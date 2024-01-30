@@ -3,6 +3,7 @@
 #include <linux/perf_event.h>
 #include <linux/hw_breakpoint.h>
 
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/syscall.h>
@@ -18,19 +19,19 @@
 #include <strings.h>
 #include <unistd.h>
 
-#include "freebsd_queue.h"		/* Really crap version from linux for now */
+#include "freebsd_queue.h"
 
 #define nitems(_a)	(sizeof((_a)) / sizeof((_a)[0]))
 
-#define PERF_MMAP_PAGES 16	/* must be power of 2 */
-#define PERF_MMAP_SIZE	(1 + PERF_MMAP_PAGES * getpagesize())
+#define PERF_MMAP_PAGES 16	/* Must be power of 2 */
+#define PERF_MMAP_SIZE	((1 + PERF_MMAP_PAGES) * getpagesize())
 
 struct perf_group_leader {
-	TAILQ_ENTRY(perf_group_leader)		 pgl_entry;
-	int					 pgl_fd;
-	int					 pgl_cpu;
-	struct perf_event_attr			 pgl_attr;
-	struct perf_event_mmap_page		*pgl_mmap;
+	TAILQ_ENTRY(perf_group_leader)	 entry;
+	int				 fd;
+	int				 cpu;
+	struct perf_event_attr		 attr;
+	struct perf_event_mmap_page	*mmap;
 };
 
 static int
@@ -94,7 +95,7 @@ static int
 perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 {
 	int			 id;
-	struct perf_event_attr	*attr = &pgl->pgl_attr;
+	struct perf_event_attr	*attr = &pgl->attr;
 
 	bzero(pgl, sizeof(*pgl));
 
@@ -120,13 +121,13 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	attr->sample_id_all = 1;	/* affects non RECORD samples */
 	attr->disabled = 1;
 
-	pgl->pgl_fd = perf_event_open(attr, -1, cpu, -1, 0);
-	if (pgl->pgl_fd == -1)
+	pgl->fd = perf_event_open(attr, -1, cpu, -1, 0);
+	if (pgl->fd == -1)
 		return (-1);
-	pgl->pgl_cpu = cpu;
-	pgl->pgl_mmap = mmap(NULL, PERF_MMAP_SIZE, PROT_READ|PROT_WRITE,
-	    MAP_SHARED, pgl->pgl_fd, 0);
-	if (pgl->pgl_mmap == NULL)
+	pgl->cpu = cpu;
+	pgl->mmap = mmap(NULL, PERF_MMAP_SIZE, PROT_READ|PROT_WRITE,
+	    MAP_SHARED, pgl->fd, 0);
+	if (pgl->mmap == NULL)
 		return (-1);
 
 	return (0);
@@ -140,13 +141,34 @@ main(int argc, char *argv[])
 	TAILQ_HEAD(perf_group_leaders, perf_group_leader) leaders =
 	    TAILQ_HEAD_INITIALIZER(leaders);
 
+	printf("using %d bytes for each ring\n", PERF_MMAP_SIZE - getpagesize());
+
 	for (i = 0; i < get_nprocs_conf(); i++) {
 		pgl = calloc(1, sizeof(*pgl));
 		if (pgl == NULL)
 			err(1, "calloc");
 		if (perf_open_group_leader(pgl, i) == -1)
 			errx(1, "perf_open_group_leader");
-		TAILQ_INSERT_HEAD(&leaders, pgl, pgl_entry);
+		TAILQ_INSERT_TAIL(&leaders, pgl, entry);
+	}
+
+	TAILQ_FOREACH(pgl, &leaders, entry) {
+		/* XXX PERF_IOC_FLAG_GROUP see bugs */
+		if (ioctl(pgl->fd, PERF_EVENT_IOC_RESET,
+		    PERF_IOC_FLAG_GROUP) == -1)
+			err(1, "ioctl PERF_EVENT_IOC_RESET:");
+		if (ioctl(pgl->fd, PERF_EVENT_IOC_ENABLE,
+		    PERF_IOC_FLAG_GROUP) == -1)
+			err(1, "ioctl PERF_EVENT_IOC_ENABLE:");
+	}
+
+	for (;;) {
+		TAILQ_FOREACH(pgl, &leaders, entry) {
+			printf("cpu%2d head %llu tail %llu\n",
+			    pgl->cpu, pgl->mmap->data_head,
+			    pgl->mmap->data_tail);
+		}
+		sleep(1);
 	}
 
 	return (0);
