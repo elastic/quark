@@ -17,6 +17,8 @@
 #include <strings.h>
 #include <unistd.h>
 
+#include <sys/queue.h>		/* Really crap version from linux for now */
+
 #define nitems(_a)	(sizeof((_a)) / sizeof((_a)[0]))
 
 static int
@@ -26,12 +28,11 @@ perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu,
 	return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
 }
 
-
 static int
 fetch_tracing_id(const char *tail)
 {
-	int	i;
-	char	path[MAXPATHLEN];
+	int i;
+	char path[MAXPATHLEN];
 	char *epath[] = {
 		"/sys/kernel/tracing/events",
 		"/sys/kernel/debug/tracing/events"
@@ -77,88 +78,67 @@ fetch_tracing_id(const char *tail)
 	return (-1);
 }
 
+struct perf_group_leader {
+	TAILQ_ENTRY(perf_group_leader)		pgl_entry;
+	int					pgl_fd;
+	int					pgl_cpu;
+	struct perf_event_attr			pgl_attr;
+	/* mmap area */
+};
+
 static int
-open_perf(int cpu)
+perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 {
-	struct perf_event_attr attr;
-	int id;
+	int			 id;
+	struct perf_event_attr	*attr = &pgl->pgl_attr;
 
-	bzero(&attr, sizeof(attr));
+	bzero(pgl, sizeof(*pgl));
 
-	attr.type = PERF_TYPE_TRACEPOINT;
-	attr.size = sizeof(attr);
-	if ((id = fetch_tracing_id("sched/sched_process_fork")) == -1)
-		errx(1, "can't fetch id for sched_process_fork");
-	attr.config = id;
-	attr.sample_period = 1;	/* we want all events */
-	attr.sample_type = PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_CPU
+	attr->type = PERF_TYPE_TRACEPOINT;
+	attr->size = sizeof(*attr);
+	if ((id = fetch_tracing_id("sched/sched_process_exec")) == -1)
+		return (-1);
+	attr->config = id;
+	attr->sample_period = 1;	/* we want all events */
+	attr->sample_type = PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_CPU
 	    | PERF_SAMPLE_RAW | PERF_SAMPLE_STREAM_ID; /* NOTE: why stream? */
 
-	/* attr.read_format = PERF_FORMAT_LOST; */
-	/* attr.mmap2 */
-	/* attr.comm_exec */
-	/* attr.sample_id_all */
-	/* attr.use_clockid !!!!!! */
-	attr.watermark = 0;	/* use number of samples, not bytes */
-	attr.wakeup_events = 1;	/* XXX for testing */
-	/* attr.clockid = ; !!!!!! */
-	attr.task = 1;		/* get fork/exec, duplicates the tracepoint */
-	attr.sample_id_all = 1;	/* affects non RECORD samples */
-	/* attr.disabled = 1; */
+	/* attr->read_format = PERF_FORMAT_LOST; */
+	/* attr->mmap2 */
+	/* attr->comm_exec */
+	/* attr->sample_id_all */
+	/* attr->use_clockid !!!!!! */
+	attr->watermark = 0;	/* use number of samples, not bytes */
+	attr->wakeup_events = 1;	/* XXX for testing */
+	/* attr->clockid = ; !!!!!! */
+	attr->task = 1;		/* get fork/exec, getting the same from two
+				 * different things */
+	attr->sample_id_all = 1;	/* affects non RECORD samples */
+	attr->disabled = 1;
 
-	return (perf_event_open(&attr, -1, cpu, -1, 0));
+	pgl->pgl_fd = perf_event_open(attr, -1, cpu, -1, 0);
+	if (pgl->pgl_fd == -1)
+		return (-1);
+	pgl->pgl_cpu = cpu;
+
+	return (0);
 }
 
 int
 main(int argc, char *argv[])
 {
-	int *cpu_to_fd, ncpus, nfds, r, i;
-	struct pollfd *fds;
+	int				 i;
+	struct perf_group_leader	*pgl;
+	TAILQ_HEAD(perf_group_leaders, perf_group_leader) leaders =
+	    TAILQ_HEAD_INITIALIZER(leaders);
 
-	ncpus = get_nprocs_conf();
-	cpu_to_fd = calloc(ncpus, sizeof(int));
-	if (cpu_to_fd == NULL)
-		err(1, "calloc");
-	for (i = 0; i < ncpus; i++) {
-		cpu_to_fd[i] = open_perf(i);
-		if (cpu_to_fd[i] == -1)
-			err(1, "can't open perf ring for cpu %d\n", i);
-		printf("cpu%-3d fd:%3d\n", i, cpu_to_fd[i]);
-	}
-	nfds = ncpus;		/* XXX for now */
-	fds = calloc(nfds, sizeof(*fds));
-	if (fds == NULL)
-		err(1, "calloc");
-	for (i = 0; i < nfds; i++) {
-		fds[i].fd = cpu_to_fd[i];
-		fds[i].events = POLLIN;
-	}
-	/*
-	 * XXX this makes no sense, events are always pollable until we drain
-	 */
-	for (;;) {
-		if ((r = poll(fds, ncpus, -1)) == -1)
-			err(1, "poll");
-
-		for (i = 0; i < ncpus; i++) {
-			char tmp[4096];
-			ssize_t n = read(cpu_to_fd[i], tmp, sizeof(tmp));
-			printf("cpu%d fd%d n=%zd\n", i, cpu_to_fd[i], n);
-		}
-		warnx("poll %d\n", r);
-		for (i = 0; i < r; i++) {
-			if (fds[i].revents & POLLERR)
-				errx(1, "fd %d got ERR\n", fds[i].fd);
-			if ((fds[i].revents & (POLLIN | POLLHUP)) == 0)
-				continue;
-			if (fds[i].revents & POLLHUP)
-				warnx("fd %d got HUP\n", fds[i].fd);
-
-			char tmp[4096];
-			ssize_t n = read(fds[i].fd, tmp, sizeof(tmp));
-			printf("fd%d n=%zd\n", fds[i].fd, n);
-		}
-		sleep(2);
+	for (i = 0; i < get_nprocs_conf(); i++) {
+		pgl = calloc(1, sizeof(*pgl));
+		if (pgl == NULL)
+			err(1, "calloc");
+		if (perf_open_group_leader(pgl, i) == -1)
+			errx(1, "perf_open_group_leader");
+		TAILQ_INSERT_HEAD(&leaders, pgl, pgl_entry);
 	}
 
 	return (0);
