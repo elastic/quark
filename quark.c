@@ -3,6 +3,7 @@
 #include <linux/perf_event.h>
 #include <linux/hw_breakpoint.h>
 
+#include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
@@ -20,6 +21,17 @@
 #include <sys/queue.h>		/* Really crap version from linux for now */
 
 #define nitems(_a)	(sizeof((_a)) / sizeof((_a)[0]))
+
+#define PERF_MMAP_PAGES 16	/* must be power of 2 */
+#define PERF_MMAP_SIZE	(1 + PERF_MMAP_PAGES * getpagesize())
+
+struct perf_group_leader {
+	TAILQ_ENTRY(perf_group_leader)		 pgl_entry;
+	int					 pgl_fd;
+	int					 pgl_cpu;
+	struct perf_event_attr			 pgl_attr;
+	struct perf_event_mmap_page		*pgl_mmap;
+};
 
 static int
 perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu,
@@ -78,14 +90,6 @@ fetch_tracing_id(const char *tail)
 	return (-1);
 }
 
-struct perf_group_leader {
-	TAILQ_ENTRY(perf_group_leader)		pgl_entry;
-	int					pgl_fd;
-	int					pgl_cpu;
-	struct perf_event_attr			pgl_attr;
-	/* mmap area */
-};
-
 static int
 perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 {
@@ -120,6 +124,10 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	if (pgl->pgl_fd == -1)
 		return (-1);
 	pgl->pgl_cpu = cpu;
+	pgl->pgl_mmap = mmap(NULL, PERF_MMAP_SIZE, PROT_READ|PROT_WRITE,
+	    MAP_SHARED, pgl->pgl_fd, 0);
+	if (pgl->pgl_mmap == NULL)
+		return (-1);
 
 	return (0);
 }
