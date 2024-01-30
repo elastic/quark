@@ -18,7 +18,7 @@
 #include <strings.h>
 #include <unistd.h>
 
-#include <sys/queue.h>		/* Really crap version from linux for now */
+#include "freebsd_queue.h"		/* Really crap version from linux for now */
 
 #define nitems(_a)	(sizeof((_a)) / sizeof((_a)[0]))
 
