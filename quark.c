@@ -32,6 +32,43 @@
 
 #define PERF_MMAP_PAGES 16	/* Must be power of 2 */
 
+struct my_perf_sample_id {
+	__u32 pid;
+	__u32 tid;
+	__u64 time;
+	__u64 stream_id;
+	__u32 cpu;
+	__u32 cpu_unused;
+};
+
+struct my_perf_record_fork {
+	struct perf_event_header	header;
+	__u32				pid;
+	__u32				ppid;
+	__u32				tid;
+	__u32				ptid;
+	__u64				time;
+	struct my_perf_sample_id	sample_id;
+};
+
+struct my_perf_record_exit {
+	struct perf_event_header	header;
+	__u32				pid;
+	__u32				ppid;
+	__u32				tid;
+	__u32				ptid;
+	__u64				time;
+	struct my_perf_sample_id	sample_id;
+};
+
+struct my_perf_event {
+	union {
+		struct perf_event_header	header;
+		struct my_perf_record_fork	fork;
+//	struct my_perf_record_exit	exit;
+	};
+};
+
 struct perf_mmap {
 	struct perf_event_mmap_page	*metadata;
 	size_t				 mapped_size;
@@ -103,8 +140,8 @@ perf_mmap_read(struct perf_mmap *mm, void *buf, size_t buflen)
 		return (-1);
 	}
 	copyleft = evh->size;
-	printf("evh->size=%d data_head=%lu data_mask=0x%lx evh=%p data_start=%p\n",
-	    evh->size, data_head, mm->data_mask, evh, mm->data_start);
+	/* printf("evh->size=%d data_head=%lu data_mask=0x%lx evh=%p data_start=%p\n", */
+	/*     evh->size, data_head, mm->data_mask, evh, mm->data_start); */
 	off = 0;
 	while (copyleft) {
 		/* How much contiguous space there is left */
@@ -117,8 +154,6 @@ perf_mmap_read(struct perf_mmap *mm, void *buf, size_t buflen)
 		pbuf += thiscopy;
 		copyleft -= thiscopy;
 	}
-
-	printf("copied %zd bytes\n", off);
 
 	/* "Tell" the kernel there is more space left */
 	perf_mmap_update_tail(meta, meta->data_tail + off);
@@ -182,20 +217,21 @@ fetch_tracing_id(const char *tail)
 
 	return (-1);
 }
+#endif
 
 static int
 perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 {
-	int			 id;
+	/* int			 id; */
 	struct perf_event_attr	*attr = &pgl->attr;
 
 	bzero(pgl, sizeof(*pgl));
 
-	attr->type = PERF_TYPE_TRACEPOINT;
+	attr->type = PERF_TYPE_SOFTWARE;
 	attr->size = sizeof(*attr);
-	if ((id = fetch_tracing_id("sched/sched_process_exec")) == -1)
-		return (-1);
-	attr->config = id;
+	/* if ((id = fetch_tracing_id("sched/sched_process_exec")) == -1) */
+	/* 	return (-1); */
+	attr->config = PERF_COUNT_SW_DUMMY;
 	attr->sample_period = 1;	/* we want all events */
 	attr->sample_type = PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_CPU
 	    | PERF_SAMPLE_RAW | PERF_SAMPLE_STREAM_ID; /* NOTE: why stream? */
@@ -217,12 +253,38 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	if (pgl->fd == -1)
 		return (-1);
 	pgl->cpu = cpu;
-	pgl->mmap = mmap(NULL, PERF_MMAP_SIZE, PROT_READ|PROT_WRITE,
-	    MAP_SHARED, pgl->fd, 0);
-	if (pgl->mmap == NULL)
+	if (perf_mmap_init(&pgl->mmap, pgl->fd) == -1) {
+		close(pgl->fd);
 		return (-1);
+	}
 
 	return (0);
+}
+
+static void
+dump_event(struct my_perf_event *ev)
+{
+	struct my_perf_record_fork *fork;
+	struct my_perf_sample_id *sid = NULL;
+	/* struct my_perf_record_exit *exit; */
+
+	switch (ev->header.type) {
+	case PERF_RECORD_FORK:
+		fork = &ev->fork;
+		sid = &fork->sample_id;
+		printf("->fork\n  pid=%d ppid=%d tid=%d ptid=%d time=%llu\n",
+		    fork->pid, fork->ppid, fork->tid, fork->ptid, fork->time);
+		break;
+	case PERF_RECORD_EXIT:
+		printf("TODO\n");
+		break;
+	}
+
+	if (sid != NULL)
+		printf("  s.pid=%d s.tid=%d s.time=%llu s.stream_id=%llu s.cpu=%d\n",
+		    sid->pid, sid->tid, sid->time, sid->stream_id, sid->cpu);
+
+	fflush(stdout);
 }
 
 int
@@ -232,8 +294,10 @@ main(int argc, char *argv[])
 	struct perf_group_leader	*pgl;
 	TAILQ_HEAD(perf_group_leaders, perf_group_leader) leaders =
 	    TAILQ_HEAD_INITIALIZER(leaders);
+	char buf[8192];
+	struct my_perf_event *event = (struct my_perf_event *)buf;
 
-	printf("using %d bytes for each ring\n", PERF_MMAP_SIZE - getpagesize());
+	printf("using %d bytes for each ring\n", PERF_MMAP_PAGES * getpagesize());
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
 		pgl = calloc(1, sizeof(*pgl));
@@ -255,10 +319,24 @@ main(int argc, char *argv[])
 	}
 
 	for (;;) {
+		ssize_t n;
+
 		TAILQ_FOREACH(pgl, &leaders, entry) {
-			printf("cpu%2d head %llu tail %llu\n",
-			    pgl->cpu, pgl->mmap->data_head,
-			    pgl->mmap->data_tail);
+			/* printf("cpu%2d head %llu tail %llu\n", */
+			/*     pgl->cpu, pgl->mmap.metadata->data_head, */
+			/*     pgl->mmap.metadata->data_tail); */
+			n = perf_mmap_read(&pgl->mmap, buf, sizeof(buf));
+			if (n == -1) {
+				/* Nothing to be read */
+				if (errno == EAGAIN)
+					continue;
+				/* Ooopsy */
+				err(1, "perf_mmap_read");
+			}
+			dump_event(event);
+			/* printf("read %zd bytes (type=%d, misc=%d, size=%d)\n", */
+			/*     n, evh->type, evh->misc, evh->size); */
+			/* printf("sizeof(evh) = %zd\n", sizeof(*evh)); */
 		}
 		sleep(1);
 	}
