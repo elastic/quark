@@ -1,4 +1,5 @@
 CFLAGS?= -g -O2
+CFLAGS+= -fno-strict-aliasing
 CFLAGS+= -Wall
 CFLAGS+= -Wextra
 CFLAGS+= -Werror
@@ -15,7 +16,6 @@ CFLAGS+= -Wpointer-arith
 CFLAGS+= -Wreturn-type
 CFLAGS+= -Wshadow
 CFLAGS+= -Wsign-compare
-CFLAGS+= -Wstrict-aliasing
 CFLAGS+= -Wstrict-prototypes
 CFLAGS+= -Wswitch
 CFLAGS+= -Wtrigraphs

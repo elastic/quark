@@ -17,10 +17,14 @@
 #include <poll.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <strings.h>
 #include <unistd.h>
 
 #include "freebsd_queue.h"
+typedef uintptr_t __uintptr_t;
+#include "freebsd_tree.h"
+/* #include "openbsd_tree.h" */
 
 #ifndef nitems
 #define nitems(_a)	(sizeof((_a)) / sizeof((_a)[0]))
@@ -96,6 +100,22 @@ struct perf_group_leader {
 	struct perf_event_attr		 attr;
 	struct perf_mmap		 mmap;
 };
+
+struct raw_event {
+	RB_ENTRY(raw_event)	entry;
+	struct my_perf_event	perf_event;
+};
+
+
+static int
+raw_event_cmp(struct raw_event *_a, struct raw_event *_b)
+{
+	return (0);
+}
+
+RB_HEAD(raw_event_tree, raw_event) raw_event_tree = RB_INITIALIZER(&raw_event_tree);
+RB_PROTOTYPE(raw_event_tree, raw_event, entry, raw_event_cmp);
+RB_GENERATE(raw_event_tree, raw_event, entry, raw_event_cmp);
 
 static int
 perf_mmap_init(struct perf_mmap *mm, int fd)
