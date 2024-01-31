@@ -12,6 +12,7 @@
 #include <bsd/stdlib.h>
 
 #include <err.h>
+#include <errno.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -21,18 +22,109 @@
 
 #include "freebsd_queue.h"
 
+#ifndef nitems
 #define nitems(_a)	(sizeof((_a)) / sizeof((_a)[0]))
+#endif	/* nitems */
+
+#ifndef min
+#define min(_a, _b)	((_a) < (_b) ? (_a) : (_b))
+#endif	/* min */
 
 #define PERF_MMAP_PAGES 16	/* Must be power of 2 */
-#define PERF_MMAP_SIZE	((1 + PERF_MMAP_PAGES) * getpagesize())
+
+struct perf_mmap {
+	struct perf_event_mmap_page	*metadata;
+	size_t				 mapped_size;
+	size_t				 data_mask;
+	uint8_t				*data_start;
+};
 
 struct perf_group_leader {
 	TAILQ_ENTRY(perf_group_leader)	 entry;
 	int				 fd;
 	int				 cpu;
 	struct perf_event_attr		 attr;
-	struct perf_event_mmap_page	*mmap;
+	struct perf_mmap		 mmap;
 };
+
+static int
+perf_mmap_init(struct perf_mmap *mm, int fd)
+{
+	mm->mapped_size = (1 + PERF_MMAP_PAGES) * getpagesize();
+	mm->metadata = mmap(NULL, mm->mapped_size, PROT_READ|PROT_WRITE,
+	    MAP_SHARED, fd, 0);
+	if (mm->metadata == NULL)
+		return (-1);
+	mm->data_mask = (PERF_MMAP_PAGES * getpagesize()) - 1;
+	mm->data_start = (uint8_t *)mm->metadata + getpagesize();
+	printf("metadata=%p data_start=%p\n", mm->metadata, mm->data_start);
+
+	return (0);
+}
+
+static inline uint64_t
+perf_mmap_load_head(struct perf_event_mmap_page *metadata)
+{
+	return (__atomic_load_n(&metadata->data_head, __ATOMIC_ACQUIRE));
+}
+
+static inline void
+perf_mmap_update_tail(struct perf_event_mmap_page *metadata, uint64_t tail)
+{
+	return (__atomic_store_n(&metadata->data_tail, tail, __ATOMIC_RELEASE));
+}
+
+static ssize_t
+perf_mmap_read(struct perf_mmap *mm, void *buf, size_t buflen)
+{
+	struct perf_event_mmap_page *meta;
+	struct perf_event_header *evh;
+	uint64_t data_head;
+	int diff;
+	ssize_t copyleft, leftcont, thiscopy, off;
+	uint8_t *pbuf;
+
+	meta = mm->metadata;
+	data_head = perf_mmap_load_head(meta);
+	diff = data_head - meta->data_tail;
+	pbuf = buf;
+
+	evh = (struct perf_event_header *)
+	    (mm->data_start + (meta->data_tail & mm->data_mask));
+
+	if (diff < (int)sizeof(*evh) || diff < evh->size) {
+		errno = EAGAIN;
+		return (-1);
+	}
+
+	/* XXX just for now XXX */
+	if (evh->size > buflen) {
+		errno = EMSGSIZE;
+		return (-1);
+	}
+	copyleft = evh->size;
+	printf("evh->size=%d data_head=%lu data_mask=0x%lx evh=%p data_start=%p\n",
+	    evh->size, data_head, mm->data_mask, evh, mm->data_start);
+	off = 0;
+	while (copyleft) {
+		/* How much contiguous space there is left */
+		leftcont = mm->data_mask + 1 - ((meta->data_tail + off) & mm->data_mask);
+		/* How much this memcpy will copy, so it doesn't wrap */
+		thiscopy = min(leftcont, copyleft);
+		/* Do it */
+		memcpy(pbuf, evh + off, thiscopy);
+		off += thiscopy;
+		pbuf += thiscopy;
+		copyleft -= thiscopy;
+	}
+
+	printf("copied %zd bytes\n", off);
+
+	/* "Tell" the kernel there is more space left */
+	perf_mmap_update_tail(meta, meta->data_tail + off);
+
+	return (off);
+}
 
 static int
 perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu,
@@ -40,7 +132,7 @@ perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu,
 {
 	return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
 }
-
+#if 0
 static int
 fetch_tracing_id(const char *tail)
 {
