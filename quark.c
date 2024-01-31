@@ -10,13 +10,13 @@
 #include <sys/sysinfo.h>
 
 #include <bsd/stdlib.h>
+#include <bsd/string.h>
 
 #include <err.h>
 #include <errno.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <stdio.h>
-#include <string.h>
 #include <strings.h>
 #include <unistd.h>
 
@@ -61,11 +61,24 @@ struct my_perf_record_exit {
 	struct my_perf_sample_id	sample_id;
 };
 
+struct data_loc {
+	__u16	offset;
+	__u16	size;
+};
+
+struct my_perf_record_sample {
+	struct perf_event_header	header;
+	struct my_perf_sample_id	sample_id;
+	__u32				size;
+	char				data[];
+};
+
 struct my_perf_event {
 	union {
 		struct perf_event_header	header;
 		struct my_perf_record_fork	fork;
 		struct my_perf_record_exit	exit;
+		struct my_perf_record_sample	sample;
 	};
 };
 
@@ -167,7 +180,7 @@ perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu,
 {
 	return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
 }
-#if 0
+
 static int
 fetch_tracing_id(const char *tail)
 {
@@ -217,21 +230,21 @@ fetch_tracing_id(const char *tail)
 
 	return (-1);
 }
-#endif
 
 static int
 perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 {
-	/* int			 id; */
+	int			 id;
 	struct perf_event_attr	*attr = &pgl->attr;
 
 	bzero(pgl, sizeof(*pgl));
 
-	attr->type = PERF_TYPE_SOFTWARE;
+	attr->type = PERF_TYPE_TRACEPOINT;
 	attr->size = sizeof(*attr);
-	/* if ((id = fetch_tracing_id("sched/sched_process_exec")) == -1) */
-	/* 	return (-1); */
-	attr->config = PERF_COUNT_SW_DUMMY;
+	if ((id = fetch_tracing_id("sched/sched_process_exec")) == -1)
+		return (-1);
+	attr->config = id;
+	/* attr->config = PERF_COUNT_SW_DUMMY; */
 	attr->sample_period = 1;	/* we want all events */
 	attr->sample_type = PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_CPU
 	    | PERF_SAMPLE_RAW | PERF_SAMPLE_STREAM_ID; /* NOTE: why stream? */
@@ -267,6 +280,9 @@ dump_event(struct my_perf_event *ev)
 	struct my_perf_sample_id	*sid = NULL;
 	struct my_perf_record_fork	*fork;
 	struct my_perf_record_exit	*exit;
+	struct my_perf_record_sample	*sample;
+	struct data_loc			*data_loc;
+	char				 buf[4096];
 
 	switch (ev->header.type) {
 	case PERF_RECORD_FORK:
@@ -280,6 +296,29 @@ dump_event(struct my_perf_event *ev)
 		sid = &exit->sample_id;
 		printf("->exit\n\tpid=%d ppid=%d tid=%d ptid=%d time=%llu\n",
 		    exit->pid, exit->ppid, exit->tid, exit->ptid, exit->time);
+		break;
+	case PERF_RECORD_SAMPLE:
+		sample = &ev->sample;
+		sid = &sample->sample_id;
+		/* XXX hardcorded offset XXX */
+		data_loc = (struct data_loc *)(sample->data + 8);
+		/* XXX ignoring data_loc.size XXX */
+		printf("->exec\n\t");
+		if (data_loc->size > sizeof(buf)) {
+			warnx("data_loc too big %d vs %zd\n",
+			    data_loc->size, sizeof(buf));
+			break;
+		}
+		memcpy(buf, sample->data + data_loc->offset, data_loc->size);
+		buf[data_loc->size - 1] = 0;
+		/* if (strlcpy(buf, sample->data + data_loc.offset, sizeof(buf)) >= */
+		/*     sizeof(buf)) */
+		/* 	warnx("filename truncated"); */
+		printf("filename=%s\n", buf);
+		break;
+
+	default:
+		printf("->Unhandled(type %d)\n", ev->header.type);
 		break;
 	}
 
