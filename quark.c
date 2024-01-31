@@ -26,6 +26,14 @@ typedef uintptr_t __uintptr_t;
 #include "freebsd_tree.h"
 /* #include "openbsd_tree.h" */
 
+#ifndef likely
+#define likely(x)	__builtin_expect(!!(x), 1)
+#endif	/* likely */
+
+#ifndef unlikely
+#define unlikely(x)	__builtin_expect(!!(x), 0)
+#endif	/* unlikely */
+
 #ifndef nitems
 #define nitems(_a)	(sizeof((_a)) / sizeof((_a)[0]))
 #endif	/* nitems */
@@ -91,6 +99,8 @@ struct perf_mmap {
 	size_t				 mapped_size;
 	size_t				 data_mask;
 	uint8_t				*data_start;
+	__u64				 data_tmp_tail;
+	__u8				 wrapped_event_buf[4096] __aligned(8);
 };
 
 struct perf_group_leader {
@@ -103,12 +113,12 @@ struct perf_group_leader {
 
 struct raw_event {
 	RB_ENTRY(raw_event)	entry;
-	struct my_perf_event	perf_event;
+	struct my_perf_event	perf_event[];
 };
 
 
 static int
-raw_event_cmp(struct raw_event *_a, struct raw_event *_b)
+raw_event_cmp(struct raw_event *a, struct raw_event *b)
 {
 	return (0);
 }
@@ -127,6 +137,7 @@ perf_mmap_init(struct perf_mmap *mm, int fd)
 		return (-1);
 	mm->data_mask = (PERF_MMAP_PAGES * getpagesize()) - 1;
 	mm->data_start = (uint8_t *)mm->metadata + getpagesize();
+	mm->data_tmp_tail = mm->metadata->data_tail;
 	printf("metadata=%p data_start=%p\n", mm->metadata, mm->data_start);
 
 	return (0);
@@ -144,54 +155,53 @@ perf_mmap_update_tail(struct perf_event_mmap_page *metadata, uint64_t tail)
 	return (__atomic_store_n(&metadata->data_tail, tail, __ATOMIC_RELEASE));
 }
 
-static ssize_t
-perf_mmap_read(struct perf_mmap *mm, void *buf, size_t buflen)
+static struct my_perf_event *
+perf_mmap_read(struct perf_mmap *mm)
 {
-	struct perf_event_mmap_page *meta;
 	struct perf_event_header *evh;
 	uint64_t data_head;
 	int diff;
-	ssize_t copyleft, leftcont, thiscopy, off;
-	uint8_t *pbuf;
+	ssize_t leftcont, thiscopy, off;
 
-	meta = mm->metadata;
-	data_head = perf_mmap_load_head(meta);
-	diff = data_head - meta->data_tail;
-	pbuf = buf;
-
+	data_head = perf_mmap_load_head(mm->metadata);
+	diff = data_head - mm->data_tmp_tail;
 	evh = (struct perf_event_header *)
-	    (mm->data_start + (meta->data_tail & mm->data_mask));
+	    (mm->data_start + (mm->data_tmp_tail & mm->data_mask));
 
-	if (diff < (int)sizeof(*evh) || diff < evh->size) {
-		errno = EAGAIN;
-		return (-1);
+	/* Do we have at least one complete event */
+	if (diff < (int)sizeof(*evh) || diff < evh->size)
+		return (NULL);
+	/* Guard that we will always be able to fit a wrapped event */
+	if (unlikely(evh->size > sizeof(mm->wrapped_event_buf)))
+		errx(1, "getting an event larger than wrapped buf");
+	/* How much contiguous space there is left */
+	leftcont = mm->data_mask + 1 - (mm->data_tmp_tail & mm->data_mask);
+	/* Everything fits without wrapping */
+	if (likely(evh->size <= leftcont)) {
+		mm->data_tmp_tail += evh->size;
+		return ((struct my_perf_event *)evh);
 	}
-
-	/* XXX just for now XXX */
-	if (evh->size > buflen) {
-		errno = EMSGSIZE;
-		return (-1);
-	}
-	copyleft = evh->size;
-	/* printf("evh->size=%d data_head=%lu data_mask=0x%lx evh=%p data_start=%p\n", */
-	/*     evh->size, data_head, mm->data_mask, evh, mm->data_start); */
-	off = 0;
-	while (copyleft) {
-		/* How much contiguous space there is left */
-		leftcont = mm->data_mask + 1 - ((meta->data_tail + off) & mm->data_mask);
+	errx(1, "TODO");
+	/* Slow path, we have to copy the event out in a linear buffer */
+	for (off = 0; evh->size - off != 0; off += thiscopy) {
+		/* Calculate next contiguous area, must fit */
+		leftcont = mm->data_mask + 1 -
+		    ((mm->data_tmp_tail + off) & mm->data_mask);
 		/* How much this memcpy will copy, so it doesn't wrap */
-		thiscopy = min(leftcont, copyleft);
+		thiscopy = min(leftcont, evh->size - off);
 		/* Do it */
-		memcpy(pbuf, evh + off, thiscopy);
-		off += thiscopy;
-		pbuf += thiscopy;
-		copyleft -= thiscopy;
+		memcpy(mm->wrapped_event_buf + off, evh + off, thiscopy);
 	}
+	/* Record where our future tail will be on release */
+	mm->data_tmp_tail += evh->size;
 
-	/* "Tell" the kernel there is more space left */
-	perf_mmap_update_tail(meta, meta->data_tail + off);
+	return ((struct my_perf_event *)evh);
+}
 
-	return (off);
+static inline void
+perf_mmap_consume(struct perf_mmap *mmap)
+{
+	perf_mmap_update_tail(mmap->metadata, mmap->data_tmp_tail);
 }
 
 static int
@@ -356,8 +366,7 @@ main(int argc, char *argv[])
 	struct perf_group_leader	*pgl;
 	TAILQ_HEAD(perf_group_leaders, perf_group_leader) leaders =
 	    TAILQ_HEAD_INITIALIZER(leaders);
-	char buf[8192];
-	struct my_perf_event *event = (struct my_perf_event *)buf;
+	struct my_perf_event *event;
 
 	printf("using %d bytes for each ring\n", PERF_MMAP_PAGES * getpagesize());
 
@@ -381,24 +390,15 @@ main(int argc, char *argv[])
 	}
 
 	for (;;) {
-		ssize_t n;
-
 		TAILQ_FOREACH(pgl, &leaders, entry) {
 			/* printf("cpu%2d head %llu tail %llu\n", */
 			/*     pgl->cpu, pgl->mmap.metadata->data_head, */
 			/*     pgl->mmap.metadata->data_tail); */
-			n = perf_mmap_read(&pgl->mmap, buf, sizeof(buf));
-			if (n == -1) {
-				/* Nothing to be read */
-				if (errno == EAGAIN)
-					continue;
-				/* Ooopsy */
-				err(1, "perf_mmap_read");
-			}
+			event = perf_mmap_read(&pgl->mmap);
+			if (event == NULL)
+				continue;
 			dump_event(event);
-			/* printf("read %zd bytes (type=%d, misc=%d, size=%d)\n", */
-			/*     n, evh->type, evh->misc, evh->size); */
-			/* printf("sizeof(evh) = %zd\n", sizeof(*evh)); */
+			perf_mmap_consume(&pgl->mmap);
 		}
 		sleep(1);
 	}
