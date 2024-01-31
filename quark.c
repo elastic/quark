@@ -65,7 +65,7 @@ struct my_perf_event {
 	union {
 		struct perf_event_header	header;
 		struct my_perf_record_fork	fork;
-//	struct my_perf_record_exit	exit;
+		struct my_perf_record_exit	exit;
 	};
 };
 
@@ -264,24 +264,27 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 static void
 dump_event(struct my_perf_event *ev)
 {
-	struct my_perf_record_fork *fork;
-	struct my_perf_sample_id *sid = NULL;
-	/* struct my_perf_record_exit *exit; */
+	struct my_perf_sample_id	*sid = NULL;
+	struct my_perf_record_fork	*fork;
+	struct my_perf_record_exit	*exit;
 
 	switch (ev->header.type) {
 	case PERF_RECORD_FORK:
 		fork = &ev->fork;
 		sid = &fork->sample_id;
-		printf("->fork\n  pid=%d ppid=%d tid=%d ptid=%d time=%llu\n",
+		printf("->fork\n\tpid=%d ppid=%d tid=%d ptid=%d time=%llu\n",
 		    fork->pid, fork->ppid, fork->tid, fork->ptid, fork->time);
 		break;
 	case PERF_RECORD_EXIT:
-		printf("TODO\n");
+		exit = &ev->exit;
+		sid = &exit->sample_id;
+		printf("->exit\n\tpid=%d ppid=%d tid=%d ptid=%d time=%llu\n",
+		    exit->pid, exit->ppid, exit->tid, exit->ptid, exit->time);
 		break;
 	}
 
 	if (sid != NULL)
-		printf("  s.pid=%d s.tid=%d s.time=%llu s.stream_id=%llu s.cpu=%d\n",
+		printf("\ts.pid=%d s.tid=%d s.time=%llu s.stream_id=%llu s.cpu=%d\n",
 		    sid->pid, sid->tid, sid->time, sid->stream_id, sid->cpu);
 
 	fflush(stdout);
