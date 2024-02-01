@@ -116,23 +116,21 @@ struct raw_event {
 	__u64			time;
 	int			type;
 	__u64			pid;
+	char			buf[1024]; /* XXX hackish */
 };
 
 static int
 raw_event_cmp(struct raw_event *a, struct raw_event *b)
 {
-	if (a->time < b->time)
-		return (-1);
-	else if (a->time > b->time)
-		return (1);
-	else
-		return (0);
+	return (a->time < b->time ? -1 : a->time > b->time);
 }
 
 static struct raw_event *
 perf_to_raw(struct my_perf_event *ev)
 {
-	struct raw_event *raw;
+	struct raw_event		*raw;
+	struct data_loc			*data_loc;	/* XXX temporary */
+	struct my_perf_record_sample	*sample;
 
 	if ((raw = calloc(1, sizeof(*raw))) == NULL)
 		return (NULL);
@@ -150,6 +148,11 @@ perf_to_raw(struct my_perf_event *ev)
 	case PERF_RECORD_SAMPLE:
 		raw->pid = ev->sample.sample_id.pid;
 		raw->time = ev->sample.sample_id.time;
+		sample = &ev->sample;
+		data_loc = (struct data_loc *)(sample->data + 8);
+		memcpy(raw->buf, sample->data + data_loc->offset,
+		    data_loc->size);
+		raw->buf[data_loc->size - 1] = 0;
 		break;
 	default:
 		errx(1, "perf_to_raw: unknown event type");
@@ -234,7 +237,7 @@ perf_mmap_read(struct perf_mmap *mm)
 }
 
 static inline void
-perf_mmap_consume_event(struct perf_mmap *mmap)
+perf_mmap_consume(struct perf_mmap *mmap)
 {
 	perf_mmap_update_tail(mmap->metadata, mmap->data_tmp_tail);
 }
@@ -393,7 +396,7 @@ dump_event(struct my_perf_event *ev)
 
 	fflush(stdout);
 }
-
+#if 0
 static const char *
 type_to_str(int type)
 {
@@ -407,6 +410,67 @@ type_to_str(int type)
 	}
 
 	return "Unknown";
+}
+#endif
+static void
+write_graphviz(void)
+{
+	struct raw_event *raw, *left, *right;
+	FILE *f;
+	const char *color;
+
+	f = fopen("quark.dot", "w");
+	if (f == NULL)
+		err(1, "fopen");
+	if (fprintf(f, "digraph {\n") < 0)
+		errx(1, "fprintf");
+	if (fprintf(f, "node [style=filled, color=black];") < 0)
+		errx(1, "fprintf");
+
+	RB_FOREACH(raw, raw_event_tree, &raw_event_tree) {
+		char label[2048];
+		switch (raw->type) {
+		case PERF_RECORD_FORK:
+			color = "lightgoldenrod";
+			(void)strlcpy(label, "FORK", sizeof(label));
+			break;
+		case PERF_RECORD_EXIT:
+			color = "lightseagreen";
+			(void)strlcpy(label, "EXIT", sizeof(label));
+			break;
+		case PERF_RECORD_SAMPLE:
+			color = "lightslateblue";
+			(void)snprintf(label, sizeof(label), "EXEC %s", raw->buf);
+			break;
+		default:
+			color = "black";
+			break;
+		}
+		if (fprintf(f, "%llu [label=\"%llu\\n%s\\npid %llu\", fillcolor=%s];\n",
+		    raw->time, raw->time, label, raw->pid, color) == -1)
+			errx(1, "fprintf");
+	}
+
+	RB_FOREACH(raw, raw_event_tree, &raw_event_tree) {
+		left = RB_LEFT(raw, entry);
+		right = RB_RIGHT(raw, entry);
+
+		if (left != NULL) {
+			if (fprintf(f, "%llu -> %llu;\n", raw->time, left->time) == -1)
+				errx(1, "fprintf");
+
+		}
+		if (right != NULL) {
+			if (fprintf(f, "%llu -> %llu;\n", raw->time, right->time) == -1)
+				errx(1, "fprintf");
+
+		}
+	}
+	if (fprintf(f, "}\n") < 0)
+		errx(1, "fprintf");
+
+	fflush(f);
+	fclose(f);
 }
 
 int
@@ -454,22 +518,23 @@ main(int argc, char *argv[])
 			if (raw != NULL) {
 				/* XXX CHEAT XXX */
 				/* raw->time = arc4random_uniform(100000); */
-				/* printf("time=%llu\n", raw->time); */
+				printf("time=%llu\n", raw->time);
 				if (RB_INSERT(raw_event_tree, &raw_event_tree, raw) != NULL)
 					errx(1, "tree collission");
 				nodes++;
 			} else
 				warnx("can't convert perf to raw");
-			perf_mmap_consume_event(&pgl->mmap);
+			perf_mmap_consume(&pgl->mmap);
 		}
 	}
 
 	RB_FOREACH(raw, raw_event_tree, &raw_event_tree) {
-		printf("(%llu, %s, %llu) ", raw->time, type_to_str(raw->type), raw->pid);
+		printf("%llu\n", raw->time);
 	}
 
 	printf("\n");
 
+	write_graphviz();
 
 	return (0);
 }
