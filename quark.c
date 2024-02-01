@@ -113,14 +113,49 @@ struct perf_group_leader {
 
 struct raw_event {
 	RB_ENTRY(raw_event)	entry;
-	struct my_perf_event	perf_event[];
+	__u64			time;
+	int			type;
+	__u64			pid;
 };
-
 
 static int
 raw_event_cmp(struct raw_event *a, struct raw_event *b)
 {
-	return (0);
+	if (a->time < b->time)
+		return (-1);
+	else if (a->time > b->time)
+		return (1);
+	else
+		return (0);
+}
+
+static struct raw_event *
+perf_to_raw(struct my_perf_event *ev)
+{
+	struct raw_event *raw;
+
+	if ((raw = calloc(1, sizeof(*raw))) == NULL)
+		return (NULL);
+
+	raw->type = ev->header.type;
+	switch (raw->type) {
+	case PERF_RECORD_FORK:
+		raw->pid = ev->fork.sample_id.pid;
+		raw->time = ev->fork.sample_id.time;
+		break;
+	case PERF_RECORD_EXIT:
+		raw->pid = ev->exit.sample_id.pid;
+		raw->time = ev->exit.sample_id.time;
+		break;
+	case PERF_RECORD_SAMPLE:
+		raw->pid = ev->sample.sample_id.pid;
+		raw->time = ev->sample.sample_id.time;
+		break;
+	default:
+		errx(1, "perf_to_raw: unknown event type");
+	}
+
+	return (raw);
 }
 
 RB_HEAD(raw_event_tree, raw_event) raw_event_tree = RB_INITIALIZER(&raw_event_tree);
@@ -199,7 +234,7 @@ perf_mmap_read(struct perf_mmap *mm)
 }
 
 static inline void
-perf_mmap_consume(struct perf_mmap *mmap)
+perf_mmap_consume_event(struct perf_mmap *mmap)
 {
 	perf_mmap_update_tail(mmap->metadata, mmap->data_tmp_tail);
 }
@@ -359,6 +394,21 @@ dump_event(struct my_perf_event *ev)
 	fflush(stdout);
 }
 
+static const char *
+type_to_str(int type)
+{
+	switch (type) {
+	case PERF_RECORD_FORK:
+		return "PERF_RECORD_FORK";
+	case PERF_RECORD_EXIT:
+		return "PERF_RECORD_EXIT";
+	case PERF_RECORD_SAMPLE:
+		return "PERF_RECORD_SAMPLE";
+	}
+
+	return "Unknown";
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -366,7 +416,9 @@ main(int argc, char *argv[])
 	struct perf_group_leader	*pgl;
 	TAILQ_HEAD(perf_group_leaders, perf_group_leader) leaders =
 	    TAILQ_HEAD_INITIALIZER(leaders);
-	struct my_perf_event *event;
+	struct my_perf_event *ev;
+	struct raw_event *raw;
+	int nodes = 0;
 
 	printf("using %d bytes for each ring\n", PERF_MMAP_PAGES * getpagesize());
 
@@ -389,19 +441,35 @@ main(int argc, char *argv[])
 			err(1, "ioctl PERF_EVENT_IOC_ENABLE:");
 	}
 
-	for (;;) {
+	while (nodes < 100) {
 		TAILQ_FOREACH(pgl, &leaders, entry) {
 			/* printf("cpu%2d head %llu tail %llu\n", */
 			/*     pgl->cpu, pgl->mmap.metadata->data_head, */
 			/*     pgl->mmap.metadata->data_tail); */
-			event = perf_mmap_read(&pgl->mmap);
-			if (event == NULL)
+			ev = perf_mmap_read(&pgl->mmap);
+			if (ev == NULL)
 				continue;
-			dump_event(event);
-			perf_mmap_consume(&pgl->mmap);
+			dump_event(ev);
+			raw = perf_to_raw(ev);
+			if (raw != NULL) {
+				/* XXX CHEAT XXX */
+				/* raw->time = arc4random_uniform(100000); */
+				/* printf("time=%llu\n", raw->time); */
+				if (RB_INSERT(raw_event_tree, &raw_event_tree, raw) != NULL)
+					errx(1, "tree collission");
+				nodes++;
+			} else
+				warnx("can't convert perf to raw");
+			perf_mmap_consume_event(&pgl->mmap);
 		}
-		sleep(1);
 	}
+
+	RB_FOREACH(raw, raw_event_tree, &raw_event_tree) {
+		printf("(%llu, %s, %llu) ", raw->time, type_to_str(raw->type), raw->pid);
+	}
+
+	printf("\n");
+
 
 	return (0);
 }
