@@ -18,48 +18,76 @@
 static int
 raw_event_cmp(struct raw_event *a, struct raw_event *b)
 {
-	return (a->time < b->time ? -1 : a->time > b->time);
+	return (a->sample_id.time < b->sample_id.time ? -1 :
+	    a->sample_id.time > b->sample_id.time);
+}
+
+RB_HEAD(raw_event_tree, raw_event) raw_event_tree = RB_INITIALIZER(&raw_event_tree);
+RB_PROTOTYPE(raw_event_tree, raw_event, entry, raw_event_cmp);
+RB_GENERATE(raw_event_tree, raw_event, entry, raw_event_cmp);
+
+/*
+ * Copies out the string pointed to by data size, if retval is >= than dst_size,
+ * it means we truncated. May return -1 on bad values.
+ */
+static ssize_t
+copy_data_loc(void *dst, ssize_t dst_size, struct perf_record_sample *sample,
+    size_t data_off)
+{
+	struct perf_data_loc	*data_loc;
+	ssize_t			 n;
+	char			*p = dst;
+
+	data_loc = (struct perf_data_loc *)(sample->data + data_off);
+	n = min(dst_size, data_loc->size);
+	if (n <= 0)
+		return (-1);
+	memcpy(p, sample->data + data_loc->offset, n);
+	/* never trust the kernel */
+	p[n - 1] = 0;
+
+	return (n - 1);
 }
 
 static struct raw_event *
 perf_to_raw(struct perf_event *ev)
 {
 	struct raw_event		*raw;
-	struct perf_data_loc		*data_loc;	/* XXX temporary */
-	struct perf_record_sample	*sample;
+	struct perf_sample_id		*sid = NULL;
+	ssize_t				 n;
 
 	if ((raw = calloc(1, sizeof(*raw))) == NULL)
 		return (NULL);
 
-	raw->type = ev->header.type;
-	switch (raw->type) {
+	switch (ev->header.type) {
 	case PERF_RECORD_FORK:
-		raw->pid = ev->fork.sample_id.pid;
-		raw->time = ev->fork.sample_id.time;
+		raw->type = RAW_FORK;
+		sid = &ev->fork.sample_id;
 		break;
 	case PERF_RECORD_EXIT:
-		raw->pid = ev->exit.sample_id.pid;
-		raw->time = ev->exit.sample_id.time;
+		raw->type = RAW_EXIT;
+		sid = &ev->exit.sample_id;
 		break;
 	case PERF_RECORD_SAMPLE:
-		raw->pid = ev->sample.sample_id.pid;
-		raw->time = ev->sample.sample_id.time;
-		sample = &ev->sample;
-		data_loc = (struct perf_data_loc *)(sample->data + 8);
-		memcpy(raw->buf, sample->data + data_loc->offset,
-		    data_loc->size);
-		raw->buf[data_loc->size - 1] = 0;
+		/* XXX CHEAT FOR NOW XXX */
+		raw->type = RAW_EXEC;
+		sid = &ev->sample.sample_id;
+		n = copy_data_loc(raw->exec.filename, sizeof(raw->exec.filename),
+		    &ev->sample, 8);
+		if (n == -1)
+			warnx("can't copy exec filename");
+		else if (n >= (ssize_t)sizeof(raw->exec.filename))
+			warnx("exec filename truncated");
 		break;
 	default:
-		errx(1, "perf_to_raw: unknown event type");
+		errx(1, "perf_to_raw: unknown event type %d\n", ev->header.type);
 	}
+
+	if (sid != NULL)
+		raw->sample_id = *sid;
 
 	return (raw);
 }
-
-RB_HEAD(raw_event_tree, raw_event) raw_event_tree = RB_INITIALIZER(&raw_event_tree);
-RB_PROTOTYPE(raw_event_tree, raw_event, entry, raw_event_cmp);
-RB_GENERATE(raw_event_tree, raw_event, entry, raw_event_cmp);
 
 static int
 perf_mmap_init(struct perf_mmap *mm, int fd)
@@ -245,8 +273,8 @@ dump_event(struct perf_event *ev)
 	struct perf_record_fork		*fork;
 	struct perf_record_exit		*exit;
 	struct perf_record_sample	*sample;
-	struct perf_data_loc		*data_loc;
 	char				 buf[4096];
+	ssize_t				 n;
 
 	switch (ev->header.type) {
 	case PERF_RECORD_FORK:
@@ -265,20 +293,12 @@ dump_event(struct perf_event *ev)
 		sample = &ev->sample;
 		sid = &sample->sample_id;
 		/* XXX hardcorded offset XXX */
-		data_loc = (struct perf_data_loc *)(sample->data + 8);
-		/* XXX ignoring data_loc.size XXX */
-		printf("->exec\n\t");
-		if (data_loc->size > sizeof(buf)) {
-			warnx("data_loc too big %d vs %zd\n",
-			    data_loc->size, sizeof(buf));
-			break;
-		}
-		memcpy(buf, sample->data + data_loc->offset, data_loc->size);
-		buf[data_loc->size - 1] = 0;
-		/* if (strlcpy(buf, sample->data + data_loc.offset, sizeof(buf)) >= */
-		/*     sizeof(buf)) */
-		/* 	warnx("filename truncated"); */
-		printf("filename=%s\n", buf);
+		n = copy_data_loc(buf, sizeof(buf), &ev->sample, 8);
+		if (n == -1)
+			warnx("can't copy exec filename");
+		else if (n >= (ssize_t)sizeof(buf))
+			warnx("exec filename truncated");
+		printf("->exec\n\tfilename=%s\n", buf);
 		break;
 
 	default:
@@ -308,12 +328,14 @@ type_to_str(int type)
 	return "Unknown";
 }
 #endif
+
 static void
 write_graphviz(void)
 {
 	struct raw_event	*raw, *left, *right;
 	FILE			*f;
 	const char		*color;
+	char			 label[4096];
 
 	f = fopen("quark.dot", "w");
 	if (f == NULL)
@@ -324,26 +346,28 @@ write_graphviz(void)
 		errx(1, "fprintf");
 
 	RB_FOREACH(raw, raw_event_tree, &raw_event_tree) {
-		char label[2048];
 		switch (raw->type) {
-		case PERF_RECORD_FORK:
+		case RAW_FORK:
 			color = "lightgoldenrod";
 			(void)strlcpy(label, "FORK", sizeof(label));
 			break;
-		case PERF_RECORD_EXIT:
+		case RAW_EXIT:
 			color = "lightseagreen";
 			(void)strlcpy(label, "EXIT", sizeof(label));
 			break;
-		case PERF_RECORD_SAMPLE:
+		case RAW_EXEC:
 			color = "lightslateblue";
-			(void)snprintf(label, sizeof(label), "EXEC %s", raw->buf);
+			if (snprintf(label, sizeof(label), "EXEC %s",
+			    raw->exec.filename) >= (int)sizeof(label))
+				warnx("%s: exec filename truncated", __func__);
 			break;
 		default:
 			color = "black";
 			break;
 		}
-		if (fprintf(f, "%llu [label=\"%llu\\n%s\\npid %llu\", fillcolor=%s];\n",
-		    raw->time, raw->time, label, raw->pid, color) == -1)
+		if (fprintf(f, "%llu [label=\"%llu\\n%s\\npid %d\", fillcolor=%s];\n",
+		    raw->sample_id.time, raw->sample_id.time, label,
+		    raw->sample_id.pid, color) == -1)
 			errx(1, "fprintf");
 	}
 
@@ -352,12 +376,14 @@ write_graphviz(void)
 		right = RB_RIGHT(raw, entry);
 
 		if (left != NULL) {
-			if (fprintf(f, "%llu -> %llu;\n", raw->time, left->time) == -1)
+			if (fprintf(f, "%llu -> %llu;\n",
+			    raw->sample_id.time, left->sample_id.time) == -1)
 				errx(1, "fprintf");
 
 		}
 		if (right != NULL) {
-			if (fprintf(f, "%llu -> %llu;\n", raw->time, right->time) == -1)
+			if (fprintf(f, "%llu -> %llu;\n",
+			    raw->sample_id.time, right->sample_id.time) == -1)
 				errx(1, "fprintf");
 
 		}
@@ -367,6 +393,31 @@ write_graphviz(void)
 
 	fflush(f);
 	fclose(f);
+}
+
+/*
+ * Insert without a colision, cheat on the timestamp in case we do. NOTE: since
+ * we bump "time" here, we shouldn't copy "time" before it sits in the tree.
+ */
+static void
+raw_event_tree_insert_nocol(struct raw_event *raw)
+{
+	struct raw_event	*col;
+	int			 attempts = 10;
+
+	do {
+		col = RB_INSERT(raw_event_tree, &raw_event_tree, raw);
+		if (unlikely(col != NULL))
+			warnx("raw_event_tree collision");
+		/*
+		 * We managed to get a collision on the TSC, this happens!
+		 * We just bump time by one until we can insert it.
+		 */
+		raw->sample_id.time++;
+	} while (unlikely(col != NULL && --attempts > 0));
+
+	if (col != NULL)
+		err(1, "we got consecutive collisions, this is a bug");
 }
 
 int
@@ -412,11 +463,9 @@ main(int argc, char *argv[])
 			dump_event(ev);
 			raw = perf_to_raw(ev);
 			if (raw != NULL) {
-				/* XXX CHEAT XXX */
+				/* Useful for debugging */
 				/* raw->time = arc4random_uniform(100000); */
-				printf("time=%llu\n", raw->time);
-				if (RB_INSERT(raw_event_tree, &raw_event_tree, raw) != NULL)
-					errx(1, "tree collission");
+				raw_event_tree_insert_nocol(raw);
 				nodes++;
 			} else
 				warnx("can't convert perf to raw");
@@ -425,7 +474,7 @@ main(int argc, char *argv[])
 	}
 
 	RB_FOREACH(raw, raw_event_tree, &raw_event_tree) {
-		printf("%llu\n", raw->time);
+		printf("%llu\n", raw->sample_id.time);
 	}
 
 	write_graphviz();

@@ -43,7 +43,7 @@ typedef uintptr_t __uintptr_t;
 struct perf_sample_id {
 	__u32 pid;
 	__u32 tid;
-	__u64 time;
+	__u64 time;	/* see raw_event_tree_insert_nocol() */
 	__u64 stream_id;
 	__u32 cpu;
 	__u32 cpu_unused;
@@ -56,7 +56,7 @@ struct perf_record_fork {
 	__u32				tid;
 	__u32				ptid;
 	__u64				time;
-	struct perf_sample_id	sample_id;
+	struct perf_sample_id		sample_id;
 };
 
 struct perf_record_exit {
@@ -66,7 +66,7 @@ struct perf_record_exit {
 	__u32				tid;
 	__u32				ptid;
 	__u64				time;
-	struct perf_sample_id	sample_id;
+	struct perf_sample_id		sample_id;
 };
 
 struct perf_data_loc {
@@ -109,12 +109,23 @@ struct perf_group_leader {
 	struct perf_mmap		 mmap;
 };
 
+enum {
+	RAW_FORK = 1,
+	RAW_EXEC,
+	RAW_EXIT
+};
+
+struct raw_exec {
+	char			filename[MAXPATHLEN]; /* XXX check size XXX */
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)	entry;
-	__u64			time;
+	struct perf_sample_id	sample_id;
 	int			type;
-	__u64			pid;
-	char			buf[1024]; /* XXX hackish */
+	union {
+		struct raw_exec exec;
+	};
 };
 
 #endif /* _QUARK_H_ */
