@@ -119,12 +119,19 @@ struct raw_exec {
 	char			filename[MAXPATHLEN];
 };
 
+struct raw_fork {
+	/* XXX what type are we going to use to store pids?
+	   The kernel seems sloppy. */
+	pid_t			child_pid;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)	entry;
 	struct perf_sample_id	sample_id;
 	int			type;
 	union {
 		struct raw_exec exec;
+		struct raw_fork fork;
 	};
 };
 

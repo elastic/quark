@@ -63,6 +63,7 @@ perf_to_raw(struct perf_event *ev)
 	case PERF_RECORD_FORK:
 		raw->type = RAW_FORK;
 		sid = &ev->fork.sample_id;
+		raw->fork.child_pid = ev->fork.pid;
 		break;
 	case PERF_RECORD_EXIT:
 		raw->type = RAW_EXIT;
@@ -292,7 +293,7 @@ dump_event(struct perf_event *ev)
 	case PERF_RECORD_SAMPLE:
 		sample = &ev->sample;
 		sid = &sample->sample_id;
-		/* XXX hardcorded offset XXX */
+		/* XXX hardcoded offset XXX */
 		n = copy_data_loc(buf, sizeof(buf), &ev->sample, 8);
 		if (n == -1)
 			warnx("can't copy exec filename");
@@ -349,7 +350,8 @@ write_graphviz(void)
 		switch (raw->type) {
 		case RAW_FORK:
 			color = "lightgoldenrod";
-			(void)strlcpy(label, "FORK", sizeof(label));
+			(void)snprintf(label, sizeof(label), "FORK %d",
+			    raw->fork.child_pid);
 			break;
 		case RAW_EXIT:
 			color = "lightseagreen";
