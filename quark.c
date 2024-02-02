@@ -16,8 +16,10 @@
 static int
 raw_event_cmp(struct raw_event *a, struct raw_event *b)
 {
-	return (a->sample_id.time < b->sample_id.time ? -1 :
-	    a->sample_id.time > b->sample_id.time);
+	if (a->sample_id.time < b->sample_id.time)
+		return (-1);
+	else
+		return (a->sample_id.time > b->sample_id.time);
 }
 
 RB_HEAD(raw_event_tree, raw_event) raw_event_tree = RB_INITIALIZER(&raw_event_tree);
