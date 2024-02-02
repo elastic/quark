@@ -1,5 +1,3 @@
-#include "quark.h"
-
 #include <bsd/stdlib.h>
 #include <bsd/string.h>
 
