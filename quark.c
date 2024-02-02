@@ -143,7 +143,7 @@ perf_mmap_read(struct perf_mmap *mm)
 		mm->data_tmp_tail += evh->size;
 		return ((struct perf_event *)evh);
 	}
-	errx(1, "TODO");
+
 	/* Slow path, we have to copy the event out in a linear buffer */
 	for (off = 0; evh->size - off != 0; off += thiscopy) {
 		/* Calculate next contiguous area, must fit */
