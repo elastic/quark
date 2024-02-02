@@ -42,7 +42,7 @@ typedef uintptr_t __uintptr_t;
 
 #define PERF_MMAP_PAGES 16	/* Must be power of 2 */
 
-struct my_perf_sample_id {
+struct perf_sample_id {
 	__u32 pid;
 	__u32 tid;
 	__u64 time;
@@ -51,24 +51,24 @@ struct my_perf_sample_id {
 	__u32 cpu_unused;
 };
 
-struct my_perf_record_fork {
+struct perf_record_fork {
 	struct perf_event_header	header;
 	__u32				pid;
 	__u32				ppid;
 	__u32				tid;
 	__u32				ptid;
 	__u64				time;
-	struct my_perf_sample_id	sample_id;
+	struct perf_sample_id	sample_id;
 };
 
-struct my_perf_record_exit {
+struct perf_record_exit {
 	struct perf_event_header	header;
 	__u32				pid;
 	__u32				ppid;
 	__u32				tid;
 	__u32				ptid;
 	__u64				time;
-	struct my_perf_sample_id	sample_id;
+	struct perf_sample_id	sample_id;
 };
 
 struct data_loc {
@@ -76,19 +76,19 @@ struct data_loc {
 	__u16	size;
 };
 
-struct my_perf_record_sample {
+struct perf_record_sample {
 	struct perf_event_header	header;
-	struct my_perf_sample_id	sample_id;
+	struct perf_sample_id		sample_id;
 	__u32				size;
 	char				data[];
 };
 
-struct my_perf_event {
+struct perf_event {
 	union {
 		struct perf_event_header	header;
-		struct my_perf_record_fork	fork;
-		struct my_perf_record_exit	exit;
-		struct my_perf_record_sample	sample;
+		struct perf_record_fork		fork;
+		struct perf_record_exit		exit;
+		struct perf_record_sample	sample;
 	};
 };
 
@@ -124,11 +124,11 @@ raw_event_cmp(struct raw_event *a, struct raw_event *b)
 }
 
 static struct raw_event *
-perf_to_raw(struct my_perf_event *ev)
+perf_to_raw(struct perf_event *ev)
 {
 	struct raw_event		*raw;
 	struct data_loc			*data_loc;	/* XXX temporary */
-	struct my_perf_record_sample	*sample;
+	struct perf_record_sample	*sample;
 
 	if ((raw = calloc(1, sizeof(*raw))) == NULL)
 		return (NULL);
@@ -191,7 +191,7 @@ perf_mmap_update_tail(struct perf_event_mmap_page *metadata, uint64_t tail)
 	return (__atomic_store_n(&metadata->data_tail, tail, __ATOMIC_RELEASE));
 }
 
-static struct my_perf_event *
+static struct perf_event *
 perf_mmap_read(struct perf_mmap *mm)
 {
 	struct perf_event_header *evh;
@@ -215,7 +215,7 @@ perf_mmap_read(struct perf_mmap *mm)
 	/* Everything fits without wrapping */
 	if (likely(evh->size <= leftcont)) {
 		mm->data_tmp_tail += evh->size;
-		return ((struct my_perf_event *)evh);
+		return ((struct perf_event *)evh);
 	}
 	errx(1, "TODO");
 	/* Slow path, we have to copy the event out in a linear buffer */
@@ -231,7 +231,7 @@ perf_mmap_read(struct perf_mmap *mm)
 	/* Record where our future tail will be on release */
 	mm->data_tmp_tail += evh->size;
 
-	return ((struct my_perf_event *)evh);
+	return ((struct perf_event *)evh);
 }
 
 static inline void
@@ -341,12 +341,12 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 }
 
 static void
-dump_event(struct my_perf_event *ev)
+dump_event(struct perf_event *ev)
 {
-	struct my_perf_sample_id	*sid = NULL;
-	struct my_perf_record_fork	*fork;
-	struct my_perf_record_exit	*exit;
-	struct my_perf_record_sample	*sample;
+	struct perf_sample_id		*sid = NULL;
+	struct perf_record_fork		*fork;
+	struct perf_record_exit		*exit;
+	struct perf_record_sample	*sample;
 	struct data_loc			*data_loc;
 	char				 buf[4096];
 
@@ -413,9 +413,9 @@ type_to_str(int type)
 static void
 write_graphviz(void)
 {
-	struct raw_event *raw, *left, *right;
-	FILE *f;
-	const char *color;
+	struct raw_event	*raw, *left, *right;
+	FILE			*f;
+	const char		*color;
 
 	f = fopen("quark.dot", "w");
 	if (f == NULL)
@@ -476,11 +476,11 @@ main(int argc, char *argv[])
 {
 	int				 i;
 	struct perf_group_leader	*pgl;
+	struct perf_event		*ev;
+	struct raw_event		*raw;
+	int				 nodes = 0;
 	TAILQ_HEAD(perf_group_leaders, perf_group_leader) leaders =
 	    TAILQ_HEAD_INITIALIZER(leaders);
-	struct my_perf_event *ev;
-	struct raw_event *raw;
-	int nodes = 0;
 
 	printf("using %d bytes for each ring\n", PERF_MMAP_PAGES * getpagesize());
 
@@ -529,8 +529,6 @@ main(int argc, char *argv[])
 	RB_FOREACH(raw, raw_event_tree, &raw_event_tree) {
 		printf("%llu\n", raw->time);
 	}
-
-	printf("\n");
 
 	write_graphviz();
 
