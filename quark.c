@@ -409,17 +409,18 @@ raw_event_tree_insert_nocol(struct raw_event *raw)
 
 	do {
 		col = RB_INSERT(raw_event_tree, &raw_event_tree, raw);
-		if (unlikely(col != NULL))
-			warnx("raw_event_tree collision");
+		if (likely(col == NULL))
+			return;
+
 		/*
 		 * We managed to get a collision on the TSC, this happens!
 		 * We just bump time by one until we can insert it.
 		 */
 		raw->sample_id.time++;
-	} while (unlikely(col != NULL && --attempts > 0));
+		warnx("raw_event_tree collision");
+	} while (--attempts > 0);
 
-	if (col != NULL)
-		err(1, "we got consecutive collisions, this is a bug");
+	err(1, "we got consecutive collisions, this is a bug");
 }
 
 int
