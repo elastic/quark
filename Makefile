@@ -28,11 +28,25 @@ CDIAGFLAGS+= -Wno-unused-parameter
 LDFLAGS?= -lbsd
 
 CC?= cc
+HEADERS:= $(wildcard *.h)
 SRCS:= $(wildcard *.c)
 PROGS:= $(patsubst %.c,%,$(SRCS))
+SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
 
-%: %.c
+%: %.c $(HEADERS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $<
 
-.PHONY: all
 all: $(PROGS)
+
+%.svg: %.dot
+	dot -Tsvg $< -o $@
+
+svg: $(SVGS)
+
+clean:
+	rm -f $(PROGS)
+
+cleanall: clean
+	rm -f $(SVGS)
+
+.PHONY: all clean cleanall
