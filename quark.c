@@ -1,11 +1,4 @@
-#include <linux/perf_event.h>
-#include <linux/hw_breakpoint.h>
-
-#include <sys/ioctl.h>
-#include <sys/mman.h>
-#include <sys/param.h>
-#include <sys/syscall.h>
-#include <sys/sysinfo.h>
+#include "quark.h"
 
 #include <bsd/stdlib.h>
 #include <bsd/string.h>
@@ -17,86 +10,10 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <strings.h>
-#include <unistd.h>
 
 #include "quark.h"
 
 #define PERF_MMAP_PAGES 16	/* Must be power of 2 */
-
-struct perf_sample_id {
-	__u32 pid;
-	__u32 tid;
-	__u64 time;
-	__u64 stream_id;
-	__u32 cpu;
-	__u32 cpu_unused;
-};
-
-struct perf_record_fork {
-	struct perf_event_header	header;
-	__u32				pid;
-	__u32				ppid;
-	__u32				tid;
-	__u32				ptid;
-	__u64				time;
-	struct perf_sample_id	sample_id;
-};
-
-struct perf_record_exit {
-	struct perf_event_header	header;
-	__u32				pid;
-	__u32				ppid;
-	__u32				tid;
-	__u32				ptid;
-	__u64				time;
-	struct perf_sample_id	sample_id;
-};
-
-struct data_loc {
-	__u16	offset;
-	__u16	size;
-};
-
-struct perf_record_sample {
-	struct perf_event_header	header;
-	struct perf_sample_id		sample_id;
-	__u32				size;
-	char				data[];
-};
-
-struct perf_event {
-	union {
-		struct perf_event_header	header;
-		struct perf_record_fork		fork;
-		struct perf_record_exit		exit;
-		struct perf_record_sample	sample;
-	};
-};
-
-struct perf_mmap {
-	struct perf_event_mmap_page	*metadata;
-	size_t				 mapped_size;
-	size_t				 data_mask;
-	uint8_t				*data_start;
-	__u64				 data_tmp_tail;
-	__u8				 wrapped_event_buf[4096] __aligned(8);
-};
-
-struct perf_group_leader {
-	TAILQ_ENTRY(perf_group_leader)	 entry;
-	int				 fd;
-	int				 cpu;
-	struct perf_event_attr		 attr;
-	struct perf_mmap		 mmap;
-};
-
-struct raw_event {
-	RB_ENTRY(raw_event)	entry;
-	__u64			time;
-	int			type;
-	__u64			pid;
-	char			buf[1024]; /* XXX hackish */
-};
 
 static int
 raw_event_cmp(struct raw_event *a, struct raw_event *b)
@@ -108,7 +25,7 @@ static struct raw_event *
 perf_to_raw(struct perf_event *ev)
 {
 	struct raw_event		*raw;
-	struct data_loc			*data_loc;	/* XXX temporary */
+	struct perf_data_loc		*data_loc;	/* XXX temporary */
 	struct perf_record_sample	*sample;
 
 	if ((raw = calloc(1, sizeof(*raw))) == NULL)
@@ -128,7 +45,7 @@ perf_to_raw(struct perf_event *ev)
 		raw->pid = ev->sample.sample_id.pid;
 		raw->time = ev->sample.sample_id.time;
 		sample = &ev->sample;
-		data_loc = (struct data_loc *)(sample->data + 8);
+		data_loc = (struct perf_data_loc *)(sample->data + 8);
 		memcpy(raw->buf, sample->data + data_loc->offset,
 		    data_loc->size);
 		raw->buf[data_loc->size - 1] = 0;
@@ -328,7 +245,7 @@ dump_event(struct perf_event *ev)
 	struct perf_record_fork		*fork;
 	struct perf_record_exit		*exit;
 	struct perf_record_sample	*sample;
-	struct data_loc			*data_loc;
+	struct perf_data_loc		*data_loc;
 	char				 buf[4096];
 
 	switch (ev->header.type) {
@@ -348,7 +265,7 @@ dump_event(struct perf_event *ev)
 		sample = &ev->sample;
 		sid = &sample->sample_id;
 		/* XXX hardcorded offset XXX */
-		data_loc = (struct data_loc *)(sample->data + 8);
+		data_loc = (struct perf_data_loc *)(sample->data + 8);
 		/* XXX ignoring data_loc.size XXX */
 		printf("->exec\n\t");
 		if (data_loc->size > sizeof(buf)) {
