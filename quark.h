@@ -116,7 +116,7 @@ enum {
 };
 
 struct raw_exec {
-	char			filename[MAXPATHLEN]; /* XXX check size XXX */
+	char			filename[MAXPATHLEN];
 };
 
 struct raw_event {
