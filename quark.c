@@ -35,7 +35,7 @@ RB_GENERATE(raw_event_tree, raw_event, entry, raw_event_cmp);
  * it means we truncated. May return -1 on bad values.
  */
 static ssize_t
-copy_data_loc(void *dst, ssize_t dst_size, struct perf_record_sample *sample,
+strlcpy_data_loc(void *dst, ssize_t dst_size, struct perf_record_sample *sample,
     size_t data_off)
 {
 	struct perf_data_loc	*data_loc;
@@ -77,7 +77,7 @@ perf_to_raw(struct perf_event *ev)
 		/* XXX CHEAT FOR NOW XXX */
 		raw->type = RAW_EXEC;
 		sid = &ev->sample.sample_id;
-		n = copy_data_loc(raw->exec.filename, sizeof(raw->exec.filename),
+		n = strlcpy_data_loc(raw->exec.filename, sizeof(raw->exec.filename),
 		    &ev->sample, 8);
 		if (n == -1)
 			warnx("can't copy exec filename");
@@ -298,7 +298,7 @@ dump_event(struct perf_event *ev)
 		sample = &ev->sample;
 		sid = &sample->sample_id;
 		/* XXX hardcoded offset XXX */
-		n = copy_data_loc(buf, sizeof(buf), &ev->sample, 8);
+		n = strlcpy_data_loc(buf, sizeof(buf), &ev->sample, 8);
 		if (n == -1)
 			warnx("can't copy exec filename");
 		else if (n >= (ssize_t)sizeof(buf))
