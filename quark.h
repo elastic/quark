@@ -100,7 +100,8 @@ struct raw_fork {
 };
 
 struct raw_event {
-	RB_ENTRY(raw_event)	entry;
+	RB_ENTRY(raw_event)	entry_by_time;
+	RB_ENTRY(raw_event)	entry_by_pidtime;
 	struct perf_sample_id	sample_id;
 	int			type;
 	union {

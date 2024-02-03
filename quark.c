@@ -18,7 +18,7 @@
 #define PERF_MMAP_PAGES 16	/* Must be power of 2 */
 
 static int
-raw_event_cmp(struct raw_event *a, struct raw_event *b)
+raw_event_by_time_cmp(struct raw_event *a, struct raw_event *b)
 {
 	if (a->sample_id.time < b->sample_id.time)
 		return (-1);
@@ -26,9 +26,45 @@ raw_event_cmp(struct raw_event *a, struct raw_event *b)
 		return (a->sample_id.time > b->sample_id.time);
 }
 
-RB_HEAD(raw_event_tree, raw_event) raw_event_tree = RB_INITIALIZER(&raw_event_tree);
-RB_PROTOTYPE(raw_event_tree, raw_event, entry, raw_event_cmp);
-RB_GENERATE(raw_event_tree, raw_event, entry, raw_event_cmp);
+/* XXX this should be by tid, but we're not there yet XXX */
+static int
+raw_event_by_pidtime_cmp(struct raw_event *a, struct raw_event *b)
+{
+	if (a->sample_id.pid < b->sample_id.time)
+		return (-1);
+	else if (a->sample_id.pid > b->sample_id.time)
+		return (1);
+
+	if (a->sample_id.time < b->sample_id.time)
+		return (-1);
+	else
+		return (a->sample_id.time > b->sample_id.time);
+}
+
+/*
+ * Raw Event Tree by time, where RB_MIN() is the oldest element in the tree, no
+ * clustering of pids so we can easily get the oldest event.
+ */
+RB_HEAD(raw_event_by_time, raw_event) raw_event_by_time =
+    RB_INITIALIZER(&raw_event_by_time);
+RB_PROTOTYPE(raw_event_by_time, raw_event,
+    entry_by_time, raw_event_by_time_cmp);
+RB_GENERATE(raw_event_by_time, raw_event,
+    entry_by_time, raw_event_by_time_cmp);
+
+/*
+ * Raw Event Tree by pid and time, this creates clusters of the same pid which
+ * are then organized by time, this is used in assembly and aggregation, if we
+ * used the 'by_time' tree, we would have to traverse the full tree in case of a
+ * miss.
+ */
+/* XXX this should be by tid, but we're not there yet XXX */
+RB_HEAD(raw_event_by_pidtime, raw_event) raw_event_by_pidtime =
+    RB_INITIALIZER(&raw_event_by_pidtime);
+RB_PROTOTYPE(raw_event_by_pidtime, raw_event,
+    entry_by_pidtime, raw_event_by_pidtime_cmp);
+RB_GENERATE(raw_event_by_pidtime, raw_event,
+    entry_by_pidtime, raw_event_by_pidtime_cmp);
 
 /*
  * Copies out the string pointed to by data size, if retval is >= than dst_size,
@@ -350,7 +386,7 @@ write_graphviz(void)
 	if (fprintf(f, "node [style=filled, color=black];") < 0)
 		errx(1, "fprintf");
 
-	RB_FOREACH(raw, raw_event_tree, &raw_event_tree) {
+	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
 		switch (raw->type) {
 		case RAW_FORK:
 			color = "lightgoldenrod";
@@ -377,9 +413,9 @@ write_graphviz(void)
 			errx(1, "fprintf");
 	}
 
-	RB_FOREACH(raw, raw_event_tree, &raw_event_tree) {
-		left = RB_LEFT(raw, entry);
-		right = RB_RIGHT(raw, entry);
+	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
+		left = RB_LEFT(raw, entry_by_time);
+		right = RB_RIGHT(raw, entry_by_time);
 
 		if (left != NULL) {
 			if (fprintf(f, "%llu -> %llu;\n",
@@ -406,25 +442,38 @@ write_graphviz(void)
  * we bump "time" here, we shouldn't copy "time" before it sits in the tree.
  */
 static void
-raw_event_tree_insert_nocol(struct raw_event *raw)
+raw_event_insert(struct raw_event *raw)
 {
 	struct raw_event	*col;
 	int			 attempts = 10;
 
+	/*
+	 * Link it first by time
+	 */
 	do {
-		col = RB_INSERT(raw_event_tree, &raw_event_tree, raw);
+		col = RB_INSERT(raw_event_by_time, &raw_event_by_time, raw);
 		if (likely(col == NULL))
-			return;
+			break;
 
 		/*
 		 * We managed to get a collision on the TSC, this happens!
 		 * We just bump time by one until we can insert it.
 		 */
 		raw->sample_id.time++;
-		warnx("raw_event_tree collision");
+		warnx("raw_event_by_time collision");
 	} while (--attempts > 0);
 
-	err(1, "we got consecutive collisions, this is a bug");
+	if (unlikely(col != NULL))
+		err(1, "we got consecutive collisions, this is a bug");
+
+	/*
+	 * Link it in the combined tree, we accept no collisions here as the
+	 * above case already saves us, but trust nothing.
+	 */
+	/* XXX this should be by tid, but we're not there yet XXX */
+	col = RB_INSERT(raw_event_by_pidtime, &raw_event_by_pidtime, raw);
+	if (unlikely(col != NULL))
+		err(1, "collision on pidtime tree, this is a bug");
 }
 
 int
@@ -472,7 +521,7 @@ main(int argc, char *argv[])
 			if (raw != NULL) {
 				/* Useful for debugging */
 				/* raw->time = arc4random_uniform(100000); */
-				raw_event_tree_insert_nocol(raw);
+				raw_event_insert(raw);
 				nodes++;
 			} else
 				warnx("can't convert perf to raw");
@@ -480,7 +529,7 @@ main(int argc, char *argv[])
 		}
 	}
 
-	RB_FOREACH(raw, raw_event_tree, &raw_event_tree) {
+	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
 		printf("%llu\n", raw->sample_id.time);
 	}
 
