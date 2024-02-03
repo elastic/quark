@@ -1,5 +1,7 @@
-#include <bsd/stdlib.h>
-#include <bsd/string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <sys/sysinfo.h>
 
 #include <err.h>
 #include <errno.h>
@@ -7,6 +9,8 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 
 #include "quark.h"
