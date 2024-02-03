@@ -25,16 +25,20 @@ CDIAGFLAGS+= -Wuninitialized
 CDIAGFLAGS+= -Wunused
 CDIAGFLAGS+= -Wno-unused-parameter
 
-LDFLAGS?= -lbsd
+LDFLAGS?=
 
 CC?= cc
 HEADERS:= $(wildcard *.h)
 SRCS:= $(wildcard *.c)
-PROGS:= $(patsubst %.c,%,$(SRCS))
+PROGS:= quark
+OBJS:= $(patsubst %.c,%.o,$(SRCS))
 SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
 
-%: %.c $(HEADERS)
-	$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $<
+%.o: %.c $(HEADERS)
+	$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
+
+$(PROGS): $(OBJS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
 
 all: $(PROGS)
 
@@ -44,7 +48,7 @@ all: $(PROGS)
 svg: $(SVGS)
 
 clean:
-	rm -f $(PROGS)
+	rm -f $(OBJS) $(PROGS)
 
 cleanall: clean
 	rm -f $(SVGS)
