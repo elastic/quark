@@ -94,9 +94,7 @@ struct raw_exec {
 };
 
 struct raw_fork {
-	/* XXX what type are we going to use to store pids?
-	   The kernel seems sloppy. */
-	pid_t			child_pid;
+	u32			child_pid;
 };
 
 struct raw_event {

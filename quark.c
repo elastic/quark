@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -17,6 +18,8 @@
 #include "quark.h"
 
 #define PERF_MMAP_PAGES 16	/* Must be power of 2 */
+
+static void xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2, 3)));
 
 static int
 raw_event_by_time_cmp(struct raw_event *a, struct raw_event *b)
@@ -31,9 +34,15 @@ raw_event_by_time_cmp(struct raw_event *a, struct raw_event *b)
 static int
 raw_event_by_pidtime_cmp(struct raw_event *a, struct raw_event *b)
 {
-	if (a->sample_id.pid < b->sample_id.time)
+	u32 apid, bpid;
+
+	/* XXX HACKISH FOR NOW XXX */
+	apid = a->type == RAW_FORK ? a->fork.child_pid : a->sample_id.pid;
+	bpid = b->type == RAW_FORK ? b->fork.child_pid : b->sample_id.pid;
+	/* XXX for god sake don't leave me here XXX */
+	if (apid < bpid)
 		return (-1);
-	else if (a->sample_id.pid > b->sample_id.time)
+	else if (a->sample_id.pid > b->sample_id.pid)
 		return (1);
 
 	if (a->sample_id.time < b->sample_id.time)
@@ -383,67 +392,106 @@ type_to_str(int type)
 #endif
 
 static void
+xfprintf(FILE *f, const char *restrict fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	if (vfprintf(f, fmt, ap) < 0)
+		errx(1, "xfprintf");
+	va_end(ap);
+}
+
+static void
+write_node_attr(FILE *f, struct raw_event *raw, char *key)
+{
+	const char		*color;
+	char			 label[4096];
+
+	switch (raw->type) {
+	case RAW_FORK:
+		color = "lightgoldenrod";
+		(void)snprintf(label, sizeof(label), "FORK %d",
+		    raw->fork.child_pid);
+		break;
+	case RAW_EXIT:
+		color = "lightseagreen";
+		(void)strlcpy(label, "EXIT", sizeof(label));
+		break;
+	case RAW_EXEC:
+		color = "lightslateblue";
+		if (snprintf(label, sizeof(label), "EXEC %s",
+		    raw->exec.filename) >= (int)sizeof(label))
+			warnx("%s: exec filename truncated", __func__);
+		break;
+	default:
+		color = "black";
+		break;
+	}
+	xfprintf(f, "\"%s\" [label=\"%llu\\n%s\\npid %d\", fillcolor=%s];\n",
+	    key, raw->sample_id.time, label,
+	    raw->sample_id.pid, color);
+}
+
+static void
 write_graphviz(void)
 {
 	struct raw_event	*raw, *left, *right;
 	FILE			*f;
-	const char		*color;
-	char			 label[4096];
+	char			 key[256];
 
-	f = fopen("quark.dot", "w");
+	f = fopen("quark_by_time.dot", "w");
 	if (f == NULL)
 		err(1, "fopen");
-	if (fprintf(f, "digraph {\n") < 0)
-		errx(1, "fprintf");
-	if (fprintf(f, "node [style=filled, color=black];") < 0)
-		errx(1, "fprintf");
 
+	xfprintf(f, "digraph {\n");
+	xfprintf(f, "node [style=filled, color=black];\n");
 	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
-		switch (raw->type) {
-		case RAW_FORK:
-			color = "lightgoldenrod";
-			(void)snprintf(label, sizeof(label), "FORK %d",
-			    raw->fork.child_pid);
-			break;
-		case RAW_EXIT:
-			color = "lightseagreen";
-			(void)strlcpy(label, "EXIT", sizeof(label));
-			break;
-		case RAW_EXEC:
-			color = "lightslateblue";
-			if (snprintf(label, sizeof(label), "EXEC %s",
-			    raw->exec.filename) >= (int)sizeof(label))
-				warnx("%s: exec filename truncated", __func__);
-			break;
-		default:
-			color = "black";
-			break;
-		}
-		if (fprintf(f, "%llu [label=\"%llu\\n%s\\npid %d\", fillcolor=%s];\n",
-		    raw->sample_id.time, raw->sample_id.time, label,
-		    raw->sample_id.pid, color) == -1)
-			errx(1, "fprintf");
+		snprintf(key, sizeof(key), "%llu", raw->sample_id.time);
+		write_node_attr(f, raw, key);
 	}
-
 	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
 		left = RB_LEFT(raw, entry_by_time);
 		right = RB_RIGHT(raw, entry_by_time);
 
-		if (left != NULL) {
-			if (fprintf(f, "%llu -> %llu;\n",
-			    raw->sample_id.time, left->sample_id.time) == -1)
-				errx(1, "fprintf");
-
-		}
-		if (right != NULL) {
-			if (fprintf(f, "%llu -> %llu;\n",
-			    raw->sample_id.time, right->sample_id.time) == -1)
-				errx(1, "fprintf");
-
-		}
+		if (left != NULL)
+			xfprintf(f, "%llu -> %llu;\n",
+			    raw->sample_id.time, left->sample_id.time);
+		if (right != NULL)
+			xfprintf(f, "%llu -> %llu;\n",
+			    raw->sample_id.time, right->sample_id.time);
 	}
-	if (fprintf(f, "}\n") < 0)
-		errx(1, "fprintf");
+	xfprintf(f, "}\n");
+
+	fflush(f);
+	fclose(f);
+
+	f = fopen("quark_by_pidtime.dot", "w");
+	if (f == NULL)
+		err(1, "fopen");
+
+	xfprintf(f, "digraph {\n");
+	xfprintf(f, "node [style=filled, color=black];\n");
+	RB_FOREACH(raw, raw_event_by_pidtime, &raw_event_by_pidtime) {
+		snprintf(key, sizeof(key), "%d %llu",
+		    raw->sample_id.pid, raw->sample_id.time);
+		write_node_attr(f, raw, key);
+	}
+	RB_FOREACH(raw, raw_event_by_pidtime, &raw_event_by_pidtime) {
+		left = RB_LEFT(raw, entry_by_pidtime);
+		right = RB_RIGHT(raw, entry_by_pidtime);
+
+		if (left != NULL) {
+			xfprintf(f, "\"%d %llu\" -> \"%d %llu\";\n",
+			    raw->sample_id.pid, raw->sample_id.time,
+			    left->sample_id.pid, left->sample_id.time);
+		}
+		if (right != NULL)
+			xfprintf(f, "\"%d %llu\" -> \"%d %llu\";\n",
+			    raw->sample_id.pid, raw->sample_id.time,
+			    right->sample_id.pid, right->sample_id.time);
+	}
+	xfprintf(f, "}\n");
 
 	fflush(f);
 	fclose(f);
