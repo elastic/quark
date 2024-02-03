@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 #include "quark.h"
 
@@ -65,6 +66,17 @@ RB_PROTOTYPE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
 RB_GENERATE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
+
+static inline u64
+now64(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) == -1)
+		err(1, "clock_gettime");
+
+	return ((u64)ts.tv_sec * (u64)NSEC_PER_SEC + (u64)ts.tv_nsec);
+}
 
 /*
  * Copies out the string pointed to by data size, if retval is >= than dst_size,
@@ -286,10 +298,10 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	/* attr->mmap2 */
 	/* attr->comm_exec */
 	/* attr->sample_id_all */
-	/* attr->use_clockid !!!!!! */
+	attr->use_clockid = 1;
+	attr->clockid = CLOCK_MONOTONIC_RAW;
 	attr->watermark = 0;	/* use number of samples, not bytes */
 	attr->wakeup_events = 1;	/* XXX for testing */
-	/* attr->clockid = ; !!!!!! */
 	attr->task = 1;		/* get fork/exec, getting the same from two
 				 * different things */
 	attr->sample_id_all = 1;	/* affects non RECORD samples */

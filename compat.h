@@ -47,6 +47,10 @@ typedef uintptr_t	__uintptr_t;	/* for freebsd_tree.h */
 #define min(_a, _b)	((_a) < (_b) ? (_a) : (_b))
 #endif	/* min */
 
+#ifndef NSEC_PER_SEC
+#define NSEC_PER_SEC	1000000000L
+#endif
+
 /*
  * BSD compat
  */
