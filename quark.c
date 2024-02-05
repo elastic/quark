@@ -16,7 +16,10 @@
 
 #include "quark.h"
 
-#define PERF_MMAP_PAGES 16	/* Must be power of 2 */
+#define PERF_MMAP_PAGES		16		/* Must be power of 2 */
+#define RAW_HOLD_MAXTIME	MS_TO_NS(1000)	/* XXX hardcoded for now XXX */
+#define RAW_HOLD_MAXNODES	10000		/* XXX hardcoded for now XXX */
+#define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
 
 static void xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2, 3)));
 
@@ -83,7 +86,20 @@ now64(void)
 	if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) == -1)
 		err(1, "clock_gettime");
 
-	return ((u64)ts.tv_sec * (u64)NSEC_PER_SEC + (u64)ts.tv_nsec);
+	return ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
+}
+
+static inline u64
+raw_event_age(struct raw_event *raw, u64 now)
+{
+	return AGE(raw->sample_id.time, now);
+}
+
+static inline int
+raw_event_expired(struct raw_event *raw, u64 now)
+{
+	/* XXX hardcoded for now XXX */
+	return (raw_event_age(raw, now) >= (u64)RAW_HOLD_MAXTIME);
 }
 
 /*
@@ -161,7 +177,6 @@ perf_mmap_init(struct perf_mmap *mm, int fd)
 	mm->data_mask = (PERF_MMAP_PAGES * getpagesize()) - 1;
 	mm->data_start = (uint8_t *)mm->metadata + getpagesize();
 	mm->data_tmp_tail = mm->metadata->data_tail;
-	printf("metadata=%p data_start=%p\n", mm->metadata, mm->data_start);
 
 	return (0);
 }
@@ -368,8 +383,9 @@ dump_event(struct perf_event *ev)
 	}
 
 	if (sid != NULL)
-		printf("\ts.pid=%d s.tid=%d s.time=%llu s.stream_id=%llu s.cpu=%d\n",
-		    sid->pid, sid->tid, sid->time, sid->stream_id, sid->cpu);
+		printf("\ts.pid=%d s.tid=%d s.time=%llu (age=(%llu)) s.stream_id=%llu s.cpu=%d\n",
+		    sid->pid, sid->tid, sid->time, AGE(sid->time, now64()),
+		    sid->stream_id, sid->cpu);
 
 	fflush(stdout);
 }
@@ -535,16 +551,58 @@ raw_event_insert(struct raw_event *raw)
 		err(1, "collision on pidtime tree, this is a bug");
 }
 
+static void
+raw_event_remove(struct raw_event *raw)
+{
+	RB_REMOVE(raw_event_by_time, &raw_event_by_time, raw);
+	RB_REMOVE(raw_event_by_pidtime, &raw_event_by_pidtime, raw);
+}
+
+static int
+raw_process(void)
+{
+	struct raw_event	*min, *next;	/* XXX todo cache min XXX */
+	u64			 now, nproc;
+
+	now = now64();
+	nproc = 0;
+	RB_FOREACH_SAFE(min, raw_event_by_time, &raw_event_by_time, next) {
+		if (!raw_event_expired(min, now))
+			break;
+		raw_event_remove(min);
+		nproc++;
+		printf("event expired time=%llu (age=%llu)\n",
+		    min->sample_id.time, raw_event_age(min, now));
+	}
+
+	return (nproc);
+}
+
 int
 main(int argc, char *argv[])
 {
-	int				 i;
+	int				 ch, i, maxnodes, nodes, nproc;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
-	int				 nodes = 0;
 	TAILQ_HEAD(perf_group_leaders, perf_group_leader) leaders =
 	    TAILQ_HEAD_INITIALIZER(leaders);
+
+	maxnodes = -1;
+	nodes = 0;
+	while ((ch = getopt(argc, argv, "m:")) != -1) {
+		const char *errstr;
+
+		switch (ch) {
+		case 'm':
+			maxnodes = strtonum(optarg, 1, 2000000, &errstr);
+			if (errstr != NULL)
+				errx(1, "invalid maxnodes: %s", errstr);
+			break;
+		default:
+			errx(1, "usage: TODO");
+		}
+	}
 
 	printf("using %d bytes for each ring\n", PERF_MMAP_PAGES * getpagesize());
 
@@ -567,7 +625,7 @@ main(int argc, char *argv[])
 			err(1, "ioctl PERF_EVENT_IOC_ENABLE:");
 	}
 
-	while (nodes < 100) {
+	while (maxnodes == -1 || nodes < maxnodes) {
 		TAILQ_FOREACH(pgl, &leaders, entry) {
 			/* printf("cpu%2d head %llu tail %llu\n", */
 			/*     pgl->cpu, pgl->mmap.metadata->data_head, */
@@ -586,10 +644,18 @@ main(int argc, char *argv[])
 				warnx("can't convert perf to raw");
 			perf_mmap_consume(&pgl->mmap);
 		}
+
+		/* If maxnodes is set, we don't want to process, only collect */
+		if (maxnodes == -1) {
+			nproc = raw_process();
+			if (nproc)
+				printf("removed %d nodes\n", nproc);
+		}
 	}
 
 	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
-		printf("%llu\n", raw->sample_id.time);
+		printf("%llu (age=%llu)\n", raw->sample_id.time,
+		    raw_event_age(raw, now64()));
 	}
 
 	write_graphviz();
