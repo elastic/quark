@@ -26,31 +26,25 @@ static void xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2,
 static int
 raw_event_by_time_cmp(struct raw_event *a, struct raw_event *b)
 {
-	if (a->sample_id.time < b->sample_id.time)
+	if (a->time < b->time)
 		return (-1);
 	else
-		return (a->sample_id.time > b->sample_id.time);
+		return (a->time > b->time);
 }
 
 /* XXX this should be by tid, but we're not there yet XXX */
 static int
 raw_event_by_pidtime_cmp(struct raw_event *a, struct raw_event *b)
 {
-	u32 apid, bpid;
-
-	/* XXX HACKISH FOR NOW XXX */
-	apid = a->type == RAW_FORK ? a->fork.child_pid : a->sample_id.pid;
-	bpid = b->type == RAW_FORK ? b->fork.child_pid : b->sample_id.pid;
-	/* XXX for god sake don't leave me here XXX */
-	if (apid < bpid)
+	if (a->pid < b->pid)
 		return (-1);
-	else if (a->sample_id.pid > b->sample_id.pid)
+	else if (a->pid > b->pid)
 		return (1);
 
-	if (a->sample_id.time < b->sample_id.time)
+	if (a->time < b->time)
 		return (-1);
 	else
-		return (a->sample_id.time > b->sample_id.time);
+		return (a->time > b->time);
 }
 
 /*
@@ -92,7 +86,7 @@ now64(void)
 static inline u64
 raw_event_age(struct raw_event *raw, u64 now)
 {
-	return AGE(raw->sample_id.time, now);
+	return AGE(raw->time, now);
 }
 
 static inline int
@@ -139,7 +133,9 @@ perf_to_raw(struct perf_event *ev)
 	case PERF_RECORD_FORK:
 		raw->type = RAW_FORK;
 		sid = &ev->fork.sample_id;
-		raw->fork.child_pid = ev->fork.pid;
+		/* We cheat FORK to be an event of the child, not the parent */
+		raw->pid = raw->fork.child_pid = ev->fork.pid;
+		raw->fork.parent_pid = ev->fork.ppid;
 		break;
 	case PERF_RECORD_EXIT:
 		raw->type = RAW_EXIT;
@@ -160,8 +156,15 @@ perf_to_raw(struct perf_event *ev)
 		errx(1, "perf_to_raw: unknown event type %d\n", ev->header.type);
 	}
 
-	if (sid != NULL)
-		raw->sample_id = *sid;
+	if (sid != NULL) {
+		/* FORK overloads */
+		if (raw->pid == 0)
+			raw->pid = sid->pid;
+		raw->opid = sid->pid;
+		raw->tid = sid->tid;
+		raw->time = sid->time;
+		raw->cpu = sid->cpu;
+	}
 
 	return (raw);
 }
@@ -444,8 +447,7 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 		break;
 	}
 	xfprintf(f, "\"%s\" [label=\"%llu\\n%s\\npid %d\", fillcolor=%s];\n",
-	    key, raw->sample_id.time, label,
-	    raw->sample_id.pid, color);
+	    key, raw->time, label, raw->pid, color);
 }
 
 static void
@@ -462,7 +464,7 @@ write_graphviz(void)
 	xfprintf(f, "digraph {\n");
 	xfprintf(f, "node [style=filled, color=black];\n");
 	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
-		snprintf(key, sizeof(key), "%llu", raw->sample_id.time);
+		snprintf(key, sizeof(key), "%llu", raw->time);
 		write_node_attr(f, raw, key);
 	}
 	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
@@ -471,10 +473,10 @@ write_graphviz(void)
 
 		if (left != NULL)
 			xfprintf(f, "%llu -> %llu;\n",
-			    raw->sample_id.time, left->sample_id.time);
+			    raw->time, left->time);
 		if (right != NULL)
 			xfprintf(f, "%llu -> %llu;\n",
-			    raw->sample_id.time, right->sample_id.time);
+			    raw->time, right->time);
 	}
 	xfprintf(f, "}\n");
 
@@ -489,7 +491,7 @@ write_graphviz(void)
 	xfprintf(f, "node [style=filled, color=black];\n");
 	RB_FOREACH(raw, raw_event_by_pidtime, &raw_event_by_pidtime) {
 		snprintf(key, sizeof(key), "%d %llu",
-		    raw->sample_id.pid, raw->sample_id.time);
+		    raw->pid, raw->time);
 		write_node_attr(f, raw, key);
 	}
 	RB_FOREACH(raw, raw_event_by_pidtime, &raw_event_by_pidtime) {
@@ -498,13 +500,13 @@ write_graphviz(void)
 
 		if (left != NULL) {
 			xfprintf(f, "\"%d %llu\" -> \"%d %llu\";\n",
-			    raw->sample_id.pid, raw->sample_id.time,
-			    left->sample_id.pid, left->sample_id.time);
+			    raw->pid, raw->time,
+			    left->pid, left->time);
 		}
 		if (right != NULL)
 			xfprintf(f, "\"%d %llu\" -> \"%d %llu\";\n",
-			    raw->sample_id.pid, raw->sample_id.time,
-			    right->sample_id.pid, right->sample_id.time);
+			    raw->pid, raw->time,
+			    right->pid, right->time);
 	}
 	xfprintf(f, "}\n");
 
@@ -534,7 +536,7 @@ raw_event_insert(struct raw_event *raw)
 		 * We managed to get a collision on the TSC, this happens!
 		 * We just bump time by one until we can insert it.
 		 */
-		raw->sample_id.time++;
+		raw->time++;
 		warnx("raw_event_by_time collision");
 	} while (--attempts > 0);
 
@@ -570,9 +572,8 @@ raw_process(void)
 		if (!raw_event_expired(min, now))
 			break;
 		raw_event_remove(min);
+		free(min);
 		nproc++;
-		printf("event expired time=%llu (age=%llu)\n",
-		    min->sample_id.time, raw_event_age(min, now));
 	}
 
 	return (nproc);
@@ -654,7 +655,7 @@ main(int argc, char *argv[])
 	}
 
 	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
-		printf("%llu (age=%llu)\n", raw->sample_id.time,
+		printf("%llu (age=%llu)\n", raw->time,
 		    raw_event_age(raw, now64()));
 	}
 

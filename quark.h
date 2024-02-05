@@ -109,13 +109,18 @@ struct raw_exec {
 };
 
 struct raw_fork {
+	u32			parent_pid;
 	u32			child_pid;
 };
 
 struct raw_event {
 	RB_ENTRY(raw_event)	entry_by_time;
 	RB_ENTRY(raw_event)	entry_by_pidtime;
-	struct perf_sample_id	sample_id;
+	u32			opid;
+	u32			pid;
+	u32			tid;
+	u32			cpu;
+	u64			time;
 	int			type;
 	union {
 		struct raw_exec exec;
