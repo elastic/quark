@@ -204,7 +204,7 @@ perf_mmap_read(struct perf_mmap *mm)
 	struct perf_event_header *evh;
 	uint64_t data_head;
 	int diff;
-	ssize_t leftcont, thiscopy, off;
+	ssize_t leftcont;	/* contiguous size left */
 
 	data_head = perf_mmap_load_head(mm->metadata);
 	diff = data_head - mm->data_tmp_tail;
@@ -218,27 +218,23 @@ perf_mmap_read(struct perf_mmap *mm)
 	if (unlikely(evh->size > sizeof(mm->wrapped_event_buf)))
 		errx(1, "getting an event larger than wrapped buf");
 	/* How much contiguous space there is left */
-	leftcont = mm->data_mask + 1 - (mm->data_tmp_tail & mm->data_mask);
+	leftcont = (mm->data_mask + 1) - (mm->data_tmp_tail & mm->data_mask);
 	/* Everything fits without wrapping */
 	if (likely(evh->size <= leftcont)) {
 		mm->data_tmp_tail += evh->size;
 		return ((struct perf_event *)evh);
 	}
-
-	/* Slow path, we have to copy the event out in a linear buffer */
-	for (off = 0; evh->size - off != 0; off += thiscopy) {
-		/* Calculate next contiguous area, must fit */
-		leftcont = mm->data_mask + 1 -
-		    ((mm->data_tmp_tail + off) & mm->data_mask);
-		/* How much this memcpy will copy, so it doesn't wrap */
-		thiscopy = min(leftcont, evh->size - off);
-		/* Do it */
-		memcpy(mm->wrapped_event_buf + off, evh + off, thiscopy);
-	}
-	/* Record where our future tail will be on release */
+	/*
+	 * Slow path, we have to copy the event out in a linear buffer. Start
+	 * from the remaining end
+	 */
+	memcpy(mm->wrapped_event_buf, evh, leftcont);
+	/* Copy the wrapped portion from the beginning */
+	memcpy(mm->wrapped_event_buf + leftcont, mm->data_start, evh->size - leftcont);
+	/* Record where our future tail will be on consume */
 	mm->data_tmp_tail += evh->size;
 
-	return ((struct perf_event *)evh);
+	return ((struct perf_event *)mm->wrapped_event_buf);
 }
 
 static inline void
