@@ -157,9 +157,11 @@ perf_to_raw(struct perf_event *ev)
 	}
 
 	if (sid != NULL) {
-		/* FORK overloads */
+		/* FORK overloads pid and tid */
 		if (raw->pid == 0)
 			raw->pid = sid->pid;
+		if (raw->tid == 0)
+			raw->tid = sid->tid;
 		raw->opid = sid->pid;
 		raw->tid = sid->tid;
 		raw->time = sid->time;
