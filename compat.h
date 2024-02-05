@@ -29,7 +29,7 @@ typedef uintptr_t	__uintptr_t;	/* for freebsd_tree.h */
 
 #ifndef __aligned
 #define __aligned(x)	__attribute__((aligned(x)))
-#endif
+#endif	/* __aligned */
 
 #ifndef likely
 #define likely(x)	__builtin_expect(!!(x), 1)
@@ -46,10 +46,6 @@ typedef uintptr_t	__uintptr_t;	/* for freebsd_tree.h */
 #ifndef min
 #define min(_a, _b)	((_a) < (_b) ? (_a) : (_b))
 #endif	/* min */
-
-#ifndef NSEC_PER_SEC
-#define NSEC_PER_SEC	1000000000L
-#endif
 
 /*
  * BSD compat

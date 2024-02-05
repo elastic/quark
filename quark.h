@@ -12,6 +12,21 @@
 #include "compat.h"
 
 /*
+ * Time helpers
+ */
+#ifndef NS_PER_S
+#define NS_PER_S	1000000000L
+#endif /* NS_PER_S */
+
+#ifndef NS_PER_MS
+#define NS_PER_MS	1000000L
+#endif /* NS_PER_MS */
+
+#ifndef MS_TO_NS
+#define MS_TO_NS(_x)	((_x) * NS_PER_MS)
+#endif /* MS_TO_NS */
+
+/*
  * Perf related declarations
  */
 struct perf_sample_id {
