@@ -604,12 +604,34 @@ block(struct perf_group_leaders *leaders)
 static int
 quark_queue_open(struct quark_queue *qq)
 {
+	int				 i;
+	struct perf_group_leader	*pgl;
+
 	bzero(qq, sizeof(*qq));
 
 	TAILQ_INIT(&qq->perf_group_leaders);
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
-	
+
+	for (i = 0; i < get_nprocs_conf(); i++) {
+		pgl = calloc(1, sizeof(*pgl));
+		if (pgl == NULL)
+			err(1, "calloc");
+		if (perf_open_group_leader(pgl, i) == -1)
+			errx(1, "perf_open_group_leader");
+		TAILQ_INSERT_TAIL(&qq->perf_group_leaders, pgl, entry);
+	}
+
+	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+		/* XXX PERF_IOC_FLAG_GROUP see bugs */
+		if (ioctl(pgl->fd, PERF_EVENT_IOC_RESET,
+		    PERF_IOC_FLAG_GROUP) == -1)
+			err(1, "ioctl PERF_EVENT_IOC_RESET:");
+		if (ioctl(pgl->fd, PERF_EVENT_IOC_ENABLE,
+		    PERF_IOC_FLAG_GROUP) == -1)
+			err(1, "ioctl PERF_EVENT_IOC_ENABLE:");
+	}
+
 	return (0);
 }
 
@@ -643,7 +665,7 @@ quark_queue_close(struct quark_queue *qq)
 int
 main(int argc, char *argv[])
 {
-	int				 ch, i, maxnodes, nodes, nproc;
+	int				 ch, maxnodes, nodes, nproc;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
@@ -651,11 +673,6 @@ main(int argc, char *argv[])
 
 	maxnodes = -1;
 	nodes = 0;
-
-	if ((qq = calloc(1, sizeof(*qq))) == NULL)
-		err(1, "calloc");
-	if (quark_queue_open(qq) != 0)
-		errx(1, "quark_queue_open");
 
 	while ((ch = getopt(argc, argv, "m:")) != -1) {
 		const char *errstr;
@@ -671,26 +688,10 @@ main(int argc, char *argv[])
 		}
 	}
 
-	printf("using %d bytes for each ring\n", PERF_MMAP_PAGES * getpagesize());
-
-	for (i = 0; i < get_nprocs_conf(); i++) {
-		pgl = calloc(1, sizeof(*pgl));
-		if (pgl == NULL)
-			err(1, "calloc");
-		if (perf_open_group_leader(pgl, i) == -1)
-			errx(1, "perf_open_group_leader");
-		TAILQ_INSERT_TAIL(&qq->perf_group_leaders, pgl, entry);
-	}
-
-	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
-		/* XXX PERF_IOC_FLAG_GROUP see bugs */
-		if (ioctl(pgl->fd, PERF_EVENT_IOC_RESET,
-		    PERF_IOC_FLAG_GROUP) == -1)
-			err(1, "ioctl PERF_EVENT_IOC_RESET:");
-		if (ioctl(pgl->fd, PERF_EVENT_IOC_ENABLE,
-		    PERF_IOC_FLAG_GROUP) == -1)
-			err(1, "ioctl PERF_EVENT_IOC_ENABLE:");
-	}
+	if ((qq = calloc(1, sizeof(*qq))) == NULL)
+		err(1, "calloc");
+	if (quark_queue_open(qq) != 0)
+		errx(1, "quark_queue_open");
 
 	while (maxnodes == -1 || nodes < maxnodes) {
 		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
