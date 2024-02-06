@@ -82,8 +82,9 @@ struct perf_event {
 struct perf_mmap {
 	struct perf_event_mmap_page	*metadata;
 	size_t				 mapped_size;
+	size_t				 data_size;
 	size_t				 data_mask;
-	uint8_t				*data_start;
+	u8				*data_start;
 	u64				 data_tmp_tail;
 	u8				 wrapped_event_buf[4096] __aligned(8);
 };

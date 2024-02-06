@@ -6,6 +6,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -179,7 +180,8 @@ perf_mmap_init(struct perf_mmap *mm, int fd)
 	    MAP_SHARED, fd, 0);
 	if (mm->metadata == NULL)
 		return (-1);
-	mm->data_mask = (PERF_MMAP_PAGES * getpagesize()) - 1;
+	mm->data_size = PERF_MMAP_PAGES * getpagesize();
+	mm->data_mask = mm->data_size - 1;
 	mm->data_start = (uint8_t *)mm->metadata + getpagesize();
 	mm->data_tmp_tail = mm->metadata->data_tail;
 
@@ -218,7 +220,7 @@ perf_mmap_read(struct perf_mmap *mm)
 	if (unlikely(evh->size > sizeof(mm->wrapped_event_buf)))
 		errx(1, "getting an event larger than wrapped buf");
 	/* How much contiguous space there is left */
-	leftcont = (mm->data_mask + 1) - (mm->data_tmp_tail & mm->data_mask);
+	leftcont = mm->data_size - (mm->data_tmp_tail & mm->data_mask);
 	/* Everything fits without wrapping */
 	if (likely(evh->size <= leftcont)) {
 		mm->data_tmp_tail += evh->size;
@@ -324,8 +326,9 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	/* attr->sample_id_all */
 	attr->use_clockid = 1;
 	attr->clockid = CLOCK_MONOTONIC_RAW;
-	attr->watermark = 0;	/* use number of samples, not bytes */
-	attr->wakeup_events = 1;	/* XXX for testing */
+	/* wakeup forcibly if ring buffer is at least 10% full */
+	attr->watermark = 1;
+	attr->wakeup_watermark = pgl->mmap.data_size / 10;
 	attr->task = 1;		/* get fork/exec, getting the same from two
 				 * different things */
 	attr->sample_id_all = 1;	/* affects non RECORD samples */
@@ -577,6 +580,42 @@ raw_process(void)
 	return (nproc);
 }
 
+TAILQ_HEAD(perf_group_leaders, perf_group_leader);
+
+
+static int
+block(struct perf_group_leaders *leaders)
+{
+	struct perf_group_leader *pgl;
+	struct pollfd *fds;
+	struct timespec ts;
+	int i, nfds, r;
+
+	nfds = 0;
+	TAILQ_FOREACH(pgl, leaders, entry) {
+		nfds++;
+	}
+	fds = calloc(sizeof(*fds), nfds);
+	if (fds == NULL)
+		err(1, "calloc");
+	i = 0;
+	TAILQ_FOREACH(pgl, leaders, entry) {
+		fds[i].fd = pgl->fd;
+		fds[i].events = POLLIN | POLLRDHUP;
+		i++;
+	}
+	ts.tv_sec = 0;
+	ts.tv_nsec = MS_TO_NS(100); /* XXX hardcoded for now */
+	r = ppoll(fds, nfds, &ts, NULL);
+#if 0
+	for (i = 0; i < nfds; i++)
+		printf("fd%d events=0x%x\n", fds[i].fd, fds[i].revents);
+#endif
+	free(fds);
+
+	return (r);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -584,8 +623,7 @@ main(int argc, char *argv[])
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
-	TAILQ_HEAD(perf_group_leaders, perf_group_leader) leaders =
-	    TAILQ_HEAD_INITIALIZER(leaders);
+	struct perf_group_leaders leaders = TAILQ_HEAD_INITIALIZER(leaders);
 
 	maxnodes = -1;
 	nodes = 0;
@@ -650,6 +688,8 @@ main(int argc, char *argv[])
 			if (nproc)
 				printf("removed %d nodes\n", nproc);
 		}
+
+		block(&leaders);
 	}
 
 	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
