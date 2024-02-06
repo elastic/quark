@@ -22,7 +22,19 @@
 #define RAW_HOLD_MAXNODES	10000		/* XXX hardcoded for now XXX */
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
 
-static void xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2, 3)));
+static void	xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2, 3)));
+static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
+static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
+
+RB_PROTOTYPE(raw_event_by_time, raw_event,
+    entry_by_time, raw_event_by_time_cmp);
+RB_GENERATE(raw_event_by_time, raw_event,
+    entry_by_time, raw_event_by_time_cmp);
+
+RB_PROTOTYPE(raw_event_by_pidtime, raw_event,
+    entry_by_pidtime, raw_event_by_pidtime_cmp);
+RB_GENERATE(raw_event_by_pidtime, raw_event,
+    entry_by_pidtime, raw_event_by_pidtime_cmp);
 
 static int
 raw_event_by_time_cmp(struct raw_event *a, struct raw_event *b)
@@ -47,31 +59,6 @@ raw_event_by_pidtime_cmp(struct raw_event *a, struct raw_event *b)
 	else
 		return (a->time > b->time);
 }
-
-/*
- * Raw Event Tree by time, where RB_MIN() is the oldest element in the tree, no
- * clustering of pids so we can easily get the oldest event.
- */
-RB_HEAD(raw_event_by_time, raw_event) raw_event_by_time =
-    RB_INITIALIZER(&raw_event_by_time);
-RB_PROTOTYPE(raw_event_by_time, raw_event,
-    entry_by_time, raw_event_by_time_cmp);
-RB_GENERATE(raw_event_by_time, raw_event,
-    entry_by_time, raw_event_by_time_cmp);
-
-/*
- * Raw Event Tree by pid and time, this creates clusters of the same pid which
- * are then organized by time, this is used in assembly and aggregation, if we
- * used the 'by_time' tree, we would have to traverse the full tree in case of a
- * miss.
- */
-/* XXX this should be by tid, but we're not there yet XXX */
-RB_HEAD(raw_event_by_pidtime, raw_event) raw_event_by_pidtime =
-    RB_INITIALIZER(&raw_event_by_pidtime);
-RB_PROTOTYPE(raw_event_by_pidtime, raw_event,
-    entry_by_pidtime, raw_event_by_pidtime_cmp);
-RB_GENERATE(raw_event_by_pidtime, raw_event,
-    entry_by_pidtime, raw_event_by_pidtime_cmp);
 
 static inline u64
 now64(void)
@@ -452,7 +439,7 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 }
 
 static void
-write_graphviz(void)
+write_graphviz(struct quark_queue *qq)
 {
 	struct raw_event	*raw, *left, *right;
 	FILE			*f;
@@ -464,11 +451,11 @@ write_graphviz(void)
 
 	xfprintf(f, "digraph {\n");
 	xfprintf(f, "node [style=filled, color=black];\n");
-	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
+	RB_FOREACH(raw, raw_event_by_time, &qq->raw_event_by_time) {
 		snprintf(key, sizeof(key), "%llu", raw->time);
 		write_node_attr(f, raw, key);
 	}
-	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
+	RB_FOREACH(raw, raw_event_by_time, &qq->raw_event_by_time) {
 		left = RB_LEFT(raw, entry_by_time);
 		right = RB_RIGHT(raw, entry_by_time);
 
@@ -490,12 +477,12 @@ write_graphviz(void)
 
 	xfprintf(f, "digraph {\n");
 	xfprintf(f, "node [style=filled, color=black];\n");
-	RB_FOREACH(raw, raw_event_by_pidtime, &raw_event_by_pidtime) {
+	RB_FOREACH(raw, raw_event_by_pidtime, &qq->raw_event_by_pidtime) {
 		snprintf(key, sizeof(key), "%d %llu",
 		    raw->pid, raw->time);
 		write_node_attr(f, raw, key);
 	}
-	RB_FOREACH(raw, raw_event_by_pidtime, &raw_event_by_pidtime) {
+	RB_FOREACH(raw, raw_event_by_pidtime, &qq->raw_event_by_pidtime) {
 		left = RB_LEFT(raw, entry_by_pidtime);
 		right = RB_RIGHT(raw, entry_by_pidtime);
 
@@ -520,7 +507,7 @@ write_graphviz(void)
  * we bump "time" here, we shouldn't copy "time" before it sits in the tree.
  */
 static void
-raw_event_insert(struct raw_event *raw)
+raw_event_insert(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct raw_event	*col;
 	int			 attempts = 10;
@@ -529,7 +516,7 @@ raw_event_insert(struct raw_event *raw)
 	 * Link it first by time
 	 */
 	do {
-		col = RB_INSERT(raw_event_by_time, &raw_event_by_time, raw);
+		col = RB_INSERT(raw_event_by_time, &qq->raw_event_by_time, raw);
 		if (likely(col == NULL))
 			break;
 
@@ -549,38 +536,36 @@ raw_event_insert(struct raw_event *raw)
 	 * above case already saves us, but trust nothing.
 	 */
 	/* XXX this should be by tid, but we're not there yet XXX */
-	col = RB_INSERT(raw_event_by_pidtime, &raw_event_by_pidtime, raw);
+	col = RB_INSERT(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
 	if (unlikely(col != NULL))
 		err(1, "collision on pidtime tree, this is a bug");
 }
 
 static void
-raw_event_remove(struct raw_event *raw)
+raw_event_remove(struct quark_queue *qq, struct raw_event *raw)
 {
-	RB_REMOVE(raw_event_by_time, &raw_event_by_time, raw);
-	RB_REMOVE(raw_event_by_pidtime, &raw_event_by_pidtime, raw);
+	RB_REMOVE(raw_event_by_time, &qq->raw_event_by_time, raw);
+	RB_REMOVE(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
 }
 
 static int
-raw_process(void)
+raw_process(struct quark_queue *qq)
 {
 	struct raw_event	*min, *next;	/* XXX todo cache min XXX */
 	u64			 now, nproc;
 
 	now = now64();
 	nproc = 0;
-	RB_FOREACH_SAFE(min, raw_event_by_time, &raw_event_by_time, next) {
+	RB_FOREACH_SAFE(min, raw_event_by_time, &qq->raw_event_by_time, next) {
 		if (!raw_event_expired(min, now))
 			break;
-		raw_event_remove(min);
+		raw_event_remove(qq, min);
 		free(min);
 		nproc++;
 	}
 
 	return (nproc);
 }
-
-TAILQ_HEAD(perf_group_leaders, perf_group_leader);
 
 
 static int
@@ -616,6 +601,44 @@ block(struct perf_group_leaders *leaders)
 	return (r);
 }
 
+static int
+quark_queue_open(struct quark_queue *qq)
+{
+	bzero(qq, sizeof(*qq));
+
+	TAILQ_INIT(&qq->perf_group_leaders);
+	RB_INIT(&qq->raw_event_by_time);
+	RB_INIT(&qq->raw_event_by_pidtime);
+	
+	return (0);
+}
+
+static void
+quark_queue_close(struct quark_queue *qq)
+{
+	struct perf_group_leader *pgl;
+	struct raw_event *raw, *raw1;
+
+	/* Stop and close the perf rings */
+	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+		/* XXX PERF_IOC_FLAG_GROUP see bugs */
+		if (ioctl(pgl->fd, PERF_EVENT_IOC_DISABLE,
+		    PERF_IOC_FLAG_GROUP) == -1)
+			warnx("ioctl PERF_EVENT_IOC_DISABLE:");
+		close(pgl->fd);
+		if (munmap(pgl->mmap.metadata, pgl->mmap.mapped_size) != 0)
+			warn("munmap");
+	}
+	/* Clean up all allocated raw events */
+	RB_FOREACH_SAFE(raw, raw_event_by_time, &qq->raw_event_by_time, raw1) {
+		raw_event_remove(qq, raw);
+		free(raw);
+	}
+	if (!RB_EMPTY(&qq->raw_event_by_time) ||
+	    !RB_EMPTY(&qq->raw_event_by_pidtime))
+		warnx("raw_event trees not empty");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -623,10 +646,16 @@ main(int argc, char *argv[])
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
-	struct perf_group_leaders leaders = TAILQ_HEAD_INITIALIZER(leaders);
+	struct quark_queue		*qq;
 
 	maxnodes = -1;
 	nodes = 0;
+
+	if ((qq = calloc(1, sizeof(*qq))) == NULL)
+		err(1, "calloc");
+	if (quark_queue_open(qq) != 0)
+		errx(1, "quark_queue_open");
+
 	while ((ch = getopt(argc, argv, "m:")) != -1) {
 		const char *errstr;
 
@@ -649,10 +678,10 @@ main(int argc, char *argv[])
 			err(1, "calloc");
 		if (perf_open_group_leader(pgl, i) == -1)
 			errx(1, "perf_open_group_leader");
-		TAILQ_INSERT_TAIL(&leaders, pgl, entry);
+		TAILQ_INSERT_TAIL(&qq->perf_group_leaders, pgl, entry);
 	}
 
-	TAILQ_FOREACH(pgl, &leaders, entry) {
+	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
 		/* XXX PERF_IOC_FLAG_GROUP see bugs */
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_RESET,
 		    PERF_IOC_FLAG_GROUP) == -1)
@@ -663,7 +692,7 @@ main(int argc, char *argv[])
 	}
 
 	while (maxnodes == -1 || nodes < maxnodes) {
-		TAILQ_FOREACH(pgl, &leaders, entry) {
+		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
 			/* printf("cpu%2d head %llu tail %llu\n", */
 			/*     pgl->cpu, pgl->mmap.metadata->data_head, */
 			/*     pgl->mmap.metadata->data_tail); */
@@ -675,7 +704,7 @@ main(int argc, char *argv[])
 			if (raw != NULL) {
 				/* Useful for debugging */
 				/* raw->time = arc4random_uniform(100000); */
-				raw_event_insert(raw);
+				raw_event_insert(qq, raw);
 				nodes++;
 			} else
 				warnx("can't convert perf to raw");
@@ -684,20 +713,23 @@ main(int argc, char *argv[])
 
 		/* If maxnodes is set, we don't want to process, only collect */
 		if (maxnodes == -1) {
-			nproc = raw_process();
+			nproc = raw_process(qq);
 			if (nproc)
 				printf("removed %d nodes\n", nproc);
 		}
 
-		block(&leaders);
+		block(&qq->perf_group_leaders);
 	}
 
-	RB_FOREACH(raw, raw_event_by_time, &raw_event_by_time) {
+	RB_FOREACH(raw, raw_event_by_time, &qq->raw_event_by_time) {
 		printf("%llu (age=%llu)\n", raw->time,
 		    raw_event_age(raw, now64()));
 	}
 
-	write_graphviz();
+	write_graphviz(qq);
+
+	quark_queue_close(qq);
+	free(qq);
 
 	return (0);
 }

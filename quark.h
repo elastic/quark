@@ -129,4 +129,34 @@ struct raw_event {
 	};
 };
 
+/*
+ * Raw Event Tree by time, where RB_MIN() is the oldest element in the tree, no
+ * clustering of pids so we can easily get the oldest event.
+ */
+RB_HEAD(raw_event_by_time, raw_event);
+
+/*
+ * Raw Event Tree by pid and time, this creates clusters of the same pid which
+ * are then organized by time, this is used in assembly and aggregation, if we
+ * used the 'by_time' tree, we would have to traverse the full tree in case of a
+ * miss.
+ */
+/* XXX this should be by tid, but we're not there yet XXX */
+RB_HEAD(raw_event_by_pidtime, raw_event);
+
+/*
+ * List of all ring buffer leaders, we have on per cpu.
+ */
+TAILQ_HEAD(perf_group_leaders, perf_group_leader);
+
+/*
+ * Quark Queue (qq) is the main structure the user interacts with, it acts as
+ * our main storage datastructure.
+ */
+struct quark_queue {
+	struct perf_group_leaders	perf_group_leaders;
+	struct raw_event_by_time	raw_event_by_time;
+	struct raw_event_by_pidtime	raw_event_by_pidtime;
+};
+
 #endif /* _QUARK_H_ */
