@@ -695,9 +695,6 @@ main(int argc, char *argv[])
 
 	while (maxnodes == -1 || nodes < maxnodes) {
 		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
-			/* printf("cpu%2d head %llu tail %llu\n", */
-			/*     pgl->cpu, pgl->mmap.metadata->data_head, */
-			/*     pgl->mmap.metadata->data_tail); */
 			ev = perf_mmap_read(&pgl->mmap);
 			if (ev == NULL)
 				continue;
