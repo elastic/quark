@@ -617,10 +617,10 @@ static void
 quark_queue_close(struct quark_queue *qq)
 {
 	struct perf_group_leader *pgl;
-	struct raw_event *raw, *raw1;
+	struct raw_event *raw;
 
 	/* Stop and close the perf rings */
-	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+	while ((pgl = TAILQ_FIRST(&qq->perf_group_leaders)) != NULL) {
 		/* XXX PERF_IOC_FLAG_GROUP see bugs */
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_DISABLE,
 		    PERF_IOC_FLAG_GROUP) == -1)
@@ -628,14 +628,15 @@ quark_queue_close(struct quark_queue *qq)
 		close(pgl->fd);
 		if (munmap(pgl->mmap.metadata, pgl->mmap.mapped_size) != 0)
 			warn("munmap");
+		TAILQ_REMOVE(&qq->perf_group_leaders, pgl, entry);
+		free(pgl);
 	}
 	/* Clean up all allocated raw events */
-	RB_FOREACH_SAFE(raw, raw_event_by_time, &qq->raw_event_by_time, raw1) {
+	while ((raw = RB_ROOT(&qq->raw_event_by_time)) != NULL) {
 		raw_event_remove(qq, raw);
 		free(raw);
 	}
-	if (!RB_EMPTY(&qq->raw_event_by_time) ||
-	    !RB_EMPTY(&qq->raw_event_by_pidtime))
+	if (!RB_EMPTY(&qq->raw_event_by_pidtime))
 		warnx("raw_event trees not empty");
 }
 
