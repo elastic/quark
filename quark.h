@@ -8,8 +8,12 @@
 /* Sys */
 #include <sys/param.h>		/* MAXPATHLEN */
 
-/* Compat, tree.h, queue.h, BSD string and more */
+/* Compat, tree.h, queue.h */
 #include "compat.h"
+
+/* quark_btf.c */
+int	quark_btf_init(void);
+ssize_t	quark_btf_offset(int);
 
 /*
  * Time helpers

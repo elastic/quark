@@ -662,6 +662,15 @@ quark_queue_close(struct quark_queue *qq)
 		warnx("raw_event trees not empty");
 }
 
+static int
+quark_init(void)
+{
+	if (quark_btf_init() == -1)
+		return (-1);
+
+	return (0);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -673,6 +682,9 @@ main(int argc, char *argv[])
 
 	maxnodes = -1;
 	nodes = 0;
+
+	if (quark_init() == -1)
+		errx(1, "quark_init");
 
 	while ((ch = getopt(argc, argv, "m:")) != -1) {
 		const char *errstr;
