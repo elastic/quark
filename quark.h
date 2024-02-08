@@ -62,11 +62,16 @@ struct perf_record_exit {
 	struct perf_sample_id		sample_id;
 };
 
+enum sample_kinds {
+	SAMPLE_EXEC = 1
+};
+
 /*
  * Kernels might actually have a different common area, so far we only
  * need common_type, so hold onto that
  */
 struct perf_sample_data {
+	/* this is the actual id from tracefs eg: sched_process_exec/id */
 	u16	 common_type;
 	/* ... */
 };

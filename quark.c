@@ -26,6 +26,10 @@ static void	xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2,
 static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
 
+/* TODO moveme */
+#define MAX_SAMPLE_IDS	4096
+u8 id_to_sample_kind[MAX_SAMPLE_IDS];
+
 RB_PROTOTYPE(raw_event_by_time, raw_event,
     entry_by_time, raw_event_by_time_cmp);
 RB_GENERATE(raw_event_by_time, raw_event,
@@ -35,6 +39,17 @@ RB_PROTOTYPE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
 RB_GENERATE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
+
+static inline int
+sample_kind_of_id(int id)
+{
+	if (unlikely(id <= 0 || id >= MAX_SAMPLE_IDS)) {
+		warnx("%s: invalid id %d", __func__, id);
+		return (errno = ERANGE, -1);
+	}
+
+	return (id_to_sample_kind[id]);
+}
 
 static int
 raw_event_by_time_cmp(struct raw_event *a, struct raw_event *b)
@@ -109,12 +124,35 @@ strlcpy_data_loc(void *dst, ssize_t dst_size,
 	return (n - 1);
 }
 
+static int
+perf_sample_to_raw(struct perf_record_sample *sample, struct raw_event *raw)
+{
+	int	id = sample->data.common_type;
+	ssize_t n;
+
+	switch (sample_kind_of_id(id)) {
+	case SAMPLE_EXEC:
+		raw->type = RAW_EXEC;
+		n = strlcpy_data_loc(raw->exec.filename, sizeof(raw->exec.filename),
+		    &sample->data, 8);
+		if (n == -1)
+			warnx("can't copy exec filename");
+		else if (n >= (ssize_t)sizeof(raw->exec.filename))
+			warnx("exec filename truncated");
+		break;
+	default:
+		warnx("%s: unknown or invalid sample id=%d\n", __func__, id);
+		return (-1);
+	}
+
+	return (0);
+}
+
 static struct raw_event *
 perf_to_raw(struct perf_event *ev)
 {
 	struct raw_event		*raw;
 	struct perf_sample_id		*sid = NULL;
-	ssize_t				 n;
 
 	if ((raw = calloc(1, sizeof(*raw))) == NULL)
 		return (NULL);
@@ -132,15 +170,9 @@ perf_to_raw(struct perf_event *ev)
 		sid = &ev->exit.sample_id;
 		break;
 	case PERF_RECORD_SAMPLE:
-		/* XXX CHEAT FOR NOW XXX */
-		raw->type = RAW_EXEC;
 		sid = &ev->sample.sample_id;
-		n = strlcpy_data_loc(raw->exec.filename, sizeof(raw->exec.filename),
-		    &ev->sample.data, 8);
-		if (n == -1)
-			warnx("can't copy exec filename");
-		else if (n >= (ssize_t)sizeof(raw->exec.filename))
-			warnx("exec filename truncated");
+		if (perf_sample_to_raw(&ev->sample, raw) == -1)
+			err(1, "perf_sample_to_raw errored"); /* XXX fatal for now */
 		break;
 	default:
 		errx(1, "perf_to_raw: unknown event type %d\n", ev->header.type);
@@ -303,6 +335,9 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	attr->size = sizeof(*attr);
 	if ((id = fetch_tracing_id("sched/sched_process_exec")) == -1)
 		return (-1);
+	/* Make sure it fits in our map */
+	if (id <= 0 || id >= MAX_SAMPLE_IDS)
+		return (errno = ERANGE, -1);
 	attr->config = id;
 	/* attr->config = PERF_COUNT_SW_DUMMY; */
 	attr->sample_period = 1;	/* we want all events */
@@ -334,8 +369,32 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 		close(pgl->fd);
 		return (-1);
 	}
+	/* XXX hardcoded for now XXX */
+	id_to_sample_kind[id] = SAMPLE_EXEC;
 
 	return (0);
+}
+
+static void
+dump_sample(struct perf_record_sample *sample)
+{
+	char			 buf[4096];
+	ssize_t			 n;
+	int			 id = sample->data.common_type;
+
+	switch (sample_kind_of_id(id)) {
+	case SAMPLE_EXEC:
+		/* XXX hardcoded offset XXX */
+		n = strlcpy_data_loc(buf, sizeof(buf), &sample->data, 8);
+		if (n == -1)
+			warnx("can't copy exec filename");
+		else if (n >= (ssize_t)sizeof(buf))
+			warnx("exec filename truncated");
+		printf("->exec (%d)\n\tfilename=%s\n", id, buf);
+		break;
+	default:
+		warnx("%s: unknown or invalid sample id=%d\n", __func__, id);
+	}
 }
 
 static void
@@ -345,8 +404,6 @@ dump_event(struct perf_event *ev)
 	struct perf_record_fork		*fork;
 	struct perf_record_exit		*exit;
 	struct perf_record_sample	*sample;
-	char				 buf[4096];
-	ssize_t				 n;
 
 	switch (ev->header.type) {
 	case PERF_RECORD_FORK:
@@ -364,13 +421,7 @@ dump_event(struct perf_event *ev)
 	case PERF_RECORD_SAMPLE:
 		sample = &ev->sample;
 		sid = &sample->sample_id;
-		/* XXX hardcoded offset XXX */
-		n = strlcpy_data_loc(buf, sizeof(buf), &ev->sample.data, 8);
-		if (n == -1)
-			warnx("can't copy exec filename");
-		else if (n >= (ssize_t)sizeof(buf))
-			warnx("exec filename truncated");
-		printf("->exec\n\tfilename=%s (common_type=%d)\n", buf, sample->data.common_type);
+		dump_sample(sample);
 		break;
 
 	default:
