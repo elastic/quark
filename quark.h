@@ -36,8 +36,8 @@ ssize_t	quark_btf_offset(int);
 struct perf_sample_id {
 	u32	pid;
 	u32	tid;
-	u64	time;		/* see raw_event_tree_insert_nocol() */
-	u64	stream_id;
+	u64	time;		/* See raw_evenr_insert() */
+	u64	stream_id;	/* We can likely get rid of this */
 	u32	cpu;
 	u32	cpu_unused;
 };
@@ -62,7 +62,16 @@ struct perf_record_exit {
 	struct perf_sample_id		sample_id;
 };
 
-struct perf_data_loc {
+/*
+ * Kernels might actually have a different common area, so far we only
+ * need common_type, so hold onto that
+ */
+struct perf_sample_data {
+	u16	 common_type;
+	/* ... */
+};
+
+struct perf_sample_data_loc {
 	u16	offset;
 	u16	size;
 };
@@ -71,7 +80,7 @@ struct perf_record_sample {
 	struct perf_event_header	header;
 	struct perf_sample_id		sample_id;
 	u32				size;
-	char				data[];
+	struct perf_sample_data		data;
 };
 
 struct perf_event {

@@ -89,18 +89,20 @@ raw_event_expired(struct raw_event *raw, u64 now)
  * it means we truncated. May return -1 on bad values.
  */
 static ssize_t
-strlcpy_data_loc(void *dst, ssize_t dst_size, struct perf_record_sample *sample,
-    size_t data_off)
+strlcpy_data_loc(void *dst, ssize_t dst_size,
+    struct perf_sample_data *sample_data, size_t data_off)
 {
-	struct perf_data_loc	*data_loc;
-	ssize_t			 n;
-	char			*p = dst;
+	struct perf_sample_data_loc	*data_loc;
+	ssize_t				 n;
+	char				*data, *p = dst;
 
-	data_loc = (struct perf_data_loc *)(sample->data + data_off);
+	p = dst;
+	data = (char *)sample_data;
+	data_loc = (struct perf_sample_data_loc *)(data + data_off);
 	n = min(dst_size, data_loc->size);
 	if (n <= 0)
 		return (-1);
-	memcpy(p, sample->data + data_loc->offset, n);
+	memcpy(p, data + data_loc->offset, n);
 	/* never trust the kernel */
 	p[n - 1] = 0;
 
@@ -134,7 +136,7 @@ perf_to_raw(struct perf_event *ev)
 		raw->type = RAW_EXEC;
 		sid = &ev->sample.sample_id;
 		n = strlcpy_data_loc(raw->exec.filename, sizeof(raw->exec.filename),
-		    &ev->sample, 8);
+		    &ev->sample.data, 8);
 		if (n == -1)
 			warnx("can't copy exec filename");
 		else if (n >= (ssize_t)sizeof(raw->exec.filename))
@@ -304,13 +306,16 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	attr->config = id;
 	/* attr->config = PERF_COUNT_SW_DUMMY; */
 	attr->sample_period = 1;	/* we want all events */
-	attr->sample_type = PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_CPU
-	    | PERF_SAMPLE_RAW | PERF_SAMPLE_STREAM_ID; /* NOTE: why stream? */
+	attr->sample_type =
+	    PERF_SAMPLE_TID		|
+	    PERF_SAMPLE_TIME		|
+	    PERF_SAMPLE_STREAM_ID	| /* We can likely get rid of this one */
+	    PERF_SAMPLE_CPU		|
+	    PERF_SAMPLE_RAW;
 
 	/* attr->read_format = PERF_FORMAT_LOST; */
 	/* attr->mmap2 */
 	/* attr->comm_exec */
-	/* attr->sample_id_all */
 	attr->use_clockid = 1;
 	attr->clockid = CLOCK_MONOTONIC_RAW;
 	/* wakeup forcibly if ring buffer is at least 10% full */
@@ -360,12 +365,12 @@ dump_event(struct perf_event *ev)
 		sample = &ev->sample;
 		sid = &sample->sample_id;
 		/* XXX hardcoded offset XXX */
-		n = strlcpy_data_loc(buf, sizeof(buf), &ev->sample, 8);
+		n = strlcpy_data_loc(buf, sizeof(buf), &ev->sample.data, 8);
 		if (n == -1)
 			warnx("can't copy exec filename");
 		else if (n >= (ssize_t)sizeof(buf))
 			warnx("exec filename truncated");
-		printf("->exec\n\tfilename=%s\n", buf);
+		printf("->exec\n\tfilename=%s (common_type=%d)\n", buf, sample->data.common_type);
 		break;
 
 	default:
@@ -374,7 +379,8 @@ dump_event(struct perf_event *ev)
 	}
 
 	if (sid != NULL)
-		printf("\ts.pid=%d s.tid=%d s.time=%llu (age=(%llu)) s.stream_id=%llu s.cpu=%d\n",
+		printf("\ts.pid=%d s.tid=%d s.time=%llu (age=%llu)"
+		    " s.stream_id=%llu s.cpu=%d\n",
 		    sid->pid, sid->tid, sid->time, AGE(sid->time, now64()),
 		    sid->stream_id, sid->cpu);
 
@@ -566,7 +572,6 @@ raw_process(struct quark_queue *qq)
 
 	return (nproc);
 }
-
 
 static int
 block(struct perf_group_leaders *leaders)
