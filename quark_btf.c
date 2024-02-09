@@ -7,18 +7,25 @@
 #include "libbpf/src/btf.h"
 #include "libbpf/include/linux/err.h"		/* IS_ERR :( */
 
-enum target_id {
-	TASK_STRUCT__CRED,
-	CRED__USER
-};
-
 struct target {
-	int		 id;
 	const char	*dotname;
-	ssize_t		 offset; /* NOTE: still in bits */
+	ssize_t		 offset; /* in bytes, not bits */
 } targets[] = {
-	{ TASK_STRUCT__CRED,	"task_struct.cred",	-1 },
-	{ CRED__USER,		"cred.user",		-1 }
+	{ "task_struct.cred",		-1 },
+	{ "cred.user",			-1 },
+	{ "cred.uid",			-1 },
+	{ "cred.gid",			-1 },
+	{ "cred.suid",			-1 },
+	{ "cred.sgid",			-1 },
+	{ "cred.euid",			-1 },
+	{ "cred.egid",			-1 },
+	{ "cred.cap_inheritable",	-1 },
+	{ "cred.cap_permitted",		-1 },
+	{ "cred.cap_effective",		-1 },
+	{ "cred.cap_bset",		-1 },
+	{ "cred.cap_ambient",		-1 },
+	{ NULL,				-1 },
+	/* Keep this table in sync with enum btf_target_id */
 };
 
 static const struct btf_type *
@@ -104,14 +111,17 @@ btf_root_offset(struct btf *btf, const char *dotname)
 			return (-1);
 	}
 
-	return (off);
+	if ((off % 8) != 0)
+		err(1, "bit offset not multiple of 8");
+
+	return (off / 8);
 }
 
 int
 quark_btf_init(void)
 {
 	struct btf	*btf;
-	int		 i, failed;
+	int		 failed;
 	struct target	*ta;
 
 	btf = btf__load_vmlinux_btf();
@@ -119,18 +129,19 @@ quark_btf_init(void)
 		return (-1);
 
 	failed = 0;
-	for (i = 0, ta = targets; i < (int)nitems(targets); i++, ta++) {
+	for (ta = targets; ta ->dotname != NULL; ta++) {
 		ta->offset = btf_root_offset(btf, ta->dotname);
 		if (ta->offset == -1) {
-			warnx("%s: id=%d name=%s failed",
-			    __func__, ta->id, ta->dotname);
+			warnx("%s: dotname=%s failed",
+			    __func__, ta->dotname);
 			failed++;
 		}
 	}
 
-	for (i = 0, ta = targets; i < (int)nitems(targets); i++, ta++)
-		printf("%s: id=%d name=%s off=%ld\n",
-		    __func__, ta->id, ta->dotname, ta->offset);
+	for (ta = targets; ta ->dotname != NULL; ta++) {
+		printf("%s: dotname=%s off=%ld (bitoff=%ld)\n",
+		    __func__, ta->dotname, ta->offset, ta->offset * 8);
+	}
 
 	btf__free(btf);
 
@@ -138,7 +149,17 @@ quark_btf_init(void)
 }
 
 ssize_t
-quark_btf_offset(int id)
+quark_btf_offset(const char *dotname)
 {
-	return (targets[id].offset);
+	struct target *ta;
+
+	for (ta = targets; ta ->dotname != NULL; ta++) {
+		if (!strcmp(ta->dotname, dotname)) {
+			if (ta->offset != -1)
+				return (ta->offset);
+			break;
+		}
+	}
+
+	return (-1);
 }

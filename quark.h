@@ -13,7 +13,7 @@
 
 /* quark_btf.c */
 int	quark_btf_init(void);
-ssize_t	quark_btf_offset(int);
+ssize_t	quark_btf_offset(const char *);
 
 /*
  * Time helpers
@@ -64,6 +64,23 @@ struct perf_record_exit {
 
 enum sample_kinds {
 	SAMPLE_EXEC = 1
+};
+
+/*
+ * Kprobe relate declarations
+ */
+struct kprobe_arg {
+	const char	*name;
+	const char	*reg;
+	const char	*typ;
+	const char	*v[4];	/* maximum is 3, last is sentinel */
+};
+
+struct kprobe {
+	const char		*name;
+	const char		*target;
+	int		 	 is_kret;
+	struct kprobe_arg	 args[];
 };
 
 /*

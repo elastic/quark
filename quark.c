@@ -21,14 +21,39 @@
 #define RAW_HOLD_MAXTIME	MS_TO_NS(1000)	/* XXX hardcoded for now XXX */
 #define RAW_HOLD_MAXNODES	10000		/* XXX hardcoded for now XXX */
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
+#define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
 
 static void	xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2, 3)));
 static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
 
-/* TODO moveme */
-#define MAX_SAMPLE_IDS	4096
+/* matches each sample event to a kind like SAMPLE_EXEC, SAMPLE_FOO */
 u8 id_to_sample_kind[MAX_SAMPLE_IDS];
+
+struct kprobe kp_wake_up_new_task = {
+	"quark_wake_up_new_task",
+	"wake_up_new_task",
+	0,
+{
+	{ "uid",		"di", "u32",	{ "task_struct.cred", "cred.uid",		NULL, NULL }},
+	{ "gid",		"di", "u32",	{ "task_struct.cred", "cred.gid",		NULL, NULL }},
+	{ "suid",		"di", "u32",	{ "task_struct.cred", "cred.suid",		NULL, NULL }},
+	{ "sgid",		"di", "u32",	{ "task_struct.cred", "cred.sgid",		NULL, NULL }},
+	{ "euid",		"di", "u32",	{ "task_struct.cred", "cred.euid",		NULL, NULL }},
+	{ "egid", 		"di", "u32",	{ "task_struct.cred", "cred.egid",		NULL, NULL }},
+	{ "cap_inheritable",	"di", "u64",	{ "task_struct.cred", "cred.cap_inheritable",	NULL, NULL }},
+	{ "cap_permitted",	"di", "u64",	{ "task_struct.cred", "cred.cap_permitted",	NULL, NULL }},
+	{ "cap_effective",	"di", "u64",	{ "task_struct.cred", "cred.cap_effective",	NULL, NULL }},
+	{ "cap_bset",		"di", "u64",	{ "task_struct.cred", "cred.cap_bset",		NULL, NULL }},
+	{ "cap_ambient", 	"di", "u64",	{ "task_struct.cred", "cred.cap_ambient",	NULL, NULL }},
+	{ NULL, 		NULL, NULL,	{ NULL, NULL, NULL, NULL } }
+}
+};
+
+struct kprobe *all_kprobes[] = {
+	&kp_wake_up_new_task,
+	NULL
+};
 
 RB_PROTOTYPE(raw_event_by_time, raw_event,
     entry_by_time, raw_event_by_time_cmp);
@@ -39,6 +64,49 @@ RB_PROTOTYPE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
 RB_GENERATE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
+
+static ssize_t
+qread(int fd, void *buf, size_t count)
+{
+	ssize_t n;
+
+again:
+	n = read(fd, buf, count);
+	if (n == -1) {
+		if (errno == EINTR)
+			goto again;
+		warn("read");
+		return (-1);
+	} else if (n == 0) {
+		warnx("read unexpected EOF");
+		return (-1);
+	}
+
+	return (n);
+}
+
+static int
+qwrite(int fd, const void *buf, size_t count)
+{
+	ssize_t n;
+	const char *p;
+
+	for (p = buf; count != 0; p += n, count -= n) {
+	again:
+		n = write(fd, p, count);
+		if (n == -1) {
+			if (errno == EINTR)
+				goto again;
+			warn("write");
+			return (-1);
+		} else if (n == 0) {
+			warnx("write: EPIPE");
+			return (-1);
+		}
+	}
+
+	return (0);
+}
 
 static inline int
 sample_kind_of_id(int id)
@@ -274,53 +342,220 @@ perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu,
 }
 
 static int
-fetch_tracing_id(const char *tail)
+open_tracing(int flags, const char *fmt, ...)
 {
-	int i;
-	char path[MAXPATHLEN];
-	char *epath[] = {
-		"/sys/kernel/tracing/events",
-		"/sys/kernel/debug/tracing/events"
+	va_list  ap;
+	int	 dfd, fd, i, r;
+	char	 tail[MAXPATHLEN];
+	char	*paths[] = {
+		"/sys/kernel/tracing",
+		"/sys/kernel/debug/tracing",
 	};
 
-	for (i = 0; i < (int)nitems(epath); i++) {
-		int id, fd;
-		ssize_t n;
-		char idbuf[16];
-		const char *errstr;
+	va_start(ap, fmt);
+	r = vsnprintf(tail, sizeof(tail), fmt, ap);
+	va_end(ap);
+	if (r == -1 || r >= (int)sizeof(tail))
+		return (-1);
+	if (tail[0] == '/')
+		return (errno = EINVAL, -1);
 
-		if (snprintf(path, sizeof(path),
-		    "%s/%s/id", epath[i], tail) >= (int)sizeof(path)) {
-			warnx("sptrinf");
+	for (i = 0; i < (int)nitems(paths); i++) {
+		if ((dfd = open(paths[i], O_PATH)) == -1) {
+			warn("open: %s", paths[i]);
 			continue;
 		}
-		fd = open(path, O_RDONLY);
+		fd = openat(dfd, tail, flags);
+		close(dfd);
 		if (fd == -1) {
-			warn("open: %s", path);
-			continue;
-		}
-		n = read(fd, idbuf, sizeof(idbuf));
-		if (n == -1) {/* XXX EINTR */
+			warn("open: %s", tail);
 			close(fd);
-			warn("read");
-			continue;
-		} else if (n == 0) {
-			warn("read unexpected EOF");
-			close(fd);
-			continue;
-		}
-		close(fd);
-		idbuf[n - 1] = 0;
-		id = strtonum(idbuf, 0, INT_MAX, &errstr);
-		if (errstr != NULL) {
-			warnx("strtonum");
 			continue;
 		}
 
-		return (id);
+		return (fd);
 	}
 
-	return (-1);
+	return (errno = ENOENT, -1);
+}
+
+static int
+fetch_tracing_id(const char *tail)
+{
+	int		 id, fd;
+	char		 idbuf[16];
+	const char	*errstr;
+	ssize_t		 n;
+
+	fd = open_tracing(O_RDONLY, tail);
+	if (fd == -1)
+		return (-1);
+
+	n = qread(fd, idbuf, sizeof(idbuf));
+	close(fd);
+	if (n == -1)
+		return (-1);
+	idbuf[n - 1] = 0;
+	id = strtonum(idbuf, 0, INT_MAX, &errstr);
+	if (errstr != NULL) {
+		warnx("strtonum: %s", errstr);
+		return (errno = ERANGE, -1);
+	}
+
+	return (id);
+}
+
+static char *
+kprobe_make_arg(struct kprobe_arg *karg)
+{
+#define O(_v)	quark_btf_offset(_v)
+	int r = -1, nvs;
+	char *p;
+
+	for (nvs = 0; nvs < (int)nitems(karg->v); nvs++) {
+		if (karg->v[nvs] == NULL)
+			break;
+		if (O(karg->v[nvs]) == -1) {
+			warnx("%s: %s unresolved", __func__, karg->v[nvs]);
+			return (NULL);
+		}
+	}
+
+	if (nvs == 1)
+		r = asprintf(&p, "%s=+%zd(%%%s):%s",
+		    karg->name, O(karg->v[0]), karg->reg, karg->typ);
+	else if (nvs == 2)
+		r = asprintf(&p, "%s=+%zd(+%zd(%%%s)):%s",
+		    karg->name, O(karg->v[1]), O(karg->v[0]),
+		    karg->reg, karg->typ);
+	else if (nvs == 3)
+		r = asprintf(&p, "%s=+%zd(+%zd(+%zd(%%%s))):%s",
+		    karg->name, O(karg->v[2]), O(karg->v[1]), O(karg->v[0]),
+		karg->reg, karg->typ);
+	else
+		warnx("%s: invalid nvs %d\n", __func__, nvs);
+
+	if (r == -1)
+		return (NULL);
+
+	return (p);
+#undef O
+}
+
+static char *
+kprobe_build_string(struct kprobe *k)
+{
+	struct kprobe_arg *karg;
+	char *p, *o, *a;
+	int r;
+
+	r = asprintf(&p, "%c:%s %s", k->is_kret ? 'r' : 'p', k->name,
+	    k->target);
+	if (r == -1)
+		return (NULL);
+	for (karg = k->args; karg->name != NULL; karg++) {
+		a = kprobe_make_arg(karg);
+		if (a == NULL) {
+			free(p);
+			return (NULL);
+		}
+		o = p;
+		r = asprintf(&p, "%s %s", o, a);
+		free(o);
+		free(a);
+		if (r == -1)
+			return (NULL);
+	}
+
+	return (p);
+}
+
+static int
+kprobe_toggle(struct kprobe *k, int enable)
+{
+	int	fd;
+	ssize_t n;
+
+	if ((fd = open_tracing(O_WRONLY, "events/kprobes/%s/enable", k->name)) == -1)
+		return (-1);
+	if (enable)
+		n = qwrite(fd, "1", 1);
+	else
+		n = qwrite(fd, "0", 1);
+	close(fd);
+	if (n == -1)
+		return (-1);
+
+	return (0);
+}
+#define kprobe_enable(_k)	kprobe_toggle((_k), 1)
+#define kprobe_disable(_k)	kprobe_toggle((_k), 0)
+
+static int
+kprobe_uninstall(struct kprobe *k)
+{
+	char buf[4096];
+	ssize_t n;
+	int fd;
+
+	(void)kprobe_disable(k);
+	if ((fd = open_tracing(O_WRONLY | O_APPEND,
+	    "kprobe_events")) == -1)
+		return (-1);
+	if (snprintf(buf, sizeof(buf), "-:%s", k->name) >=
+	    (int)sizeof(buf)) {
+		close(fd);
+		return (-1);
+	}
+	n = qwrite(fd, buf, strlen(buf));
+	close(fd);
+	if (n == -1)
+		return (-1);
+
+	return (0);
+}
+
+static int
+kprobe_install(struct kprobe *k)
+{
+	int fd;
+	ssize_t n;
+	char *kstr;
+
+	(void)kprobe_uninstall(k);
+
+	if ((kstr = kprobe_build_string(k)) == NULL)
+		return (-1);
+	if ((fd = open_tracing(O_WRONLY, "kprobe_events")) == -1) {
+		free(kstr);
+		return (-1);
+	}
+	n = qwrite(fd, kstr, strlen(kstr));
+	close(fd);
+	free(kstr);
+	if (n == -1)
+		return (-1);
+
+	return (0);
+}
+
+static int
+kprobe_init(void)
+{
+	struct kprobe *k;
+	int i = 0;
+
+	while ((k = all_kprobes[i++]) != NULL) {
+		if (kprobe_install(k) == -1)
+			return (-1);
+		/* XXX REMOVE ME XXX */
+		if (kprobe_enable(k) == -1) {
+			warnx("kprobe_enable: can't enable");
+			return (1);
+		}
+	}
+
+	return (0);
 }
 
 static int
@@ -333,7 +568,7 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 
 	attr->type = PERF_TYPE_TRACEPOINT;
 	attr->size = sizeof(*attr);
-	if ((id = fetch_tracing_id("sched/sched_process_exec")) == -1)
+	if ((id = fetch_tracing_id("events/sched/sched_process_exec/id")) == -1)
 		return (-1);
 	/* Make sure it fits in our map */
 	if (id <= 0 || id >= MAX_SAMPLE_IDS)
@@ -437,22 +672,6 @@ dump_event(struct perf_event *ev)
 
 	fflush(stdout);
 }
-#if 0
-static const char *
-type_to_str(int type)
-{
-	switch (type) {
-	case PERF_RECORD_FORK:
-		return "PERF_RECORD_FORK";
-	case PERF_RECORD_EXIT:
-		return "PERF_RECORD_EXIT";
-	case PERF_RECORD_SAMPLE:
-		return "PERF_RECORD_SAMPLE";
-	}
-
-	return "Unknown";
-}
-#endif
 
 static void
 xfprintf(FILE *f, const char *restrict fmt, ...)
@@ -627,10 +846,10 @@ raw_process(struct quark_queue *qq)
 static int
 block(struct perf_group_leaders *leaders)
 {
-	struct perf_group_leader *pgl;
-	struct pollfd *fds;
-	struct timespec ts;
-	int i, nfds, r;
+	struct perf_group_leader	*pgl;
+	struct pollfd			*fds;
+	struct timespec			 ts;
+	int				 i, nfds, r;
 
 	nfds = 0;
 	TAILQ_FOREACH(pgl, leaders, entry) {
@@ -689,6 +908,7 @@ quark_queue_open(struct quark_queue *qq)
 	}
 
 	return (0);
+#undef O
 }
 
 static void
@@ -721,8 +941,14 @@ quark_queue_close(struct quark_queue *qq)
 static int
 quark_init(void)
 {
-	if (quark_btf_init() == -1)
+	if (quark_btf_init() == -1) {
+		warnx("%s: can't initialize btf", __func__);
 		return (-1);
+	}
+	if (kprobe_init() == -1) {
+		warnx("%s: can't initialize kprobes", __func__);
+		return (-1);
+	}
 
 	return (0);
 }
