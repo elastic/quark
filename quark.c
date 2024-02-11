@@ -24,6 +24,7 @@
 #define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
 
 static void	xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2, 3)));
+static int	open_tracing(int, const char *, ...) __attribute__((format(printf, 2, 3)));
 static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
 
@@ -387,7 +388,7 @@ fetch_tracing_id(const char *tail)
 	const char	*errstr;
 	ssize_t		 n;
 
-	fd = open_tracing(O_RDONLY, tail);
+	fd = open_tracing(O_RDONLY, "%s", tail);
 	if (fd == -1)
 		return (-1);
 
