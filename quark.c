@@ -495,9 +495,9 @@ kprobe_toggle(struct kprobe *k, int enable)
 static int
 kprobe_uninstall(struct kprobe *k)
 {
-	char buf[4096];
+	char	buf[4096];
 	ssize_t n;
-	int fd;
+	int	fd;
 
 	if ((fd = open_tracing(O_WRONLY | O_APPEND,
 	    "kprobe_events")) == -1)
@@ -523,9 +523,9 @@ kprobe_uninstall(struct kprobe *k)
 static int
 kprobe_install(struct kprobe *k)
 {
-	int fd;
-	ssize_t n;
-	char *kstr;
+	int	 fd;
+	ssize_t	 n;
+	char	*kstr;
 
 	if (kprobe_uninstall(k) == -1 && errno != ENOENT)
 		warn("kprobe_uninstall");
@@ -547,8 +547,8 @@ kprobe_install(struct kprobe *k)
 static int
 kprobe_init(void)
 {
-	struct kprobe *k;
-	int i = 0;
+	struct kprobe	*k;
+	int		 i = 0;
 
 	while ((k = all_kprobes[i++]) != NULL) {
 		if (kprobe_install(k) == -1)
@@ -614,8 +614,8 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 static int
 perf_open_kprobe(struct kprobe_state *ks, int cpu, int group_fd)
 {
-	int id;
-	char buf[MAXPATHLEN];
+	int	id;
+	char	buf[MAXPATHLEN];
 
 	if (snprintf(buf, sizeof(buf), "events/kprobes/%s/id", ks->k->name)
 	    >= (int)sizeof(buf))
@@ -957,9 +957,9 @@ quark_queue_open(struct quark_queue *qq)
 static void
 quark_queue_close(struct quark_queue *qq)
 {
-	struct perf_group_leader *pgl;
-	struct kprobe_state *ks;
-	struct raw_event *raw;
+	struct perf_group_leader	*pgl;
+	struct kprobe_state		*ks;
+	struct raw_event		*raw;
 
 	/* Stop and close the perf rings */
 	while ((pgl = TAILQ_FIRST(&qq->perf_group_leaders)) != NULL) {
