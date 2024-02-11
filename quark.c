@@ -210,7 +210,7 @@ perf_sample_to_raw(struct perf_record_sample *sample, struct raw_event *raw)
 			warnx("exec filename truncated");
 		break;
 	default:
-		warnx("%s: unknown or invalid sample id=%d\n", __func__, id);
+		warnx("%s: unknown or invalid sample id=%d", __func__, id);
 		return (-1);
 	}
 
@@ -218,7 +218,7 @@ perf_sample_to_raw(struct perf_record_sample *sample, struct raw_event *raw)
 }
 
 static struct raw_event *
-perf_to_raw(struct perf_event *ev)
+perf_event_to_raw(struct perf_event *ev)
 {
 	struct raw_event		*raw;
 	struct perf_sample_id		*sid = NULL;
@@ -240,11 +240,15 @@ perf_to_raw(struct perf_event *ev)
 		break;
 	case PERF_RECORD_SAMPLE:
 		sid = &ev->sample.sample_id;
-		if (perf_sample_to_raw(&ev->sample, raw) == -1)
-			err(1, "perf_sample_to_raw errored"); /* XXX fatal for now */
+		if (perf_sample_to_raw(&ev->sample, raw) == -1) {
+			free(raw);
+			return (NULL);
+		}
 		break;
 	default:
-		errx(1, "perf_to_raw: unknown event type %d\n", ev->header.type);
+		free(raw);
+		return (NULL);
+		break;
 	}
 
 	if (sid != NULL) {
@@ -370,7 +374,6 @@ open_tracing(int flags, const char *fmt, ...)
 		close(dfd);
 		if (fd == -1) {
 			warn("open: %s", tail);
-			close(fd);
 			continue;
 		}
 
@@ -397,7 +400,7 @@ fetch_tracing_id(const char *tail)
 	if (n == -1)
 		return (-1);
 	idbuf[n - 1] = 0;
-	id = strtonum(idbuf, 0, INT_MAX, &errstr);
+	id = strtonum(idbuf, 1, MAX_SAMPLE_IDS - 1, &errstr);
 	if (errstr != NULL) {
 		warnx("strtonum: %s", errstr);
 		return (errno = ERANGE, -1);
@@ -516,6 +519,11 @@ kprobe_uninstall(struct kprobe *k)
 	return (0);
 }
 
+/*
+ * Builds the kprobe string and "installs" in tracefs, mapping to a perf ring is
+ * later and belongs to kprobe_state. This separation makes library cleanup
+ * easier.
+ */
 static int
 kprobe_install(struct kprobe *k)
 {
@@ -549,31 +557,18 @@ kprobe_init(void)
 	while ((k = all_kprobes[i++]) != NULL) {
 		if (kprobe_install(k) == -1)
 			return (-1);
-		/* XXX REMOVE ME XXX */
-		if (kprobe_enable(k) == -1) {
-			warnx("kprobe_enable: can't enable");
-			return (1);
-		}
 	}
 
 	return (0);
 }
 
-static int
-perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
+static void
+perf_attr_init(struct perf_event_attr *attr, int id)
 {
-	int			 id;
-	struct perf_event_attr	*attr = &pgl->attr;
-
-	bzero(pgl, sizeof(*pgl));
+	bzero(attr, sizeof(*attr));
 
 	attr->type = PERF_TYPE_TRACEPOINT;
 	attr->size = sizeof(*attr);
-	if ((id = fetch_tracing_id("events/sched/sched_process_exec/id")) == -1)
-		return (-1);
-	/* Make sure it fits in our map */
-	if (id <= 0 || id >= MAX_SAMPLE_IDS)
-		return (errno = ERANGE, -1);
 	attr->config = id;
 	/* attr->config = PERF_COUNT_SW_DUMMY; */
 	attr->sample_period = 1;	/* we want all events */
@@ -591,22 +586,58 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	attr->clockid = CLOCK_MONOTONIC_RAW;
 	/* wakeup forcibly if ring buffer is at least 10% full */
 	attr->watermark = 1;
-	attr->wakeup_watermark = pgl->mmap.data_size / 10;
+	attr->wakeup_watermark = (PERF_MMAP_PAGES * getpagesize()) / 10;
 	attr->task = 1;		/* get fork/exec, getting the same from two
 				 * different things */
 	attr->sample_id_all = 1;	/* affects non RECORD samples */
 	attr->disabled = 1;
+}
 
-	pgl->fd = perf_event_open(attr, -1, cpu, -1, 0);
+static int
+perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
+{
+	int id;
+
+	/* By putting EXEC on group leader we save one fd per cpu */
+	if ((id = fetch_tracing_id("events/sched/sched_process_exec/id")) == -1)
+		return (-1);
+	perf_attr_init(&pgl->attr, id);
+	pgl->fd = perf_event_open(&pgl->attr, -1, cpu, -1, 0);
 	if (pgl->fd == -1)
 		return (-1);
-	pgl->cpu = cpu;
 	if (perf_mmap_init(&pgl->mmap, pgl->fd) == -1) {
 		close(pgl->fd);
 		return (-1);
 	}
-	/* XXX hardcoded for now XXX */
+	pgl->cpu = cpu;
 	id_to_sample_kind[id] = SAMPLE_EXEC;
+
+	return (0);
+}
+
+static int
+perf_open_kprobe(struct kprobe_state *ks, int cpu, int group_fd)
+{
+	int id;
+	char buf[MAXPATHLEN];
+
+	if (snprintf(buf, sizeof(buf), "events/kprobes/%s/id", ks->k->name)
+	    >= (int)sizeof(buf))
+		return (errno = ENAMETOOLONG, -1);
+	if ((id = fetch_tracing_id(buf)) == -1)
+		return (-1);
+	perf_attr_init(&ks->attr, id);
+	ks->fd = perf_event_open(&ks->attr, -1, cpu, group_fd, 0);
+	if (ks->fd == -1)
+		return (-1);
+	/* Output our records in the group_fd */
+	if (ioctl(ks->fd, PERF_EVENT_IOC_SET_OUTPUT, group_fd) == -1) {
+		close(ks->fd);
+		ks->fd = -1;
+		return (-1);
+	}
+	ks->cpu = cpu;
+	ks->group_fd = group_fd;
 
 	return (0);
 }
@@ -629,7 +660,7 @@ dump_sample(struct perf_record_sample *sample)
 		printf("->exec (%d)\n\tfilename=%s\n", id, buf);
 		break;
 	default:
-		warnx("%s: unknown or invalid sample id=%d\n", __func__, id);
+		warnx("%s: unknown or invalid sample id=%d", __func__, id);
 	}
 }
 
@@ -882,21 +913,36 @@ quark_queue_open(struct quark_queue *qq)
 {
 	int				 i;
 	struct perf_group_leader	*pgl;
+	struct kprobe			*k;
+	struct kprobe_state		*ks;
 
 	bzero(qq, sizeof(*qq));
 
 	TAILQ_INIT(&qq->perf_group_leaders);
+	TAILQ_INIT(&qq->kprobe_states);
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
 		pgl = calloc(1, sizeof(*pgl));
 		if (pgl == NULL)
-			err(1, "calloc");
+			err(1, "calloc"); /* XXX TODO proper cleanup */
 		if (perf_open_group_leader(pgl, i) == -1)
-			errx(1, "perf_open_group_leader");
+			errx(1, "perf_open_group_leader"); /* XXX TODO proper cleanup */
 		TAILQ_INSERT_TAIL(&qq->perf_group_leaders, pgl, entry);
 	}
+
+	i = 0;
+	while ((k = all_kprobes[i++]) != NULL) {
+	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+		ks = calloc(1, sizeof(*ks));
+		if (ks == NULL)
+			err(1, "calloc"); /* XXX TODO proper cleanup */
+		ks->k = k;
+		if (perf_open_kprobe(ks, pgl->cpu, pgl->fd) == -1)
+			errx(1, "perf_open_kprobe"); /* XXX TODO proper cleanup */
+		TAILQ_INSERT_TAIL(&qq->kprobe_states, ks, entry);
+	}}
 
 	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
 		/* XXX PERF_IOC_FLAG_GROUP see bugs */
@@ -916,6 +962,7 @@ static void
 quark_queue_close(struct quark_queue *qq)
 {
 	struct perf_group_leader *pgl;
+	struct kprobe_state *ks;
 	struct raw_event *raw;
 
 	/* Stop and close the perf rings */
@@ -929,6 +976,12 @@ quark_queue_close(struct quark_queue *qq)
 			warn("munmap");
 		TAILQ_REMOVE(&qq->perf_group_leaders, pgl, entry);
 		free(pgl);
+	}
+	/* Clean up all state allocated to kprobes */
+	while ((ks = TAILQ_FIRST(&qq->kprobe_states)) != NULL) {
+		close(ks->fd);
+		TAILQ_REMOVE(&qq->kprobe_states, ks, entry);
+		free(ks);
 	}
 	/* Clean up all allocated raw events */
 	while ((raw = RB_ROOT(&qq->raw_event_by_time)) != NULL) {
@@ -950,6 +1003,19 @@ quark_init(void)
 		warnx("%s: can't initialize kprobes", __func__);
 		return (-1);
 	}
+
+	return (0);
+}
+
+static int
+quark_close(void)
+{
+	struct kprobe	*k;
+	int		 i;
+
+	i = 0;
+	while ((k = all_kprobes[i++]) != NULL)
+		(void) kprobe_uninstall(k);
 
 	return (0);
 }
@@ -994,7 +1060,7 @@ main(int argc, char *argv[])
 			if (ev == NULL)
 				continue;
 			dump_event(ev);
-			raw = perf_to_raw(ev);
+			raw = perf_event_to_raw(ev);
 			if (raw != NULL) {
 				/* Useful for debugging */
 				/* raw->time = arc4random_uniform(100000); */
@@ -1024,6 +1090,7 @@ main(int argc, char *argv[])
 
 	quark_queue_close(qq);
 	free(qq);
+	quark_close();
 
 	return (0);
 }

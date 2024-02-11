@@ -79,8 +79,17 @@ struct kprobe_arg {
 struct kprobe {
 	const char		*name;
 	const char		*target;
-	int		 	 is_kret;
+	int			 is_kret;
 	struct kprobe_arg	 args[];
+};
+
+struct kprobe_state {
+	TAILQ_ENTRY(kprobe_state)	 entry;
+	struct kprobe			*k;
+	struct perf_event_attr		 attr;
+	int				 fd;
+	int				 cpu;
+	int				 group_fd;
 };
 
 /*
@@ -185,11 +194,17 @@ RB_HEAD(raw_event_by_pidtime, raw_event);
 TAILQ_HEAD(perf_group_leaders, perf_group_leader);
 
 /*
+ * List of online kprobes.
+ */
+TAILQ_HEAD(kprobe_states, kprobe_state);
+
+/*
  * Quark Queue (qq) is the main structure the user interacts with, it acts as
  * our main storage datastructure.
  */
 struct quark_queue {
 	struct perf_group_leaders	perf_group_leaders;
+	struct kprobe_states		kprobe_states;
 	struct raw_event_by_time	raw_event_by_time;
 	struct raw_event_by_pidtime	raw_event_by_pidtime;
 };
