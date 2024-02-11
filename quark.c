@@ -98,12 +98,9 @@ qwrite(int fd, const void *buf, size_t count)
 		if (n == -1) {
 			if (errno == EINTR)
 				goto again;
-			warn("write");
 			return (-1);
-		} else if (n == 0) {
-			warnx("write: EPIPE");
-			return (-1);
-		}
+		} else if (n == 0)
+			return (errno = EPIPE, -1);
 	}
 
 	return (0);
@@ -473,7 +470,7 @@ kprobe_build_string(struct kprobe *k)
 
 	return (p);
 }
-
+#if 0
 static int
 kprobe_toggle(struct kprobe *k, int enable)
 {
@@ -494,7 +491,7 @@ kprobe_toggle(struct kprobe *k, int enable)
 }
 #define kprobe_enable(_k)	kprobe_toggle((_k), 1)
 #define kprobe_disable(_k)	kprobe_toggle((_k), 0)
-
+#endif
 static int
 kprobe_uninstall(struct kprobe *k)
 {
@@ -502,7 +499,6 @@ kprobe_uninstall(struct kprobe *k)
 	ssize_t n;
 	int fd;
 
-	(void)kprobe_disable(k);
 	if ((fd = open_tracing(O_WRONLY | O_APPEND,
 	    "kprobe_events")) == -1)
 		return (-1);
@@ -531,8 +527,8 @@ kprobe_install(struct kprobe *k)
 	ssize_t n;
 	char *kstr;
 
-	(void)kprobe_uninstall(k);
-
+	if (kprobe_uninstall(k) == -1 && errno != ENOENT)
+		warn("kprobe_uninstall");
 	if ((kstr = kprobe_build_string(k)) == NULL)
 		return (-1);
 	if ((fd = open_tracing(O_WRONLY, "kprobe_events")) == -1) {
@@ -1014,8 +1010,9 @@ quark_close(void)
 	int		 i;
 
 	i = 0;
-	while ((k = all_kprobes[i++]) != NULL)
-		(void) kprobe_uninstall(k);
+	while ((k = all_kprobes[i++]) != NULL) {
+		(void)kprobe_uninstall(k);
+	}
 
 	return (0);
 }
