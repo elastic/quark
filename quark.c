@@ -22,32 +22,36 @@
 #define RAW_HOLD_MAXNODES	10000		/* XXX hardcoded for now XXX */
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
 #define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
+#define MAGIC_DATA_OFF		8
 
 static void	xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2, 3)));
 static int	open_tracing(int, const char *, ...) __attribute__((format(printf, 2, 3)));
 static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
 
-/* matches each sample event to a kind like SAMPLE_EXEC, SAMPLE_FOO */
+/* matches each sample event to a kind like EXEC_SAMPLE, FOO_SAMPLE */
 u8 id_to_sample_kind[MAX_SAMPLE_IDS];
 
 struct kprobe kp_wake_up_new_task = {
 	"quark_wake_up_new_task",
 	"wake_up_new_task",
+	WAKE_UP_NEW_TASK_SAMPLE,
 	0,
 {
-	{ "uid",		"di", "u32",	{ "task_struct.cred", "cred.uid",		NULL, NULL }},
-	{ "gid",		"di", "u32",	{ "task_struct.cred", "cred.gid",		NULL, NULL }},
-	{ "suid",		"di", "u32",	{ "task_struct.cred", "cred.suid",		NULL, NULL }},
-	{ "sgid",		"di", "u32",	{ "task_struct.cred", "cred.sgid",		NULL, NULL }},
-	{ "euid",		"di", "u32",	{ "task_struct.cred", "cred.euid",		NULL, NULL }},
-	{ "egid", 		"di", "u32",	{ "task_struct.cred", "cred.egid",		NULL, NULL }},
-	{ "cap_inheritable",	"di", "u64",	{ "task_struct.cred", "cred.cap_inheritable",	NULL, NULL }},
-	{ "cap_permitted",	"di", "u64",	{ "task_struct.cred", "cred.cap_permitted",	NULL, NULL }},
-	{ "cap_effective",	"di", "u64",	{ "task_struct.cred", "cred.cap_effective",	NULL, NULL }},
-	{ "cap_bset",		"di", "u64",	{ "task_struct.cred", "cred.cap_bset",		NULL, NULL }},
-	{ "cap_ambient", 	"di", "u64",	{ "task_struct.cred", "cred.cap_ambient",	NULL, NULL }},
-	{ NULL, 		NULL, NULL,	{ NULL, NULL, NULL, NULL } }
+	{ "uid",		"di", "u32",	{ "task_struct.cred",	"cred.uid",		NULL, NULL }},
+	{ "gid",		"di", "u32",	{ "task_struct.cred",	"cred.gid",		NULL, NULL }},
+	{ "suid",		"di", "u32",	{ "task_struct.cred",	"cred.suid",		NULL, NULL }},
+	{ "sgid",		"di", "u32",	{ "task_struct.cred",	"cred.sgid",		NULL, NULL }},
+	{ "euid",		"di", "u32",	{ "task_struct.cred",	"cred.euid",		NULL, NULL }},
+	{ "egid", 		"di", "u32",	{ "task_struct.cred",	"cred.egid",		NULL, NULL }},
+	{ "cap_inheritable",	"di", "u64",	{ "task_struct.cred",	"cred.cap_inheritable",	NULL, NULL }},
+	{ "cap_permitted",	"di", "u64",	{ "task_struct.cred",	"cred.cap_permitted",	NULL, NULL }},
+	{ "cap_effective",	"di", "u64",	{ "task_struct.cred",	"cred.cap_effective",	NULL, NULL }},
+	{ "cap_bset",		"di", "u64",	{ "task_struct.cred",	"cred.cap_bset",	NULL, NULL }},
+	{ "cap_ambient", 	"di", "u64",	{ "task_struct.cred",	"cred.cap_ambient",	NULL, NULL }},
+	{ "pid", 		"di", "u32",	{ "task_struct.tgid",	NULL,			NULL, NULL }},
+	{ "tid", 		"di", "u32",	{ "task_struct.pid",	NULL,			NULL, NULL }},
+	{ NULL, 		NULL, NULL,	{ NULL,			NULL,			NULL, NULL }}
 }
 };
 
@@ -106,17 +110,6 @@ qwrite(int fd, const void *buf, size_t count)
 	return (0);
 }
 
-static inline int
-sample_kind_of_id(int id)
-{
-	if (unlikely(id <= 0 || id >= MAX_SAMPLE_IDS)) {
-		warnx("%s: invalid id %d", __func__, id);
-		return (errno = ERANGE, -1);
-	}
-
-	return (id_to_sample_kind[id]);
-}
-
 static int
 raw_event_by_time_cmp(struct raw_event *a, struct raw_event *b)
 {
@@ -171,18 +164,16 @@ raw_event_expired(struct raw_event *raw, u64 now)
  */
 static ssize_t
 strlcpy_data_loc(void *dst, ssize_t dst_size,
-    struct perf_sample_data *sample_data, size_t data_off)
+    struct perf_record_sample *sample, struct perf_sample_data_loc *data_loc)
 {
-	struct perf_sample_data_loc	*data_loc;
 	ssize_t				 n;
-	char				*data, *p = dst;
+	char				*p = dst, *data;
 
 	p = dst;
-	data = (char *)sample_data;
-	data_loc = (struct perf_sample_data_loc *)(data + data_off);
 	n = min(dst_size, data_loc->size);
 	if (n <= 0)
 		return (-1);
+	data = sample->data;
 	memcpy(p, data + data_loc->offset, n);
 	/* never trust the kernel */
 	p[n - 1] = 0;
@@ -190,22 +181,65 @@ strlcpy_data_loc(void *dst, ssize_t dst_size,
 	return (n - 1);
 }
 
+static inline int
+sample_kind_of_id(int id)
+{
+	if (unlikely(id <= 0 || id >= MAX_SAMPLE_IDS)) {
+		warnx("%s: invalid id %d", __func__, id);
+		return (errno = ERANGE, -1);
+	}
+
+	return (id_to_sample_kind[id]);
+}
+
+static inline void *
+sample_data_body(struct perf_record_sample *sample)
+{
+	/* XXX this 8 is what we calculate in parse_data_offset() XXX */
+	return (sample->data + MAGIC_DATA_OFF);
+}
+
+static inline int
+sample_data_id(struct perf_record_sample *sample)
+{
+	struct perf_sample_data_hdr *h = (struct perf_sample_data_hdr *)sample->data;
+	return (h->common_type);
+}
+#if 0
+static inline int
+sample_kind(struct perf_record_sample *sample)
+{
+	return (sample_kind_of_id(sample_data_id(sample)));
+}
+#endif
 static int
 perf_sample_to_raw(struct perf_record_sample *sample, struct raw_event *raw)
 {
-	int	id = sample->data.common_type;
-	ssize_t n;
+	int				 id;
+	ssize_t				 n;
+
+	id = sample_data_id(sample);
 
 	switch (sample_kind_of_id(id)) {
-	case SAMPLE_EXEC:
+	case EXEC_SAMPLE: {
+		struct exec_sample *exec = sample_data_body(sample);
 		raw->type = RAW_EXEC;
 		n = strlcpy_data_loc(raw->exec.filename, sizeof(raw->exec.filename),
-		    &sample->data, 8);
+		    sample, &exec->filename);
 		if (n == -1)
 			warnx("can't copy exec filename");
 		else if (n >= (ssize_t)sizeof(raw->exec.filename))
 			warnx("exec filename truncated");
 		break;
+	}
+	case WAKE_UP_NEW_TASK_SAMPLE: {
+		struct wake_up_new_task_sample *w = sample_data_body(sample);
+		raw->type = RAW_WAKE_UP_NEW_TASK;
+		raw->wake_up_new_task = *w;
+		raw->pid = w->pid;
+		raw->tid = w->tid;
+		break;
+	}
 	default:
 		warnx("%s: unknown or invalid sample id=%d", __func__, id);
 		return (-1);
@@ -249,7 +283,7 @@ perf_event_to_raw(struct perf_event *ev)
 	}
 
 	if (sid != NULL) {
-		/* FORK overloads pid and tid */
+		/* FORK/WAKE_UP_NEW_TASK overloads pid and tid */
 		if (raw->pid == 0)
 			raw->pid = sid->pid;
 		if (raw->tid == 0)
@@ -405,7 +439,55 @@ fetch_tracing_id(const char *tail)
 
 	return (id);
 }
+#if 0
+static ssize_t
+parse_data_offset(struct kprobe *k)
+{
+	int		 fd;
+	FILE		*f;
+	char		*line, *s, *e;
+	const char	*errstr;
+	ssize_t		 n, data_offset;
+	size_t		 line_len;
+	int		 past_common;
 
+	fd = open_tracing(O_RDONLY, "events/kprobes/%s/format", k->name);
+	if (fd == -1)
+		return (-1);
+	f = fdopen(fd, "r");
+	if (f == NULL) {
+		close(fd);
+		return (-1);
+	}
+
+	past_common = 0;
+	line = NULL;
+	line_len = 0;
+	data_offset = -1;
+	while ((n = getline(&line, &line_len, f)) != -1) {
+		if (!past_common) {
+			past_common = !strcmp(line, "\n");
+			continue;
+		}
+		s = strstr(line, "offset:");
+		if (s == NULL)
+			break;
+		s += strlen("offset:");
+		e = strchr(s, ';');
+		if (e == NULL)
+			break;
+		*e = 0;
+		data_offset = strtonum(s, 0, SSIZE_MAX, &errstr);
+		if (errstr)
+			data_offset = -1;
+		break;
+	}
+	free(line);
+	fclose(f);
+
+	return (data_offset);
+}
+#endif
 static char *
 kprobe_make_arg(struct kprobe_arg *karg)
 {
@@ -477,7 +559,8 @@ kprobe_toggle(struct kprobe *k, int enable)
 	int	fd;
 	ssize_t n;
 
-	if ((fd = open_tracing(O_WRONLY, "events/kprobes/%s/enable", k->name)) == -1)
+	if ((fd = open_tracing(O_WRONLY, "events/kprobes/%s/enable", k->name))
+	    == -1)
 		return (-1);
 	if (enable)
 		n = qwrite(fd, "1", 1);
@@ -499,8 +582,7 @@ kprobe_uninstall(struct kprobe *k)
 	ssize_t n;
 	int	fd;
 
-	if ((fd = open_tracing(O_WRONLY | O_APPEND,
-	    "kprobe_events")) == -1)
+	if ((fd = open_tracing(O_WRONLY | O_APPEND, "kprobe_events")) == -1)
 		return (-1);
 	if (snprintf(buf, sizeof(buf), "-:%s", k->name) >=
 	    (int)sizeof(buf)) {
@@ -582,10 +664,8 @@ perf_attr_init(struct perf_event_attr *attr, int id)
 	attr->clockid = CLOCK_MONOTONIC_RAW;
 	/* wakeup forcibly if ring buffer is at least 10% full */
 	attr->watermark = 1;
+	/* XXXXXX SHOULD WE DO THIS IN THE CHILD AS WELL?????? XXXXXXX */
 	attr->wakeup_watermark = (PERF_MMAP_PAGES * getpagesize()) / 10;
-	attr->task = 1;		/* get fork/exec, getting the same from two
-				 * different things */
-	attr->sample_id_all = 1;	/* affects non RECORD samples */
 	attr->disabled = 1;
 }
 
@@ -598,6 +678,8 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	if ((id = fetch_tracing_id("events/sched/sched_process_exec/id")) == -1)
 		return (-1);
 	perf_attr_init(&pgl->attr, id);
+	pgl->attr.task = 1;			/* PERF_RECORD_{FORK,EXIT} */
+	pgl->attr.sample_id_all = 1;		/* add sample_id to all types */
 	pgl->fd = perf_event_open(&pgl->attr, -1, cpu, -1, 0);
 	if (pgl->fd == -1)
 		return (-1);
@@ -606,7 +688,7 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 		return (-1);
 	}
 	pgl->cpu = cpu;
-	id_to_sample_kind[id] = SAMPLE_EXEC;
+	id_to_sample_kind[id] = EXEC_SAMPLE;
 
 	return (0);
 }
@@ -634,6 +716,7 @@ perf_open_kprobe(struct kprobe_state *ks, int cpu, int group_fd)
 	}
 	ks->cpu = cpu;
 	ks->group_fd = group_fd;
+	id_to_sample_kind[id] = ks->k->sample_kind;
 
 	return (0);
 }
@@ -643,19 +726,31 @@ dump_sample(struct perf_record_sample *sample)
 {
 	char			 buf[4096];
 	ssize_t			 n;
-	int			 id = sample->data.common_type;
+	int			 id = sample_data_id(sample);
 
 	switch (sample_kind_of_id(id)) {
-	case SAMPLE_EXEC:
-		/* XXX hardcoded offset XXX */
-		n = strlcpy_data_loc(buf, sizeof(buf), &sample->data, 8);
+	case EXEC_SAMPLE: {
+		struct exec_sample *exec = sample_data_body(sample);
+		n = strlcpy_data_loc(buf, sizeof(buf), sample, &exec->filename);
 		if (n == -1)
 			warnx("can't copy exec filename");
 		else if (n >= (ssize_t)sizeof(buf))
 			warnx("exec filename truncated");
 		printf("->exec (%d)\n\tfilename=%s\n", id, buf);
 		break;
-	default:
+	}
+	case WAKE_UP_NEW_TASK_SAMPLE: {
+		struct wake_up_new_task_sample *w;
+		printf("->wake_up_new_task (%d)\n\t", id);
+		w = sample_data_body(sample);
+		printf("uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d ",
+		    w->uid, w->gid, w->suid, w->sgid, w->euid, w->egid);
+		printf("cap_inheritable=0x%llx cap_permitted=0x%llx "
+		    "cap_effective=0x%llx cap_bset=0x%llx cap_ambient=0x%llx\n",
+		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
+		    w->cap_bset, w->cap_ambient);
+		break;
+	} default:
 		warnx("%s: unknown or invalid sample id=%d", __func__, id);
 	}
 }
@@ -734,6 +829,14 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 		    raw->exec.filename) >= (int)sizeof(label))
 			warnx("%s: exec filename truncated", __func__);
 		break;
+	case RAW_WAKE_UP_NEW_TASK: {
+		struct wake_up_new_task_sample *w = &raw->wake_up_new_task;
+		color = "orange";
+		if (snprintf(label, sizeof(label), "WAKE_UP_NEW_TASK %d",
+		    w->pid) >= (int)sizeof(label))
+			warnx("%s: snprintf", __func__);
+		break;
+	}
 	default:
 		color = "black";
 		break;

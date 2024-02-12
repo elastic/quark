@@ -12,6 +12,8 @@ struct target {
 	ssize_t		 offset; /* in bytes, not bits */
 } targets[] = {
 	{ "task_struct.cred",		-1 },
+	{ "task_struct.pid",		-1 },
+	{ "task_struct.tgid",		-1 },
 	{ "cred.user",			-1 },
 	{ "cred.uid",			-1 },
 	{ "cred.gid",			-1 },

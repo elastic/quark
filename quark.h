@@ -62,41 +62,11 @@ struct perf_record_exit {
 	struct perf_sample_id		sample_id;
 };
 
-enum sample_kinds {
-	SAMPLE_EXEC = 1
-};
-
-/*
- * Kprobe relate declarations
- */
-struct kprobe_arg {
-	const char	*name;
-	const char	*reg;
-	const char	*typ;
-	const char	*v[4];	/* maximum is 3, last is sentinel */
-};
-
-struct kprobe {
-	const char		*name;
-	const char		*target;
-	int			 is_kret;
-	struct kprobe_arg	 args[];
-};
-
-struct kprobe_state {
-	TAILQ_ENTRY(kprobe_state)	 entry;
-	struct kprobe			*k;
-	struct perf_event_attr		 attr;
-	int				 fd;
-	int				 cpu;
-	int				 group_fd;
-};
-
 /*
  * Kernels might actually have a different common area, so far we only
  * need common_type, so hold onto that
  */
-struct perf_sample_data {
+struct perf_sample_data_hdr {
 	/* this is the actual id from tracefs eg: sched_process_exec/id */
 	u16	 common_type;
 	/* ... */
@@ -110,8 +80,8 @@ struct perf_sample_data_loc {
 struct perf_record_sample {
 	struct perf_event_header	header;
 	struct perf_sample_id		sample_id;
-	u32				size;
-	struct perf_sample_data		data;
+	u32				data_size;
+	char				data[];
 };
 
 struct perf_event {
@@ -133,8 +103,6 @@ struct perf_mmap {
 	u8				 wrapped_event_buf[4096] __aligned(8);
 };
 
-/* More local perf related declarations */
-
 struct perf_group_leader {
 	TAILQ_ENTRY(perf_group_leader)	 entry;
 	int				 fd;
@@ -143,10 +111,73 @@ struct perf_group_leader {
 	struct perf_mmap		 mmap;
 };
 
+/*
+ * Quark sample formats
+ */
+enum sample_kinds {
+	EXEC_SAMPLE = 1,
+	WAKE_UP_NEW_TASK_SAMPLE,
+};
+
+struct exec_sample {
+	struct perf_sample_data_loc	filename;
+	s32				pid;
+	s32				old_pid;
+};
+
+/* 8 byte aligned, we have to be careful with padding still */
+struct wake_up_new_task_sample {
+	u64	probe_ip;
+	u32	uid;
+	u32	gid;
+	u32	suid;
+	u32	sgid;
+	u32	euid;
+	u32	egid;
+	u64	cap_inheritable;
+	u64	cap_permitted;
+	u64	cap_effective;
+	u64	cap_bset;
+	u64	cap_ambient;
+	u32	pid;
+	u32	tid;
+};
+
+/*
+ * Kprobe related declarations
+ */
+struct kprobe_arg {
+	const char	*name;
+	const char	*reg;
+	const char	*typ;
+	const char	*v[4];	/* maximum is 3, last is sentinel */
+};
+
+struct kprobe {
+	const char		*name;
+	const char		*target;
+	int			 sample_kind;
+	int			 is_kret;
+	struct kprobe_arg	 args[];
+};
+
+struct kprobe_state {
+	TAILQ_ENTRY(kprobe_state)	 entry;
+	struct kprobe			*k;
+	struct perf_event_attr		 attr;
+	int				 fd;
+	int				 cpu;
+	int				 group_fd;
+};
+
+/*
+ * Raw events
+ */
 enum {
 	RAW_FORK = 1,
 	RAW_EXEC,
-	RAW_EXIT
+	RAW_EXIT,
+	RAW_WAKE_UP_NEW_TASK
 };
 
 struct raw_exec {
@@ -168,8 +199,9 @@ struct raw_event {
 	u64			time;
 	int			type;
 	union {
-		struct raw_exec exec;
-		struct raw_fork fork;
+		struct raw_exec			exec;
+		struct raw_fork			fork;
+		struct wake_up_new_task_sample	wake_up_new_task;
 	};
 };
 
