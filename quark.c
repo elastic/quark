@@ -43,15 +43,15 @@ struct kprobe kp_wake_up_new_task = {
 	{ "suid",		"di", "u32",	{ "task_struct.cred",	"cred.suid",		NULL, NULL }},
 	{ "sgid",		"di", "u32",	{ "task_struct.cred",	"cred.sgid",		NULL, NULL }},
 	{ "euid",		"di", "u32",	{ "task_struct.cred",	"cred.euid",		NULL, NULL }},
-	{ "egid", 		"di", "u32",	{ "task_struct.cred",	"cred.egid",		NULL, NULL }},
+	{ "egid",		"di", "u32",	{ "task_struct.cred",	"cred.egid",		NULL, NULL }},
 	{ "cap_inheritable",	"di", "u64",	{ "task_struct.cred",	"cred.cap_inheritable",	NULL, NULL }},
 	{ "cap_permitted",	"di", "u64",	{ "task_struct.cred",	"cred.cap_permitted",	NULL, NULL }},
 	{ "cap_effective",	"di", "u64",	{ "task_struct.cred",	"cred.cap_effective",	NULL, NULL }},
 	{ "cap_bset",		"di", "u64",	{ "task_struct.cred",	"cred.cap_bset",	NULL, NULL }},
-	{ "cap_ambient", 	"di", "u64",	{ "task_struct.cred",	"cred.cap_ambient",	NULL, NULL }},
-	{ "pid", 		"di", "u32",	{ "task_struct.tgid",	NULL,			NULL, NULL }},
-	{ "tid", 		"di", "u32",	{ "task_struct.pid",	NULL,			NULL, NULL }},
-	{ NULL, 		NULL, NULL,	{ NULL,			NULL,			NULL, NULL }}
+	{ "cap_ambient",	"di", "u64",	{ "task_struct.cred",	"cred.cap_ambient",	NULL, NULL }},
+	{ "pid",		"di", "u32",	{ "task_struct.tgid",	NULL,			NULL, NULL }},
+	{ "tid",		"di", "u32",	{ "task_struct.pid",	NULL,			NULL, NULL }},
+	{ NULL,		NULL, NULL,	{ NULL,			NULL,			NULL, NULL }}
 }
 };
 
@@ -212,17 +212,20 @@ sample_kind(struct perf_record_sample *sample)
 	return (sample_kind_of_id(sample_data_id(sample)));
 }
 #endif
-static int
-perf_sample_to_raw(struct perf_record_sample *sample, struct raw_event *raw)
+static struct raw_event *
+perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 {
-	int				 id;
-	ssize_t				 n;
+	int			 id;
+	ssize_t			 n;
+	struct raw_event	*raw = NULL;
 
 	id = sample_data_id(sample);
 
 	switch (sample_kind_of_id(id)) {
 	case EXEC_SAMPLE: {
 		struct exec_sample *exec = sample_data_body(sample);
+		if ((raw = calloc(1, sizeof(*raw))) == NULL)
+			return (NULL);
 		raw->type = RAW_EXEC;
 		n = strlcpy_data_loc(raw->exec.filename, sizeof(raw->exec.filename),
 		    sample, &exec->filename);
@@ -234,6 +237,15 @@ perf_sample_to_raw(struct perf_record_sample *sample, struct raw_event *raw)
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: {
 		struct wake_up_new_task_sample *w = sample_data_body(sample);
+		/*
+		 * ev->sample.sample_id.pid is the parent, if the new task has
+		 * the same pid as it, then this is a thread event
+		 */
+		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
+		    w->pid == sample->sample_id.pid)
+			return (NULL);
+		if ((raw = calloc(1, sizeof(*raw))) == NULL)
+			return (NULL);
 		raw->type = RAW_WAKE_UP_NEW_TASK;
 		raw->wake_up_new_task = *w;
 		raw->pid = w->pid;
@@ -242,23 +254,28 @@ perf_sample_to_raw(struct perf_record_sample *sample, struct raw_event *raw)
 	}
 	default:
 		warnx("%s: unknown or invalid sample id=%d", __func__, id);
-		return (-1);
+		return (NULL);
 	}
 
-	return (0);
+	return (raw);
 }
 
 static struct raw_event *
-perf_event_to_raw(struct perf_event *ev)
+perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 {
-	struct raw_event		*raw;
+	struct raw_event		*raw = NULL;
 	struct perf_sample_id		*sid = NULL;
-
-	if ((raw = calloc(1, sizeof(*raw))) == NULL)
-		return (NULL);
 
 	switch (ev->header.type) {
 	case PERF_RECORD_FORK:
+		/* Drop thread "forks" */
+		if ((qq->flags & QQ_FORK_EVENTS) == 0)
+			return (NULL);
+		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
+		    ev->fork.pid == ev->fork.ppid)
+			return (NULL);
+		if ((raw = calloc(1, sizeof(*raw))) == NULL)
+			return (NULL);
 		raw->type = RAW_FORK;
 		sid = &ev->fork.sample_id;
 		/* We cheat FORK to be an event of the child, not the parent */
@@ -266,18 +283,21 @@ perf_event_to_raw(struct perf_event *ev)
 		raw->fork.parent_pid = ev->fork.ppid;
 		break;
 	case PERF_RECORD_EXIT:
+		/* Drop thread "exits" */
+		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
+		    ev->exit.pid != ev->exit.tid)
+			return (NULL);
+		if ((raw = calloc(1, sizeof(*raw))) == NULL)
+			return (NULL);
 		raw->type = RAW_EXIT;
 		sid = &ev->exit.sample_id;
 		break;
 	case PERF_RECORD_SAMPLE:
-		sid = &ev->sample.sample_id;
-		if (perf_sample_to_raw(&ev->sample, raw) == -1) {
-			free(raw);
-			return (NULL);
-		}
+		raw = perf_sample_to_raw(qq, &ev->sample);
+		if (raw != NULL)
+			sid = &ev->sample.sample_id;
 		break;
 	default:
-		free(raw);
 		return (NULL);
 		break;
 	}
@@ -743,10 +763,10 @@ dump_sample(struct perf_record_sample *sample)
 		struct wake_up_new_task_sample *w;
 		printf("->wake_up_new_task (%d)\n\t", id);
 		w = sample_data_body(sample);
-		printf("uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d ",
-		    w->uid, w->gid, w->suid, w->sgid, w->euid, w->egid);
-		printf("cap_inheritable=0x%llx cap_permitted=0x%llx "
-		    "cap_effective=0x%llx cap_bset=0x%llx cap_ambient=0x%llx\n",
+		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
+		    w->pid, w->tid, w->uid, w->gid, w->suid, w->sgid, w->euid, w->egid);
+		printf("\tcap_inheritable=0x%llx cap_permitted=0x%llx cap_effective=0x%llx\n"
+		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
 		    w->cap_bset, w->cap_ambient);
 		break;
@@ -832,7 +852,7 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 	case RAW_WAKE_UP_NEW_TASK: {
 		struct wake_up_new_task_sample *w = &raw->wake_up_new_task;
 		color = "orange";
-		if (snprintf(label, sizeof(label), "WAKE_UP_NEW_TASK %d",
+		if (snprintf(label, sizeof(label), "NEW_TASK %d",
 		    w->pid) >= (int)sizeof(label))
 			warnx("%s: snprintf", __func__);
 		break;
@@ -1008,7 +1028,7 @@ block(struct perf_group_leaders *leaders)
 }
 
 static int
-quark_queue_open(struct quark_queue *qq)
+quark_queue_open(struct quark_queue *qq, int flags)
 {
 	int				 i;
 	struct perf_group_leader	*pgl;
@@ -1021,6 +1041,7 @@ quark_queue_open(struct quark_queue *qq)
 	TAILQ_INIT(&qq->kprobe_states);
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
+	qq->flags = flags;
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
 		pgl = calloc(1, sizeof(*pgl));
@@ -1123,7 +1144,7 @@ quark_close(void)
 int
 main(int argc, char *argv[])
 {
-	int				 ch, maxnodes, nodes, nproc;
+	int				 ch, maxnodes, nodes, nproc, qq_flags;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
@@ -1131,18 +1152,24 @@ main(int argc, char *argv[])
 
 	maxnodes = -1;
 	nodes = 0;
+	qq_flags = 0;
 
 	if (quark_init() == -1)
 		errx(1, "quark_init");
-
-	while ((ch = getopt(argc, argv, "m:")) != -1) {
+	while ((ch = getopt(argc, argv, "fm:t")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
+		case 'f':
+			qq_flags |= QQ_FORK_EVENTS;
+			break;
 		case 'm':
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);
 			if (errstr != NULL)
 				errx(1, "invalid maxnodes: %s", errstr);
+			break;
+		case 't':
+			qq_flags |= QQ_THREAD_EVENTS;
 			break;
 		default:
 			errx(1, "usage: TODO");
@@ -1151,7 +1178,7 @@ main(int argc, char *argv[])
 
 	if ((qq = calloc(1, sizeof(*qq))) == NULL)
 		err(1, "calloc");
-	if (quark_queue_open(qq) != 0)
+	if (quark_queue_open(qq, qq_flags) != 0)
 		errx(1, "quark_queue_open");
 
 	while (maxnodes == -1 || nodes < maxnodes) {
@@ -1159,15 +1186,14 @@ main(int argc, char *argv[])
 			ev = perf_mmap_read(&pgl->mmap);
 			if (ev == NULL)
 				continue;
-			dump_event(ev);
-			raw = perf_event_to_raw(ev);
+			raw = perf_event_to_raw(qq, ev);
 			if (raw != NULL) {
+				dump_event(ev);
 				/* Useful for debugging */
 				/* raw->time = arc4random_uniform(100000); */
 				raw_event_insert(qq, raw);
 				nodes++;
-			} else
-				warnx("can't convert perf to raw");
+			}
 			perf_mmap_consume(&pgl->mmap);
 		}
 

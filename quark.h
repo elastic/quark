@@ -239,6 +239,9 @@ struct quark_queue {
 	struct kprobe_states		kprobe_states;
 	struct raw_event_by_time	raw_event_by_time;
 	struct raw_event_by_pidtime	raw_event_by_pidtime;
+#define QQ_THREAD_EVENTS	(1 << 0)
+#define QQ_FORK_EVENTS		(1 << 1)
+	int				flags;
 };
 
 #endif /* _QUARK_H_ */
