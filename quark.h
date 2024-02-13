@@ -11,7 +11,7 @@
 /* Compat, tree.h, queue.h */
 #include "compat.h"
 
-/* quark_btf.c */
+/* btf.c */
 int	quark_btf_init(void);
 ssize_t	quark_btf_offset(const char *);
 
