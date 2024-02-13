@@ -1303,7 +1303,6 @@ main(int argc, char *argv[])
 		errx(1, "quark_queue_open");
 
 	ncpus = get_nprocs_conf();
-	empty_rings = 0;
 	while (!gotsigint && (maxnodes == -1 || nodes < maxnodes)) {
 		credits = 1000;
 		empty_rings = 0;
