@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -1236,6 +1237,18 @@ quark_close(void)
 	return (0);
 }
 
+/*
+ * End of library
+ */
+
+static int gotsigint;
+
+static void
+sigint_handler(int sig)
+{
+	gotsigint = 1;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1246,6 +1259,7 @@ main(int argc, char *argv[])
 	struct perf_event		*ev;
 	struct raw_event		*raw;
 	struct quark_queue		*qq;
+	struct sigaction		 sigact;
 
 	maxnodes = -1;
 	nodes = 0;
@@ -1275,6 +1289,12 @@ main(int argc, char *argv[])
 		}
 	}
 
+	bzero(&sigact, sizeof(sigact));
+	sigact.sa_flags = SA_RESTART | SA_RESETHAND;
+	sigact.sa_handler = &sigint_handler;
+	if (sigaction(SIGINT, &sigact, NULL) == -1)
+		err(1, "sigaction");
+
 	if (quark_init() == -1)
 		errx(1, "quark_init");
 	if ((qq = calloc(1, sizeof(*qq))) == NULL)
@@ -1284,7 +1304,7 @@ main(int argc, char *argv[])
 
 	ncpus = get_nprocs_conf();
 	empty_rings = 0;
-	while (maxnodes == -1 || nodes < maxnodes) {
+	while (!gotsigint && (maxnodes == -1 || nodes < maxnodes)) {
 		credits = 1000;
 		empty_rings = 0;
 		while (empty_rings < ncpus && credits > 0) {
