@@ -53,6 +53,7 @@ struct kprobe kp_wake_up_new_task = {
 	{ "pid",		"di", "u32",	{ "task_struct.tgid",		NULL,			NULL, NULL }},
 	{ "tid",		"di", "u32",	{ "task_struct.pid",		NULL,			NULL, NULL }},
 	{ "start_time",		"di", "u64",	{ "task_struct.start_time",	NULL,			NULL, NULL }},
+	{ "start_boottime",	"di", "u64",	{ "task_struct.start_boottime",	NULL,			NULL, NULL }},
 	{ NULL,			NULL, NULL,	{ NULL,				NULL,			NULL, NULL }}
 }
 };
@@ -185,10 +186,9 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		struct wake_up_new_task_sample *w = &raw->wake_up_new_task;
 
 		printf("%swake_up_new_task (%d)\n\t", header, raw->pid);
-		printf("pid=%d tid=%d uid=%d gid=%d "
-		    "suid=%d sgid=%d euid=%d egid=%d start_time=%llu\n",
-		    w->pid, w->tid, w->uid, w->gid,
-		    w->suid, w->sgid, w->euid, w->egid, w->start_time);
+		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
+		    w->pid, w->tid, w->uid, w->gid, w->suid, w->sgid, w->euid, w->egid);
+		printf("\tstart_time=%llu start_boottime=%llu\n", w->start_time, w->start_boottime);
 		printf("\tcap_inheritable=0x%llx cap_permitted=0x%llx cap_effective=0x%llx\n"
 		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
