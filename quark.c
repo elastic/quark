@@ -39,20 +39,21 @@ struct kprobe kp_wake_up_new_task = {
 	WAKE_UP_NEW_TASK_SAMPLE,
 	0,
 {
-	{ "uid",		"di", "u32",	{ "task_struct.cred",	"cred.uid",		NULL, NULL }},
-	{ "gid",		"di", "u32",	{ "task_struct.cred",	"cred.gid",		NULL, NULL }},
-	{ "suid",		"di", "u32",	{ "task_struct.cred",	"cred.suid",		NULL, NULL }},
-	{ "sgid",		"di", "u32",	{ "task_struct.cred",	"cred.sgid",		NULL, NULL }},
-	{ "euid",		"di", "u32",	{ "task_struct.cred",	"cred.euid",		NULL, NULL }},
-	{ "egid",		"di", "u32",	{ "task_struct.cred",	"cred.egid",		NULL, NULL }},
-	{ "cap_inheritable",	"di", "u64",	{ "task_struct.cred",	"cred.cap_inheritable",	NULL, NULL }},
-	{ "cap_permitted",	"di", "u64",	{ "task_struct.cred",	"cred.cap_permitted",	NULL, NULL }},
-	{ "cap_effective",	"di", "u64",	{ "task_struct.cred",	"cred.cap_effective",	NULL, NULL }},
-	{ "cap_bset",		"di", "u64",	{ "task_struct.cred",	"cred.cap_bset",	NULL, NULL }},
-	{ "cap_ambient",	"di", "u64",	{ "task_struct.cred",	"cred.cap_ambient",	NULL, NULL }},
-	{ "pid",		"di", "u32",	{ "task_struct.tgid",	NULL,			NULL, NULL }},
-	{ "tid",		"di", "u32",	{ "task_struct.pid",	NULL,			NULL, NULL }},
-	{ NULL,			NULL, NULL,	{ NULL,			NULL,			NULL, NULL }}
+	{ "uid",		"di", "u32",	{ "task_struct.cred",		"cred.uid",		NULL, NULL }},
+	{ "gid",		"di", "u32",	{ "task_struct.cred",		"cred.gid",		NULL, NULL }},
+	{ "suid",		"di", "u32",	{ "task_struct.cred",		"cred.suid",		NULL, NULL }},
+	{ "sgid",		"di", "u32",	{ "task_struct.cred",		"cred.sgid",		NULL, NULL }},
+	{ "euid",		"di", "u32",	{ "task_struct.cred",		"cred.euid",		NULL, NULL }},
+	{ "egid",		"di", "u32",	{ "task_struct.cred",		"cred.egid",		NULL, NULL }},
+	{ "cap_inheritable",	"di", "u64",	{ "task_struct.cred",		"cred.cap_inheritable",	NULL, NULL }},
+	{ "cap_permitted",	"di", "u64",	{ "task_struct.cred",		"cred.cap_permitted",	NULL, NULL }},
+	{ "cap_effective",	"di", "u64",	{ "task_struct.cred",		"cred.cap_effective",	NULL, NULL }},
+	{ "cap_bset",		"di", "u64",	{ "task_struct.cred",		"cred.cap_bset",	NULL, NULL }},
+	{ "cap_ambient",	"di", "u64",	{ "task_struct.cred",		"cred.cap_ambient",	NULL, NULL }},
+	{ "pid",		"di", "u32",	{ "task_struct.tgid",		NULL,			NULL, NULL }},
+	{ "tid",		"di", "u32",	{ "task_struct.pid",		NULL,			NULL, NULL }},
+	{ "start_time",		"di", "u64",	{ "task_struct.start_time",	NULL,			NULL, NULL }},
+	{ NULL,			NULL, NULL,	{ NULL,				NULL,			NULL, NULL }}
 }
 };
 
@@ -184,8 +185,10 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		struct wake_up_new_task_sample *w = &raw->wake_up_new_task;
 
 		printf("%swake_up_new_task (%d)\n\t", header, raw->pid);
-		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
-		    w->pid, w->tid, w->uid, w->gid, w->suid, w->sgid, w->euid, w->egid);
+		printf("pid=%d tid=%d uid=%d gid=%d "
+		    "suid=%d sgid=%d euid=%d egid=%d start_time=%llu\n",
+		    w->pid, w->tid, w->uid, w->gid,
+		    w->suid, w->sgid, w->euid, w->egid, w->start_time);
 		printf("\tcap_inheritable=0x%llx cap_permitted=0x%llx cap_effective=0x%llx\n"
 		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    w->cap_inheritable, w->cap_permitted, w->cap_effective,

@@ -141,6 +141,7 @@ struct wake_up_new_task_sample {
 	u64	cap_ambient;
 	u32	pid;
 	u32	tid;
+	u64	start_time;
 };
 
 /*
