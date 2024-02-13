@@ -232,6 +232,13 @@ TAILQ_HEAD(perf_group_leaders, perf_group_leader);
  */
 TAILQ_HEAD(kprobe_states, kprobe_state);
 
+struct quark_queue_stats {
+	u64	insertions;
+	u64	removals;
+	u64	aggregations;
+	u64	non_aggregations;
+	/* TODO u64	peak_nodes; */
+};
 /*
  * Quark Queue (qq) is the main structure the user interacts with, it acts as
  * our main storage datastructure.
@@ -241,6 +248,7 @@ struct quark_queue {
 	struct kprobe_states		kprobe_states;
 	struct raw_event_by_time	raw_event_by_time;
 	struct raw_event_by_pidtime	raw_event_by_pidtime;
+	struct quark_queue_stats	stats;
 #define QQ_THREAD_EVENTS	(1 << 0)
 #define QQ_FORK_EVENTS		(1 << 1)
 	int				flags;

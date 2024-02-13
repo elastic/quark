@@ -1017,6 +1017,7 @@ raw_event_insert(struct quark_queue *qq, struct raw_event *raw)
 	col = RB_INSERT(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
 	if (unlikely(col != NULL))
 		err(1, "collision on pidtime tree, this is a bug");
+	qq->stats.insertions++;
 }
 
 static void
@@ -1024,6 +1025,7 @@ raw_event_remove(struct quark_queue *qq, struct raw_event *raw)
 {
 	RB_REMOVE(raw_event_by_time, &qq->raw_event_by_time, raw);
 	RB_REMOVE(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
+	qq->stats.removals++;
 }
 
 static int
@@ -1150,12 +1152,23 @@ quark_queue_close(struct quark_queue *qq)
 }
 
 static void
+quark_queue_dump_stats(struct quark_queue *qq)
+{
+	struct quark_queue_stats *s = &qq->stats;
+	printf("%8llu insertions %8llu removals %8llu aggregations %8llu non-aggregations\n",
+	    s->insertions, s->removals, s->aggregations, s->non_aggregations);
+}
+
+static void
 quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 {
 	struct raw_event	*next, *aux;
+	int			 agg = 0;
 
-	if (min->type != RAW_WAKE_UP_NEW_TASK)
+	if (min->type != RAW_WAKE_UP_NEW_TASK) {
+		qq->stats.non_aggregations++;
 		return;
+	}
 	next = RB_NEXT(raw_event_by_pidtime, &qq->raw_event_by_pidtime,
 	    min);
 
@@ -1167,6 +1180,7 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 		    &qq->raw_event_by_pidtime, next);
 		raw_event_remove(qq, aux);
 		TAILQ_INSERT_TAIL(&min->agg_queue, aux, agg_entry);
+		agg++;
 	} else
 		return;
 	if (next != NULL &&
@@ -1177,7 +1191,13 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 		    &qq->raw_event_by_pidtime, next);
 		raw_event_remove(qq, aux);
 		TAILQ_INSERT_TAIL(&min->agg_queue, aux, agg_entry);
+		agg++;
 	}
+
+	if (agg)
+		qq->stats.aggregations++;
+	else
+		qq->stats.non_aggregations++;
 }
 
 static int
@@ -1354,6 +1374,7 @@ main(int argc, char *argv[])
 
 	write_graphviz(qq);
 
+	quark_queue_dump_stats(qq);
 	quark_queue_close(qq);
 	free(qq);
 	quark_close();
