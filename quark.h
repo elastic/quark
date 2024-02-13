@@ -190,14 +190,16 @@ struct raw_fork {
 };
 
 struct raw_event {
-	RB_ENTRY(raw_event)	entry_by_time;
-	RB_ENTRY(raw_event)	entry_by_pidtime;
-	u32			opid;
-	u32			pid;
-	u32			tid;
-	u32			cpu;
-	u64			time;
-	int			type;
+	RB_ENTRY(raw_event)			entry_by_time;
+	RB_ENTRY(raw_event)			entry_by_pidtime;
+	TAILQ_HEAD(agg_queue, raw_event)	agg_queue;
+	TAILQ_ENTRY(raw_event)			agg_entry;
+	u32					opid;
+	u32					pid;
+	u32					tid;
+	u32					cpu;
+	u64					time;
+	int					type;
 	union {
 		struct raw_exec			exec;
 		struct raw_fork			fork;

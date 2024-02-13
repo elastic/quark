@@ -51,7 +51,7 @@ struct kprobe kp_wake_up_new_task = {
 	{ "cap_ambient",	"di", "u64",	{ "task_struct.cred",	"cred.cap_ambient",	NULL, NULL }},
 	{ "pid",		"di", "u32",	{ "task_struct.tgid",	NULL,			NULL, NULL }},
 	{ "tid",		"di", "u32",	{ "task_struct.pid",	NULL,			NULL, NULL }},
-	{ NULL,		NULL, NULL,	{ NULL,			NULL,			NULL, NULL }}
+	{ NULL,			NULL, NULL,	{ NULL,			NULL,			NULL, NULL }}
 }
 };
 
@@ -110,6 +110,18 @@ qwrite(int fd, const void *buf, size_t count)
 	return (0);
 }
 
+static struct raw_event *
+raw_event_alloc(void)
+{
+	struct raw_event *raw;
+
+	raw = calloc(1, sizeof(*raw));
+	if (raw != NULL)
+		TAILQ_INIT(&raw->agg_queue);
+
+	return (raw);
+}
+
 static int
 raw_event_by_time_cmp(struct raw_event *a, struct raw_event *b)
 {
@@ -156,6 +168,43 @@ raw_event_expired(struct raw_event *raw, u64 now)
 {
 	/* XXX hardcoded for now XXX */
 	return (raw_event_age(raw, now) >= (u64)RAW_HOLD_MAXTIME);
+}
+
+static void
+raw_event_dump(struct raw_event *raw, int is_agg)
+{
+	struct raw_event	*agg;
+	char			*header;
+
+	header = is_agg ? "\t++" : "->";
+
+	switch (raw->type) {
+	case RAW_WAKE_UP_NEW_TASK: {
+		struct wake_up_new_task_sample *w = &raw->wake_up_new_task;
+
+		printf("%swake_up_new_task (%d)\n\t", header, raw->pid);
+		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
+		    w->pid, w->tid, w->uid, w->gid, w->suid, w->sgid, w->euid, w->egid);
+		printf("\tcap_inheritable=0x%llx cap_permitted=0x%llx cap_effective=0x%llx\n"
+		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
+		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
+		    w->cap_bset, w->cap_ambient);
+		TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
+			raw_event_dump(agg, 1);
+		}
+		break;
+	}
+	case RAW_EXEC:
+		printf("%sexec (%d)\n\tfilename=%s\n",
+		    header, raw->pid, raw->exec.filename);
+		break;
+	case RAW_EXIT:
+		printf("%sexit (%d)\n", header, raw->pid);
+		break;
+	default:
+		printf("->Unhandled(type %d, pid %d)\n", raw->type, raw->pid);
+		break;
+	}
 }
 
 /*
@@ -224,7 +273,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	switch (sample_kind_of_id(id)) {
 	case EXEC_SAMPLE: {
 		struct exec_sample *exec = sample_data_body(sample);
-		if ((raw = calloc(1, sizeof(*raw))) == NULL)
+		if ((raw = raw_event_alloc()) == NULL)
 			return (NULL);
 		raw->type = RAW_EXEC;
 		n = strlcpy_data_loc(raw->exec.filename, sizeof(raw->exec.filename),
@@ -244,7 +293,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
 		    w->pid == sample->sample_id.pid)
 			return (NULL);
-		if ((raw = calloc(1, sizeof(*raw))) == NULL)
+		if ((raw = raw_event_alloc()) == NULL)
 			return (NULL);
 		raw->type = RAW_WAKE_UP_NEW_TASK;
 		raw->wake_up_new_task = *w;
@@ -274,7 +323,7 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
 		    ev->fork.pid == ev->fork.ppid)
 			return (NULL);
-		if ((raw = calloc(1, sizeof(*raw))) == NULL)
+		if ((raw = raw_event_alloc()) == NULL)
 			return (NULL);
 		raw->type = RAW_FORK;
 		sid = &ev->fork.sample_id;
@@ -287,7 +336,7 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
 		    ev->exit.pid != ev->exit.tid)
 			return (NULL);
-		if ((raw = calloc(1, sizeof(*raw))) == NULL)
+		if ((raw = raw_event_alloc()) == NULL)
 			return (NULL);
 		raw->type = RAW_EXIT;
 		sid = &ev->exit.sample_id;
@@ -770,7 +819,8 @@ dump_sample(struct perf_record_sample *sample)
 		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
 		    w->cap_bset, w->cap_ambient);
 		break;
-	} default:
+	}
+	default:
 		warnx("%s: unknown or invalid sample id=%d", __func__, id);
 	}
 }
@@ -976,25 +1026,6 @@ raw_event_remove(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static int
-raw_process(struct quark_queue *qq)
-{
-	struct raw_event	*min, *next;	/* XXX todo cache min XXX */
-	u64			 now, nproc;
-
-	now = now64();
-	nproc = 0;
-	RB_FOREACH_SAFE(min, raw_event_by_time, &qq->raw_event_by_time, next) {
-		if (!raw_event_expired(min, now))
-			break;
-		raw_event_remove(qq, min);
-		free(min);
-		nproc++;
-	}
-
-	return (nproc);
-}
-
-static int
 block(struct perf_group_leaders *leaders)
 {
 	struct perf_group_leader	*pgl;
@@ -1112,6 +1143,70 @@ quark_queue_close(struct quark_queue *qq)
 		warnx("raw_event trees not empty");
 }
 
+static void
+quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
+{
+	struct raw_event	*next, *aux;
+
+	if (min->type != RAW_WAKE_UP_NEW_TASK)
+		return;
+	next = RB_NEXT(raw_event_by_pidtime, &qq->raw_event_by_pidtime,
+	    min);
+
+	if (next != NULL &&
+	    next->pid == min->pid &&
+	    next->type == RAW_EXEC) {
+		aux = next;
+		next = RB_NEXT(raw_event_by_pidtime,
+		    &qq->raw_event_by_pidtime, next);
+		raw_event_remove(qq, aux);
+		TAILQ_INSERT_TAIL(&min->agg_queue, aux, agg_entry);
+	} else
+		return;
+	if (next != NULL &&
+	    next->pid == min->pid &&
+	    next->type == RAW_EXIT) {
+		aux = next;
+		next = RB_NEXT(raw_event_by_pidtime,
+		    &qq->raw_event_by_pidtime, next);
+		raw_event_remove(qq, aux);
+		TAILQ_INSERT_TAIL(&min->agg_queue, aux, agg_entry);
+	}
+}
+
+static int
+quark_queue_process(struct quark_queue *qq)
+{
+	int			 nproc;
+	struct raw_event	*min, *next, *aux;
+	u64			 now;
+
+	nproc = 0;
+	now = now64();
+	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
+	while (min != NULL) {
+		if (!raw_event_expired(min, now))
+			break;
+
+		quark_queue_aggregate(qq, min);
+
+		raw_event_dump(min, 0);
+		while ((aux = TAILQ_FIRST(&min->agg_queue)) != NULL) {
+			TAILQ_REMOVE(&min->agg_queue, aux, agg_entry);
+			free(aux);
+			nproc++;
+		}
+
+		next = RB_NEXT(raw_event_by_time, &qq->raw_event_by_time, min);
+		raw_event_remove(qq, min);
+		free(min);
+		nproc++;
+		min = next;
+	}
+
+	return (nproc);
+}
+
 static int
 quark_init(void)
 {
@@ -1144,7 +1239,8 @@ quark_close(void)
 int
 main(int argc, char *argv[])
 {
-	int				 ch, maxnodes, nodes, nproc, qq_flags;
+	int				 ch, maxnodes, nodes, nproc;
+	int				 dump_perf, qq_flags;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
@@ -1153,10 +1249,9 @@ main(int argc, char *argv[])
 	maxnodes = -1;
 	nodes = 0;
 	qq_flags = 0;
+	dump_perf = 0;
 
-	if (quark_init() == -1)
-		errx(1, "quark_init");
-	while ((ch = getopt(argc, argv, "fm:t")) != -1) {
+	while ((ch = getopt(argc, argv, "fm:pt")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -1168,6 +1263,9 @@ main(int argc, char *argv[])
 			if (errstr != NULL)
 				errx(1, "invalid maxnodes: %s", errstr);
 			break;
+		case 'p':
+			dump_perf = 1;
+			break;
 		case 't':
 			qq_flags |= QQ_THREAD_EVENTS;
 			break;
@@ -1176,6 +1274,8 @@ main(int argc, char *argv[])
 		}
 	}
 
+	if (quark_init() == -1)
+		errx(1, "quark_init");
 	if ((qq = calloc(1, sizeof(*qq))) == NULL)
 		err(1, "calloc");
 	if (quark_queue_open(qq, qq_flags) != 0)
@@ -1188,7 +1288,8 @@ main(int argc, char *argv[])
 				continue;
 			raw = perf_event_to_raw(qq, ev);
 			if (raw != NULL) {
-				dump_event(ev);
+				if (dump_perf)
+					dump_event(ev);
 				/* Useful for debugging */
 				/* raw->time = arc4random_uniform(100000); */
 				raw_event_insert(qq, raw);
@@ -1199,7 +1300,7 @@ main(int argc, char *argv[])
 
 		/* If maxnodes is set, we don't want to process, only collect */
 		if (maxnodes == -1) {
-			nproc = raw_process(qq);
+			nproc = quark_queue_process(qq);
 			if (nproc)
 				printf("removed %d nodes\n", nproc);
 		}
