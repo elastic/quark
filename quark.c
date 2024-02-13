@@ -1240,7 +1240,8 @@ int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes, nodes, nproc;
-	int				 dump_perf, qq_flags;
+	int				 dump_perf, qq_flags, ncpus;
+	int				 empty_rings, credits;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
@@ -1281,11 +1282,20 @@ main(int argc, char *argv[])
 	if (quark_queue_open(qq, qq_flags) != 0)
 		errx(1, "quark_queue_open");
 
+	ncpus = get_nprocs_conf();
+	empty_rings = 0;
 	while (maxnodes == -1 || nodes < maxnodes) {
+		credits = 1000;
+		empty_rings = 0;
+		while (empty_rings < ncpus && credits > 0) {
 		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
 			ev = perf_mmap_read(&pgl->mmap);
-			if (ev == NULL)
+			if (ev == NULL) {
+				empty_rings++;
 				continue;
+			}
+			empty_rings = 0;
+			credits--;
 			raw = perf_event_to_raw(qq, ev);
 			if (raw != NULL) {
 				if (dump_perf)
@@ -1296,7 +1306,7 @@ main(int argc, char *argv[])
 				nodes++;
 			}
 			perf_mmap_consume(&pgl->mmap);
-		}
+		}}
 
 		/* If maxnodes is set, we don't want to process, only collect */
 		if (maxnodes == -1) {
@@ -1305,7 +1315,12 @@ main(int argc, char *argv[])
 				printf("removed %d nodes\n", nproc);
 		}
 
-		block(&qq->perf_group_leaders);
+		/*
+		 * Only block if we got here with credits left, otherwise we're
+		 * trying to catch up with the kernel.
+		 */
+		if (credits > 0)
+			block(&qq->perf_group_leaders);
 	}
 
 	RB_FOREACH(raw, raw_event_by_time, &qq->raw_event_by_time) {
