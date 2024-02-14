@@ -23,7 +23,6 @@
 #define RAW_HOLD_MAXNODES	10000		/* XXX hardcoded for now XXX */
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
 #define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
-#define MAGIC_DATA_OFF		8
 
 static void	xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2, 3)));
 static int	open_tracing(int, const char *, ...) __attribute__((format(printf, 2, 3)));
@@ -31,7 +30,13 @@ static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
 
 /* matches each sample event to a kind like EXEC_SAMPLE, FOO_SAMPLE */
-u8 id_to_sample_kind[MAX_SAMPLE_IDS];
+u8	id_to_sample_kind[MAX_SAMPLE_IDS];
+
+/*
+ * This is the offset from the common area of a probe to the body. It is almost
+ * always 8, but some older redhat kernels are different.
+ */
+ssize_t	quark_probe_data_body_offset;
 
 struct kprobe kp_wake_up_new_task = {
 	"quark_wake_up_new_task",
@@ -249,7 +254,7 @@ static inline void *
 sample_data_body(struct perf_record_sample *sample)
 {
 	/* XXX this 8 is what we calculate in parse_data_offset() XXX */
-	return (sample->data + MAGIC_DATA_OFF);
+	return (sample->data + quark_probe_data_body_offset);
 }
 
 static inline int
@@ -512,9 +517,9 @@ fetch_tracing_id(const char *tail)
 
 	return (id);
 }
-#if 0
+
 static ssize_t
-parse_data_offset(struct kprobe *k)
+parse_probe_data_body_offset(void)
 {
 	int		 fd;
 	FILE		*f;
@@ -524,7 +529,7 @@ parse_data_offset(struct kprobe *k)
 	size_t		 line_len;
 	int		 past_common;
 
-	fd = open_tracing(O_RDONLY, "events/kprobes/%s/format", k->name);
+	fd = open_tracing(O_RDONLY, "events/sched/sched_process_exec/format");
 	if (fd == -1)
 		return (-1);
 	f = fdopen(fd, "r");
@@ -558,9 +563,11 @@ parse_data_offset(struct kprobe *k)
 	free(line);
 	fclose(f);
 
+	quark_probe_data_body_offset = data_offset;
+
 	return (data_offset);
 }
-#endif
+
 static char *
 kprobe_make_arg(struct kprobe_arg *karg)
 {
@@ -1264,6 +1271,11 @@ quark_queue_process(struct quark_queue *qq)
 static int
 quark_init(void)
 {
+	if (parse_probe_data_body_offset() == -1) {
+		warnx("%s: can't parse host probe data offset\n",
+		    __func__);
+		return (-1);
+	}
 	if (quark_btf_init() == -1) {
 		warnx("%s: can't initialize btf", __func__);
 		return (-1);
