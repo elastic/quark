@@ -6,7 +6,9 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <poll.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -929,15 +931,13 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 }
 
 static void
-write_graphviz(struct quark_queue *qq)
+write_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 {
 	struct raw_event	*raw, *left, *right;
 	FILE			*f;
 	char			 key[256];
 
-	f = fopen("quark_by_time.dot", "w");
-	if (f == NULL)
-		err(1, "fopen");
+	f = by_time;
 
 	xfprintf(f, "digraph {\n");
 	xfprintf(f, "node [style=filled, color=black];\n");
@@ -961,9 +961,7 @@ write_graphviz(struct quark_queue *qq)
 	fflush(f);
 	fclose(f);
 
-	f = fopen("quark_by_pidtime.dot", "w");
-	if (f == NULL)
-		err(1, "fopen");
+	f = by_pidtime;
 
 	xfprintf(f, "digraph {\n");
 	xfprintf(f, "node [style=filled, color=black];\n");
@@ -1268,6 +1266,7 @@ quark_init(void)
 static int
 quark_close(void)
 {
+
 	struct kprobe	*k;
 	int		 i;
 
@@ -1291,27 +1290,54 @@ sigint_handler(int sig)
 	gotsigint = 1;
 }
 
+static void
+priv_drop(void)
+{
+	struct passwd	*pw;
+
+	/* getpwnam_r is too painful for a demo */
+	if ((pw = getpwnam("nobody")) == NULL)
+		err(1, "getpwnam");
+
+	/* chroot */
+	if (chroot("/var/empty") == -1)
+		err(1, "chroot");
+	if (chdir("/") == -1)
+		err(1, "chdir");
+
+	/* setproctitle would be here */
+
+	/* become the weakling */
+	if (setgroups(1, &pw->pw_gid) ||
+	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
+	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
+		err(1, "error dropping privileges");
+}
+
 int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes, nodes, nproc;
 	int				 dump_perf, qq_flags, ncpus;
-	int				 empty_rings, credits;
+	int				 empty_rings, credits, do_drop;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
 	struct quark_queue		*qq;
 	struct sigaction		 sigact;
+	FILE				*graph_by_time, *graph_by_pidtime;
 
 	maxnodes = -1;
 	nodes = 0;
-	qq_flags = 0;
-	dump_perf = 0;
+	qq_flags = dump_perf = do_drop = 0;
 
-	while ((ch = getopt(argc, argv, "fm:pt")) != -1) {
+	while ((ch = getopt(argc, argv, "Dfm:pt")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
+		case 'D':
+			do_drop = 1;
+			break;
 		case 'f':
 			qq_flags |= QQ_FORK_EVENTS;
 			break;
@@ -1343,6 +1369,17 @@ main(int argc, char *argv[])
 		err(1, "calloc");
 	if (quark_queue_open(qq, qq_flags) != 0)
 		errx(1, "quark_queue_open");
+	/* open graphviz files before priv_drop */
+	graph_by_time = fopen("quark_by_time.dot", "w");
+	if (graph_by_time == NULL)
+		err(1, "fopen");
+	graph_by_pidtime = fopen("quark_by_pidtime.dot", "w");
+	if (graph_by_pidtime == NULL)
+		err(1, "fopen");
+
+	/* From now on we will be nobody */
+	if (do_drop)
+		priv_drop();
 
 	ncpus = get_nprocs_conf();
 	while (!gotsigint && (maxnodes == -1 || nodes < maxnodes)) {
@@ -1389,12 +1426,13 @@ main(int argc, char *argv[])
 		    raw_event_age(raw, now64()));
 	}
 
-	write_graphviz(qq);
+	write_graphviz(qq, graph_by_time, graph_by_pidtime);
 
 	quark_queue_dump_stats(qq);
 	quark_queue_close(qq);
 	free(qq);
-	quark_close();
+	if (!do_drop)
+		quark_close();
 
 	return (0);
 }
