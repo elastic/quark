@@ -253,7 +253,6 @@ sample_kind_of_id(int id)
 static inline void *
 sample_data_body(struct perf_record_sample *sample)
 {
-	/* XXX this 8 is what we calculate in parse_data_offset() XXX */
 	return (sample->data + quark_probe_data_body_offset);
 }
 
