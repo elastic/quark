@@ -15,6 +15,22 @@
 int	quark_btf_init(void);
 ssize_t	quark_btf_offset(const char *);
 
+/* qutil.c */
+struct qstr {
+	char	*p;
+	char	 small[64];
+};
+
+struct perf_record_sample;
+struct perf_sample_data_loc;
+
+ssize_t	qread(int, void *, size_t);
+int	qwrite(int, const void *, size_t);
+void	qstr_init(struct qstr *);
+int	qstr_ensure(struct qstr *, size_t);
+int	qstr_copy_data_loc(struct qstr *, struct perf_record_sample *,
+    struct perf_sample_data_loc *);
+void	qstr_free(struct qstr *);
 /*
  * Time helpers
  */
@@ -109,11 +125,6 @@ struct perf_group_leader {
 	int				 cpu;
 	struct perf_event_attr		 attr;
 	struct perf_mmap		 mmap;
-};
-
-struct qstr {
-	char	*p;
-	char	 small[64];
 };
 
 /*
