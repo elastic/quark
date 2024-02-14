@@ -591,7 +591,16 @@ kprobe_make_arg(struct kprobe_arg *karg)
 	for (pp = tokens; *pp != NULL; pp++) {
 		p = *pp;
 		last = kstr;
-		off = quark_btf_offset(p);
+		if (*p == '+') {
+			const char *errstr;
+			off = strtonum(p + 1, 0, UINT32_MAX, &errstr);
+			if (errstr != NULL) {
+				warnx("%s: bad +val %s: %s",
+				    __func__, p, errstr);
+				off = -1;
+			}
+		} else
+			off = quark_btf_offset(p);
 		if (off == -1 ||
 		    asprintf(&kstr, "+%zd(%s)", off, last) == -1) {
 			if (off == -1)
