@@ -152,7 +152,7 @@ struct kprobe_arg {
 	const char	*name;
 	const char	*reg;
 	const char	*typ;
-	const char	*v[4];	/* maximum is 3, last is sentinel */
+	const char	*arg_dsl;
 };
 
 struct kprobe {

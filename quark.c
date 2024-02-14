@@ -39,22 +39,22 @@ struct kprobe kp_wake_up_new_task = {
 	WAKE_UP_NEW_TASK_SAMPLE,
 	0,
 {
-	{ "uid",		"di", "u32",	{ "task_struct.cred",		"cred.uid",		NULL, NULL }},
-	{ "gid",		"di", "u32",	{ "task_struct.cred",		"cred.gid",		NULL, NULL }},
-	{ "suid",		"di", "u32",	{ "task_struct.cred",		"cred.suid",		NULL, NULL }},
-	{ "sgid",		"di", "u32",	{ "task_struct.cred",		"cred.sgid",		NULL, NULL }},
-	{ "euid",		"di", "u32",	{ "task_struct.cred",		"cred.euid",		NULL, NULL }},
-	{ "egid",		"di", "u32",	{ "task_struct.cred",		"cred.egid",		NULL, NULL }},
-	{ "cap_inheritable",	"di", "u64",	{ "task_struct.cred",		"cred.cap_inheritable",	NULL, NULL }},
-	{ "cap_permitted",	"di", "u64",	{ "task_struct.cred",		"cred.cap_permitted",	NULL, NULL }},
-	{ "cap_effective",	"di", "u64",	{ "task_struct.cred",		"cred.cap_effective",	NULL, NULL }},
-	{ "cap_bset",		"di", "u64",	{ "task_struct.cred",		"cred.cap_bset",	NULL, NULL }},
-	{ "cap_ambient",	"di", "u64",	{ "task_struct.cred",		"cred.cap_ambient",	NULL, NULL }},
-	{ "pid",		"di", "u32",	{ "task_struct.tgid",		NULL,			NULL, NULL }},
-	{ "tid",		"di", "u32",	{ "task_struct.pid",		NULL,			NULL, NULL }},
-	{ "start_time",		"di", "u64",	{ "task_struct.start_time",	NULL,			NULL, NULL }},
-	{ "start_boottime",	"di", "u64",	{ "task_struct.start_boottime",	NULL,			NULL, NULL }},
-	{ NULL,			NULL, NULL,	{ NULL,				NULL,			NULL, NULL }}
+	{ "uid",		"di", "u32", "task_struct.cred cred.uid"		},
+	{ "gid",		"di", "u32", "task_struct.cred cred.gid"		},
+	{ "suid",		"di", "u32", "task_struct.cred cred.suid"		},
+	{ "sgid",		"di", "u32", "task_struct.cred cred.sgid"		},
+	{ "euid",		"di", "u32", "task_struct.cred cred.euid"		},
+	{ "egid",		"di", "u32", "task_struct.cred cred.egid"		},
+	{ "cap_inheritable",	"di", "u64", "task_struct.cred cred.cap_inheritable"	},
+	{ "cap_permitted",	"di", "u64", "task_struct.cred cred.cap_permitted"	},
+	{ "cap_effective",	"di", "u64", "task_struct.cred cred.cap_effective"	},
+	{ "cap_bset",		"di", "u64", "task_struct.cred cred.cap_bset"		},
+	{ "cap_ambient",	"di", "u64", "task_struct.cred cred.cap_ambient"	},
+	{ "pid",		"di", "u32", "task_struct.tgid"				},
+	{ "tid",		"di", "u32", "task_struct.pid"				},
+	{ "start_time",		"di", "u64", "task_struct.start_time"			},
+	{ "start_boottime",	"di", "u64", "task_struct.start_boottime"		},
+	{ NULL,			NULL, NULL,  NULL					}
 }
 };
 
@@ -564,38 +564,54 @@ parse_data_offset(struct kprobe *k)
 static char *
 kprobe_make_arg(struct kprobe_arg *karg)
 {
-#define O(_v)	quark_btf_offset(_v)
-	int r = -1, nvs;
-	char *p;
+	int	 i;
+	ssize_t	 off;
+	char	*p, **pp, *last, *kstr, *tokens[128], *arg_dsl;
 
-	for (nvs = 0; nvs < (int)nitems(karg->v); nvs++) {
-		if (karg->v[nvs] == NULL)
-			break;
-		if (O(karg->v[nvs]) == -1) {
-			warnx("%s: %s unresolved", __func__, karg->v[nvs]);
+	kstr = NULL;
+	if ((arg_dsl = strdup(karg->arg_dsl)) == NULL)
+		return (NULL);
+	i = 0;
+	for (p = strtok_r(arg_dsl, " ", &last);
+	     p != NULL;
+	     p = strtok_r(NULL, " ", &last)) {
+		/* Last is sentinel */
+		if (i == ((int)nitems(tokens) - 1)) {
+			warnx("%s: too many tokens", __func__);
+			free(arg_dsl);
 			return (NULL);
 		}
+		tokens[i++] = p;
 	}
-
-	if (nvs == 1)
-		r = asprintf(&p, "%s=+%zd(%%%s):%s",
-		    karg->name, O(karg->v[0]), karg->reg, karg->typ);
-	else if (nvs == 2)
-		r = asprintf(&p, "%s=+%zd(+%zd(%%%s)):%s",
-		    karg->name, O(karg->v[1]), O(karg->v[0]),
-		    karg->reg, karg->typ);
-	else if (nvs == 3)
-		r = asprintf(&p, "%s=+%zd(+%zd(+%zd(%%%s))):%s",
-		    karg->name, O(karg->v[2]), O(karg->v[1]), O(karg->v[0]),
-		karg->reg, karg->typ);
-	else
-		warnx("%s: invalid nvs %d\n", __func__, nvs);
-
-	if (r == -1)
+	tokens[i] = NULL;
+	if (asprintf(&kstr, "%%%s", karg->reg) == -1) {
+		free(arg_dsl);
 		return (NULL);
+	}
+	for (pp = tokens; *pp != NULL; pp++) {
+		p = *pp;
+		last = kstr;
+		off = quark_btf_offset(p);
+		if (off == -1 ||
+		    asprintf(&kstr, "+%zd(%s)", off, last) == -1) {
+			if (off == -1)
+				warnx("%s: %s is unresolved\n", __func__, p);
+			free(arg_dsl);
+			free(last);
+			return (NULL);
+		}
+		free(last);
+	}
+	last = kstr;
+	if (asprintf(&kstr, "%s=%s:%s", karg->name, last, karg->typ) == -1) {
+		free(arg_dsl);
+		free(last);
+		return (NULL);
+	}
+	free(last);
+	free(arg_dsl);
 
-	return (p);
-#undef O
+	return (kstr);
 }
 
 static char *
