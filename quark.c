@@ -118,6 +118,57 @@ qwrite(int fd, const void *buf, size_t count)
 	return (0);
 }
 
+static void
+qstr_init(struct qstr *qstr)
+{
+	qstr->p = qstr->small;
+}
+
+static int
+qstr_ensure(struct qstr *qstr, size_t n)
+{
+	if (n > sizeof(qstr->small)) {
+		qstr->p = malloc(n);
+		if (qstr->p == NULL)
+			return (-1);
+	}
+
+	return (0);
+}
+
+static int
+qstr_copy_data_loc(struct qstr *qstr,
+    struct perf_record_sample *sample, struct perf_sample_data_loc *data_loc)
+{
+	/* size includes NUL */
+	if (qstr_ensure(qstr, data_loc->size) == -1)
+		return (-1);
+	memcpy(qstr->p, sample->data + data_loc->offset, data_loc->size);
+
+	return (data_loc->size);
+}
+#if 0
+static ssize_t
+qstr_strlcpy(struct qstr *qstr, const char *src)
+{
+	ssize_t slen = strlen(src);
+
+	qstr_ensure(qstr, slen + 1);
+	memcpy(qstr->p, src, slen);
+	qstr->p[slen] = 0;
+
+	return (slen);
+}
+#endif
+static void
+qstr_free(struct qstr *qstr)
+{
+	if (qstr->p == qstr->small)
+		return;
+
+	free(qstr->p);
+}
+
 static struct raw_event *
 raw_event_alloc(void)
 {
@@ -128,6 +179,27 @@ raw_event_alloc(void)
 		TAILQ_INIT(&raw->agg_queue);
 
 	return (raw);
+}
+
+static void
+raw_event_free(struct raw_event *raw)
+{
+	struct raw_event *aux;
+
+	switch (raw->type) {
+	case RAW_EXEC:
+		qstr_free(&raw->exec.filename);
+		break;
+	default:
+		break;
+	}
+
+	while ((aux = TAILQ_FIRST(&raw->agg_queue)) != NULL) {
+		TAILQ_REMOVE(&raw->agg_queue, aux, agg_entry);
+		free(aux);
+	}
+
+	free(raw);
 }
 
 static int
@@ -205,7 +277,7 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 	}
 	case RAW_EXEC:
 		printf("%sexec (%d)\n\tfilename=%s\n",
-		    header, raw->pid, raw->exec.filename);
+		    header, raw->pid, raw->exec.filename.p);
 		break;
 	case RAW_EXIT:
 		printf("%sexit (%d)\n", header, raw->pid);
@@ -215,7 +287,7 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		break;
 	}
 }
-
+#if 0
 /*
  * Copies out the string pointed to by data size, if retval is >= than dst_size,
  * it means we truncated. May return -1 on bad values.
@@ -238,7 +310,7 @@ strlcpy_data_loc(void *dst, ssize_t dst_size,
 
 	return (n - 1);
 }
-
+#endif
 static inline int
 sample_kind_of_id(int id)
 {
@@ -284,12 +356,10 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		if ((raw = raw_event_alloc()) == NULL)
 			return (NULL);
 		raw->type = RAW_EXEC;
-		n = strlcpy_data_loc(raw->exec.filename, sizeof(raw->exec.filename),
-		    sample, &exec->filename);
+		qstr_init(&raw->exec.filename);
+		n = qstr_copy_data_loc(&raw->exec.filename, sample, &exec->filename);
 		if (n == -1)
 			warnx("can't copy exec filename");
-		else if (n >= (ssize_t)sizeof(raw->exec.filename))
-			warnx("exec filename truncated");
 		break;
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: {
@@ -828,19 +898,18 @@ perf_open_kprobe(struct kprobe_state *ks, int cpu, int group_fd)
 static void
 dump_sample(struct perf_record_sample *sample)
 {
-	char			 buf[4096];
-	ssize_t			 n;
-	int			 id = sample_data_id(sample);
+	int	id = sample_data_id(sample);
 
 	switch (sample_kind_of_id(id)) {
 	case EXEC_SAMPLE: {
 		struct exec_sample *exec = sample_data_body(sample);
-		n = strlcpy_data_loc(buf, sizeof(buf), sample, &exec->filename);
-		if (n == -1)
+		struct qstr qstr;
+
+		qstr_init(&qstr);
+		if (qstr_copy_data_loc(&qstr, sample, &exec->filename) == -1)
 			warnx("can't copy exec filename");
-		else if (n >= (ssize_t)sizeof(buf))
-			warnx("exec filename truncated");
-		printf("->exec (%d)\n\tfilename=%s\n", id, buf);
+		printf("->exec (%d)\n\tfilename=%s\n", id, qstr.p);
+		qstr_free(&qstr);
 		break;
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: {
@@ -931,7 +1000,7 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 	case RAW_EXEC:
 		color = "lightslateblue";
 		if (snprintf(label, sizeof(label), "EXEC %s",
-		    raw->exec.filename) >= (int)sizeof(label))
+		    raw->exec.filename.p) >= (int)sizeof(label))
 			warnx("%s: exec filename truncated", __func__);
 		break;
 	case RAW_WAKE_UP_NEW_TASK: {
@@ -1179,7 +1248,7 @@ quark_queue_close(struct quark_queue *qq)
 			free(aux);
 		}
 
-		free(raw);
+		raw_event_free(raw);
 	}
 	if (!RB_EMPTY(&qq->raw_event_by_pidtime))
 		warnx("raw_event trees not empty");
@@ -1253,13 +1322,13 @@ quark_queue_process(struct quark_queue *qq)
 		raw_event_dump(min, 0);
 		while ((aux = TAILQ_FIRST(&min->agg_queue)) != NULL) {
 			TAILQ_REMOVE(&min->agg_queue, aux, agg_entry);
-			free(aux);
+			raw_event_free(aux);
 			nproc++;
 		}
 
 		next = RB_NEXT(raw_event_by_time, &qq->raw_event_by_time, min);
 		raw_event_remove(qq, min);
-		free(min);
+		raw_event_free(min);
 		nproc++;
 		min = next;
 	}

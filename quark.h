@@ -111,6 +111,11 @@ struct perf_group_leader {
 	struct perf_mmap		 mmap;
 };
 
+struct qstr {
+	char	*p;
+	char	 small[64];
+};
+
 /*
  * Quark sample formats
  */
@@ -183,7 +188,7 @@ enum {
 };
 
 struct raw_exec {
-	char			filename[MAXPATHLEN];
+	struct qstr		filename;
 };
 
 struct raw_fork {
