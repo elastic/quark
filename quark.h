@@ -142,7 +142,7 @@ struct exec_sample {
 };
 
 /* 8 byte aligned, we have to be careful with padding still */
-struct wake_up_new_task_sample {
+struct task_sample {
 	u64	probe_ip;
 	u32	uid;
 	u32	gid;
@@ -159,6 +159,7 @@ struct wake_up_new_task_sample {
 	u32	tid;
 	u64	start_time;
 	u64	start_boottime;
+	s32	exit_code;
 };
 
 /*
@@ -221,7 +222,7 @@ struct raw_event {
 	union {
 		struct raw_exec			exec;
 		struct raw_fork			fork;
-		struct wake_up_new_task_sample	wake_up_new_task;
+		struct task_sample		task_sample;
 	};
 };
 

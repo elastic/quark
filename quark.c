@@ -171,7 +171,7 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 
 	switch (raw->type) {
 	case RAW_WAKE_UP_NEW_TASK: {
-		struct wake_up_new_task_sample *w = &raw->wake_up_new_task;
+		struct task_sample *w = &raw->task_sample;
 
 		printf("%swake_up_new_task (%d)\n\t", header, raw->pid);
 		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
@@ -274,7 +274,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		break;
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: {
-		struct wake_up_new_task_sample *w = sample_data_body(sample);
+		struct task_sample *w = sample_data_body(sample);
 		/*
 		 * ev->sample.sample_id.pid is the parent, if the new task has
 		 * the same pid as it, then this is a thread event
@@ -285,7 +285,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		if ((raw = raw_event_alloc()) == NULL)
 			return (NULL);
 		raw->type = RAW_WAKE_UP_NEW_TASK;
-		raw->wake_up_new_task = *w;
+		raw->task_sample = *w;
 		raw->pid = w->pid;
 		raw->tid = w->tid;
 		break;
@@ -824,7 +824,7 @@ dump_sample(struct perf_record_sample *sample)
 		break;
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: {
-		struct wake_up_new_task_sample *w;
+		struct task_sample *w;
 		printf("->wake_up_new_task (%d)\n\t", id);
 		w = sample_data_body(sample);
 		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
@@ -915,7 +915,7 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 			warnx("%s: exec filename truncated", __func__);
 		break;
 	case RAW_WAKE_UP_NEW_TASK: {
-		struct wake_up_new_task_sample *w = &raw->wake_up_new_task;
+		struct task_sample *w = &raw->task_sample;
 		color = "orange";
 		if (snprintf(label, sizeof(label), "NEW_TASK %d",
 		    w->pid) >= (int)sizeof(label))

@@ -16,6 +16,7 @@ struct target {
 	{ "task_struct.tgid",		-1 },
 	{ "task_struct.start_time",	-1 },
 	{ "task_struct.start_boottime",	-1 },
+	{ "task_struct.exit_code",	-1 },
 	{ "cred.user",			-1 },
 	{ "cred.uid",			-1 },
 	{ "cred.gid",			-1 },
