@@ -40,33 +40,45 @@ u8	id_to_sample_kind[MAX_SAMPLE_IDS];
  */
 ssize_t	quark_probe_data_body_offset;
 
+#define TASK_SAMPLE {										\
+	{ "uid",		"di", "u32", "task_struct.cred cred.uid"		},	\
+	{ "gid",		"di", "u32", "task_struct.cred cred.gid"		},	\
+	{ "suid",		"di", "u32", "task_struct.cred cred.suid"		},	\
+	{ "sgid",		"di", "u32", "task_struct.cred cred.sgid"		},	\
+	{ "euid",		"di", "u32", "task_struct.cred cred.euid"		},	\
+	{ "egid",		"di", "u32", "task_struct.cred cred.egid"		},	\
+	{ "cap_inheritable",	"di", "u64", "task_struct.cred cred.cap_inheritable"	},	\
+	{ "cap_permitted",	"di", "u64", "task_struct.cred cred.cap_permitted"	},	\
+	{ "cap_effective",	"di", "u64", "task_struct.cred cred.cap_effective"	},	\
+	{ "cap_bset",		"di", "u64", "task_struct.cred cred.cap_bset"		},	\
+	{ "cap_ambient",	"di", "u64", "task_struct.cred cred.cap_ambient"	},	\
+	{ "pid",		"di", "u32", "task_struct.tgid"				},	\
+	{ "tid",		"di", "u32", "task_struct.pid"				},	\
+	{ "start_time",		"di", "u64", "task_struct.start_time"			},	\
+	{ "start_boottime",	"di", "u64", "task_struct.start_boottime"		},	\
+	{ "exit_code",		"di", "s32", "task_struct.exit_code"			},	\
+	{ NULL,			NULL, NULL,  NULL					}}
+
+
 struct kprobe kp_wake_up_new_task = {
 	"quark_wake_up_new_task",
 	"wake_up_new_task",
 	WAKE_UP_NEW_TASK_SAMPLE,
 	0,
-{
-	{ "uid",		"di", "u32", "task_struct.cred cred.uid"		},
-	{ "gid",		"di", "u32", "task_struct.cred cred.gid"		},
-	{ "suid",		"di", "u32", "task_struct.cred cred.suid"		},
-	{ "sgid",		"di", "u32", "task_struct.cred cred.sgid"		},
-	{ "euid",		"di", "u32", "task_struct.cred cred.euid"		},
-	{ "egid",		"di", "u32", "task_struct.cred cred.egid"		},
-	{ "cap_inheritable",	"di", "u64", "task_struct.cred cred.cap_inheritable"	},
-	{ "cap_permitted",	"di", "u64", "task_struct.cred cred.cap_permitted"	},
-	{ "cap_effective",	"di", "u64", "task_struct.cred cred.cap_effective"	},
-	{ "cap_bset",		"di", "u64", "task_struct.cred cred.cap_bset"		},
-	{ "cap_ambient",	"di", "u64", "task_struct.cred cred.cap_ambient"	},
-	{ "pid",		"di", "u32", "task_struct.tgid"				},
-	{ "tid",		"di", "u32", "task_struct.pid"				},
-	{ "start_time",		"di", "u64", "task_struct.start_time"			},
-	{ "start_boottime",	"di", "u64", "task_struct.start_boottime"		},
-	{ NULL,			NULL, NULL,  NULL					}
-}
+	TASK_SAMPLE
+};
+
+struct kprobe kp_exit_thread = {
+	"quark_exit_thread",
+	"exit_thread",
+	EXIT_THREAD_SAMPLE,
+	0,
+	TASK_SAMPLE
 };
 
 struct kprobe *all_kprobes[] = {
 	&kp_wake_up_new_task,
+	&kp_exit_thread,
 	NULL
 };
 
@@ -170,10 +182,14 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 	header = is_agg ? "\t++" : "->";
 
 	switch (raw->type) {
-	case RAW_WAKE_UP_NEW_TASK: {
-		struct task_sample *w = &raw->task_sample;
+	case RAW_WAKE_UP_NEW_TASK: /* FALLTHROUGH */
+	case RAW_EXIT_THREAD: {
+		struct task_sample	*w = &raw->task_sample;
+		const char		*head;
 
-		printf("%swake_up_new_task (%d)\n\t", header, raw->pid);
+		head = raw->type == RAW_WAKE_UP_NEW_TASK ?
+		    "wake_up_new_task" : "exit_thread";
+		printf("%s%s (%d)\n\t", header, head, raw->pid);
 		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
 		    w->pid, w->tid, w->uid, w->gid, w->suid, w->sgid, w->euid, w->egid);
 		printf("\tstart_time=%llu start_boottime=%llu\n", w->start_time, w->start_boottime);
@@ -181,6 +197,8 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
 		    w->cap_bset, w->cap_ambient);
+		if (raw->type == RAW_EXIT_THREAD)
+			printf("\texit_code=%d\n", w->exit_code);
 		TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
 			raw_event_dump(agg, 1);
 		}
@@ -255,13 +273,14 @@ sample_kind(struct perf_record_sample *sample)
 static struct raw_event *
 perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 {
-	int			 id;
+	int			 id, kind;
 	ssize_t			 n;
 	struct raw_event	*raw = NULL;
 
 	id = sample_data_id(sample);
+	kind = sample_kind_of_id(id);
 
-	switch (sample_kind_of_id(id)) {
+	switch (kind) {
 	case EXEC_SAMPLE: {
 		struct exec_sample *exec = sample_data_body(sample);
 		if ((raw = raw_event_alloc()) == NULL)
@@ -273,21 +292,25 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			warnx("can't copy exec filename");
 		break;
 	}
-	case WAKE_UP_NEW_TASK_SAMPLE: {
+	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
+	case EXIT_THREAD_SAMPLE: {
 		struct task_sample *w = sample_data_body(sample);
 		/*
 		 * ev->sample.sample_id.pid is the parent, if the new task has
 		 * the same pid as it, then this is a thread event
 		 */
-		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
-		    w->pid == sample->sample_id.pid)
+		if ((qq->flags & QQ_THREAD_EVENTS) == 0
+		    && w->pid != w->tid)
 			return (NULL);
 		if ((raw = raw_event_alloc()) == NULL)
 			return (NULL);
-		raw->type = RAW_WAKE_UP_NEW_TASK;
 		raw->task_sample = *w;
-		raw->pid = w->pid;
-		raw->tid = w->tid;
+		if (kind == WAKE_UP_NEW_TASK_SAMPLE) {
+			raw->type = RAW_WAKE_UP_NEW_TASK;
+			raw->pid = w->pid;
+			raw->tid = w->tid;
+		} else
+			raw->type = RAW_EXIT_THREAD;
 		break;
 	}
 	default:
@@ -307,7 +330,7 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 	switch (ev->header.type) {
 	case PERF_RECORD_FORK:
 		/* Drop thread "forks" */
-		if ((qq->flags & QQ_FORK_EVENTS) == 0)
+		if ((qq->flags & QQ_PERF_TASK_EVENTS) == 0)
 			return (NULL);
 		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
 		    ev->fork.pid == ev->fork.ppid)
@@ -321,6 +344,8 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		raw->fork.parent_pid = ev->fork.ppid;
 		break;
 	case PERF_RECORD_EXIT:
+		if ((qq->flags & QQ_PERF_TASK_EVENTS) == 0)
+			return (NULL);
 		/* Drop thread "exits" */
 		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
 		    ev->exit.pid != ev->exit.tid)
@@ -809,9 +834,12 @@ perf_open_kprobe(struct kprobe_state *ks, int cpu, int group_fd)
 static void
 dump_sample(struct perf_record_sample *sample)
 {
-	int	id = sample_data_id(sample);
+	int	id, kind;
 
-	switch (sample_kind_of_id(id)) {
+	id = sample_data_id(sample);
+	kind = sample_kind_of_id(id);
+
+	switch (kind) {
 	case EXEC_SAMPLE: {
 		struct exec_sample *exec = sample_data_body(sample);
 		struct qstr qstr;
@@ -823,16 +851,22 @@ dump_sample(struct perf_record_sample *sample)
 		qstr_free(&qstr);
 		break;
 	}
-	case WAKE_UP_NEW_TASK_SAMPLE: {
-		struct task_sample *w;
-		printf("->wake_up_new_task (%d)\n\t", id);
+	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
+	case EXIT_THREAD_SAMPLE: {
+		struct task_sample	*w;
+		const char		*head;
+
 		w = sample_data_body(sample);
+		head = kind == WAKE_UP_NEW_TASK_SAMPLE ?
+		    "wake_up_new_task" : "exit_thread";
+		printf("->%s (%d)\n\t", head, id);
 		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
 		    w->pid, w->tid, w->uid, w->gid, w->suid, w->sgid, w->euid, w->egid);
 		printf("\tcap_inheritable=0x%llx cap_permitted=0x%llx cap_effective=0x%llx\n"
 		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
 		    w->cap_bset, w->cap_ambient);
+		printf("\texit_code=%d\n", w->exit_code);
 		break;
 	}
 	default:
@@ -1195,7 +1229,7 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 		return;
 	if (next != NULL &&
 	    next->pid == min->pid &&
-	    next->type == RAW_EXIT) {
+	    next->type == RAW_EXIT_THREAD) {
 		aux = next;
 		next = RB_NEXT(raw_event_by_pidtime,
 		    &qq->raw_event_by_pidtime, next);
@@ -1339,7 +1373,7 @@ main(int argc, char *argv[])
 			do_drop = 1;
 			break;
 		case 'f':
-			qq_flags |= QQ_FORK_EVENTS;
+			qq_flags |= QQ_PERF_TASK_EVENTS;
 			break;
 		case 'm':
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);

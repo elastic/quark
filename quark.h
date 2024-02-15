@@ -133,6 +133,7 @@ struct perf_group_leader {
 enum sample_kinds {
 	EXEC_SAMPLE = 1,
 	WAKE_UP_NEW_TASK_SAMPLE,
+	EXIT_THREAD_SAMPLE,
 };
 
 struct exec_sample {
@@ -196,7 +197,8 @@ enum {
 	RAW_FORK = 1,
 	RAW_EXEC,
 	RAW_EXIT,
-	RAW_WAKE_UP_NEW_TASK
+	RAW_WAKE_UP_NEW_TASK,
+	RAW_EXIT_THREAD
 };
 
 struct raw_exec {
@@ -268,8 +270,8 @@ struct quark_queue {
 	struct raw_event_by_time	raw_event_by_time;
 	struct raw_event_by_pidtime	raw_event_by_pidtime;
 	struct quark_queue_stats	stats;
-#define QQ_THREAD_EVENTS	(1 << 0)
-#define QQ_FORK_EVENTS		(1 << 1)
+#define QQ_THREAD_EVENTS		(1 << 0)
+#define QQ_PERF_TASK_EVENTS		(1 << 1)
 	int				flags;
 };
 
