@@ -57,7 +57,6 @@ struct perf_sample_id {
 	u32	pid;
 	u32	tid;
 	u64	time;		/* See raw_evenr_insert() */
-	u64	stream_id;	/* We can likely get rid of this */
 	u32	cpu;
 	u32	cpu_unused;
 };

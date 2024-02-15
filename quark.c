@@ -791,7 +791,6 @@ perf_attr_init(struct perf_event_attr *attr, int id)
 	attr->sample_type =
 	    PERF_SAMPLE_TID		|
 	    PERF_SAMPLE_TIME		|
-	    PERF_SAMPLE_STREAM_ID	| /* We can likely get rid of this one */
 	    PERF_SAMPLE_CPU		|
 	    PERF_SAMPLE_RAW;
 
@@ -938,9 +937,9 @@ dump_event(struct perf_event *ev)
 
 	if (sid != NULL)
 		printf("\ts.pid=%d s.tid=%d s.time=%llu (age=%llu)"
-		    " s.stream_id=%llu s.cpu=%d\n",
+		    " s.cpu=%d\n",
 		    sid->pid, sid->tid, sid->time, AGE(sid->time, now64()),
-		    sid->stream_id, sid->cpu);
+		    sid->cpu);
 
 	fflush(stdout);
 }
