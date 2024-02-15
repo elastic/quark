@@ -216,8 +216,12 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 	case RAW_EXIT:
 		printf("%sexit (%d)\n", header, raw->pid);
 		break;
+	case RAW_COMM:
+		printf("%scomm (%d)\n\tcomm=%s\n", header, raw->pid, raw->comm.comm);
+		break;
 	default:
-		printf("->Unhandled(type %d, pid %d)\n", raw->type, raw->pid);
+		warnx("%s unhandled(type %d, pid %d)\n",
+		    __func__, raw->type, raw->pid);
 		break;
 	}
 }
@@ -331,6 +335,7 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 {
 	struct raw_event		*raw = NULL;
 	struct perf_sample_id		*sid = NULL;
+	ssize_t				 n;
 
 	switch (ev->header.type) {
 	case PERF_RECORD_FORK:
@@ -365,7 +370,25 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		if (raw != NULL)
 			sid = &ev->sample.sample_id;
 		break;
+	case PERF_RECORD_COMM:
+		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
+		    ev->comm.pid != ev->comm.tid)
+			return (NULL);
+		if ((raw = raw_event_alloc()) == NULL)
+			return (NULL);
+		raw->type = RAW_COMM;
+		n = strlcpy(raw->comm.comm, ev->comm.comm,
+		    sizeof(raw->comm.comm));
+		/*
+		 * Yes, comm is variable length, maximum 16. The kernel
+		 * guarantees alignment on an 8byte bounday for the sample_id,
+		 * that means we have to calculate the next boundary.
+		 */
+		sid = (struct perf_sample_id *)
+		    ALIGN_UP(ev->comm.comm + n + 1, 8);
+		break;
 	default:
+		warnx("%s unhandled type%d\n", __func__, ev->header.type);
 		return (NULL);
 		break;
 	}
@@ -793,6 +816,8 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	if ((id = fetch_tracing_id("events/sched/sched_process_exec/id")) == -1)
 		return (-1);
 	perf_attr_init(&pgl->attr, id);
+	/* We can get rid of task */
+	pgl->attr.comm = 1;
 	pgl->attr.task = 1;			/* PERF_RECORD_{FORK,EXIT} */
 	pgl->attr.sample_id_all = 1;		/* add sample_id to all types */
 	pgl->fd = perf_event_open(&pgl->attr, -1, cpu, -1, 0);
@@ -907,7 +932,7 @@ dump_event(struct perf_event *ev)
 		break;
 
 	default:
-		printf("->Unhandled(type %d)\n", ev->header.type);
+		warnx("%s: unhandled(type %d)\n", __func__, ev->header.type);
 		break;
 	}
 
@@ -1226,7 +1251,8 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 			break;
 		/* We only aggregate these into fork for now */
 		if (next->type != RAW_EXEC &&
-		    next->type != RAW_EXIT_THREAD)
+		    next->type != RAW_EXIT_THREAD &&
+		    next->type != RAW_COMM)
 			break;
 		aux = next;
 		next = RB_NEXT(raw_event_by_pidtime,

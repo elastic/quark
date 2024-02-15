@@ -11,6 +11,10 @@
 /* Compat, tree.h, queue.h */
 #include "compat.h"
 
+#ifndef ALIGN_UP
+#define ALIGN_UP(_p, _b) (((u64)(_p) + ((_b) - 1)) & ~((_b) - 1))
+#endif
+
 /* btf.c */
 int	quark_btf_init(void);
 ssize_t	quark_btf_offset(const char *);
@@ -78,6 +82,14 @@ struct perf_record_exit {
 	struct perf_sample_id		sample_id;
 };
 
+struct perf_record_comm {
+	struct perf_event_header	header;
+	u32				pid;
+	u32				tid;
+	char				comm[];
+	/* followed by sample_id */
+};
+
 /*
  * Kernels might actually have a different common area, so far we only
  * need common_type, so hold onto that
@@ -105,6 +117,7 @@ struct perf_event {
 		struct perf_event_header	header;
 		struct perf_record_fork		fork;
 		struct perf_record_exit		exit;
+		struct perf_record_comm		comm;
 		struct perf_record_sample	sample;
 	};
 };
@@ -198,7 +211,8 @@ enum {
 	RAW_EXEC,
 	RAW_EXIT,
 	RAW_WAKE_UP_NEW_TASK,
-	RAW_EXIT_THREAD
+	RAW_EXIT_THREAD,
+	RAW_COMM,
 };
 
 struct raw_exec {
@@ -208,6 +222,10 @@ struct raw_exec {
 struct raw_fork {
 	u32			parent_pid;
 	u32			child_pid;
+};
+
+struct raw_comm {
+	char			comm[16];
 };
 
 struct raw_event {
@@ -224,6 +242,7 @@ struct raw_event {
 	union {
 		struct raw_exec			exec;
 		struct raw_fork			fork;
+		struct raw_comm			comm;
 		struct task_sample		task_sample;
 	};
 };
