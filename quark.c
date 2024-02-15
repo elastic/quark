@@ -1353,6 +1353,15 @@ priv_drop(void)
 		err(1, "error dropping privileges");
 }
 
+static void
+usage(void)
+{
+	fprintf(stderr, "usage: %s [-Dfpt] [-m max_nodes]\n",
+	    program_invocation_short_name);
+
+	exit(1);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1392,7 +1401,7 @@ main(int argc, char *argv[])
 			qq_flags |= QQ_THREAD_EVENTS;
 			break;
 		default:
-			errx(1, "usage: TODO");
+			usage();
 		}
 	}
 
