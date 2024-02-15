@@ -1374,7 +1374,7 @@ priv_drop(void)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-Dfpt] [-m max_nodes]\n",
+	fprintf(stderr, "usage: %s [-Dfptv] [-m max_nodes]\n",
 	    program_invocation_short_name);
 
 	exit(1);
@@ -1385,7 +1385,7 @@ main(int argc, char *argv[])
 {
 	int				 ch, maxnodes, nodes, nproc;
 	int				 dump_perf, qq_flags, ncpus;
-	int				 empty_rings, credits, do_drop;
+	int				 empty_rings, credits, do_drop, verbose;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
@@ -1395,9 +1395,9 @@ main(int argc, char *argv[])
 
 	maxnodes = -1;
 	nodes = 0;
-	qq_flags = dump_perf = do_drop = 0;
+	qq_flags = dump_perf = do_drop = verbose = 0;
 
-	while ((ch = getopt(argc, argv, "Dfm:pt")) != -1) {
+	while ((ch = getopt(argc, argv, "Dfm:ptv")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -1417,6 +1417,9 @@ main(int argc, char *argv[])
 			break;
 		case 't':
 			qq_flags |= QQ_THREAD_EVENTS;
+			break;
+		case 'v':
+			verbose++;
 			break;
 		default:
 			usage();
@@ -1475,7 +1478,7 @@ main(int argc, char *argv[])
 		/* If maxnodes is set, we don't want to process, only collect */
 		if (maxnodes == -1) {
 			nproc = quark_queue_process(qq);
-			if (nproc)
+			if (verbose && nproc)
 				printf("removed %d nodes\n", nproc);
 		}
 
