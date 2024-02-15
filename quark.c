@@ -191,14 +191,19 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		    "wake_up_new_task" : "exit_thread";
 		printf("%s%s (%d)\n\t", header, head, raw->pid);
 		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
-		    w->pid, w->tid, w->uid, w->gid, w->suid, w->sgid, w->euid, w->egid);
-		printf("\tstart_time=%llu start_boottime=%llu\n", w->start_time, w->start_boottime);
+		    w->pid, w->tid, w->uid, w->gid, w->suid, w->sgid, w->euid,
+		    w->egid);
+		printf("\tstart_time=%llu start_boottime=%llu",
+		    w->start_time, w->start_boottime);
+		if (raw->type == RAW_WAKE_UP_NEW_TASK)
+			printf(" norm_start=%llu", raw->time);
+		printf("\n");
 		printf("\tcap_inheritable=0x%llx cap_permitted=0x%llx cap_effective=0x%llx\n"
 		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
 		    w->cap_bset, w->cap_ambient);
 		if (raw->type == RAW_EXIT_THREAD)
-			printf("\texit_code=%d\n", w->exit_code);
+			printf("\texit_code=%d norm_end=%llu\n", w->exit_code, raw->time);
 		TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
 			raw_event_dump(agg, 1);
 		}
