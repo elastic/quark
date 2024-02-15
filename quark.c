@@ -1220,21 +1220,14 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 	}
 	next = RB_NEXT(raw_event_by_pidtime, &qq->raw_event_by_pidtime,
 	    min);
-
-	if (next != NULL &&
-	    next->pid == min->pid &&
-	    next->type == RAW_EXEC) {
-		aux = next;
-		next = RB_NEXT(raw_event_by_pidtime,
-		    &qq->raw_event_by_pidtime, next);
-		raw_event_remove(qq, aux);
-		TAILQ_INSERT_TAIL(&min->agg_queue, aux, agg_entry);
-		agg++;
-	} else
-		return;
-	if (next != NULL &&
-	    next->pid == min->pid &&
-	    next->type == RAW_EXIT_THREAD) {
+	while (next != NULL) {
+		/* Different pids can't merge */
+		if (next->pid != min->pid)
+			break;
+		/* We only aggregate these into fork for now */
+		if (next->type != RAW_EXEC &&
+		    next->type != RAW_EXIT_THREAD)
+			break;
 		aux = next;
 		next = RB_NEXT(raw_event_by_pidtime,
 		    &qq->raw_event_by_pidtime, next);
