@@ -154,24 +154,24 @@ struct exec_sample {
 	s32				old_pid;
 };
 
-/* 8 byte aligned, we have to be careful with padding still */
+/* Sorted by alignment restriction, 64->32->16->8 */
 struct task_sample {
 	u64	probe_ip;
+	u64	cap_inheritable;
+	u64	cap_permitted;
+	u64	cap_effective;
+	u64	cap_bset;
+	u64	cap_ambient;
+	u64	start_time;
+	u64	start_boottime;
 	u32	uid;
 	u32	gid;
 	u32	suid;
 	u32	sgid;
 	u32	euid;
 	u32	egid;
-	u64	cap_inheritable;
-	u64	cap_permitted;
-	u64	cap_effective;
-	u64	cap_bset;
-	u64	cap_ambient;
 	u32	pid;
 	u32	tid;
-	u64	start_time;
-	u64	start_boottime;
 	s32	exit_code;
 };
 

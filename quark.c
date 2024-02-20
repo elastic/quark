@@ -41,21 +41,21 @@ u8	id_to_sample_kind[MAX_SAMPLE_IDS];
 ssize_t	quark_probe_data_body_offset;
 
 #define TASK_SAMPLE {										\
+	{ "cap_inheritable",	"di", "u64", "task_struct.cred cred.cap_inheritable"	}, 	\
+	{ "cap_permitted",	"di", "u64", "task_struct.cred cred.cap_permitted"	}, 	\
+	{ "cap_effective",	"di", "u64", "task_struct.cred cred.cap_effective"	}, 	\
+	{ "cap_bset",		"di", "u64", "task_struct.cred cred.cap_bset"		}, 	\
+	{ "cap_ambient",	"di", "u64", "task_struct.cred cred.cap_ambient"	}, 	\
+	{ "start_time",		"di", "u64", "task_struct.start_time"			}, 	\
+	{ "start_boottime",	"di", "u64", "task_struct.start_boottime"		}, 	\
 	{ "uid",		"di", "u32", "task_struct.cred cred.uid"		},	\
 	{ "gid",		"di", "u32", "task_struct.cred cred.gid"		},	\
 	{ "suid",		"di", "u32", "task_struct.cred cred.suid"		},	\
 	{ "sgid",		"di", "u32", "task_struct.cred cred.sgid"		},	\
 	{ "euid",		"di", "u32", "task_struct.cred cred.euid"		},	\
 	{ "egid",		"di", "u32", "task_struct.cred cred.egid"		},	\
-	{ "cap_inheritable",	"di", "u64", "task_struct.cred cred.cap_inheritable"	},	\
-	{ "cap_permitted",	"di", "u64", "task_struct.cred cred.cap_permitted"	},	\
-	{ "cap_effective",	"di", "u64", "task_struct.cred cred.cap_effective"	},	\
-	{ "cap_bset",		"di", "u64", "task_struct.cred cred.cap_bset"		},	\
-	{ "cap_ambient",	"di", "u64", "task_struct.cred cred.cap_ambient"	},	\
 	{ "pid",		"di", "u32", "task_struct.tgid"				},	\
 	{ "tid",		"di", "u32", "task_struct.pid"				},	\
-	{ "start_time",		"di", "u64", "task_struct.start_time"			},	\
-	{ "start_boottime",	"di", "u64", "task_struct.start_boottime"		},	\
 	{ "exit_code",		"di", "s32", "task_struct.exit_code"			},	\
 	{ NULL,			NULL, NULL,  NULL					}}
 
