@@ -604,23 +604,58 @@ parse_probe_data_body_offset(void)
 static int
 kprobe_exp(char *exp, ssize_t *off1)
 {
-	const char	*errstr;
 	ssize_t		 off;
 
-	if (*exp == '+' || *exp == '-') {
-		off = strtonum(exp, INT32_MIN, INT32_MAX, &errstr);
-		if (errstr != NULL) {
-			warnx("%s: bad +val %s: %s",
-			    __func__, exp, errstr);
+	switch (*exp) {
+	case '(': {
+		char	*p, *o, *pa, *pb, c;
+		ssize_t	 ia, ib;
+
+		if ((p = strdup(exp)) == NULL)
+			return (-1);
+		o = p;
+		*p++ = 0;
+		pa = p;
+		if (((p = strchr(pa, '+')) == NULL) &&
+		    ((p = strchr(pa, '-')) == NULL)) {
+			free(o);
 			return (-1);
 		}
-	} else {
-		off = quark_btf_offset(exp);
-		if (off == -1) {
+		c = *p;
+		*p++ = 0;
+		pb = p;
+		if ((p = strchr(p, ')')) == NULL) {
+			warnx("%s: %s unbalanced parenthesis\n", __func__, exp);
+			free(o);
+			return (-1);
+		}
+		*p = 0;
+		if (kprobe_exp(pa, &ia) == -1) {
+			warnx("%s: %s is unresolved\n", __func__, pa);
+			free(o);
+			return (-1);
+		}
+		if (kprobe_exp(pb, &ib) == -1) {
+			warnx("%s: %s is unresolved\n", __func__, pb);
+			free(o);
+			return (-1);
+		}
+		free(o);
+		off = c == '+' ? ia + ib : ia - ib;
+		break;
+	}
+	default: {
+		const char	*errstr;
+
+		off = strtonum(exp, INT32_MIN, INT32_MAX, &errstr);
+		if (errstr == NULL)
+			break;
+		if ((off = quark_btf_offset(exp)) == -1) {
 			warnx("%s: %s is unresolved\n", __func__, exp);
 			return (-1);
 		}
-	}
+		break;
+	}}
 
 	*off1 = off;
 
