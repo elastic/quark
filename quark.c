@@ -601,6 +601,32 @@ parse_probe_data_body_offset(void)
 	return (data_offset);
 }
 
+static int
+kprobe_exp(char *exp, ssize_t *off1)
+{
+	const char	*errstr;
+	ssize_t		 off;
+
+	if (*exp == '+' || *exp == '-') {
+		off = strtonum(exp, INT32_MIN, INT32_MAX, &errstr);
+		if (errstr != NULL) {
+			warnx("%s: bad +val %s: %s",
+			    __func__, exp, errstr);
+			return (-1);
+		}
+	} else {
+		off = quark_btf_offset(exp);
+		if (off == -1) {
+			warnx("%s: %s is unresolved\n", __func__, exp);
+			return (-1);
+		}
+	}
+
+	*off1 = off;
+
+	return (0);
+}
+
 static char *
 kprobe_make_arg(struct kprobe_arg *karg)
 {
@@ -631,20 +657,8 @@ kprobe_make_arg(struct kprobe_arg *karg)
 	for (pp = tokens; *pp != NULL; pp++) {
 		p = *pp;
 		last = kstr;
-		if (*p == '+') {
-			const char *errstr;
-			off = strtonum(p + 1, 0, UINT32_MAX, &errstr);
-			if (errstr != NULL) {
-				warnx("%s: bad +val %s: %s",
-				    __func__, p, errstr);
-				off = -1;
-			}
-		} else
-			off = quark_btf_offset(p);
-		if (off == -1 ||
+		if (kprobe_exp(p, &off) == -1 ||
 		    asprintf(&kstr, "+%zd(%s)", off, last) == -1) {
-			if (off == -1)
-				warnx("%s: %s is unresolved\n", __func__, p);
 			free(arg_dsl);
 			free(last);
 			return (NULL);
