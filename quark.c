@@ -40,25 +40,49 @@ u8	id_to_sample_kind[MAX_SAMPLE_IDS];
  */
 ssize_t	quark_probe_data_body_offset;
 
-#define TASK_SAMPLE {										\
-	{ "cap_inheritable",	"di", "u64", "task_struct.cred cred.cap_inheritable"	}, 	\
-	{ "cap_permitted",	"di", "u64", "task_struct.cred cred.cap_permitted"	}, 	\
-	{ "cap_effective",	"di", "u64", "task_struct.cred cred.cap_effective"	}, 	\
-	{ "cap_bset",		"di", "u64", "task_struct.cred cred.cap_bset"		}, 	\
-	{ "cap_ambient",	"di", "u64", "task_struct.cred cred.cap_ambient"	}, 	\
-	{ "start_time",		"di", "u64", "task_struct.start_time"			}, 	\
-	{ "start_boottime",	"di", "u64", "task_struct.start_boottime"		}, 	\
-	{ "uid",		"di", "u32", "task_struct.cred cred.uid"		},	\
-	{ "gid",		"di", "u32", "task_struct.cred cred.gid"		},	\
-	{ "suid",		"di", "u32", "task_struct.cred cred.suid"		},	\
-	{ "sgid",		"di", "u32", "task_struct.cred cred.sgid"		},	\
-	{ "euid",		"di", "u32", "task_struct.cred cred.euid"		},	\
-	{ "egid",		"di", "u32", "task_struct.cred cred.egid"		},	\
-	{ "pid",		"di", "u32", "task_struct.tgid"				},	\
-	{ "tid",		"di", "u32", "task_struct.pid"				},	\
-	{ "exit_code",		"di", "s32", "task_struct.exit_code"			},	\
-	{ NULL,			NULL, NULL,  NULL					}}
+#define S(_a)		#_a
+#define XS(_a)		S(_a)
+#define PWD_K(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent))
+#define PWD_S(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent)) " dentry.d_name.name +0"
 
+#define TASK_SAMPLE {																	\
+	{ "cap_inheritable",	"di", "u64",	"task_struct.cred cred.cap_inheritable"								},	\
+	{ "cap_permitted",	"di", "u64",	"task_struct.cred cred.cap_permitted",								},	\
+	{ "cap_effective",	"di", "u64",	"task_struct.cred cred.cap_effective"								},	\
+	{ "cap_bset",		"di", "u64",	"task_struct.cred cred.cap_bset"								},	\
+	{ "cap_ambient",	"di", "u64",	"task_struct.cred cred.cap_ambient"								},	\
+	{ "start_time",		"di", "u64",	"task_struct.start_time"									},	\
+	{ "start_boottime",	"di", "u64",	"task_struct.start_boottime"									},	\
+	{ "root_k",		"di", "u64",	"task_struct.fs fs_struct.root.dentry"								},	\
+	{ "mnt_root_k",		"di", "u64",	"task_struct.fs fs_struct.pwd.mnt vfsmount.mnt_root"						},	\
+	{ "mnt_mountpoint_k",	"di", "u64",	"task_struct.fs fs_struct.pwd.mnt (mount.mnt_mountpoint-mount.mnt)"				},	\
+	{ "pwd_k0",		"di", "u64",	PWD_K(0, 0)											},	\
+	{ "pwd_k1",		"di", "u64",	PWD_K(0, 1)											},	\
+	{ "pwd_k2",		"di", "u64",	PWD_K(0, 2)											},	\
+	{ "pwd_k3",		"di", "u64",	PWD_K(0, 3)											},	\
+	{ "pwd_k4",		"di", "u64",	PWD_K(0, 4)											},	\
+	{ "pwd_k5",		"di", "u64",	PWD_K(0, 5)											},	\
+	{ "pwd_k6",		"di", "u64",	PWD_K(0, 6)											},	\
+	{ "root_s",		"di", "string",	"task_struct.fs fs_struct.root.dentry dentry.d_name.name +0"					},	\
+	{ "mnt_root_s",		"di", "string",	"task_struct.fs fs_struct.pwd.mnt vfsmount.mnt_root dentry.d_name.name +0"			},	\
+	{ "mnt_mountpoint_s",	"di", "string",	"task_struct.fs fs_struct.pwd.mnt (mount.mnt_mountpoint-mount.mnt) dentry.d_name.name +0"	},	\
+	{ "pwd_s0",		"di", "string",	PWD_S(0, 0)											},	\
+	{ "pwd_s1",		"di", "string",	PWD_S(0, 1)											},	\
+	{ "pwd_s2",		"di", "string",	PWD_S(0, 2)											},	\
+	{ "pwd_s3",		"di", "string",	PWD_S(0, 3)											},	\
+	{ "pwd_s4",		"di", "string",	PWD_S(0, 4)											},	\
+	{ "pwd_s5",		"di", "string",	PWD_S(0, 5)											},	\
+	{ "pwd_s6",		"di", "string",	PWD_S(0, 6)											},	\
+	{ "uid",		"di", "u32",	"task_struct.cred cred.uid"									},	\
+	{ "gid",		"di", "u32",	"task_struct.cred cred.gid"									},	\
+	{ "suid",		"di", "u32",	"task_struct.cred cred.suid"									},	\
+	{ "sgid",		"di", "u32",	"task_struct.cred cred.sgid"									},	\
+	{ "euid",		"di", "u32",	"task_struct.cred cred.euid"									},	\
+	{ "egid",		"di", "u32",	"task_struct.cred cred.egid"									},	\
+	{ "pid",		"di", "u32",	"task_struct.tgid"										},	\
+	{ "tid",		"di", "u32",	"task_struct.pid"										},	\
+	{ "exit_code",		"di", "s32",	"task_struct.exit_code"										},	\
+	{ NULL,			NULL, NULL,  	NULL												}}
 
 struct kprobe kp_wake_up_new_task = {
 	"quark_wake_up_new_task",
@@ -75,6 +99,11 @@ struct kprobe kp_exit_thread = {
 	0,
 	TASK_SAMPLE
 };
+
+#undef PWD_S
+#undef PWD_K
+#undef XS
+#undef S
 
 struct kprobe *all_kprobes[] = {
 	&kp_wake_up_new_task,
@@ -112,6 +141,10 @@ raw_event_free(struct raw_event *raw)
 	switch (raw->type) {
 	case RAW_EXEC:
 		qstr_free(&raw->exec.filename);
+		break;
+	case RAW_WAKE_UP_NEW_TASK:
+	case RAW_EXIT_THREAD:
+		free(raw->task.cwd);
 		break;
 	default:
 		break;
@@ -184,14 +217,14 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 	switch (raw->type) {
 	case RAW_WAKE_UP_NEW_TASK: /* FALLTHROUGH */
 	case RAW_EXIT_THREAD: {
-		struct task_sample	*w = &raw->task_sample;
+		struct raw_task		*w = &raw->task;
 		const char		*head;
 
 		head = raw->type == RAW_WAKE_UP_NEW_TASK ?
 		    "wake_up_new_task" : "exit_thread";
 		printf("%s%s (%d)\n\t", header, head, raw->pid);
 		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
-		    w->pid, w->tid, w->uid, w->gid, w->suid, w->sgid, w->euid,
+		    raw->pid, raw->tid, w->uid, w->gid, w->suid, w->sgid, w->euid,
 		    w->egid);
 		printf("\tstart_time=%llu start_boottime=%llu",
 		    w->start_time, w->start_boottime);
@@ -202,7 +235,9 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
 		    w->cap_bset, w->cap_ambient);
-		if (raw->type == RAW_EXIT_THREAD)
+		if (raw->type == RAW_WAKE_UP_NEW_TASK)
+			printf("\tworking_directory=%s\n", w->cwd);
+		else if (raw->type == RAW_EXIT_THREAD)
 			printf("\texit_code=%d norm_end=%llu\n", w->exit_code, raw->time);
 		TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
 			raw_event_dump(agg, 1);
@@ -224,7 +259,17 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		    __func__, raw->type, raw->pid);
 		break;
 	}
+
+	fflush(stdout);
 }
+
+static char *
+str_of_dataloc(struct perf_record_sample *sample,
+    struct perf_sample_data_loc *data_loc)
+{
+	return (sample->data + data_loc->offset);
+}
+
 #if 0
 /*
  * Copies out the string pointed to by data size, if retval is >= than dst_size,
@@ -279,6 +324,43 @@ sample_kind(struct perf_record_sample *sample)
 	return (sample_kind_of_id(sample_data_id(sample)));
 }
 #endif
+
+static char *
+build_path(struct path_ctx *ctx)
+{
+	int	 i, done;
+	char	*p, *pwd, *ppwd, path[MAXPATHLEN];
+	u64	 pwd_k;
+
+	p = &path[sizeof(path) - 1];
+	*p = 0;
+	done = 0;
+	for (i = 0; i < (int)nitems(ctx->pwd) && !done; i++) {
+		pwd_k = ctx->pwd[i].pwd_k;
+		pwd = ctx->pwd[i].pwd;
+		if (pwd_k == ctx->root_k)
+			break;
+		if (pwd_k == ctx->mnt_root_k) {
+			pwd = ctx->mnt_mountpoint;
+			done = 1;
+		}
+		/* XXX this strlen sucks as we had the length on the wire */
+		ppwd = pwd + strlen(pwd);
+		/* +1 is the / */
+		/* XXX this is way too dangerous XXX */
+		if (((ppwd - pwd) + 1) > (p - path))
+			return (errno = ENAMETOOLONG, NULL);
+		while (ppwd != pwd)
+			*--p = *--ppwd;
+		*--p = '/';
+	}
+	if (*p == 0)
+		*--p = '/';
+
+	/* XXX double copy XXX */
+	return (strdup(p));
+}
+
 static struct raw_event *
 perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 {
@@ -303,7 +385,9 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
 	case EXIT_THREAD_SAMPLE: {
-		struct task_sample *w = sample_data_body(sample);
+		struct task_sample	*w = sample_data_body(sample);
+		struct path_ctx		 pctx;
+		int			 i;
 		/*
 		 * ev->sample.sample_id.pid is the parent, if the new task has
 		 * the same pid as it, then this is a thread event
@@ -313,13 +397,40 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			return (NULL);
 		if ((raw = raw_event_alloc()) == NULL)
 			return (NULL);
-		raw->task_sample = *w;
 		if (kind == WAKE_UP_NEW_TASK_SAMPLE) {
 			raw->type = RAW_WAKE_UP_NEW_TASK;
 			raw->pid = w->pid;
 			raw->tid = w->tid;
+			pctx.root = str_of_dataloc(sample, &w->root_s);
+			pctx.root_k = w->root_k;
+			pctx.mnt_root = str_of_dataloc(sample, &w->mnt_root_s);
+			pctx.mnt_root_k = w->mnt_root_k;
+			pctx.mnt_mountpoint = str_of_dataloc(sample,
+			    &w->mnt_mountpoint_s);
+			pctx.mnt_mountpoint_k = w->mnt_mountpoint_k;
+			for (i = 0; i < (int)nitems(pctx.pwd); i++) {
+				pctx.pwd[i].pwd = str_of_dataloc(sample,
+				    &w->pwd_s[i]);
+				pctx.pwd[i].pwd_k = w->pwd_k[i];
+			}
+			raw->task.cwd = build_path(&pctx);
 		} else
 			raw->type = RAW_EXIT_THREAD;
+		raw->task.cap_inheritable = w->cap_inheritable;
+		raw->task.cap_permitted = w->cap_permitted;
+		raw->task.cap_effective = w->cap_effective;
+		raw->task.cap_bset = w->cap_bset;
+		raw->task.cap_ambient = w->cap_ambient;
+		raw->task.start_time = w->start_time;
+		raw->task.start_boottime = w->start_boottime;
+		raw->task.uid = w->uid;
+		raw->task.gid = w->gid;
+		raw->task.suid = w->suid;
+		raw->task.sgid = w->sgid;
+		raw->task.euid = w->euid;
+		raw->task.egid = w->egid;
+		raw->task.exit_code = w->exit_code;
+
 		break;
 	}
 	default:
@@ -381,7 +492,7 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		    sizeof(raw->comm.comm));
 		/*
 		 * Yes, comm is variable length, maximum 16. The kernel
-		 * guarantees alignment on an 8byte bounday for the sample_id,
+		 * guarantees alignment on an 8byte boundary for the sample_id,
 		 * that means we have to calculate the next boundary.
 		 */
 		sid = (struct perf_sample_id *)
@@ -439,10 +550,10 @@ perf_mmap_update_tail(struct perf_event_mmap_page *metadata, uint64_t tail)
 static struct perf_event *
 perf_mmap_read(struct perf_mmap *mm)
 {
-	struct perf_event_header *evh;
-	uint64_t data_head;
-	int diff;
-	ssize_t leftcont;	/* contiguous size left */
+	struct perf_event_header	*evh;
+	uint64_t			 data_head;
+	int				 diff;
+	ssize_t				 leftcont;	/* contiguous size left */
 
 	data_head = perf_mmap_load_head(mm->metadata);
 	diff = data_head - mm->data_tmp_tail;
@@ -715,9 +826,9 @@ kprobe_make_arg(struct kprobe_arg *karg)
 static char *
 kprobe_build_string(struct kprobe *k)
 {
-	struct kprobe_arg *karg;
-	char *p, *o, *a;
-	int r;
+	struct kprobe_arg	*karg;
+	char			*p, *o, *a;
+	int			 r;
 
 	r = asprintf(&p, "%c:%s %s", k->is_kret ? 'r' : 'p', k->name,
 	    k->target);
@@ -1033,10 +1144,9 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 			warnx("%s: exec filename truncated", __func__);
 		break;
 	case RAW_WAKE_UP_NEW_TASK: {
-		struct task_sample *w = &raw->task_sample;
 		color = "orange";
 		if (snprintf(label, sizeof(label), "NEW_TASK %d",
-		    w->pid) >= (int)sizeof(label))
+		    raw->pid) >= (int)sizeof(label))
 			warnx("%s: snprintf", __func__);
 		break;
 	}

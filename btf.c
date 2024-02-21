@@ -12,6 +12,7 @@ struct target {
 	ssize_t		 offset; /* in bytes, not bits */
 } targets[] = {
 	{ "task_struct.cred",		-1 },
+	{ "task_struct.fs",		-1 },
 	{ "task_struct.pid",		-1 },
 	{ "task_struct.tgid",		-1 },
 	{ "task_struct.start_time",	-1 },
@@ -29,6 +30,14 @@ struct target {
 	{ "cred.cap_effective",		-1 },
 	{ "cred.cap_bset",		-1 },
 	{ "cred.cap_ambient",		-1 },
+	{ "dentry.d_name.name",		-1 },
+	{ "dentry.d_parent",		-1 },
+	{ "mount.mnt",			-1 },
+	{ "mount.mnt_mountpoint",	-1 },
+	{ "fs_struct.pwd.dentry",	-1 },
+	{ "fs_struct.pwd.mnt",		-1 },
+	{ "fs_struct.root.dentry",	-1 },
+	{ "vfsmount.mnt_root",		-1 },
 	{ NULL,				-1 },
 	/* Keep this table in sync with enum btf_target_id */
 };

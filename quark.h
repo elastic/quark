@@ -11,9 +11,23 @@
 /* Compat, tree.h, queue.h */
 #include "compat.h"
 
+/* Misc */
 #ifndef ALIGN_UP
 #define ALIGN_UP(_p, _b) (((u64)(_p) + ((_b) - 1)) & ~((_b) - 1))
 #endif
+
+#define RPT0(_x)
+#define RPT1(_x) _x
+#define RPT2(_x) RPT1(_x) _x
+#define RPT3(_x) RPT2(_x) _x
+#define RPT4(_x) RPT3(_x) _x
+#define RPT5(_x) RPT4(_x) _x
+#define RPT6(_x) RPT5(_x) _x
+#define RPT7(_x) RPT6(_x) _x
+#define RPT8(_x) RPT7(_x) _x
+#define RPT9(_x) RPT8(_x) _x
+#define RPT10(_x) RPT9(_x) _x
+#define RPT(TENS,ONES,X) RPT##TENS(RPT10(X)) RPT##ONES(X)
 
 /* btf.c */
 int	quark_btf_init(void);
@@ -154,8 +168,11 @@ struct exec_sample {
 	s32				old_pid;
 };
 
+#define MAX_PWD		7
+
 /* Sorted by alignment restriction, 64->32->16->8 */
 struct task_sample {
+	/* 64bit */
 	u64	probe_ip;
 	u64	cap_inheritable;
 	u64	cap_permitted;
@@ -164,6 +181,15 @@ struct task_sample {
 	u64	cap_ambient;
 	u64	start_time;
 	u64	start_boottime;
+	u64	root_k;
+	u64	mnt_root_k;
+	u64	mnt_mountpoint_k;
+	u64	pwd_k[MAX_PWD];
+	/* 32bit */
+	struct perf_sample_data_loc root_s;
+	struct perf_sample_data_loc mnt_root_s;
+	struct perf_sample_data_loc mnt_mountpoint_s;
+	struct perf_sample_data_loc pwd_s[MAX_PWD];
 	u32	uid;
 	u32	gid;
 	u32	suid;
@@ -202,6 +228,19 @@ struct kprobe_state {
 	int				 group_fd;
 };
 
+struct path_ctx {
+	char	*root;
+	u64	 root_k;
+	char	*mnt_root;
+	u64	 mnt_root_k;
+	char	*mnt_mountpoint;
+	u64	 mnt_mountpoint_k;
+	struct {
+		char	*pwd;
+		u64	 pwd_k;
+	} pwd[MAX_PWD];
+};
+
 /*
  * Raw events
  */
@@ -227,6 +266,24 @@ struct raw_comm {
 	char			comm[16];
 };
 
+struct raw_task {
+	u64	 cap_inheritable;
+	u64	 cap_permitted;
+	u64	 cap_effective;
+	u64	 cap_bset;
+	u64	 cap_ambient;
+	u64	 start_time;
+	u64	 start_boottime;
+	u32	 uid;
+	u32	 gid;
+	u32	 suid;
+	u32	 sgid;
+	u32	 euid;
+	u32	 egid;
+	s32	 exit_code;
+	char	*cwd;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -242,7 +299,7 @@ struct raw_event {
 		struct raw_exec			exec;
 		struct raw_fork			fork;
 		struct raw_comm			comm;
-		struct task_sample		task_sample;
+		struct raw_task			task;
 	};
 };
 
