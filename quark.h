@@ -49,6 +49,10 @@ int	qstr_ensure(struct qstr *, size_t);
 int	qstr_copy_data_loc(struct qstr *, struct perf_record_sample *,
     struct perf_sample_data_loc *);
 void	qstr_free(struct qstr *);
+
+/* kprobe.c */
+extern struct kprobe *all_kprobes[];
+
 /*
  * Time helpers
  */
