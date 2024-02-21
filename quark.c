@@ -1016,7 +1016,13 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 		(void)snprintf(label, sizeof(label), "FORK %d",
 		    raw->fork.child_pid);
 		break;
+	case RAW_COMM:
+		color = "yellow";
+		(void)snprintf(label, sizeof(label), "COMM %s",
+		    raw->comm.comm);
+		break;
 	case RAW_EXIT:
+	case RAW_EXIT_THREAD:
 		color = "lightseagreen";
 		(void)strlcpy(label, "EXIT", sizeof(label));
 		break;
