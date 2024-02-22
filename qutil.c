@@ -74,6 +74,17 @@ qstr_copy_data_loc(struct qstr *qstr,
 
 	return (data_loc->size);
 }
+
+int
+qstr_memcpy(struct qstr *qstr, void *src, size_t len)
+{
+	if (qstr_ensure(qstr, len) == -1)
+		return (-1);
+	memcpy(qstr->p, src, len);
+
+	return (0);
+}
+
 #if 0
 ssize_t
 qstr_strlcpy(struct qstr *qstr, const char *src)

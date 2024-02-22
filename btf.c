@@ -28,11 +28,13 @@ struct target {
 	{ "fs_struct.pwd.dentry",	-1 },
 	{ "fs_struct.pwd.mnt",		-1 },
 	{ "fs_struct.root.dentry",	-1 },
+	{ "mm_struct.(anon).start_stack",-1 },
 	{ "mount.mnt",			-1 },
 	{ "mount.mnt_mountpoint",	-1 },
 	{ "task_struct.cred",		-1 },
 	{ "task_struct.exit_code",	-1 },
 	{ "task_struct.fs",		-1 },
+	{ "task_struct.mm",		-1 },
 	{ "task_struct.pid",		-1 },
 	{ "task_struct.start_boottime",	-1 },
 	{ "task_struct.start_time",	-1 },
@@ -72,6 +74,8 @@ btf_offsetof(struct btf *btf, struct btf_type const *t, const char *mname)
 		return (errno = EINVAL, NULL);
 	vlen = BTF_INFO_VLEN(t->info);
 	m = (const struct btf_member *)(t + 1);
+	if (!strcmp(mname, "(anon)"))
+		mname = "";
 
 	for (i = 0; i < vlen; i++, m++) {
 		mname1 = btf__name_by_offset(btf, m->name_off);
@@ -143,7 +147,7 @@ quark_btf_init(void)
 		return (-1);
 
 	failed = 0;
-	for (ta = targets; ta ->dotname != NULL; ta++) {
+	for (ta = targets; ta->dotname != NULL; ta++) {
 		ta->offset = btf_root_offset(btf, ta->dotname);
 		if (ta->offset == -1) {
 			warnx("%s: dotname=%s failed",

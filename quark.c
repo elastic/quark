@@ -75,6 +75,9 @@ raw_event_free(struct raw_event *raw)
 	case RAW_EXIT_THREAD:
 		free(raw->task.cwd);
 		break;
+	case RAW_EXEC_CONNECTOR:
+		qstr_free(&raw->exec_connector.args);
+		break;
 	default:
 		break;
 	}
@@ -183,6 +186,19 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 	case RAW_COMM:
 		printf("%scomm (%d)\n\tcomm=%s\n", header, raw->pid, raw->comm.comm);
 		break;
+	case RAW_EXEC_CONNECTOR: {
+		int	 argc;
+		char	*p;
+
+		printf("%sexec_connector (%d)\n\targs=", header, raw->pid);
+		p = raw->exec_connector.args.p;
+		for (argc = 0; argc < raw->exec_connector.argc; argc++) {
+			printf("%s ", p);
+			p += strlen(p) + 1;
+		}
+		printf("\n");
+		break;
+	}
 	default:
 		warnx("%s unhandled(type %d, pid %d)\n",
 		    __func__, raw->type, raw->pid);
@@ -360,6 +376,32 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		raw->task.egid = w->egid;
 		raw->task.exit_code = w->exit_code;
 
+		break;
+	}
+	case EXEC_CONNECTOR_SAMPLE: {
+		char				*start, *p, *end;
+		int				 i;
+		struct exec_connector_sample	*exec_sample = sample_data_body(sample);
+		struct raw_exec_connector	*exec;
+
+		if ((raw = raw_event_alloc()) == NULL)
+			return (NULL);
+		raw->type = RAW_EXEC_CONNECTOR;
+		exec = &raw->exec_connector;
+		qstr_init(&exec->args);
+
+		start = p = (char *)&exec_sample->stack[0];
+		end = start + sizeof(exec_sample->stack);
+
+		for (i = 0; i < (int)exec_sample->argc && p < end; i++)
+			p += strnlen(p, end - p) + 1;
+		if (p >= end)
+			p = end;
+		exec->argc = i;
+		if (qstr_memcpy(&exec->args, start, p - start) == -1)
+			warnx("can't copy args");
+		if (p == end)
+			exec->args.p[p - start - 1] = 0;
 		break;
 	}
 	default:
@@ -1018,7 +1060,6 @@ dump_event(struct perf_event *ev)
 		sid = &sample->sample_id;
 		dump_sample(sample);
 		break;
-
 	default:
 		warnx("%s: unhandled(type %d)\n", __func__, ev->header.type);
 		break;
@@ -1079,7 +1120,14 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 			warnx("%s: snprintf", __func__);
 		break;
 	}
+	case RAW_EXEC_CONNECTOR:
+		color = "lightskyblue";
+		if (snprintf(label, sizeof(label), "EXEC_CONNECTOR")
+		    >= (int)sizeof(label))
+			warnx("%s: exec_connector truncated", __func__);
+		break;
 	default:
+		warnx("%s: %d unhandled\n", __func__, raw->type);
 		color = "black";
 		break;
 	}
@@ -1345,7 +1393,8 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 		/* We only aggregate these into fork for now */
 		if (next->type != RAW_EXEC &&
 		    next->type != RAW_EXIT_THREAD &&
-		    next->type != RAW_COMM)
+		    next->type != RAW_COMM &&
+		    next->type != RAW_EXEC_CONNECTOR)
 			break;
 		aux = next;
 		next = RB_NEXT(raw_event_by_pidtime,

@@ -48,6 +48,7 @@ void	qstr_init(struct qstr *);
 int	qstr_ensure(struct qstr *, size_t);
 int	qstr_copy_data_loc(struct qstr *, struct perf_record_sample *,
     struct perf_sample_data_loc *);
+int	qstr_memcpy(struct qstr *, void *, size_t);
 void	qstr_free(struct qstr *);
 
 /* kprobe.c */
@@ -164,6 +165,7 @@ enum sample_kinds {
 	EXEC_SAMPLE = 1,
 	WAKE_UP_NEW_TASK_SAMPLE,
 	EXIT_THREAD_SAMPLE,
+	EXEC_CONNECTOR_SAMPLE
 };
 
 struct exec_sample {
@@ -203,6 +205,12 @@ struct task_sample {
 	u32	pid;
 	u32	tid;
 	s32	exit_code;
+};
+
+struct exec_connector_sample {
+	u64	probe_ip;
+	u64	argc;
+	u64	stack[100];
 };
 
 /*
@@ -255,6 +263,7 @@ enum {
 	RAW_WAKE_UP_NEW_TASK,
 	RAW_EXIT_THREAD,
 	RAW_COMM,
+	RAW_EXEC_CONNECTOR,
 };
 
 struct raw_exec {
@@ -288,6 +297,11 @@ struct raw_task {
 	char	*cwd;
 };
 
+struct raw_exec_connector {
+	int		argc;
+	struct qstr	args;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -304,6 +318,7 @@ struct raw_event {
 		struct raw_fork			fork;
 		struct raw_comm			comm;
 		struct raw_task			task;
+		struct raw_exec_connector	exec_connector;
 	};
 };
 
