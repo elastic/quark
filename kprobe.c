@@ -23,20 +23,20 @@
 	{ "pwd_k4",		"di", "u64",	PWD_K(0, 4)											}, \
 	{ "pwd_k5",		"di", "u64",	PWD_K(0, 5)											}, \
 	{ "pwd_k6",		"di", "u64",	PWD_K(0, 6)											}, \
-       	{ "root_s",		"di", "string",	"task_struct.fs fs_struct.root.dentry dentry.d_name.name +0"					}, \
-       	{ "mnt_root_s",		"di", "string",	"task_struct.fs fs_struct.pwd.mnt vfsmount.mnt_root dentry.d_name.name +0"			}, \
-       	{ "mnt_mountpoint_s",	"di", "string",	"task_struct.fs fs_struct.pwd.mnt (mount.mnt_mountpoint-mount.mnt) dentry.d_name.name +0"	}, \
-       	{ "pwd_s0",		"di", "string",	PWD_S(0, 0)											}, \
-       	{ "pwd_s1",		"di", "string",	PWD_S(0, 1)											}, \
-       	{ "pwd_s2",		"di", "string",	PWD_S(0, 2)											}, \
-       	{ "pwd_s3",		"di", "string",	PWD_S(0, 3)											}, \
-       	{ "pwd_s4",		"di", "string",	PWD_S(0, 4)											}, \
-       	{ "pwd_s5",		"di", "string",	PWD_S(0, 5)											}, \
-       	{ "pwd_s6",		"di", "string",	PWD_S(0, 6)											}, \
-       	{ "uid",		"di", "u32",	"task_struct.cred cred.uid"									}, \
-       	{ "gid",		"di", "u32",	"task_struct.cred cred.gid"									}, \
-       	{ "suid",		"di", "u32",	"task_struct.cred cred.suid"									}, \
-       	{ "sgid",		"di", "u32",	"task_struct.cred cred.sgid"									}, \
+	{ "root_s",		"di", "string",	"task_struct.fs fs_struct.root.dentry dentry.d_name.name +0"					}, \
+	{ "mnt_root_s",		"di", "string",	"task_struct.fs fs_struct.pwd.mnt vfsmount.mnt_root dentry.d_name.name +0"			}, \
+	{ "mnt_mountpoint_s",	"di", "string",	"task_struct.fs fs_struct.pwd.mnt (mount.mnt_mountpoint-mount.mnt) dentry.d_name.name +0"	}, \
+	{ "pwd_s0",		"di", "string",	PWD_S(0, 0)											}, \
+	{ "pwd_s1",		"di", "string",	PWD_S(0, 1)											}, \
+	{ "pwd_s2",		"di", "string",	PWD_S(0, 2)											}, \
+	{ "pwd_s3",		"di", "string",	PWD_S(0, 3)											}, \
+	{ "pwd_s4",		"di", "string",	PWD_S(0, 4)											}, \
+	{ "pwd_s5",		"di", "string",	PWD_S(0, 5)											}, \
+	{ "pwd_s6",		"di", "string",	PWD_S(0, 6)											}, \
+	{ "uid",		"di", "u32",	"task_struct.cred cred.uid"									}, \
+	{ "gid",		"di", "u32",	"task_struct.cred cred.gid"									}, \
+	{ "suid",		"di", "u32",	"task_struct.cred cred.suid"									}, \
+	{ "sgid",		"di", "u32",	"task_struct.cred cred.sgid"									}, \
 	{ "euid",		"di", "u32",	"task_struct.cred cred.euid"									}, \
 	{ "egid",		"di", "u32",	"task_struct.cred cred.egid"									}, \
 	{ "pid",		"di", "u32",	"task_struct.tgid"										}, \
