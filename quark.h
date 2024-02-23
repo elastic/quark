@@ -19,19 +19,6 @@
 /* Temporary until we have proper env debugging */
 extern int	quark_verbose;
 
-#define RPT0(_x)
-#define RPT1(_x) _x
-#define RPT2(_x) RPT1(_x) _x
-#define RPT3(_x) RPT2(_x) _x
-#define RPT4(_x) RPT3(_x) _x
-#define RPT5(_x) RPT4(_x) _x
-#define RPT6(_x) RPT5(_x) _x
-#define RPT7(_x) RPT6(_x) _x
-#define RPT8(_x) RPT7(_x) _x
-#define RPT9(_x) RPT8(_x) _x
-#define RPT10(_x) RPT9(_x) _x
-#define RPT(TENS,ONES,X) RPT##TENS(RPT10(X)) RPT##ONES(X)
-
 /* btf.c */
 int	quark_btf_init(void);
 ssize_t	quark_btf_offset(const char *);

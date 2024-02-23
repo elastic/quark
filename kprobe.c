@@ -1,10 +1,22 @@
 #include "quark.h"
 
+#define RPT0(_x)
+#define RPT1(_x) _x
+#define RPT2(_x) RPT1(_x) _x
+#define RPT3(_x) RPT2(_x) _x
+#define RPT4(_x) RPT3(_x) _x
+#define RPT5(_x) RPT4(_x) _x
+#define RPT6(_x) RPT5(_x) _x
+#define RPT7(_x) RPT6(_x) _x
+#define RPT8(_x) RPT7(_x) _x
+#define RPT9(_x) RPT8(_x) _x
+#define RPT10(_x) RPT9(_x) _x
+#define RPT(TENS,ONES,X) RPT##TENS(RPT10(X)) RPT##ONES(X)
+
 #define S(_a)		#_a
 #define XS(_a)		S(_a)
 #define PWD_K(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent))
 #define PWD_S(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent)) " dentry.d_name.name +0"
-
 #define TASK_SAMPLE {							\
 	{ "cap_inheritable",	"di", "u64",	"task_struct.cred cred.cap_inheritable"								}, \
 	{ "cap_permitted",	"di", "u64",	"task_struct.cred cred.cap_permitted",								}, \
@@ -173,6 +185,19 @@ struct kprobe kp_exec_connector = {
 #undef PWD_K
 #undef XS
 #undef S
+
+#undef RPT
+#undef RPT10
+#undef RPT9
+#undef RPT8
+#undef RPT7
+#undef RPT6
+#undef RPT5
+#undef RPT4
+#undef RPT3
+#undef RPT2
+#undef RPT1
+#undef RPT0
 
 struct kprobe *all_kprobes[] = {
 	&kp_wake_up_new_task,
