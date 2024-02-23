@@ -995,89 +995,6 @@ perf_open_kprobe(struct kprobe_state *ks, int cpu, int group_fd)
 }
 
 static void
-dump_sample(struct perf_record_sample *sample)
-{
-	int	id, kind;
-
-	id = sample_data_id(sample);
-	kind = sample_kind_of_id(id);
-
-	switch (kind) {
-	case EXEC_SAMPLE: {
-		struct exec_sample *exec = sample_data_body(sample);
-		struct qstr qstr;
-
-		qstr_init(&qstr);
-		if (qstr_copy_data_loc(&qstr, sample, &exec->filename) == -1)
-			warnx("can't copy exec filename");
-		printf("->exec (%d)\n\tfilename=%s\n", id, qstr.p);
-		qstr_free(&qstr);
-		break;
-	}
-	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
-	case EXIT_THREAD_SAMPLE: {
-		struct task_sample	*w;
-		const char		*head;
-
-		w = sample_data_body(sample);
-		head = kind == WAKE_UP_NEW_TASK_SAMPLE ?
-		    "wake_up_new_task" : "exit_thread";
-		printf("->%s (%d)\n\t", head, id);
-		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
-		    w->pid, w->tid, w->uid, w->gid, w->suid, w->sgid, w->euid, w->egid);
-		printf("\tcap_inheritable=0x%llx cap_permitted=0x%llx cap_effective=0x%llx\n"
-		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
-		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
-		    w->cap_bset, w->cap_ambient);
-		printf("\texit_code=%d\n", w->exit_code);
-		break;
-	}
-	default:
-		warnx("%s: unknown or invalid sample id=%d", __func__, id);
-	}
-}
-
-static void
-dump_event(struct perf_event *ev)
-{
-	struct perf_sample_id		*sid = NULL;
-	struct perf_record_fork		*fork;
-	struct perf_record_exit		*exit;
-	struct perf_record_sample	*sample;
-
-	switch (ev->header.type) {
-	case PERF_RECORD_FORK:
-		fork = &ev->fork;
-		sid = &fork->sample_id;
-		printf("->fork\n\tpid=%d ppid=%d tid=%d ptid=%d time=%llu\n",
-		    fork->pid, fork->ppid, fork->tid, fork->ptid, fork->time);
-		break;
-	case PERF_RECORD_EXIT:
-		exit = &ev->exit;
-		sid = &exit->sample_id;
-		printf("->exit\n\tpid=%d ppid=%d tid=%d ptid=%d time=%llu\n",
-		    exit->pid, exit->ppid, exit->tid, exit->ptid, exit->time);
-		break;
-	case PERF_RECORD_SAMPLE:
-		sample = &ev->sample;
-		sid = &sample->sample_id;
-		dump_sample(sample);
-		break;
-	default:
-		warnx("%s: unhandled(type %d)\n", __func__, ev->header.type);
-		break;
-	}
-
-	if (sid != NULL)
-		printf("\ts.pid=%d s.tid=%d s.time=%llu (age=%llu)"
-		    " s.cpu=%d\n",
-		    sid->pid, sid->tid, sid->time, AGE(sid->time, now64()),
-		    sid->cpu);
-
-	fflush(stdout);
-}
-
-static void
 xfprintf(FILE *f, const char *restrict fmt, ...)
 {
 	va_list ap;
@@ -1543,7 +1460,7 @@ main(int argc, char *argv[])
 	nodes = 0;
 	qq_flags = dump_perf = do_drop = 0;
 
-	while ((ch = getopt(argc, argv, "Dfm:ptv")) != -1) {
+	while ((ch = getopt(argc, argv, "Dfm:tv")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -1557,9 +1474,6 @@ main(int argc, char *argv[])
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);
 			if (errstr != NULL)
 				errx(1, "invalid maxnodes: %s", errstr);
-			break;
-		case 'p':
-			dump_perf = 1;
 			break;
 		case 't':
 			qq_flags |= QQ_THREAD_EVENTS;
@@ -1611,8 +1525,6 @@ main(int argc, char *argv[])
 			credits--;
 			raw = perf_event_to_raw(qq, ev);
 			if (raw != NULL) {
-				if (dump_perf)
-					dump_event(ev);
 				/* Useful for debugging */
 				/* raw->time = arc4random_uniform(100000); */
 				raw_event_insert(qq, raw);
