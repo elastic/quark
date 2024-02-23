@@ -283,7 +283,8 @@ struct raw_task {
 	u32	 sgid;
 	u32	 euid;
 	u32	 egid;
-	s32	 exit_code;
+	u32	 ppid;		/* Unavailable at exit */
+	s32	 exit_code;	/* Unavailable at fork */
 	char	*cwd;
 };
 

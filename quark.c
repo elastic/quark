@@ -170,9 +170,10 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    w->cap_inheritable, w->cap_permitted, w->cap_effective,
 		    w->cap_bset, w->cap_ambient);
-		if (raw->type == RAW_WAKE_UP_NEW_TASK)
+		if (raw->type == RAW_WAKE_UP_NEW_TASK) {
 			printf("\tworking_directory=%s\n", w->cwd);
-		else if (raw->type == RAW_EXIT_THREAD)
+			printf("\tppid=%d\n", w->ppid);
+		} else if (raw->type == RAW_EXIT_THREAD)
 			printf("\texit_code=%d norm_end=%llu\n", w->exit_code, raw->time);
 		TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
 			raw_event_dump(agg, 1);
@@ -347,8 +348,12 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			return (NULL);
 		if (kind == WAKE_UP_NEW_TASK_SAMPLE) {
 			raw->type = RAW_WAKE_UP_NEW_TASK;
+			/*
+			 * Cheat, make this look like a child event.
+			 */
 			raw->pid = w->pid;
 			raw->tid = w->tid;
+			raw->task.ppid = sample->sample_id.pid;
 			pctx.root = str_of_dataloc(sample, &w->root_s);
 			pctx.root_k = w->root_k;
 			pctx.mnt_root = str_of_dataloc(sample, &w->mnt_root_s);
@@ -362,8 +367,18 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 				pctx.pwd[i].pwd_k = w->pwd_k[i];
 			}
 			raw->task.cwd = build_path(&pctx);
-		} else
+			raw->task.exit_code = -1;
+		} else {
 			raw->type = RAW_EXIT_THREAD;
+			/*
+			 * We derive ppid from the incoming sample header as
+			 * it's originally an event of the parent, since exit is
+			 * originally an event of the child, we don't have
+			 * access to ppid.
+			 */
+			raw->task.ppid = -1;
+			raw->task.exit_code = w->exit_code;
+		}
 		raw->task.cap_inheritable = w->cap_inheritable;
 		raw->task.cap_permitted = w->cap_permitted;
 		raw->task.cap_effective = w->cap_effective;
@@ -377,7 +392,6 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		raw->task.sgid = w->sgid;
 		raw->task.euid = w->euid;
 		raw->task.egid = w->egid;
-		raw->task.exit_code = w->exit_code;
 
 		break;
 	}
