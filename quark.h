@@ -247,9 +247,7 @@ struct path_ctx {
  * Raw events
  */
 enum {
-	RAW_FORK = 1,
-	RAW_EXEC,
-	RAW_EXIT,
+	RAW_EXEC = 1,
 	RAW_WAKE_UP_NEW_TASK,
 	RAW_EXIT_THREAD,
 	RAW_COMM,
@@ -258,11 +256,6 @@ enum {
 
 struct raw_exec {
 	struct qstr		filename;
-};
-
-struct raw_fork {
-	u32			parent_pid;
-	u32			child_pid;
 };
 
 struct raw_comm {
@@ -306,7 +299,6 @@ struct raw_event {
 	int					type;
 	union {
 		struct raw_exec			exec;
-		struct raw_fork			fork;
 		struct raw_comm			comm;
 		struct raw_task			task;
 		struct raw_exec_connector	exec_connector;

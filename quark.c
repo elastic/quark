@@ -184,9 +184,6 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		printf("%sexec (%d)\n\tfilename=%s\n",
 		    header, raw->pid, raw->exec.filename.p);
 		break;
-	case RAW_EXIT:
-		printf("%sexit (%d)\n", header, raw->pid);
-		break;
 	case RAW_COMM:
 		printf("%scomm (%d)\n\tcomm=%s\n", header, raw->pid, raw->comm.comm);
 		break;
@@ -437,33 +434,6 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 	ssize_t				 n;
 
 	switch (ev->header.type) {
-	case PERF_RECORD_FORK:
-		/* Drop thread "forks" */
-		if ((qq->flags & QQ_PERF_TASK_EVENTS) == 0)
-			return (NULL);
-		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
-		    ev->fork.pid == ev->fork.ppid)
-			return (NULL);
-		if ((raw = raw_event_alloc()) == NULL)
-			return (NULL);
-		raw->type = RAW_FORK;
-		sid = &ev->fork.sample_id;
-		/* We cheat FORK to be an event of the child, not the parent */
-		raw->pid = raw->fork.child_pid = ev->fork.pid;
-		raw->fork.parent_pid = ev->fork.ppid;
-		break;
-	case PERF_RECORD_EXIT:
-		if ((qq->flags & QQ_PERF_TASK_EVENTS) == 0)
-			return (NULL);
-		/* Drop thread "exits" */
-		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
-		    ev->exit.pid != ev->exit.tid)
-			return (NULL);
-		if ((raw = raw_event_alloc()) == NULL)
-			return (NULL);
-		raw->type = RAW_EXIT;
-		sid = &ev->exit.sample_id;
-		break;
 	case PERF_RECORD_SAMPLE:
 		raw = perf_sample_to_raw(qq, &ev->sample);
 		if (raw != NULL)
@@ -486,8 +456,17 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		sid = (struct perf_sample_id *)
 		    ALIGN_UP(ev->comm.comm + n + 1, 8);
 		break;
+	case PERF_RECORD_FORK:
+	case PERF_RECORD_EXIT:
+		/*
+		 * As long as we are still using PERF_RECORD_COMM events, the
+		 * kernel implies we want FORK and EXIT as well, see
+		 * core.c:perf_event_task_match(), this is likely unintended
+		 * behaviour.
+		 */
+		break;
 	default:
-		warnx("%s unhandled type%d\n", __func__, ev->header.type);
+		warnx("%s unhandled type %d\n", __func__, ev->header.type);
 		return (NULL);
 		break;
 	}
@@ -963,9 +942,11 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	if ((id = fetch_tracing_id("events/sched/sched_process_exec/id")) == -1)
 		return (-1);
 	perf_attr_init(&pgl->attr, id);
-	/* We can get rid of task */
+	/*
+	 * We will still get task events as long as set comm, see
+	 * perf_event_to_raw()
+	 */
 	pgl->attr.comm = 1;
-	pgl->attr.task = 1;			/* PERF_RECORD_{FORK,EXIT} */
 	pgl->attr.sample_id_all = 1;		/* add sample_id to all types */
 	pgl->fd = perf_event_open(&pgl->attr, -1, cpu, -1, 0);
 	if (pgl->fd == -1)
@@ -1026,17 +1007,11 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 	char			 label[4096];
 
 	switch (raw->type) {
-	case RAW_FORK:
-		color = "lightgoldenrod";
-		(void)snprintf(label, sizeof(label), "FORK %d",
-		    raw->fork.child_pid);
-		break;
 	case RAW_COMM:
 		color = "yellow";
 		(void)snprintf(label, sizeof(label), "COMM %s",
 		    raw->comm.comm);
 		break;
-	case RAW_EXIT:
 	case RAW_EXIT_THREAD:
 		color = "lightseagreen";
 		(void)strlcpy(label, "EXIT", sizeof(label));
