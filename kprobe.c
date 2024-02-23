@@ -54,7 +54,7 @@
 	{ "pid",		"di", "u32",	"task_struct.tgid"										}, \
 	{ "tid",		"di", "u32",	"task_struct.pid"										}, \
 	{ "exit_code",		"di", "s32",	"task_struct.exit_code"										}, \
-	{ NULL,			NULL, NULL,  	NULL												}}
+	{ NULL,			NULL, NULL,	NULL												}}
 
 struct kprobe kp_wake_up_new_task = {
 	"quark_wake_up_new_task",
@@ -205,4 +205,3 @@ struct kprobe *all_kprobes[] = {
 	&kp_exec_connector,
 	NULL
 };
-
