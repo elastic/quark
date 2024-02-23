@@ -16,6 +16,9 @@
 #define ALIGN_UP(_p, _b) (((u64)(_p) + ((_b) - 1)) & ~((_b) - 1))
 #endif
 
+/* Temporary until we have proper env debugging */
+extern int	quark_verbose;
+
 #define RPT0(_x)
 #define RPT1(_x) _x
 #define RPT2(_x) RPT1(_x) _x

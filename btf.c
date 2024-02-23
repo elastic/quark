@@ -156,10 +156,11 @@ quark_btf_init(void)
 		}
 	}
 
-	for (ta = targets; ta ->dotname != NULL; ta++) {
-		printf("%s: dotname=%s off=%ld (bitoff=%ld)\n",
-		    __func__, ta->dotname, ta->offset, ta->offset * 8);
-	}
+	if (quark_verbose)
+		for (ta = targets; ta ->dotname != NULL; ta++) {
+			fprintf(stderr, "%s: dotname=%s off=%ld (bitoff=%ld)\n",
+			    __func__, ta->dotname, ta->offset, ta->offset * 8);
+		}
 
 	btf__free(btf);
 

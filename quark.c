@@ -31,6 +31,9 @@ static int	open_tracing(int, const char *, ...) __attribute__((format(printf, 2,
 static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
 
+/* For debugging */
+int	quark_verbose;
+
 /* matches each sample event to a kind like EXEC_SAMPLE, FOO_SAMPLE */
 u8	id_to_sample_kind[MAX_SAMPLE_IDS];
 
@@ -1528,7 +1531,7 @@ main(int argc, char *argv[])
 {
 	int				 ch, maxnodes, nodes, nproc;
 	int				 dump_perf, qq_flags, ncpus;
-	int				 empty_rings, credits, do_drop, verbose;
+	int				 empty_rings, credits, do_drop;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
@@ -1538,7 +1541,7 @@ main(int argc, char *argv[])
 
 	maxnodes = -1;
 	nodes = 0;
-	qq_flags = dump_perf = do_drop = verbose = 0;
+	qq_flags = dump_perf = do_drop = 0;
 
 	while ((ch = getopt(argc, argv, "Dfm:ptv")) != -1) {
 		const char *errstr;
@@ -1562,7 +1565,7 @@ main(int argc, char *argv[])
 			qq_flags |= QQ_THREAD_EVENTS;
 			break;
 		case 'v':
-			verbose++;
+			quark_verbose++;
 			break;
 		default:
 			usage();
@@ -1621,8 +1624,8 @@ main(int argc, char *argv[])
 		/* If maxnodes is set, we don't want to process, only collect */
 		if (maxnodes == -1) {
 			nproc = quark_queue_process(qq);
-			if (verbose && nproc)
-				printf("removed %d nodes\n", nproc);
+			if (quark_verbose > 1 && nproc)
+				fprintf(stderr, "removed %d nodes\n", nproc);
 		}
 
 		/*
