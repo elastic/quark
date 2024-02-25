@@ -923,13 +923,9 @@ perf_attr_init(struct perf_event_attr *attr, int id)
 
 	/* attr->read_format = PERF_FORMAT_LOST; */
 	/* attr->mmap2 */
-	/* attr->comm_exec */
+	/* XXX Should we set clock in the child as well? XXX */
 	attr->use_clockid = 1;
 	attr->clockid = CLOCK_MONOTONIC_RAW;
-	/* wakeup forcibly if ring buffer is at least 10% full */
-	attr->watermark = 1;
-	/* XXXXXX SHOULD WE DO THIS IN THE CHILD AS WELL?????? XXXXXXX */
-	attr->wakeup_watermark = (PERF_MMAP_PAGES * getpagesize()) / 10;
 	attr->disabled = 1;
 }
 
@@ -947,7 +943,11 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	 * perf_event_to_raw()
 	 */
 	pgl->attr.comm = 1;
+	/* pgl->attr.comm_exec = 1; */
 	pgl->attr.sample_id_all = 1;		/* add sample_id to all types */
+	pgl->attr.watermark = 1;
+	pgl->attr.wakeup_watermark = (PERF_MMAP_PAGES * getpagesize()) / 10;;
+
 	pgl->fd = perf_event_open(&pgl->attr, -1, cpu, -1, 0);
 	if (pgl->fd == -1)
 		return (-1);
