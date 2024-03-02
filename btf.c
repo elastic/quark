@@ -31,6 +31,7 @@ struct target {
 	{ "mm_struct.(anon).start_stack",-1 },
 	{ "mount.mnt",			-1 },
 	{ "mount.mnt_mountpoint",	-1 },
+	{ "task_struct.comm",		-1 },
 	{ "task_struct.cred",		-1 },
 	{ "task_struct.exit_code",	-1 },
 	{ "task_struct.fs",		-1 },

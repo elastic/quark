@@ -195,6 +195,9 @@ struct task_sample {
 	u32	pid;
 	u32	tid;
 	s32	exit_code;
+	/* 16bit */
+	/* 8bit */
+	char	comm[16];
 };
 
 struct exec_connector_sample {

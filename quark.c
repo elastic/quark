@@ -440,6 +440,12 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 			sid = &ev->sample.sample_id;
 		break;
 	case PERF_RECORD_COMM:
+		/*
+		 * Supress comm events due to exec as we can fetch comm
+		 * directly from the task struct
+		 */
+		if (ev->header.misc & PERF_RECORD_MISC_COMM_EXEC)
+			return (NULL);
 		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
 		    ev->comm.pid != ev->comm.tid)
 			return (NULL);
@@ -943,7 +949,7 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	 * perf_event_to_raw()
 	 */
 	pgl->attr.comm = 1;
-	/* pgl->attr.comm_exec = 1; */
+	pgl->attr.comm_exec = 1;
 	pgl->attr.sample_id_all = 1;		/* add sample_id to all types */
 	pgl->attr.watermark = 1;
 	pgl->attr.wakeup_watermark = (PERF_MMAP_PAGES * getpagesize()) / 10;;

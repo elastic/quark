@@ -54,6 +54,7 @@
 	{ "pid",		"di", "u32",	"task_struct.tgid"										}, \
 	{ "tid",		"di", "u32",	"task_struct.pid"										}, \
 	{ "exit_code",		"di", "s32",	"task_struct.exit_code"										}, \
+	{ "comm",		"di", "string",	"task_struct.comm"										}, \
 	{ NULL,			NULL, NULL,	NULL												}}
 
 struct kprobe kp_wake_up_new_task = {
