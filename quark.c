@@ -1159,13 +1159,15 @@ raw_event_remove(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static int
-block(struct perf_group_leaders *leaders)
+quark_queue_block(struct quark_queue *qq)
 {
+	struct perf_group_leaders	*leaders;
 	struct perf_group_leader	*pgl;
 	struct pollfd			*fds;
 	struct timespec			 ts;
 	int				 i, nfds, r;
 
+	leaders = &qq->perf_group_leaders;
 	nfds = 0;
 	TAILQ_FOREACH(pgl, leaders, entry) {
 		nfds++;
@@ -1540,7 +1542,7 @@ main(int argc, char *argv[])
 		 * trying to catch up with the kernel.
 		 */
 		if (credits > 0)
-			block(&qq->perf_group_leaders);
+			quark_queue_block(qq);
 	}
 
 	RB_FOREACH(raw, raw_event_by_time, &qq->raw_event_by_time) {
