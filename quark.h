@@ -354,6 +354,7 @@ struct quark_queue {
 #define QQ_PERF_TASK_EVENTS		(1 << 1)
 	int				flags;
 	int				length;
+	int				max_length;
 };
 
 #endif /* _QUARK_H_ */

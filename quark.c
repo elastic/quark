@@ -21,8 +21,7 @@
 #include "quark.h"
 
 #define PERF_MMAP_PAGES		16		/* Must be power of 2 */
-#define RAW_HOLD_MAXTIME	MS_TO_NS(1000)	/* XXX hardcoded for now XXX */
-#define RAW_HOLD_MAXNODES	10000		/* XXX hardcoded for now XXX */
+#define QUARK_QUEUE_MAXLENGTH	10000		/* XXX hardcoded for now XXX */
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
 #define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
 
@@ -134,11 +133,36 @@ raw_event_age(struct raw_event *raw, u64 now)
 	return AGE(raw->time, now);
 }
 
-static inline int
-raw_event_expired(struct raw_event *raw, u64 now)
+/*
+ * Target age is the duration in ns of how long should we hold the event in the
+ * tree before processing it. It's a function of the number of items in the tree
+ * and its maximum capacity:
+ * from [0; 10%]    -> 1000ms
+ * from [90%; 100%] -> 0ms
+ * from (10%; 90%)  -> linear from 1000ms -> 100ms
+ */
+static u64
+raw_event_target_age(int maxn, int n)
 {
-	/* XXX hardcoded for now XXX */
-	return (raw_event_age(raw, now) >= (u64)RAW_HOLD_MAXTIME);
+	int	v;
+
+	if (n < (maxn / 10))
+		v = 1000;
+	else if (n < ((maxn / 10) * 9))
+		v = 1000 - (n / (maxn / 1000)) + 1;
+	else
+		v = 0;
+
+	return ((u64)MS_TO_NS(v));
+}
+
+static inline int
+raw_event_expired(struct quark_queue *qq, struct raw_event *raw, u64 now)
+{
+	u64 target;
+
+	target = raw_event_target_age(qq->max_length, qq->length);
+	return (raw_event_age(raw, now) >= target);
 }
 
 static void
@@ -1211,6 +1235,7 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
 	qq->flags = flags;
+	qq->max_length = QUARK_QUEUE_MAXLENGTH; /* Only used for age target for now */
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
 		pgl = calloc(1, sizeof(*pgl));
@@ -1341,7 +1366,7 @@ quark_queue_process(struct quark_queue *qq)
 	now = now64();
 	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
 	while (min != NULL) {
-		if (!raw_event_expired(min, now))
+		if (!raw_event_expired(qq, min, now))
 			break;
 
 		quark_queue_aggregate(qq, min);
