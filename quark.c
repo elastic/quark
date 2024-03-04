@@ -159,7 +159,7 @@ raw_event_target_age(int maxn, int n)
 static inline int
 raw_event_expired(struct quark_queue *qq, struct raw_event *raw, u64 now)
 {
-	u64 target;
+	u64	target;
 
 	target = raw_event_target_age(qq->max_length, qq->length);
 	return (raw_event_age(raw, now) >= target);
@@ -1172,6 +1172,8 @@ raw_event_insert(struct quark_queue *qq, struct raw_event *raw)
 	if (unlikely(col != NULL))
 		err(1, "collision on pidtime tree, this is a bug");
 
+	/* if (qq->min == NULL || raw_event_by_time_cmp(raw, qq->min) == -1) */
+	/* 	qq->min = raw; */
 	qq->length++;
 	qq->stats.insertions++;
 }
@@ -1181,6 +1183,7 @@ raw_event_remove(struct quark_queue *qq, struct raw_event *raw)
 {
 	RB_REMOVE(raw_event_by_time, &qq->raw_event_by_time, raw);
 	RB_REMOVE(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
+	/* if (qq->min == raw) qq->min = NULL */
 	qq->length--;
 	qq->stats.removals++;
 }
@@ -1234,7 +1237,7 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	RB_INIT(&qq->raw_event_by_pidtime);
 	qq->flags = flags;
 	qq->length = 0;
-	qq->max_length = QUARK_QUEUE_MAXLENGTH; /* Only used for age target for now */
+	qq->max_length = QUARK_QUEUE_MAXLENGTH;
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
 		pgl = calloc(1, sizeof(*pgl));
@@ -1269,7 +1272,6 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	}
 
 	return (0);
-#undef O
 }
 
 static void
@@ -1356,36 +1358,67 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 }
 
 static int
-quark_queue_process(struct quark_queue *qq)
+quark_queue_populate(struct quark_queue *qq)
 {
-	int			 nproc;
-	struct raw_event	*min, *next, *aux;
-	u64			 now;
+	int				 empty_rings, num_rings, npop;
+	struct perf_group_leader	*pgl;
+	struct perf_event		*ev;
+	struct raw_event		*raw;
 
-	nproc = 0;
-	now = now64();
-	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
-	while (min != NULL) {
-		if (!raw_event_expired(qq, min, now))
-			break;
+	num_rings = qq->num_perf_group_leaders;
+	npop = 0;
 
-		quark_queue_aggregate(qq, min);
-
-		raw_event_dump(min, 0);
-		while ((aux = TAILQ_FIRST(&min->agg_queue)) != NULL) {
-			TAILQ_REMOVE(&min->agg_queue, aux, agg_entry);
-			raw_event_free(aux);
-			nproc++;
+	/*
+	 * We stop if the queue is full, or if we see all perf ring buffers
+	 * empty.
+	 */
+	while (qq->length < qq->max_length) {
+		empty_rings = 0;
+		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+			ev = perf_mmap_read(&pgl->mmap);
+			if (ev == NULL) {
+				empty_rings++;
+				continue;
+			}
+			empty_rings = 0;
+			raw = perf_event_to_raw(qq, ev);
+			if (raw != NULL) {
+				raw_event_insert(qq, raw);
+				npop++;
+			}
+			perf_mmap_consume(&pgl->mmap);
 		}
-
-		next = RB_NEXT(raw_event_by_time, &qq->raw_event_by_time, min);
-		raw_event_remove(qq, min);
-		raw_event_free(min);
-		nproc++;
-		min = next;
+		if (empty_rings == num_rings)
+			break;
 	}
 
-	return (nproc);
+	return (npop);
+}
+
+static struct raw_event *
+quark_queue_pop(struct quark_queue *qq)
+{
+	struct raw_event	*min;
+	u64			 now;
+
+	/*
+	 * We populate before draining so we can have a fuller tree for
+	 * aggregation.
+	 */
+	(void)quark_queue_populate(qq);
+
+	now = now64();
+	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
+	if (min == NULL || !raw_event_expired(qq, min, now)) {
+		/* qq->idle++; */
+		return (NULL);
+	}
+
+	quark_queue_aggregate(qq, min);
+	/* qq->min = RB_NEXT(raw_event_by_time, &qq->raw_event_by_time, min); */
+	raw_event_remove(qq, min);
+
+	return (min);
 }
 
 static int
@@ -1471,18 +1504,15 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
-	int				 ch, maxnodes, nodes, nproc;
-	int				 dump_perf, qq_flags, num_rings;
-	int				 empty_rings, credits, do_drop;
-	struct perf_group_leader	*pgl;
-	struct perf_event		*ev;
-	struct raw_event		*raw;
+	int				 ch, maxnodes;
+	int				 dump_perf, qq_flags;
+	int				 do_drop;
 	struct quark_queue		*qq;
+	struct raw_event		*raw;
 	struct sigaction		 sigact;
 	FILE				*graph_by_time, *graph_by_pidtime;
 
 	maxnodes = -1;
-	nodes = 0;
 	qq_flags = dump_perf = do_drop = 0;
 
 	while ((ch = getopt(argc, argv, "Dfm:tv")) != -1) {
@@ -1535,42 +1565,27 @@ main(int argc, char *argv[])
 	if (do_drop)
 		priv_drop();
 
-	num_rings = qq->num_perf_group_leaders;
-	while (!gotsigint && (maxnodes == -1 || nodes < maxnodes)) {
-		credits = 1000;
-		empty_rings = 0;
-		while (empty_rings < num_rings && credits > 0) {
-		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
-			ev = perf_mmap_read(&pgl->mmap);
-			if (ev == NULL) {
-				empty_rings++;
-				continue;
-			}
-			empty_rings = 0;
-			credits--;
-			raw = perf_event_to_raw(qq, ev);
-			if (raw != NULL) {
-				/* Useful for debugging */
-				/* raw->time = arc4random_uniform(100000); */
-				raw_event_insert(qq, raw);
-				nodes++;
-			}
-			perf_mmap_consume(&pgl->mmap);
-		}}
+	/*
+	 * Debug mode, let the tree grow to >= maxnodes and bail, without
+	 * popping nondes
+	 */
+	while (!gotsigint && maxnodes != -1 && qq->length < maxnodes) {
+		quark_queue_populate(qq);
+		quark_queue_block(qq);
+	}
 
-		/* If maxnodes is set, we don't want to process, only collect */
-		if (maxnodes == -1) {
-			nproc = quark_queue_process(qq);
-			if (quark_verbose > 1 && nproc)
-				fprintf(stderr, "removed %d nodes\n", nproc);
-		}
-
-		/*
-		 * Only block if we got here with credits left, otherwise we're
-		 * trying to catch up with the kernel.
-		 */
-		if (credits > 0)
+	/*
+	 * Normal mode, collect, pop and dump elements until we get a sigint
+	 */
+	while (!gotsigint && maxnodes == -1) {
+		/* Normal case */
+		raw = quark_queue_pop(qq);
+		if (raw == NULL) {
 			quark_queue_block(qq);
+			continue;
+		}
+		raw_event_dump(raw, 0); /* userlike function */
+		raw_event_free(raw);
 	}
 
 	RB_FOREACH(raw, raw_event_by_time, &qq->raw_event_by_time) {
