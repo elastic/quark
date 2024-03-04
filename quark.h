@@ -353,6 +353,7 @@ struct quark_queue {
 #define QQ_THREAD_EVENTS		(1 << 0)
 #define QQ_PERF_TASK_EVENTS		(1 << 1)
 	int				flags;
+	int				length;
 };
 
 #endif /* _QUARK_H_ */

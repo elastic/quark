@@ -1147,6 +1147,8 @@ raw_event_insert(struct quark_queue *qq, struct raw_event *raw)
 	col = RB_INSERT(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
 	if (unlikely(col != NULL))
 		err(1, "collision on pidtime tree, this is a bug");
+
+	qq->length++;
 	qq->stats.insertions++;
 }
 
@@ -1155,6 +1157,7 @@ raw_event_remove(struct quark_queue *qq, struct raw_event *raw)
 {
 	RB_REMOVE(raw_event_by_time, &qq->raw_event_by_time, raw);
 	RB_REMOVE(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
+	qq->length--;
 	qq->stats.removals++;
 }
 
