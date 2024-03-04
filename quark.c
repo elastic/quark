@@ -1235,6 +1235,7 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
 	qq->flags = flags;
+	qq->length = 0;
 	qq->max_length = QUARK_QUEUE_MAXLENGTH; /* Only used for age target for now */
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
