@@ -1195,10 +1195,7 @@ quark_queue_block(struct quark_queue *qq)
 	int				 i, nfds, r;
 
 	leaders = &qq->perf_group_leaders;
-	nfds = 0;
-	TAILQ_FOREACH(pgl, leaders, entry) {
-		nfds++;
-	}
+	nfds = qq->num_perf_group_leaders;
 	fds = calloc(sizeof(*fds), nfds);
 	if (fds == NULL)
 		err(1, "calloc");
@@ -1231,6 +1228,7 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	bzero(qq, sizeof(*qq));
 
 	TAILQ_INIT(&qq->perf_group_leaders);
+	qq->num_perf_group_leaders = 0;
 	TAILQ_INIT(&qq->kprobe_states);
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
@@ -1245,6 +1243,7 @@ quark_queue_open(struct quark_queue *qq, int flags)
 		if (perf_open_group_leader(pgl, i) == -1)
 			errx(1, "perf_open_group_leader"); /* XXX TODO proper cleanup */
 		TAILQ_INSERT_TAIL(&qq->perf_group_leaders, pgl, entry);
+		qq->num_perf_group_leaders++;
 	}
 
 	i = 0;
@@ -1473,7 +1472,7 @@ int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes, nodes, nproc;
-	int				 dump_perf, qq_flags, ncpus;
+	int				 dump_perf, qq_flags, num_rings;
 	int				 empty_rings, credits, do_drop;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
@@ -1536,11 +1535,11 @@ main(int argc, char *argv[])
 	if (do_drop)
 		priv_drop();
 
-	ncpus = get_nprocs_conf();
+	num_rings = qq->num_perf_group_leaders;
 	while (!gotsigint && (maxnodes == -1 || nodes < maxnodes)) {
 		credits = 1000;
 		empty_rings = 0;
-		while (empty_rings < ncpus && credits > 0) {
+		while (empty_rings < num_rings && credits > 0) {
 		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
 			ev = perf_mmap_read(&pgl->mmap);
 			if (ev == NULL) {

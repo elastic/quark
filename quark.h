@@ -346,6 +346,7 @@ struct quark_queue_stats {
  */
 struct quark_queue {
 	struct perf_group_leaders	perf_group_leaders;
+	int				num_perf_group_leaders;
 	struct kprobe_states		kprobe_states;
 	struct raw_event_by_time	raw_event_by_time;
 	struct raw_event_by_pidtime	raw_event_by_pidtime;
