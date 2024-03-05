@@ -1563,7 +1563,7 @@ main(int argc, char *argv[])
 
 	/*
 	 * Debug mode, let the tree grow to >= maxnodes and bail, without
-	 * popping nondes
+	 * popping nodes
 	 */
 	while (!gotsigint && maxnodes != -1 && qq->length < maxnodes) {
 		quark_queue_populate(qq);
