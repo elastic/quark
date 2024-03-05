@@ -1271,7 +1271,7 @@ quark_queue_close(struct quark_queue *qq)
 {
 	struct perf_group_leader	*pgl;
 	struct kprobe_state		*ks;
-	struct raw_event		*raw, *aux;
+	struct raw_event		*raw;
 
 	/* Stop and close the perf rings */
 	while ((pgl = TAILQ_FIRST(&qq->perf_group_leaders)) != NULL) {
@@ -1294,11 +1294,6 @@ quark_queue_close(struct quark_queue *qq)
 	/* Clean up all allocated raw events */
 	while ((raw = RB_ROOT(&qq->raw_event_by_time)) != NULL) {
 		raw_event_remove(qq, raw);
-		while ((aux = TAILQ_FIRST(&raw->agg_queue)) != NULL) {
-			TAILQ_REMOVE(&raw->agg_queue, aux, agg_entry);
-			free(aux);
-		}
-
 		raw_event_free(raw);
 	}
 	if (!RB_EMPTY(&qq->raw_event_by_pidtime))
