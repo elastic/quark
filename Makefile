@@ -25,38 +25,42 @@ CDIAGFLAGS+= -Wuninitialized
 CDIAGFLAGS+= -Wunused
 CDIAGFLAGS+= -Wno-unused-parameter
 
-# LIBBPF wants these
-LDFLAGS?=-lelf -lz
-
 CC?= cc
-HEADERS:= $(wildcard *.h)
-SRCS:= $(wildcard *.c)
-PROGS:= quark
-OBJS:= $(patsubst %.c,%.o,$(SRCS))
+
+# LIBQUARK
+LIBQUARK_HEADERS:= $(wildcard *.h)
+LIBQUARK_SRCS:= $(filter-out quark-mon.c,$(wildcard *.c))
+LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
+LIBQUARK_STATIC:= libquark.a
 SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
 
+# Embedded LIBBPF
+LDFLAGS+= -lelf -lz
 LIBBPF_SRC:= libbpf/src
 LIBBPF_STATIC:= $(LIBBPF_SRC)/libbpf.a
 LIBBPF_DEPS:= $(wildcard libbpf/src/*.[ch]) $(wildcard libbpf/include/*.[ch])
 
-%.o: %.c $(HEADERS)
-	$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
+all: $(LIBBPF_STATIC) $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon
 
-$(PROGS): $(OBJS) $(LIBBPF_STATIC)
-	$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
-
-$(LIBBPF_STATIC):
+$(LIBBPF_STATIC): $(LIBBPF_DEPS)
 	make -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=y
 
-all: $(PROGS)
+$(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
+	ar rcs $@ $^
+
+%.o: %.c $(LIBQUARK_HEADERS)
+	$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
 
 %.svg: %.dot
 	dot -Tsvg $< -o $@
 
 svg: $(SVGS)
 
+quark-mon: quark-mon.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
+
 clean:
-	rm -f $(OBJS) $(PROGS)
+	rm -f $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon quark-mon.o
 
 cleanall: clean
 	rm -f $(SVGS)

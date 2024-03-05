@@ -3,4 +3,5 @@
 *.png
 *.svg
 cscope.*
-quark
+quark-mon
+libquark.a
