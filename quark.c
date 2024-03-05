@@ -25,7 +25,6 @@
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
 #define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
 
-static void	xfprintf(FILE *, const char *, ...) __attribute__((format(printf, 2, 3)));
 static int	open_tracing(int, const char *, ...) __attribute__((format(printf, 2, 3)));
 static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
@@ -1019,18 +1018,10 @@ perf_open_kprobe(struct kprobe_state *ks, int cpu, int group_fd)
 	return (0);
 }
 
-static void
-xfprintf(FILE *f, const char *restrict fmt, ...)
-{
-	va_list ap;
-
-	va_start(ap, fmt);
-	if (vfprintf(f, fmt, ap) < 0)
-		errx(1, "xfprintf");
-	va_end(ap);
-}
-
-static void
+#define P(_f, ...)				\
+	if (fprintf(_f, __VA_ARGS__) < 0)	\
+		return (-1);
+static int
 write_node_attr(FILE *f, struct raw_event *raw, char *key)
 {
 	const char		*color;
@@ -1070,12 +1061,14 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 		color = "black";
 		break;
 	}
-	xfprintf(f, "\"%s\" [label=\"%llu\\n%s\\npid %d\", fillcolor=%s];\n",
+	P(f, "\"%s\" [label=\"%llu\\n%s\\npid %d\", fillcolor=%s];\n",
 	    key, raw->time, label, raw->pid, color);
+
+	return (0);
 }
 
-static void
-write_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
+static int
+quark_dump_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 {
 	struct raw_event	*raw, *left, *right;
 	FILE			*f;
@@ -1083,56 +1076,59 @@ write_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 
 	f = by_time;
 
-	xfprintf(f, "digraph {\n");
-	xfprintf(f, "node [style=filled, color=black];\n");
+	P(f, "digraph {\n");
+	P(f, "node [style=filled, color=black];\n");
 	RB_FOREACH(raw, raw_event_by_time, &qq->raw_event_by_time) {
 		snprintf(key, sizeof(key), "%llu", raw->time);
-		write_node_attr(f, raw, key);
+		if (write_node_attr(f, raw, key) < 0)
+			return (-1);
 	}
 	RB_FOREACH(raw, raw_event_by_time, &qq->raw_event_by_time) {
 		left = RB_LEFT(raw, entry_by_time);
 		right = RB_RIGHT(raw, entry_by_time);
 
 		if (left != NULL)
-			xfprintf(f, "%llu -> %llu;\n",
+			P(f, "%llu -> %llu;\n",
 			    raw->time, left->time);
 		if (right != NULL)
-			xfprintf(f, "%llu -> %llu;\n",
+			P(f, "%llu -> %llu;\n",
 			    raw->time, right->time);
 	}
-	xfprintf(f, "}\n");
+	P(f, "}\n");
 
 	fflush(f);
-	fclose(f);
 
 	f = by_pidtime;
 
-	xfprintf(f, "digraph {\n");
-	xfprintf(f, "node [style=filled, color=black];\n");
+	P(f, "digraph {\n");
+	P(f, "node [style=filled, color=black];\n");
 	RB_FOREACH(raw, raw_event_by_pidtime, &qq->raw_event_by_pidtime) {
 		snprintf(key, sizeof(key), "%d %llu",
 		    raw->pid, raw->time);
-		write_node_attr(f, raw, key);
+		if (write_node_attr(f, raw, key) < 0)
+			return (-1);
 	}
 	RB_FOREACH(raw, raw_event_by_pidtime, &qq->raw_event_by_pidtime) {
 		left = RB_LEFT(raw, entry_by_pidtime);
 		right = RB_RIGHT(raw, entry_by_pidtime);
 
 		if (left != NULL) {
-			xfprintf(f, "\"%d %llu\" -> \"%d %llu\";\n",
+			P(f, "\"%d %llu\" -> \"%d %llu\";\n",
 			    raw->pid, raw->time,
 			    left->pid, left->time);
 		}
 		if (right != NULL)
-			xfprintf(f, "\"%d %llu\" -> \"%d %llu\";\n",
+			P(f, "\"%d %llu\" -> \"%d %llu\";\n",
 			    raw->pid, raw->time,
 			    right->pid, right->time);
 	}
-	xfprintf(f, "}\n");
+	P(f, "}\n");
 
 	fflush(f);
-	fclose(f);
+
+	return (0);
 }
+#undef P
 
 /*
  * Insert without a colision, cheat on the timestamp in case we do. NOTE: since
@@ -1578,7 +1574,6 @@ main(int argc, char *argv[])
 	 * Normal mode, collect, pop and dump elements until we get a sigint
 	 */
 	while (!gotsigint && maxnodes == -1) {
-		/* Normal case */
 		raw = quark_queue_pop(qq);
 		if (raw == NULL) {
 			quark_queue_block(qq);
@@ -1593,7 +1588,9 @@ main(int argc, char *argv[])
 		    raw_event_age(raw, now64()));
 	}
 
-	write_graphviz(qq, graph_by_time, graph_by_pidtime);
+	quark_dump_graphviz(qq, graph_by_time, graph_by_pidtime);
+	fclose(graph_by_time);
+	fclose(graph_by_pidtime);
 
 	quark_queue_dump_stats(qq);
 	quark_queue_close(qq);
