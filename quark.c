@@ -1067,7 +1067,7 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 	return (0);
 }
 
-static int
+int
 quark_dump_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 {
 	struct raw_event	*raw, *left, *right;
@@ -1184,7 +1184,7 @@ raw_event_remove(struct quark_queue *qq, struct raw_event *raw)
 	qq->stats.removals++;
 }
 
-static int
+int
 quark_queue_block(struct quark_queue *qq)
 {
 	struct perf_group_leaders	*leaders;
@@ -1216,7 +1216,7 @@ quark_queue_block(struct quark_queue *qq)
 	return (r);
 }
 
-static int
+int
 quark_queue_open(struct quark_queue *qq, int flags)
 {
 	int				 i;
@@ -1270,7 +1270,7 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	return (0);
 }
 
-static void
+void
 quark_queue_close(struct quark_queue *qq)
 {
 	struct perf_group_leader	*pgl;
@@ -1391,7 +1391,7 @@ quark_queue_populate(struct quark_queue *qq)
 	return (npop);
 }
 
-static struct raw_event *
+struct raw_event *
 quark_queue_pop(struct quark_queue *qq)
 {
 	struct raw_event	*min;
@@ -1417,7 +1417,7 @@ quark_queue_pop(struct quark_queue *qq)
 	return (min);
 }
 
-static int
+int
 quark_init(void)
 {
 	if (parse_probe_data_body_offset() == -1) {
@@ -1437,7 +1437,7 @@ quark_init(void)
 	return (0);
 }
 
-static int
+int
 quark_close(void)
 {
 

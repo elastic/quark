@@ -8,6 +8,9 @@
 /* Sys */
 #include <sys/param.h>		/* MAXPATHLEN */
 
+/* Misc types */
+#include <stdio.h>
+
 /* Compat, tree.h, queue.h */
 #include "compat.h"
 
@@ -18,6 +21,17 @@
 
 /* Temporary until we have proper env debugging */
 extern int	quark_verbose;
+
+/* quark.c */
+struct raw_event;
+struct quark_queue;
+int			 quark_init(void);
+int			 quark_close(void);
+int			 quark_queue_open(struct quark_queue *, int);
+void			 quark_queue_close(struct quark_queue *);
+struct raw_event	*quark_queue_pop(struct quark_queue *);
+int			 quark_queue_block(struct quark_queue *);
+int			 quark_dump_graphviz(struct quark_queue *, FILE *, FILE *);
 
 /* btf.c */
 int	quark_btf_init(void);
