@@ -954,14 +954,21 @@ perf_attr_init(struct perf_event_attr *attr, int id)
 	attr->disabled = 1;
 }
 
-static int
-perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
+static struct perf_group_leader *
+perf_open_group_leader(int cpu)
 {
-	int id;
+	struct perf_group_leader	*pgl;
+	int				 id;
 
+	pgl = calloc(1, sizeof(*pgl));
+	if (pgl == NULL)
+		return (NULL);
 	/* By putting EXEC on group leader we save one fd per cpu */
-	if ((id = fetch_tracing_id("events/sched/sched_process_exec/id")) == -1)
-		return (-1);
+	if ((id = fetch_tracing_id("events/sched/sched_process_exec/id"))
+	    == -1) {
+		free(pgl);
+		return (NULL);
+	}
 	perf_attr_init(&pgl->attr, id);
 	/*
 	 * We will still get task events as long as set comm, see
@@ -974,44 +981,58 @@ perf_open_group_leader(struct perf_group_leader *pgl, int cpu)
 	pgl->attr.wakeup_watermark = (PERF_MMAP_PAGES * getpagesize()) / 10;;
 
 	pgl->fd = perf_event_open(&pgl->attr, -1, cpu, -1, 0);
-	if (pgl->fd == -1)
-		return (-1);
+	if (pgl->fd == -1) {
+		free(pgl);
+		return (NULL);
+	}
 	if (perf_mmap_init(&pgl->mmap, pgl->fd) == -1) {
 		close(pgl->fd);
-		return (-1);
+		free(pgl);
+		return (NULL);
 	}
 	pgl->cpu = cpu;
 	id_to_sample_kind[id] = EXEC_SAMPLE;
 
-	return (0);
+	return (pgl);
 }
 
-static int
-perf_open_kprobe(struct kprobe_state *ks, int cpu, int group_fd)
+static struct kprobe_state *
+perf_open_kprobe(struct kprobe *k, int cpu, int group_fd)
 {
-	int	id;
-	char	buf[MAXPATHLEN];
+	int			 id;
+	char			 buf[MAXPATHLEN];
+	struct kprobe_state	*ks;
 
-	if (snprintf(buf, sizeof(buf), "events/kprobes/%s/id", ks->k->name)
-	    >= (int)sizeof(buf))
-		return (errno = ENAMETOOLONG, -1);
-	if ((id = fetch_tracing_id(buf)) == -1)
-		return (-1);
+	ks = calloc(1, sizeof(*ks));
+	if (ks == NULL)
+		return (NULL);
+	if (snprintf(buf, sizeof(buf), "events/kprobes/%s/id", k->name)
+	    >= (int)sizeof(buf)) {
+		free(ks);
+		return (errno = ENAMETOOLONG, NULL);
+	}
+	if ((id = fetch_tracing_id(buf)) == -1) {
+		free(ks);
+		return (NULL);
+	}
 	perf_attr_init(&ks->attr, id);
 	ks->fd = perf_event_open(&ks->attr, -1, cpu, group_fd, 0);
-	if (ks->fd == -1)
-		return (-1);
+	if (ks->fd == -1) {
+		free(ks);
+		return (NULL);
+	}
 	/* Output our records in the group_fd */
 	if (ioctl(ks->fd, PERF_EVENT_IOC_SET_OUTPUT, group_fd) == -1) {
 		close(ks->fd);
-		ks->fd = -1;
-		return (-1);
+		free(ks);
+		return (NULL);
 	}
+	ks->k = k;
 	ks->cpu = cpu;
 	ks->group_fd = group_fd;
 	id_to_sample_kind[id] = ks->k->sample_kind;
 
-	return (0);
+	return (ks);
 }
 
 #define P(_f, ...)				\
@@ -1232,40 +1253,49 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	qq->max_length = QUARK_QUEUE_MAXLENGTH;
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
-		pgl = calloc(1, sizeof(*pgl));
-		if (pgl == NULL)
-			err(1, "calloc"); /* XXX TODO proper cleanup */
-		if (perf_open_group_leader(pgl, i) == -1)
-			errx(1, "perf_open_group_leader"); /* XXX TODO proper cleanup */
+		pgl = perf_open_group_leader(i);
+		if (pgl == NULL) {
+			quark_queue_close(qq);
+			return (-1);
+		}
 		TAILQ_INSERT_TAIL(&qq->perf_group_leaders, pgl, entry);
 		qq->num_perf_group_leaders++;
 	}
 
 	i = 0;
 	while ((k = all_kprobes[i++]) != NULL) {
-	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
-		ks = calloc(1, sizeof(*ks));
-		if (ks == NULL)
-			err(1, "calloc"); /* XXX TODO proper cleanup */
-		ks->k = k;
-		if (perf_open_kprobe(ks, pgl->cpu, pgl->fd) == -1)
-			errx(1, "perf_open_kprobe"); /* XXX TODO proper cleanup */
-		TAILQ_INSERT_TAIL(&qq->kprobe_states, ks, entry);
-	}}
+		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+			ks = perf_open_kprobe(k, pgl->cpu, pgl->fd);
+			if (ks == NULL) {
+				quark_queue_close(qq);
+				return (-1);
+			}
+			TAILQ_INSERT_TAIL(&qq->kprobe_states, ks, entry);
+		}
+	}
 
 	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
 		/* XXX PERF_IOC_FLAG_GROUP see bugs */
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_RESET,
-		    PERF_IOC_FLAG_GROUP) == -1)
-			err(1, "ioctl PERF_EVENT_IOC_RESET:");
+		    PERF_IOC_FLAG_GROUP) == -1) {
+			warn("ioctl PERF_EVENT_IOC_RESET:");
+			quark_queue_close(qq);
+			return (-1);
+		}
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_ENABLE,
-		    PERF_IOC_FLAG_GROUP) == -1)
-			err(1, "ioctl PERF_EVENT_IOC_ENABLE:");
+		    PERF_IOC_FLAG_GROUP) == -1) {
+			warn("ioctl PERF_EVENT_IOC_ENABLE:");
+			quark_queue_close(qq);
+			return (-1);
+		}
 	}
 
 	return (0);
 }
 
+/*
+ * Must be careful enough that can be called if quark_queue_open() fails
+ */
 void
 quark_queue_close(struct quark_queue *qq)
 {
@@ -1276,18 +1306,22 @@ quark_queue_close(struct quark_queue *qq)
 	/* Stop and close the perf rings */
 	while ((pgl = TAILQ_FIRST(&qq->perf_group_leaders)) != NULL) {
 		/* XXX PERF_IOC_FLAG_GROUP see bugs */
-		if (ioctl(pgl->fd, PERF_EVENT_IOC_DISABLE,
-		    PERF_IOC_FLAG_GROUP) == -1)
-			warnx("ioctl PERF_EVENT_IOC_DISABLE:");
-		close(pgl->fd);
-		if (munmap(pgl->mmap.metadata, pgl->mmap.mapped_size) != 0)
-			warn("munmap");
+		if (pgl->fd != -1) {
+			if (ioctl(pgl->fd, PERF_EVENT_IOC_DISABLE,
+			    PERF_IOC_FLAG_GROUP) == -1)
+				warnx("ioctl PERF_EVENT_IOC_DISABLE:");
+			close(pgl->fd);
+		}
+		if (pgl->mmap.metadata != NULL)
+			if (munmap(pgl->mmap.metadata, pgl->mmap.mapped_size) != 0)
+				warn("munmap");
 		TAILQ_REMOVE(&qq->perf_group_leaders, pgl, entry);
 		free(pgl);
 	}
 	/* Clean up all state allocated to kprobes */
 	while ((ks = TAILQ_FIRST(&qq->kprobe_states)) != NULL) {
-		close(ks->fd);
+		if (ks->fd != -1)
+			close(ks->fd);
 		TAILQ_REMOVE(&qq->kprobe_states, ks, entry);
 		free(ks);
 	}
