@@ -59,7 +59,7 @@ raw_event_alloc(void)
 	return (raw);
 }
 
-void
+static void
 raw_event_free(struct raw_event *raw)
 {
 	struct raw_event *aux;
@@ -159,8 +159,8 @@ raw_event_expired(struct quark_queue *qq, struct raw_event *raw, u64 now)
 	target = raw_event_target_age(qq->max_length, qq->length);
 	return (raw_event_age(raw, now) >= target);
 }
-
-void
+#if 0
+static void
 raw_event_dump(struct raw_event *raw, int is_agg)
 {
 	struct raw_event	*agg;
@@ -226,6 +226,143 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 	}
 
 	fflush(stdout);
+}
+#endif
+static size_t
+args_to_spaces(char *dst, size_t dst_len, int argc, char *args)
+{
+	char	*d, *s, *e;
+
+	if (dst_len == 0 || argc == 0)
+		return (0);
+	s = args;
+	d = dst;
+	e = dst + dst_len;
+	while (argc-- > 0) {
+		while (d != e && (*d++ = *s++) != 0)
+			;
+		if (d > dst)
+			d[-1] = ' ';
+	}
+	if (d > dst)
+		d[-1] = 0;
+	else
+		d[0] = 0;
+
+	return (d - dst);
+}
+
+static int
+raw_event_to_quark_event(struct raw_event *raw, struct quark_event *qev)
+{
+	struct raw_event                *agg;
+	struct raw_task                 *task, *exit;
+	struct raw_comm                 *comm;
+	struct raw_exec                 *exec;
+	struct raw_exec_connector       *exec_connector;
+
+	task = NULL;
+	exit = NULL;
+	comm = NULL;
+	exec = NULL;
+	exec_connector = NULL;
+
+	switch (raw->type) {
+	case RAW_WAKE_UP_NEW_TASK:
+		task = &raw->task;
+		break;
+	case RAW_EXEC:
+		exec = &raw->exec;
+		break;
+	case RAW_EXIT_THREAD:
+		exit = &raw->task;
+		break;
+	case RAW_COMM:
+		comm = &raw->comm;
+		break;
+	case RAW_EXEC_CONNECTOR:
+		exec_connector = &raw->exec_connector;
+		break;
+	default:
+		return (errno = EINVAL, -1);
+		break;		/* NOTREACHED */
+	};
+
+	TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
+		switch (agg->type) {
+		case RAW_WAKE_UP_NEW_TASK:
+			task = &agg->task;
+			break;
+		case RAW_EXEC:
+			exec = &agg->exec;
+			break;
+		case RAW_EXIT_THREAD:
+			exit = &agg->task;
+			break;
+		case RAW_COMM:
+			comm = &agg->comm;
+			break;
+		case RAW_EXEC_CONNECTOR:
+			exec_connector = &agg->exec_connector;
+			break;
+		default:
+			break;
+		}
+	}
+
+	/* Always present members */
+	qev->pid = raw->pid;
+	qev->flags = 0;
+
+	/* QUARK_EV_PROC */
+	if (task != NULL) {
+		qev->flags |= QUARK_EV_PROC;
+
+		qev->proc_cap_inheritable = task->cap_inheritable;
+		qev->proc_cap_permitted = task->cap_permitted;
+		qev->proc_cap_effective = task->cap_effective;
+		qev->proc_cap_bset = task->cap_bset;
+		qev->proc_cap_ambient = task->cap_ambient;
+		qev->proc_ppid = task->ppid;
+		qev->proc_uid = task->uid;
+		qev->proc_gid = task->gid;
+		qev->proc_suid = task->suid;
+		qev->proc_sgid = task->sgid;
+		qev->proc_euid = task->euid;
+		qev->proc_egid = task->egid;
+
+		qev->flags |= QUARK_EV_CWD;
+		strlcpy(qev->cwd, task->cwd, sizeof(qev->cwd));
+		/* XXX missing boottime and starttime XXX */
+	}
+	if (exit != NULL) {
+		qev->flags |= QUARK_EV_EXIT;
+
+		qev->exit_code = exit->exit_code;
+		/* XXX considering updating task values since we have it here XXX */
+	}
+	if (comm != NULL) {
+		qev->flags |= QUARK_EV_COMM;
+
+		strlcpy(qev->comm, comm->comm, sizeof(qev->comm));
+	}
+	if (exec != NULL) {
+		qev->flags |= QUARK_EV_FILENAME;
+
+		strlcpy(qev->filename, exec->filename.p, sizeof(qev->filename));
+	}
+	if (exec_connector != NULL) {
+		qev->flags |= QUARK_EV_CMDLINE;
+
+		qev->cmdline[0] = 0;
+		args_to_spaces(qev->cmdline, sizeof(qev->cmdline),
+		    exec_connector->argc, exec_connector->args.p);
+	}
+
+	if (qev->flags == 0)
+		warnx("%s: no flags", __func__);
+
+	return (0);
 }
 
 static char *
@@ -1409,7 +1546,7 @@ quark_queue_populate(struct quark_queue *qq)
 }
 
 struct raw_event *
-quark_queue_pop(struct quark_queue *qq)
+quark_queue_pop_raw(struct quark_queue *qq)
 {
 	struct raw_event	*min;
 	u64			 now;
@@ -1432,6 +1569,90 @@ quark_queue_pop(struct quark_queue *qq)
 	raw_event_remove(qq, min);
 
 	return (min);
+}
+
+int
+quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
+    int nqevs)
+{
+	struct raw_event	*raw;
+	int			 got;
+
+	got = 0;
+	while (got != nqevs) {
+		raw = quark_queue_pop_raw(qq);
+		if (raw == NULL)
+			break;
+		if (raw_event_to_quark_event(raw, qevs) == -1) {
+			raw_event_free(raw);
+			warnx("raw_event_to_quark_event");
+			continue;
+		}
+		raw_event_free(raw);
+		got++;
+		qevs++;
+	}
+
+	return (got);
+}
+
+static const char *
+quark_event_flag_str(int flag)
+{
+	switch (flag) {
+	case QUARK_EV_PROC:
+		return "PROC";
+	case QUARK_EV_EXIT:
+		return "EXIT";
+	case QUARK_EV_COMM:
+		return "COMM";
+	case QUARK_EV_FILENAME:
+		return "FILENAME";
+	case QUARK_EV_CMDLINE:
+		return "CMDLINE";
+	case QUARK_EV_CWD:
+		return "CWD";
+	default:
+		return "?";
+	}
+}
+
+void
+quark_event_dump(struct quark_event *qev)
+{
+	const char *flagname;
+	/* TODO: add tid */
+	printf("->%d\n", qev->pid);
+	if (qev->flags & QUARK_EV_CMDLINE) {
+		flagname = quark_event_flag_str(QUARK_EV_CMDLINE);
+		printf("  %.4s\tcmdline=%s\n", flagname, qev->cmdline);
+	}
+	if (qev->flags & QUARK_EV_PROC) {
+		flagname = quark_event_flag_str(QUARK_EV_PROC);
+		printf("  %.4s\tppid=%d\n", flagname, qev->proc_ppid);
+		printf("  %.4s\tcap_inheritable=0x%llx cap_permitted=0x%llx "
+		    "cap_effective=0x%llx\n",
+		    flagname, qev->proc_cap_inheritable,
+		    qev->proc_cap_permitted, qev->proc_cap_effective);
+		printf("  %.4s\tcap_bset=0x%llx cap_ambient=0x%llx\n",
+		    flagname, qev->proc_cap_bset, qev->proc_cap_ambient);
+	}
+	if (qev->flags & QUARK_EV_CWD) {
+		flagname = quark_event_flag_str(QUARK_EV_CWD);
+		printf("  %.4s\tcwd=%s\n", flagname, qev->cwd);
+	}
+	if (qev->flags & QUARK_EV_FILENAME) {
+		flagname = quark_event_flag_str(QUARK_EV_FILENAME);
+		printf("  %.4s\tfilename=%s\n", flagname, qev->filename);
+	}
+	if (qev->flags & QUARK_EV_COMM) {
+		flagname = quark_event_flag_str(QUARK_EV_COMM);
+		printf("  %.4s\tcomm=%s\n", flagname, qev->comm);
+	}
+	if (qev->flags & QUARK_EV_EXIT) {
+		flagname = quark_event_flag_str(QUARK_EV_EXIT);
+		printf("  %.4s\texit_code=%d\n", flagname, qev->exit_code);
+	}
 }
 
 int

@@ -24,17 +24,18 @@ extern int	quark_verbose;
 
 /* quark.c */
 struct raw_event;
+struct quark_event;
 struct quark_queue;
 int			 quark_init(void);
 int			 quark_close(void);
 int			 quark_queue_open(struct quark_queue *, int);
 void			 quark_queue_close(struct quark_queue *);
 int			 quark_queue_populate(struct quark_queue *);
-struct raw_event	*quark_queue_pop(struct quark_queue *);
+struct raw_event	*quark_queue_pop_raw(struct quark_queue *);
 int			 quark_queue_block(struct quark_queue *);
+int			 quark_queue_get_events(struct quark_queue *, struct quark_event *, int);
 int			 quark_dump_graphviz(struct quark_queue *, FILE *, FILE *);
-void			 raw_event_dump(struct raw_event *, int);
-void			 raw_event_free(struct raw_event *);
+void			 quark_event_dump(struct quark_event *);
 
 /* btf.c */
 int	quark_btf_init(void);
@@ -349,6 +350,46 @@ TAILQ_HEAD(perf_group_leaders, perf_group_leader);
  * List of online kprobes.
  */
 TAILQ_HEAD(kprobe_states, kprobe_state);
+
+/*
+ * Main external working set, user passes this back and forth, members only have
+ * a meaning if its respective flag is set, say proc_cap_inheritable should only
+ * be meaningful if flags & QUARK_EV_PROC.
+ */
+struct quark_event {
+	/* Always present */
+	u32	pid;
+#define QUARK_EV_PROC		(1 << 0)
+#define QUARK_EV_EXIT		(1 << 1)
+#define QUARK_EV_COMM		(1 << 2)
+#define QUARK_EV_FILENAME	(1 << 3)
+#define QUARK_EV_CMDLINE	(1 << 4)
+#define QUARK_EV_CWD		(1 << 5)
+	u64	flags;
+	/* QUARK_EV_PROC */
+	u64	proc_cap_inheritable;
+	u64	proc_cap_permitted;
+	u64	proc_cap_effective;
+	u64	proc_cap_bset;
+	u64	proc_cap_ambient;
+	u32	proc_ppid;
+	u32	proc_uid;
+	u32	proc_gid;
+	u32	proc_suid;
+	u32	proc_sgid;
+	u32	proc_euid;
+	u32	proc_egid;
+	/* QUARK_EV_EXIT */
+	s32	exit_code;
+	/* QUARK_EV_COMM */
+	char	comm[16];
+	/* QUARK_EV_FILENAME */
+	char	filename[1024];
+	/* QUARK_EV_CMDLINE */
+	char	cmdline[1024];
+	/* QUARK_EV_CWD */
+	char	cwd[1024];
+};
 
 struct quark_queue_stats {
 	u64	insertions;

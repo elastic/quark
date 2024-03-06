@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
+#include <string.h>
 
 #include "quark.h"
 
@@ -60,16 +61,17 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
-	int				 ch, maxnodes;
+	int				 ch, maxnodes, n, i;
 	int				 dump_perf, qq_flags;
-	int				 do_drop;
+	int				 do_drop, nqevs;
 	struct quark_queue		*qq;
-	struct raw_event		*raw;
+	struct quark_event		*qev, *qevs;
 	struct sigaction		 sigact;
 	FILE				*graph_by_time, *graph_by_pidtime;
 
 	maxnodes = -1;
 	qq_flags = dump_perf = do_drop = 0;
+	nqevs = 32;
 
 	while ((ch = getopt(argc, argv, "Dfm:tv")) != -1) {
 		const char *errstr;
@@ -109,6 +111,8 @@ main(int argc, char *argv[])
 		err(1, "calloc");
 	if (quark_queue_open(qq, qq_flags) != 0)
 		errx(1, "quark_queue_open");
+	if ((qevs = calloc(nqevs, sizeof(*qevs))) == NULL)
+		err(1, "calloc");
 	/* open graphviz files before priv_drop */
 	graph_by_time = fopen("quark_by_time.dot", "w");
 	if (graph_by_time == NULL)
@@ -134,19 +138,24 @@ main(int argc, char *argv[])
 	 * Normal mode, collect, pop and dump elements until we get a sigint
 	 */
 	while (!gotsigint && maxnodes == -1) {
-		raw = quark_queue_pop(qq);
-		if (raw == NULL) {
+		n = quark_queue_get_events(qq, qevs, nqevs);
+		if (n == -1)
+			err(1, "quark_queue_get_events");
+		/* Scan each event */
+		for (i = 0, qev = qevs; i < n; i++, qev++)
+			quark_event_dump(qev);
+		/* No events, just block */
+		if (n == 0) {
 			quark_queue_block(qq);
 			continue;
 		}
-		raw_event_dump(raw, 0); /* userlike function */
-		raw_event_free(raw);
 	}
 
 	quark_dump_graphviz(qq, graph_by_time, graph_by_pidtime);
 	fclose(graph_by_time);
 	fclose(graph_by_pidtime);
 
+	free(qevs);
 	quark_queue_dump_stats(qq);
 	quark_queue_close(qq);
 	free(qq);
