@@ -159,6 +159,61 @@ raw_event_expired(struct quark_queue *qq, struct raw_event *raw, u64 now)
 	target = raw_event_target_age(qq->max_length, qq->length);
 	return (raw_event_age(raw, now) >= target);
 }
+
+/*
+ * Insert without a colision, cheat on the timestamp in case we do. NOTE: since
+ * we bump "time" here, we shouldn't copy "time" before it sits in the tree.
+ */
+static void
+raw_event_insert(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct raw_event	*col;
+	int			 attempts = 10;
+
+	/*
+	 * Link it first by time
+	 */
+	do {
+		col = RB_INSERT(raw_event_by_time, &qq->raw_event_by_time, raw);
+		if (likely(col == NULL))
+			break;
+
+		/*
+		 * We managed to get a collision on the TSC, this happens!
+		 * We just bump time by one until we can insert it.
+		 */
+		raw->time++;
+		warnx("raw_event_by_time collision");
+	} while (--attempts > 0);
+
+	if (unlikely(col != NULL))
+		err(1, "we got consecutive collisions, this is a bug");
+
+	/*
+	 * Link it in the combined tree, we accept no collisions here as the
+	 * above case already saves us, but trust nothing.
+	 */
+	/* XXX this should be by tid, but we're not there yet XXX */
+	col = RB_INSERT(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
+	if (unlikely(col != NULL))
+		err(1, "collision on pidtime tree, this is a bug");
+
+	/* if (qq->min == NULL || raw_event_by_time_cmp(raw, qq->min) == -1) */
+	/* 	qq->min = raw; */
+	qq->length++;
+	qq->stats.insertions++;
+}
+
+static void
+raw_event_remove(struct quark_queue *qq, struct raw_event *raw)
+{
+	RB_REMOVE(raw_event_by_time, &qq->raw_event_by_time, raw);
+	RB_REMOVE(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
+	/* if (qq->min == raw) qq->min = NULL */
+	qq->length--;
+	qq->stats.removals++;
+}
+
 #if 0
 static void
 raw_event_dump(struct raw_event *raw, int is_agg)
@@ -1283,60 +1338,6 @@ quark_dump_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 	return (0);
 }
 #undef P
-
-/*
- * Insert without a colision, cheat on the timestamp in case we do. NOTE: since
- * we bump "time" here, we shouldn't copy "time" before it sits in the tree.
- */
-static void
-raw_event_insert(struct quark_queue *qq, struct raw_event *raw)
-{
-	struct raw_event	*col;
-	int			 attempts = 10;
-
-	/*
-	 * Link it first by time
-	 */
-	do {
-		col = RB_INSERT(raw_event_by_time, &qq->raw_event_by_time, raw);
-		if (likely(col == NULL))
-			break;
-
-		/*
-		 * We managed to get a collision on the TSC, this happens!
-		 * We just bump time by one until we can insert it.
-		 */
-		raw->time++;
-		warnx("raw_event_by_time collision");
-	} while (--attempts > 0);
-
-	if (unlikely(col != NULL))
-		err(1, "we got consecutive collisions, this is a bug");
-
-	/*
-	 * Link it in the combined tree, we accept no collisions here as the
-	 * above case already saves us, but trust nothing.
-	 */
-	/* XXX this should be by tid, but we're not there yet XXX */
-	col = RB_INSERT(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
-	if (unlikely(col != NULL))
-		err(1, "collision on pidtime tree, this is a bug");
-
-	/* if (qq->min == NULL || raw_event_by_time_cmp(raw, qq->min) == -1) */
-	/* 	qq->min = raw; */
-	qq->length++;
-	qq->stats.insertions++;
-}
-
-static void
-raw_event_remove(struct quark_queue *qq, struct raw_event *raw)
-{
-	RB_REMOVE(raw_event_by_time, &qq->raw_event_by_time, raw);
-	RB_REMOVE(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
-	/* if (qq->min == raw) qq->min = NULL */
-	qq->length--;
-	qq->stats.removals++;
-}
 
 int
 quark_queue_block(struct quark_queue *qq)
