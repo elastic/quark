@@ -81,7 +81,7 @@ raw_event_free(struct raw_event *raw)
 
 	while ((aux = TAILQ_FIRST(&raw->agg_queue)) != NULL) {
 		TAILQ_REMOVE(&raw->agg_queue, aux, agg_entry);
-		free(aux);
+		raw_event_free(aux);
 	}
 
 	free(raw);
