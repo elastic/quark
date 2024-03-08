@@ -1340,6 +1340,25 @@ quark_dump_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 #undef P
 
 int
+quark_queue_get_fds(struct quark_queue *qq, int *fds, int fds_len)
+{
+	struct perf_group_leader	*pgl;
+	int				 nfds;
+
+	if (TAILQ_EMPTY(&qq->perf_group_leaders))
+		return (errno = EINVAL, -1);
+	nfds = 0;
+	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+		if (nfds == fds_len)
+			return (errno = ENOBUFS, -1);
+		*fds++ = pgl->fd;
+		nfds++;
+	}
+
+	return (nfds);
+}
+
+int
 quark_queue_block(struct quark_queue *qq)
 {
 	struct perf_group_leaders	*leaders;
