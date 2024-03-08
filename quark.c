@@ -787,7 +787,7 @@ static int
 open_tracing(int flags, const char *fmt, ...)
 {
 	va_list  ap;
-	int	 dfd, fd, i, r;
+	int	 dfd, fd, i, r, saved_errno;
 	char	 tail[MAXPATHLEN];
 	char	*paths[] = {
 		"/sys/kernel/tracing",
@@ -802,14 +802,19 @@ open_tracing(int flags, const char *fmt, ...)
 	if (tail[0] == '/')
 		return (errno = EINVAL, -1);
 
+	saved_errno = 0;
 	for (i = 0; i < (int)nitems(paths); i++) {
 		if ((dfd = open(paths[i], O_PATH)) == -1) {
+			if (!saved_errno && errno != ENOENT)
+				saved_errno = errno;
 			warn("open: %s", paths[i]);
 			continue;
 		}
 		fd = openat(dfd, tail, flags);
 		close(dfd);
 		if (fd == -1) {
+			if (!saved_errno && errno != ENOENT)
+				saved_errno = errno;
 			warn("open: %s", tail);
 			continue;
 		}
@@ -817,7 +822,10 @@ open_tracing(int flags, const char *fmt, ...)
 		return (fd);
 	}
 
-	return (errno = ENOENT, -1);
+	if (saved_errno)
+		errno = saved_errno;
+
+	return (-1);
 }
 
 static int
