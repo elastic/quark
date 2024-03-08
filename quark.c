@@ -378,6 +378,9 @@ raw_event_to_quark_event(struct raw_event *raw, struct quark_event *qev)
 		qev->proc_cap_effective = task->cap_effective;
 		qev->proc_cap_bset = task->cap_bset;
 		qev->proc_cap_ambient = task->cap_ambient;
+		qev->proc_time_boot = task->start_boottime;
+		qev->proc_time_event = raw->time;
+		qev->proc_time_start = task->start_time;
 		qev->proc_ppid = task->ppid;
 		qev->proc_uid = task->uid;
 		qev->proc_gid = task->gid;
@@ -1664,6 +1667,9 @@ quark_event_dump(struct quark_event *qev)
 		    qev->proc_cap_permitted, qev->proc_cap_effective);
 		printf("  %.4s\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    flagname, qev->proc_cap_bset, qev->proc_cap_ambient);
+		printf("  %.4s\ttime_boot=%llu time_event=%llu time_start=%llu\n",
+		    flagname, qev->proc_time_boot, qev->proc_time_event,
+		    qev->proc_time_start);
 	}
 	if (qev->flags & QUARK_EV_CWD) {
 		flagname = quark_event_flag_str(QUARK_EV_CWD);

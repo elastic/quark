@@ -373,6 +373,9 @@ struct quark_event {
 	u64	proc_cap_effective;
 	u64	proc_cap_bset;
 	u64	proc_cap_ambient;
+	u64	proc_time_boot;
+	u64	proc_time_event;
+	u64	proc_time_start;
 	u32	proc_ppid;
 	u32	proc_uid;
 	u32	proc_gid;

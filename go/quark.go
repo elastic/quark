@@ -20,6 +20,9 @@ type QuarkProcEvent struct {
 	cap_effective uint64
 	cap_bset uint64
 	cap_ambient uint64
+	time_boot uint64
+	time_event uint64
+	time_start uint64
 	ppid uint32
 	uid uint32
 	gid uint32
@@ -141,6 +144,9 @@ func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 			cap_effective: uint64(cev.proc_cap_effective),
 			cap_bset: uint64(cev.proc_cap_bset),
 			cap_ambient: uint64(cev.proc_cap_ambient),
+			time_boot: uint64(cev.proc_time_boot),
+			time_event: uint64(cev.proc_time_event),
+			time_start: uint64(cev.proc_time_start),
 			ppid: uint32(cev.proc_ppid),
 			uid: uint32(cev.proc_uid),
 			gid: uint32(cev.proc_gid),
