@@ -7,9 +7,12 @@ package main
    #include "quark.h"
 */
 import "C"
-import "fmt"
-import "errors"
-import "golang.org/x/sys/unix"
+
+import (
+	"errors"
+	"fmt"
+	"golang.org/x/sys/unix"
+)
 
 type QuarkProcEvent struct {
 	cap_inheritable uint64
@@ -179,7 +182,7 @@ func main() {
 	for {
 		qevs, err := qq.GetEvents()
 		if err != nil {
-			panic("GetEvents")
+			panic(err)
 		}
 		for _, qev := range qevs {
 			fmt.Printf("%#v", qev)
