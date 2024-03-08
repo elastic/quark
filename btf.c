@@ -7,6 +7,8 @@
 #include "libbpf/src/btf.h"
 #include "libbpf/include/linux/err.h"		/* IS_ERR :( */
 
+s32	btf_root_offset(struct btf *, const char *);
+
 struct target {
 	const char	*dotname;
 	ssize_t		 offset; /* in bytes, not bits */
@@ -94,7 +96,7 @@ btf_offsetof(struct btf *btf, struct btf_type const *t, const char *mname)
 	return (NULL);
 }
 
-static s32
+s32
 btf_root_offset(struct btf *btf, const char *dotname)
 {
 	const struct btf_type *parent;
@@ -162,7 +164,7 @@ quark_btf_init(void)
 	}
 
 	if (quark_verbose)
-		for (ta = targets; ta ->dotname != NULL; ta++) {
+		for (ta = targets; ta->dotname != NULL; ta++) {
 			fprintf(stderr, "%s: dotname=%s off=%ld (bitoff=%ld)\n",
 			    __func__, ta->dotname, ta->offset, ta->offset * 8);
 		}
@@ -177,7 +179,7 @@ quark_btf_offset(const char *dotname)
 {
 	struct target *ta;
 
-	for (ta = targets; ta ->dotname != NULL; ta++) {
+	for (ta = targets; ta->dotname != NULL; ta++) {
 		if (!strcmp(ta->dotname, dotname)) {
 			if (ta->offset != -1)
 				return (ta->offset);

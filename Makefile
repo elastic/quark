@@ -29,7 +29,7 @@ CC?= cc
 
 # LIBQUARK
 LIBQUARK_HEADERS:= $(wildcard *.h)
-LIBQUARK_SRCS:= $(filter-out quark-mon.c,$(wildcard *.c))
+LIBQUARK_SRCS:= $(filter-out quark-mon.c quark-btf.c,$(wildcard *.c))
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
@@ -40,7 +40,7 @@ LIBBPF_SRC:= libbpf/src
 LIBBPF_STATIC:= $(LIBBPF_SRC)/libbpf.a
 LIBBPF_DEPS:= $(wildcard libbpf/src/*.[ch]) $(wildcard libbpf/include/*.[ch])
 
-all: $(LIBBPF_STATIC) $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon
+all: $(LIBBPF_STATIC) $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon quark-btf
 
 $(LIBBPF_STATIC): $(LIBBPF_DEPS)
 	make -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=y
@@ -59,8 +59,11 @@ svg: $(SVGS)
 quark-mon: quark-mon.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
 
+quark-btf: quark-btf.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
+
 clean:
-	rm -f $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon quark-mon.o
+	rm -f $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon quark-mon.o quark-btf quark-btf.o
 
 cleanall: clean
 	rm -f $(SVGS)
