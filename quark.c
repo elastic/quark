@@ -1661,6 +1661,9 @@ quark_event_dump(struct quark_event *qev)
 	if (qev->flags & QUARK_EV_PROC) {
 		flagname = quark_event_flag_str(QUARK_EV_PROC);
 		printf("  %.4s\tppid=%d\n", flagname, qev->proc_ppid);
+		printf("  %.4s\tuid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
+		    flagname, qev->proc_uid, qev->proc_gid, qev->proc_suid,
+		    qev->proc_sgid, qev->proc_euid, qev->proc_egid);
 		printf("  %.4s\tcap_inheritable=0x%llx cap_permitted=0x%llx "
 		    "cap_effective=0x%llx\n",
 		    flagname, qev->proc_cap_inheritable,
