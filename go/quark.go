@@ -1,8 +1,8 @@
-package main
+package quark
 
 /*
-   #cgo CFLAGS: -I../
-   #cgo LDFLAGS: ./../libquark.a ./../libbpf/src/libbpf.a -lelf -lz
+   #cgo CFLAGS: -I${SRCDIR}/..
+   #cgo LDFLAGS: ${SRCDIR}/../libquark.a ${SRCDIR}/../libbpf/src/libbpf.a -lelf -lz
 
    #include <stdlib.h>
    #include "quark.h"
