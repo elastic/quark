@@ -11,7 +11,6 @@ import "C"
 
 import (
 	"errors"
-	"fmt"
 
 	"golang.org/x/sys/unix"
 )
@@ -168,33 +167,4 @@ func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 	}
 
 	return qev, nil
-}
-
-func main() {
-	err := QuarkInit()
-	if err != nil {
-		panic(err)
-	}
-	qq, err := QuarkQueueOpen(64)
-	if err != nil {
-		panic(err)
-	}
-	for {
-		qevs, err := qq.GetEvents()
-		if err != nil {
-			panic(err)
-		}
-		for _, qev := range qevs {
-			fmt.Printf("%#v", qev)
-			if qev.proc != nil {
-				fmt.Printf(" %#v", qev.proc)
-			}
-			fmt.Printf("\n")
-		}
-		if len(qevs) == 0 {
-			qq.Block()
-		}
-	}
-	qq.Close()
-	QuarkClose()
 }
