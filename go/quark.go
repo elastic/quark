@@ -53,7 +53,7 @@ type QuarkQueue struct {
 var ErrUndefined = errors.New("Undefined")
 
 func wrapErrno(err error) error {
-	if err != nil {
+	if err == nil {
 		err = ErrUndefined
 	}
 
