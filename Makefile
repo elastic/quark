@@ -1,4 +1,4 @@
-CFLAGS?= -g -O2 -fno-strict-aliasing
+CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
 
 CPPFLAGS?=-D_GNU_SOURCE
 
@@ -43,7 +43,7 @@ LIBBPF_DEPS:= $(wildcard libbpf/src/*.[ch]) $(wildcard libbpf/include/*.[ch])
 all: $(LIBBPF_STATIC) $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon quark-btf
 
 $(LIBBPF_STATIC): $(LIBBPF_DEPS)
-	make -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=y
+	make -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=y EXTRA_CFLAGS=-fPIC
 
 $(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
 	ar rcs $@ $^
