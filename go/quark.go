@@ -35,13 +35,13 @@ type QuarkProcEvent struct {
 }
 
 type QuarkEvent struct {
-	pid       uint32          // Always present
-	proc      *QuarkProcEvent // QUARK_EV_PROC
-	exit_code *int32          // QUARK_EV_EXIT
-	comm      string          // QUARK_EV_COMM
-	filename  string          // QUARK_EV_FILENAME
-	cmdline   string          // QUARK_EV_CMDLINE
-	cwd       string          // QUARK_EV_CWD
+	Pid       uint32          // Always present
+	Proc      *QuarkProcEvent // QUARK_EV_PROC
+	Exit_code *int32          // QUARK_EV_EXIT
+	Comm      string          // QUARK_EV_COMM
+	Filename  string          // QUARK_EV_FILENAME
+	Cmdline   string          // QUARK_EV_CMDLINE
+	Cwd       string          // QUARK_EV_CWD
 }
 
 type QuarkQueue struct {
