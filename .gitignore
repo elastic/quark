@@ -4,4 +4,5 @@
 *.svg
 cscope.*
 quark-mon
+quark-btf
 libquark.a
