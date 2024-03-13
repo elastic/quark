@@ -130,9 +130,9 @@ func (qq *QuarkQueue) Block() {
 func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 	var qev QuarkEvent
 
-	qev.pid = uint32(cev.pid)
+	qev.Pid = uint32(cev.pid)
 	if cev.flags&C.QUARK_EV_PROC != 0 {
-		qev.proc = &QuarkProcEvent{
+		qev.Proc = &QuarkProcEvent{
 			cap_inheritable: uint64(cev.proc_cap_inheritable),
 			cap_permitted:   uint64(cev.proc_cap_permitted),
 			cap_effective:   uint64(cev.proc_cap_effective),
@@ -152,19 +152,19 @@ func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 	}
 	if cev.flags&C.QUARK_EV_EXIT != 0 {
 		exit_code := int32(cev.exit_code)
-		qev.exit_code = &exit_code
+		qev.Exit_code = &exit_code
 	}
 	if cev.flags&C.QUARK_EV_COMM != 0 {
-		qev.comm = C.GoString(&cev.comm[0])
+		qev.Comm = C.GoString(&cev.comm[0])
 	}
 	if cev.flags&C.QUARK_EV_FILENAME != 0 {
-		qev.filename = C.GoString(&cev.filename[0])
+		qev.Filename = C.GoString(&cev.filename[0])
 	}
 	if cev.flags&C.QUARK_EV_CMDLINE != 0 {
-		qev.cmdline = C.GoString(&cev.cmdline[0])
+		qev.Cmdline = C.GoString(&cev.cmdline[0])
 	}
 	if cev.flags&C.QUARK_EV_CWD != 0 {
-		qev.cwd = C.GoString(&cev.cwd[0])
+		qev.Cwd = C.GoString(&cev.cwd[0])
 	}
 
 	return qev, nil
