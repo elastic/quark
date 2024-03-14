@@ -16,21 +16,21 @@ import (
 )
 
 type QuarkProcEvent struct {
-	cap_inheritable uint64
-	cap_permitted   uint64
-	cap_effective   uint64
-	cap_bset        uint64
-	cap_ambient     uint64
-	time_boot       uint64
-	time_event      uint64
-	time_start      uint64
-	ppid            uint32
-	uid             uint32
-	gid             uint32
-	suid            uint32
-	sgid            uint32
-	euid            uint32
-	egid            uint32
+	CapInheritable uint64
+	CapPermitted   uint64
+	CapEffective   uint64
+	CapBset        uint64
+	CapAmbient     uint64
+	TimeBoot       uint64
+	TimeEvent      uint64
+	TimeStart      uint64
+	Ppid           uint32
+	Uid            uint32
+	Gid            uint32
+	Suid           uint32
+	Sgid           uint32
+	Euid           uint32
+	Egid           uint32
 }
 
 type QuarkEvent struct {
@@ -49,7 +49,7 @@ type QuarkQueue struct {
 	fds  []unix.PollFd
 }
 
-var ErrUndefined = errors.New("Undefined")
+var ErrUndefined = errors.New("undefined")
 
 func wrapErrno(err error) error {
 	if err == nil {
@@ -132,21 +132,21 @@ func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 	qev.Pid = uint32(cev.pid)
 	if cev.flags&C.QUARK_EV_PROC != 0 {
 		qev.Proc = &QuarkProcEvent{
-			cap_inheritable: uint64(cev.proc_cap_inheritable),
-			cap_permitted:   uint64(cev.proc_cap_permitted),
-			cap_effective:   uint64(cev.proc_cap_effective),
-			cap_bset:        uint64(cev.proc_cap_bset),
-			cap_ambient:     uint64(cev.proc_cap_ambient),
-			time_boot:       uint64(cev.proc_time_boot),
-			time_event:      uint64(cev.proc_time_event),
-			time_start:      uint64(cev.proc_time_start),
-			ppid:            uint32(cev.proc_ppid),
-			uid:             uint32(cev.proc_uid),
-			gid:             uint32(cev.proc_gid),
-			suid:            uint32(cev.proc_suid),
-			sgid:            uint32(cev.proc_sgid),
-			euid:            uint32(cev.proc_euid),
-			egid:            uint32(cev.proc_egid),
+			CapInheritable: uint64(cev.proc_cap_inheritable),
+			CapPermitted:   uint64(cev.proc_cap_permitted),
+			CapEffective:   uint64(cev.proc_cap_effective),
+			CapBset:        uint64(cev.proc_cap_bset),
+			CapAmbient:     uint64(cev.proc_cap_ambient),
+			TimeBoot:       uint64(cev.proc_time_boot),
+			TimeEvent:      uint64(cev.proc_time_event),
+			TimeStart:      uint64(cev.proc_time_start),
+			Ppid:           uint32(cev.proc_ppid),
+			Uid:            uint32(cev.proc_uid),
+			Gid:            uint32(cev.proc_gid),
+			Suid:           uint32(cev.proc_suid),
+			Sgid:           uint32(cev.proc_sgid),
+			Euid:           uint32(cev.proc_euid),
+			Egid:           uint32(cev.proc_egid),
 		}
 	}
 	if cev.flags&C.QUARK_EV_EXIT != 0 {
