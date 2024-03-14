@@ -399,22 +399,23 @@ raw_event_to_quark_event(struct raw_event *raw, struct quark_event *qev)
 		qev->exit_code = exit->exit_code;
 		/* XXX considering updating task values since we have it here XXX */
 	}
-	if (comm != NULL) {
-		qev->flags |= QUARK_EV_COMM;
-
-		strlcpy(qev->comm, comm->comm, sizeof(qev->comm));
-	}
 	if (exec != NULL) {
 		qev->flags |= QUARK_EV_FILENAME;
 
 		strlcpy(qev->filename, exec->filename.p, sizeof(qev->filename));
 	}
 	if (exec_connector != NULL) {
-		qev->flags |= QUARK_EV_CMDLINE;
+		qev->flags |= QUARK_EV_CMDLINE | QUARK_EV_COMM;
 
 		qev->cmdline[0] = 0;
 		args_to_spaces(qev->cmdline, sizeof(qev->cmdline),
 		    exec_connector->argc, exec_connector->args.p);
+		strlcpy(qev->comm, exec_connector->comm, sizeof(qev->comm));
+	}
+	if (comm != NULL) {
+		qev->flags |= QUARK_EV_COMM;
+
+		strlcpy(qev->comm, comm->comm, sizeof(qev->comm));
 	}
 
 	if (qev->flags == 0)
@@ -630,6 +631,8 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			warnx("can't copy args");
 		if (p == end)
 			exec->args.p[p - start - 1] = 0;
+		strlcpy(exec->comm, str_of_dataloc(sample, &exec_sample->comm),
+		    sizeof(exec->comm));
 		break;
 	}
 	default:
@@ -1654,6 +1657,10 @@ quark_event_dump(struct quark_event *qev)
 	const char *flagname;
 	/* TODO: add tid */
 	printf("->%d\n", qev->pid);
+	if (qev->flags & QUARK_EV_COMM) {
+		flagname = quark_event_flag_str(QUARK_EV_COMM);
+		printf("  %.4s\tcomm=%s\n", flagname, qev->comm);
+	}
 	if (qev->flags & QUARK_EV_CMDLINE) {
 		flagname = quark_event_flag_str(QUARK_EV_CMDLINE);
 		printf("  %.4s\tcmdline=%s\n", flagname, qev->cmdline);
@@ -1681,10 +1688,6 @@ quark_event_dump(struct quark_event *qev)
 	if (qev->flags & QUARK_EV_FILENAME) {
 		flagname = quark_event_flag_str(QUARK_EV_FILENAME);
 		printf("  %.4s\tfilename=%s\n", flagname, qev->filename);
-	}
-	if (qev->flags & QUARK_EV_COMM) {
-		flagname = quark_event_flag_str(QUARK_EV_COMM);
-		printf("  %.4s\tcomm=%s\n", flagname, qev->comm);
 	}
 	if (qev->flags & QUARK_EV_EXIT) {
 		flagname = quark_event_flag_str(QUARK_EV_EXIT);

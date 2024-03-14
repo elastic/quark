@@ -216,13 +216,13 @@ struct task_sample {
 	s32	exit_code;
 	/* 16bit */
 	/* 8bit */
-	char	comm[16];
 };
 
 struct exec_connector_sample {
-	u64	probe_ip;
-	u64	argc;
-	u64	stack[100];
+	u64				probe_ip;
+	u64				argc;
+	u64				stack[100];
+	struct perf_sample_data_loc	comm;
 };
 
 /*
@@ -306,6 +306,7 @@ struct raw_task {
 struct raw_exec_connector {
 	int		argc;
 	struct qstr	args;
+	char		comm[16];
 };
 
 struct raw_event {
