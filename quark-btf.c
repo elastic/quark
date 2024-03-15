@@ -18,7 +18,9 @@ struct target {
 	ssize_t		 offset;
 };
 
-extern struct target targets[];
+extern struct target	targets[];
+static size_t		longest;
+static int		bflag;
 
 static void
 usage(void)
@@ -29,16 +31,27 @@ usage(void)
 	exit(1);
 }
 
+static void
+printit(const char *t, ssize_t off)
+{
+	printf("%-*s ", (int)longest, t);
+	if (off == -1)
+		printf("U");
+	else
+		printf("%-7zd", off);
+	if (bflag && off != -1)
+		printf("%zd", off * 8);
+	printf("\n");
+	fflush(stdout);
+}
+
 int
 main(int argc, char *argv[])
 {
-	int		 i, ch, bflag;
+	int		 i, ch, failed;
 	struct btf	*btf;
 	struct target	*ta;
-	size_t		 longest;
-	char		 fmt[1024];
 
-	bflag = 0;
 	while ((ch = getopt(argc, argv, "b")) != -1) {
 		switch (ch) {
 		case 'b':
@@ -52,6 +65,7 @@ main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 	longest = 0;
+	failed = 0;
 
 	if (argc == 0) {
 		if (quark_btf_init() != 0)
@@ -59,17 +73,13 @@ main(int argc, char *argv[])
 		for (ta = targets, longest = 0; ta->dotname != NULL; ta++)
 			if (strlen(ta->dotname) > longest)
 				longest = strlen(ta->dotname);
-		if (snprintf(fmt, sizeof(fmt),
-		    "%%-%zds %%-7zd", longest) >= (int)sizeof(fmt))
-			errx(1, "fmt too long");
 		for (ta = targets; ta->dotname != NULL; ta++) {
-			printf(fmt, ta->dotname, ta->offset);
-			if (bflag && ta->offset != -1)
-				printf("%zd", ta->offset * 8);
-			printf("\n");
-			fflush(stdout);
+			if (ta->offset == -1)
+				failed = 1;
+			printit(ta->dotname, ta->offset);
 		}
-		return (0);
+
+		return (failed);
 	}
 
 	btf = btf__load_vmlinux_btf();
@@ -79,21 +89,16 @@ main(int argc, char *argv[])
 	for (i = 0; i < argc; i++)
 		if (strlen(argv[i]) > longest)
 			longest = strlen(argv[i]);
-	if (snprintf(fmt, sizeof(fmt),
-	    "%%-%zds %%-7zd", longest) >= (int)sizeof(fmt))
-		errx(1, "fmt too long");
 	for (i = 0; i < argc; i++) {
 		s32	off;
 
 		off = btf_root_offset(btf, argv[i]);
-		printf(fmt, argv[i], off);
-		if (bflag && off != -1)
-			printf("%d", off * 8);
-		printf("\n");
-		fflush(stdout);
+		if (off == -1)
+			failed = 1;
+		printit(argv[i], off);
 	}
 
 	btf__free(btf);
 
-	return (0);
+	return (failed);
 }
