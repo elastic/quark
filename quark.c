@@ -404,11 +404,13 @@ raw_event_to_quark_event(struct raw_event *raw, struct quark_event *qev)
 		strlcpy(qev->filename, exec->filename.p, sizeof(qev->filename));
 	}
 	if (exec_connector != NULL) {
-		qev->flags |= QUARK_EV_CMDLINE | QUARK_EV_COMM;
+		qev->flags |= QUARK_EV_CMDLINE;
 
 		qev->cmdline[0] = 0;
 		args_to_spaces(qev->cmdline, sizeof(qev->cmdline),
 		    exec_connector->argc, exec_connector->args.p);
+
+		qev->flags |= QUARK_EV_COMM;
 		strlcpy(qev->comm, exec_connector->comm, sizeof(qev->comm));
 	}
 	if (comm != NULL) {
