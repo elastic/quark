@@ -64,7 +64,6 @@ main(int argc, char *argv[])
 
 	argc -= optind;
 	argv += optind;
-	longest = 0;
 	failed = 0;
 
 	if (argc == 0) {
