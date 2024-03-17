@@ -57,7 +57,8 @@ void	qstr_init(struct qstr *);
 int	qstr_ensure(struct qstr *, size_t);
 int	qstr_copy_data_loc(struct qstr *, struct perf_record_sample *,
     struct perf_sample_data_loc *);
-int	qstr_memcpy(struct qstr *, void *, size_t);
+int	qstr_memcpy(struct qstr *, const void *, size_t);
+int	qstr_strcpy(struct qstr *, const char *);
 void	qstr_free(struct qstr *);
 
 /* kprobe.c */
@@ -285,22 +286,22 @@ struct raw_comm {
 };
 
 struct raw_task {
-	u64	 cap_inheritable;
-	u64	 cap_permitted;
-	u64	 cap_effective;
-	u64	 cap_bset;
-	u64	 cap_ambient;
-	u64	 start_time;
-	u64	 start_boottime;
-	u32	 uid;
-	u32	 gid;
-	u32	 suid;
-	u32	 sgid;
-	u32	 euid;
-	u32	 egid;
-	u32	 ppid;		/* Unavailable at exit */
-	s32	 exit_code;	/* Unavailable at fork */
-	char	*cwd;
+	u64		cap_inheritable;
+	u64		cap_permitted;
+	u64		cap_effective;
+	u64		cap_bset;
+	u64		cap_ambient;
+	u64		start_time;
+	u64		start_boottime;
+	u32		uid;
+	u32		gid;
+	u32		suid;
+	u32		sgid;
+	u32		euid;
+	u32		egid;
+	u32		ppid;		/* Unavailable at exit */
+	s32		exit_code;	/* Unavailable at fork */
+	struct qstr	cwd;
 };
 
 struct raw_exec_connector {

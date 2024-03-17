@@ -76,7 +76,7 @@ qstr_copy_data_loc(struct qstr *qstr,
 }
 
 int
-qstr_memcpy(struct qstr *qstr, void *src, size_t len)
+qstr_memcpy(struct qstr *qstr, const void *src, size_t len)
 {
 	if (qstr_ensure(qstr, len) == -1)
 		return (-1);
@@ -85,19 +85,13 @@ qstr_memcpy(struct qstr *qstr, void *src, size_t len)
 	return (0);
 }
 
-#if 0
-ssize_t
-qstr_strlcpy(struct qstr *qstr, const char *src)
+
+int
+qstr_strcpy(struct qstr *qstr, const char *src)
 {
-	ssize_t slen = strlen(src);
-
-	qstr_ensure(qstr, slen + 1);
-	memcpy(qstr->p, src, slen);
-	qstr->p[slen] = 0;
-
-	return (slen);
+	return (qstr_memcpy(qstr, src, strlen(src) + 1));
 }
-#endif
+
 void
 qstr_free(struct qstr *qstr)
 {

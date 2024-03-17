@@ -70,7 +70,7 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_WAKE_UP_NEW_TASK:
 	case RAW_EXIT_THREAD:
-		free(raw->task.cwd);
+		qstr_free(&raw->task.cwd);
 		break;
 	case RAW_EXEC_CONNECTOR:
 		qstr_free(&raw->exec_connector.args);
@@ -390,8 +390,7 @@ raw_event_to_quark_event(struct raw_event *raw, struct quark_event *qev)
 		qev->proc_egid = task->egid;
 
 		qev->flags |= QUARK_EV_CWD;
-		strlcpy(qev->cwd, task->cwd, sizeof(qev->cwd));
-		/* XXX missing boottime and starttime XXX */
+		strlcpy(qev->cwd, task->cwd.p, sizeof(qev->cwd));
 	}
 	if (exit != NULL) {
 		qev->flags |= QUARK_EV_EXIT;
@@ -486,8 +485,8 @@ sample_kind(struct perf_record_sample *sample)
 }
 #endif
 
-static char *
-build_path(struct path_ctx *ctx)
+static int
+build_path(struct path_ctx *ctx, struct qstr *dst)
 {
 	int	 i, done;
 	char	*p, *pwd, *ppwd, path[MAXPATHLEN];
@@ -510,7 +509,7 @@ build_path(struct path_ctx *ctx)
 		/* +1 is the / */
 		/* XXX this is way too dangerous XXX */
 		if (((ppwd - pwd) + 1) > (p - path))
-			return (errno = ENAMETOOLONG, NULL);
+			return (errno = ENAMETOOLONG, -1);
 		while (ppwd != pwd)
 			*--p = *--ppwd;
 		*--p = '/';
@@ -519,7 +518,7 @@ build_path(struct path_ctx *ctx)
 		*--p = '/';
 
 	/* XXX double copy XXX */
-	return (strdup(p));
+	return (qstr_strcpy(dst, p));
 }
 
 static struct raw_event *
@@ -578,7 +577,9 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 				    &w->pwd_s[i]);
 				pctx.pwd[i].pwd_k = w->pwd_k[i];
 			}
-			raw->task.cwd = build_path(&pctx);
+			qstr_init(&raw->task.cwd);
+			if (build_path(&pctx, &raw->task.cwd) == -1)
+				warn("can't build path");
 			raw->task.exit_code = -1;
 		} else {
 			raw->type = RAW_EXIT_THREAD;
