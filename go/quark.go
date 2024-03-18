@@ -34,13 +34,13 @@ type QuarkProcEvent struct {
 }
 
 type QuarkEvent struct {
-	Pid       uint32          // Always present
-	Proc      *QuarkProcEvent // QUARK_EV_PROC
-	Exit_code *int32          // QUARK_EV_EXIT
-	Comm      string          // QUARK_EV_COMM
-	Filename  string          // QUARK_EV_FILENAME
-	Cmdline   string          // QUARK_EV_CMDLINE
-	Cwd       string          // QUARK_EV_CWD
+	Pid      uint32          // Always present
+	Proc     *QuarkProcEvent // QUARK_EV_PROC
+	ExitCode *int32          // QUARK_EV_EXIT
+	Comm     string          // QUARK_EV_COMM
+	Filename string          // QUARK_EV_FILENAME
+	Cmdline  string          // QUARK_EV_CMDLINE
+	Cwd      string          // QUARK_EV_CWD
 }
 
 type QuarkQueue struct {
@@ -151,7 +151,7 @@ func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 	}
 	if cev.flags&C.QUARK_EV_EXIT != 0 {
 		exit_code := int32(cev.exit_code)
-		qev.Exit_code = &exit_code
+		qev.ExitCode = &exit_code
 	}
 	if cev.flags&C.QUARK_EV_COMM != 0 {
 		qev.Comm = C.GoString(&cev.comm[0])
