@@ -238,7 +238,11 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		printf("\tstart_time=%llu start_boottime=%llu",
 		    w->start_time, w->start_boottime);
 		if (raw->type == RAW_WAKE_UP_NEW_TASK)
-			printf(" norm_start=%llu", raw->time);
+			printf(" start_time_event=%llu", w->start_time_event);
+
+		raw->type == RAW_WAKE_UP_NEW_TASK ? "start" : "end");
+		printf(" norm_%s=%llu", raw->time,
+		    raw->type == RAW_WAKE_UP_NEW_TASK ? "start" : "end");
 		printf("\n");
 		printf("\tcap_inheritable=0x%llx cap_permitted=0x%llx cap_effective=0x%llx\n"
 		    "\tcap_bset=0x%llx cap_ambient=0x%llx\n",
@@ -248,7 +252,8 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 			printf("\tworking_directory=%s\n", w->cwd);
 			printf("\tppid=%d\n", w->ppid);
 		} else if (raw->type == RAW_EXIT_THREAD)
-			printf("\texit_code=%d norm_end=%llu\n", w->exit_code, raw->time);
+			printf("\texit_code=%d exit_time_event=%llu\n",
+			    w->exit_code, w->exit_time_event);
 		TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
 			raw_event_dump(agg, 1);
 		}
@@ -379,7 +384,7 @@ raw_event_to_quark_event(struct raw_event *raw, struct quark_event *qev)
 		qev->proc_cap_bset = task->cap_bset;
 		qev->proc_cap_ambient = task->cap_ambient;
 		qev->proc_time_boot = task->start_boottime;
-		qev->proc_time_event = raw->time;
+		qev->proc_time_start_event = task->start_time_event;
 		qev->proc_time_start = task->start_time;
 		qev->proc_ppid = task->ppid;
 		qev->proc_uid = task->uid;
@@ -396,6 +401,7 @@ raw_event_to_quark_event(struct raw_event *raw, struct quark_event *qev)
 		qev->flags |= QUARK_EV_EXIT;
 
 		qev->exit_code = exit->exit_code;
+		qev->exit_time_event = exit->exit_time_event;
 		/* XXX considering updating task values since we have it here XXX */
 	}
 	if (exec != NULL) {
@@ -583,6 +589,8 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			if (build_path(&pctx, &raw->task.cwd) == -1)
 				warn("can't build path");
 			raw->task.exit_code = -1;
+			raw->task.exit_time_event = 0;
+			raw->task.start_time_event = sample->sample_id.time;
 		} else {
 			raw->type = RAW_EXIT_THREAD;
 			/*
@@ -593,6 +601,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			 */
 			raw->task.ppid = -1;
 			raw->task.exit_code = w->exit_code;
+			raw->task.exit_time_event = sample->sample_id.time;
 		}
 		raw->task.cap_inheritable = w->cap_inheritable;
 		raw->task.cap_permitted = w->cap_permitted;
@@ -1681,7 +1690,7 @@ quark_event_dump(struct quark_event *qev)
 		printf("  %.4s\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    flagname, qev->proc_cap_bset, qev->proc_cap_ambient);
 		printf("  %.4s\ttime_boot=%llu time_event=%llu time_start=%llu\n",
-		    flagname, qev->proc_time_boot, qev->proc_time_event,
+		    flagname, qev->proc_time_boot, qev->proc_time_start_event,
 		    qev->proc_time_start);
 	}
 	if (qev->flags & QUARK_EV_CWD) {
@@ -1694,7 +1703,8 @@ quark_event_dump(struct quark_event *qev)
 	}
 	if (qev->flags & QUARK_EV_EXIT) {
 		flagname = quark_event_flag_str(QUARK_EV_EXIT);
-		printf("  %.4s\texit_code=%d\n", flagname, qev->exit_code);
+		printf("  %.4s\texit_code=%d exit_time=%llu\n", flagname,
+		    qev->exit_code, qev->exit_time_event);
 	}
 }
 

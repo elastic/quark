@@ -33,14 +33,19 @@ type QuarkProcEvent struct {
 	Egid           uint32
 }
 
+type QuarkExitEvent struct {
+	ExitCode      int32
+	ExitTimeEvent uint64
+}
+
 type QuarkEvent struct {
-	Pid      uint32          // Always present
-	Proc     *QuarkProcEvent // QUARK_EV_PROC
-	ExitCode *int32          // QUARK_EV_EXIT
-	Comm     string          // QUARK_EV_COMM
-	Filename string          // QUARK_EV_FILENAME
-	Cmdline  string          // QUARK_EV_CMDLINE
-	Cwd      string          // QUARK_EV_CWD
+	Pid       uint32          // Always present
+	Proc      *QuarkProcEvent // QUARK_EV_PROC
+	ExitEvent *QuarkExitEvent // QUARK_EV_EXIT
+	Comm      string          // QUARK_EV_COMM
+	Filename  string          // QUARK_EV_FILENAME
+	Cmdline   string          // QUARK_EV_CMDLINE
+	Cwd       string          // QUARK_EV_CWD
 }
 
 type QuarkQueue struct {
@@ -138,7 +143,7 @@ func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 			CapBset:        uint64(cev.proc_cap_bset),
 			CapAmbient:     uint64(cev.proc_cap_ambient),
 			TimeBoot:       uint64(cev.proc_time_boot),
-			TimeEvent:      uint64(cev.proc_time_event),
+			TimeEvent:      uint64(cev.proc_time_start_event),
 			TimeStart:      uint64(cev.proc_time_start),
 			Ppid:           uint32(cev.proc_ppid),
 			Uid:            uint32(cev.proc_uid),
@@ -150,8 +155,10 @@ func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 		}
 	}
 	if cev.flags&C.QUARK_EV_EXIT != 0 {
-		exit_code := int32(cev.exit_code)
-		qev.ExitCode = &exit_code
+		var exit QuarkExitEvent
+		exit.ExitCode = int32(cev.exit_code)
+		exit.ExitTimeEvent = uint64(cev.exit_time_event)
+		qev.ExitEvent = &exit
 	}
 	if cev.flags&C.QUARK_EV_COMM != 0 {
 		qev.Comm = C.GoString(&cev.comm[0])

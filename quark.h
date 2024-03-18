@@ -293,14 +293,16 @@ struct raw_task {
 	u64		cap_ambient;
 	u64		start_time;
 	u64		start_boottime;
+	u64		start_time_event;	/* Unavailable at exit */
 	u32		uid;
 	u32		gid;
 	u32		suid;
 	u32		sgid;
 	u32		euid;
 	u32		egid;
-	u32		ppid;		/* Unavailable at exit */
-	s32		exit_code;	/* Unavailable at fork */
+	u32		ppid;			/* Unavailable at exit */
+	s32		exit_code;		/* Unavailable at fork */
+	u64		exit_time_event;	/* Unavailable at fork */
 	struct qstr	cwd;
 };
 
@@ -376,7 +378,7 @@ struct quark_event {
 	u64	proc_cap_bset;
 	u64	proc_cap_ambient;
 	u64	proc_time_boot;
-	u64	proc_time_event;
+	u64	proc_time_start_event;
 	u64	proc_time_start;
 	u32	proc_ppid;
 	u32	proc_uid;
@@ -387,6 +389,7 @@ struct quark_event {
 	u32	proc_egid;
 	/* QUARK_EV_EXIT */
 	s32	exit_code;
+	u64	exit_time_event;
 	/* QUARK_EV_COMM */
 	char	comm[16];
 	/* QUARK_EV_FILENAME */
