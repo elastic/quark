@@ -20,10 +20,12 @@
 #define QUARK_QUEUE_MAXLENGTH	10000		/* XXX hardcoded for now XXX */
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
 #define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
+#define EVENT_CACHE_GRACETIME	MS_TO_NS(4000) /* 4 seconds is probably too much */
 
 static int	open_tracing(int, const char *, ...) __attribute__((format(printf, 2, 3)));
 static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
+static int	event_by_pid_cmp(struct quark_event *, struct quark_event *);
 
 /* For debugging */
 int	quark_verbose;
@@ -36,6 +38,11 @@ u8	id_to_sample_kind[MAX_SAMPLE_IDS];
  * always 8, but some older redhat kernels are different.
  */
 ssize_t	quark_probe_data_body_offset;
+
+RB_PROTOTYPE(event_by_pid, quark_event,
+    entry_by_pid, event_by_pid_cmp);
+RB_GENERATE(event_by_pid, quark_event,
+    entry_by_pid, event_by_pid_cmp);
 
 RB_PROTOTYPE(raw_event_by_time, raw_event,
     entry_by_time, raw_event_by_time_cmp);
@@ -312,20 +319,184 @@ args_to_spaces(char *dst, size_t dst_len, int argc, char *args)
 	return (d - dst);
 }
 
-static int
-raw_event_to_quark_event(struct raw_event *raw, struct quark_event *qev)
+static void
+event_copy_out(struct quark_event *dst, struct quark_event *src)
 {
+	memcpy(dst, src, sizeof(*dst));
+	bzero(&dst->quark_event_zero_start,
+	    (char *)&dst->quark_event_zero_end - (char *)&dst->quark_event_zero_start);
+}
+
+static struct quark_event *
+event_cache_lookup(struct quark_queue *qq, int pid)
+{
+	struct quark_event	key;
+
+	key.pid = pid;
+
+	return (RB_FIND(event_by_pid, &qq->event_by_pid, &key));
+}
+
+static struct quark_event *
+event_cache_get(struct quark_queue *qq, int pid)
+{
+	struct quark_event	*qev;
+
+	qev = event_cache_lookup(qq, pid);
+	if (qev != NULL)
+		return (qev);
+
+	qev = calloc(1, sizeof(*qev));
+	if (qev == NULL)
+		return (NULL);
+	qev->pid = pid;
+	if (RB_INSERT(event_by_pid, &qq->event_by_pid,
+	    qev) != NULL) {
+		warnx("collision, this is a bug");
+		free(qev);
+		return (NULL);
+	}
+
+	return (qev);
+}
+
+static void
+event_cache_delete(struct quark_queue *qq, struct quark_event *qev)
+{
+	RB_REMOVE(event_by_pid, &qq->event_by_pid, qev);
+	if (qev->gc_time)
+		TAILQ_REMOVE(&qq->event_gc, qev, entry_gc);
+	free(qev);
+}
+
+static int
+event_cache_gc(struct quark_queue *qq)
+{
+	struct quark_event	*qev;
+	u64			 now;
+	int			 n;
+
+	now = now64();
+	n = 0;
+	while ((qev = TAILQ_FIRST(&qq->event_gc)) != NULL) {
+		if (AGE(qev->gc_time, now) < EVENT_CACHE_GRACETIME)
+			break;
+		event_cache_delete(qq, qev);
+		n++;
+	}
+
+	return (n);
+}
+
+static int
+event_by_pid_cmp(struct quark_event *a, struct quark_event *b)
+{
+	if (a->pid < b->pid)
+		return (-1);
+	else if (a->pid > b->pid)
+		return (1);
+
+	return (0);
+}
+
+static const char *
+event_flag_str(int flag)
+{
+	switch (flag) {
+	case QUARK_EV_PROC:
+		return "PROC";
+	case QUARK_EV_EXIT:
+		return "EXIT";
+	case QUARK_EV_COMM:
+		return "COMM";
+	case QUARK_EV_FILENAME:
+		return "FILENAME";
+	case QUARK_EV_CMDLINE:
+		return "CMDLINE";
+	case QUARK_EV_CWD:
+		return "CWD";
+	default:
+		return "?";
+	}
+}
+
+/* User facing version of event_cache_lookup() */
+int
+quark_event_lookup(struct quark_queue *qq, struct quark_event *dst, int pid)
+{
+	struct quark_event	*qev;
+
+	qev = event_cache_lookup(qq, pid);
+	if (qev == NULL)
+		return (errno = ESRCH, -1);
+
+	event_copy_out(dst, qev);
+
+	return (0);
+}
+
+void
+quark_event_dump(struct quark_event *qev)
+{
+	const char *flagname;
+	/* TODO: add tid */
+	printf("->%d\n", qev->pid);
+	if (qev->flags & QUARK_EV_COMM) {
+		flagname = event_flag_str(QUARK_EV_COMM);
+		printf("  %.4s\tcomm=%s\n", flagname, qev->comm);
+	}
+	if (qev->flags & QUARK_EV_CMDLINE) {
+		flagname = event_flag_str(QUARK_EV_CMDLINE);
+		printf("  %.4s\tcmdline=%s\n", flagname, qev->cmdline);
+	}
+	if (qev->flags & QUARK_EV_PROC) {
+		flagname = event_flag_str(QUARK_EV_PROC);
+		printf("  %.4s\tppid=%d\n", flagname, qev->proc_ppid);
+		printf("  %.4s\tuid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
+		    flagname, qev->proc_uid, qev->proc_gid, qev->proc_suid,
+		    qev->proc_sgid, qev->proc_euid, qev->proc_egid);
+		printf("  %.4s\tcap_inheritable=0x%llx cap_permitted=0x%llx "
+		    "cap_effective=0x%llx\n",
+		    flagname, qev->proc_cap_inheritable,
+		    qev->proc_cap_permitted, qev->proc_cap_effective);
+		printf("  %.4s\tcap_bset=0x%llx cap_ambient=0x%llx\n",
+		    flagname, qev->proc_cap_bset, qev->proc_cap_ambient);
+		printf("  %.4s\ttime_boot=%llu time_event=%llu time_start=%llu\n",
+		    flagname, qev->proc_time_boot, qev->proc_time_start_event,
+		    qev->proc_time_start);
+	}
+	if (qev->flags & QUARK_EV_CWD) {
+		flagname = event_flag_str(QUARK_EV_CWD);
+		printf("  %.4s\tcwd=%s\n", flagname, qev->cwd);
+	}
+	if (qev->flags & QUARK_EV_FILENAME) {
+		flagname = event_flag_str(QUARK_EV_FILENAME);
+		printf("  %.4s\tfilename=%s\n", flagname, qev->filename);
+	}
+	if (qev->flags & QUARK_EV_EXIT) {
+		flagname = event_flag_str(QUARK_EV_EXIT);
+		printf("  %.4s\texit_code=%d exit_time=%llu\n", flagname,
+		    qev->exit_code, qev->exit_time_event);
+	}
+}
+
+static int
+raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct quark_event *dst)
+{
+	struct quark_event		*qev;
 	struct raw_event                *agg;
 	struct raw_task                 *task, *exit;
 	struct raw_comm                 *comm;
 	struct raw_exec                 *exec;
 	struct raw_exec_connector       *exec_connector;
+	int				 do_cache;
 
 	task = NULL;
 	exit = NULL;
 	comm = NULL;
 	exec = NULL;
 	exec_connector = NULL;
+	do_cache = (qq->flags & QQ_NO_CACHE) == 0;
 
 	switch (raw->type) {
 	case RAW_WAKE_UP_NEW_TASK:
@@ -370,9 +541,16 @@ raw_event_to_quark_event(struct raw_event *raw, struct quark_event *qev)
 		}
 	}
 
-	/* Always present members */
-	qev->pid = raw->pid;
-	qev->flags = 0;
+	if (do_cache) {
+		/* XXX pass if this is a fork down, so we can evict the old one XXX */
+		qev = event_cache_get(qq, raw->pid);
+		if (qev == NULL)
+			return (-1);
+	} else {
+		qev = dst;
+		qev->pid = raw->pid;
+		qev->flags = 0;
+	}
 
 	/* QUARK_EV_PROC */
 	if (task != NULL) {
@@ -427,6 +605,20 @@ raw_event_to_quark_event(struct raw_event *raw, struct quark_event *qev)
 
 	if (qev->flags == 0)
 		warnx("%s: no flags", __func__);
+
+	if (do_cache) {
+		event_copy_out(dst, qev);
+
+		/*
+		 * On the very unlikely case that pids get re-used, we might
+		 * see an old qev for a new process, which could prompt us in
+		 * trying to remove it twice.
+		 */
+		if (exit != NULL && qev->gc_time == 0) {
+			qev->gc_time = now64();
+			TAILQ_INSERT_TAIL(&qq->event_gc, qev, entry_gc);
+		}
+	}
 
 	return (0);
 }
@@ -1431,6 +1623,8 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	TAILQ_INIT(&qq->kprobe_states);
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
+	RB_INIT(&qq->event_by_pid);
+	TAILQ_INIT(&qq->event_gc);
 	qq->flags = flags;
 	qq->length = 0;
 	qq->max_length = QUARK_QUEUE_MAXLENGTH;
@@ -1485,6 +1679,7 @@ quark_queue_close(struct quark_queue *qq)
 	struct perf_group_leader	*pgl;
 	struct kprobe_state		*ks;
 	struct raw_event		*raw;
+	struct quark_event		*qev;
 
 	/* Stop and close the perf rings */
 	while ((pgl = TAILQ_FIRST(&qq->perf_group_leaders)) != NULL) {
@@ -1515,6 +1710,9 @@ quark_queue_close(struct quark_queue *qq)
 	}
 	if (!RB_EMPTY(&qq->raw_event_by_pidtime))
 		warnx("raw_event trees not empty");
+	/* Clean up all cached quark_events */
+	while ((qev = RB_ROOT(&qq->event_by_pid)) != NULL)
+		event_cache_delete(qq, qev);
 }
 
 static void
@@ -1591,7 +1789,7 @@ quark_queue_populate(struct quark_queue *qq)
 	return (npop);
 }
 
-struct raw_event *
+static struct raw_event *
 quark_queue_pop_raw(struct quark_queue *qq)
 {
 	struct raw_event	*min;
@@ -1629,7 +1827,7 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 		raw = quark_queue_pop_raw(qq);
 		if (raw == NULL)
 			break;
-		if (raw_event_to_quark_event(raw, qevs) == -1) {
+		if (raw_event_to_quark_event(qq, raw, qevs) == -1) {
 			raw_event_free(raw);
 			warnx("raw_event_to_quark_event");
 			continue;
@@ -1639,73 +1837,10 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 		qevs++;
 	}
 
+	/* GC all processes that exited after some grace time */
+	event_cache_gc(qq);
+
 	return (got);
-}
-
-static const char *
-quark_event_flag_str(int flag)
-{
-	switch (flag) {
-	case QUARK_EV_PROC:
-		return "PROC";
-	case QUARK_EV_EXIT:
-		return "EXIT";
-	case QUARK_EV_COMM:
-		return "COMM";
-	case QUARK_EV_FILENAME:
-		return "FILENAME";
-	case QUARK_EV_CMDLINE:
-		return "CMDLINE";
-	case QUARK_EV_CWD:
-		return "CWD";
-	default:
-		return "?";
-	}
-}
-
-void
-quark_event_dump(struct quark_event *qev)
-{
-	const char *flagname;
-	/* TODO: add tid */
-	printf("->%d\n", qev->pid);
-	if (qev->flags & QUARK_EV_COMM) {
-		flagname = quark_event_flag_str(QUARK_EV_COMM);
-		printf("  %.4s\tcomm=%s\n", flagname, qev->comm);
-	}
-	if (qev->flags & QUARK_EV_CMDLINE) {
-		flagname = quark_event_flag_str(QUARK_EV_CMDLINE);
-		printf("  %.4s\tcmdline=%s\n", flagname, qev->cmdline);
-	}
-	if (qev->flags & QUARK_EV_PROC) {
-		flagname = quark_event_flag_str(QUARK_EV_PROC);
-		printf("  %.4s\tppid=%d\n", flagname, qev->proc_ppid);
-		printf("  %.4s\tuid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
-		    flagname, qev->proc_uid, qev->proc_gid, qev->proc_suid,
-		    qev->proc_sgid, qev->proc_euid, qev->proc_egid);
-		printf("  %.4s\tcap_inheritable=0x%llx cap_permitted=0x%llx "
-		    "cap_effective=0x%llx\n",
-		    flagname, qev->proc_cap_inheritable,
-		    qev->proc_cap_permitted, qev->proc_cap_effective);
-		printf("  %.4s\tcap_bset=0x%llx cap_ambient=0x%llx\n",
-		    flagname, qev->proc_cap_bset, qev->proc_cap_ambient);
-		printf("  %.4s\ttime_boot=%llu time_event=%llu time_start=%llu\n",
-		    flagname, qev->proc_time_boot, qev->proc_time_start_event,
-		    qev->proc_time_start);
-	}
-	if (qev->flags & QUARK_EV_CWD) {
-		flagname = quark_event_flag_str(QUARK_EV_CWD);
-		printf("  %.4s\tcwd=%s\n", flagname, qev->cwd);
-	}
-	if (qev->flags & QUARK_EV_FILENAME) {
-		flagname = quark_event_flag_str(QUARK_EV_FILENAME);
-		printf("  %.4s\tfilename=%s\n", flagname, qev->filename);
-	}
-	if (qev->flags & QUARK_EV_EXIT) {
-		flagname = quark_event_flag_str(QUARK_EV_EXIT);
-		printf("  %.4s\texit_code=%d exit_time=%llu\n", flagname,
-		    qev->exit_code, qev->exit_time_event);
-	}
 }
 
 int

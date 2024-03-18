@@ -26,17 +26,17 @@ extern int	quark_verbose;
 struct raw_event;
 struct quark_event;
 struct quark_queue;
-int			 quark_init(void);
-int			 quark_close(void);
-int			 quark_queue_open(struct quark_queue *, int);
-void			 quark_queue_close(struct quark_queue *);
-int			 quark_queue_populate(struct quark_queue *);
-struct raw_event	*quark_queue_pop_raw(struct quark_queue *);
-int			 quark_queue_block(struct quark_queue *);
-int			 quark_queue_get_events(struct quark_queue *, struct quark_event *, int);
-int			 quark_queue_get_fds(struct quark_queue *, int *, int);
-int			 quark_dump_graphviz(struct quark_queue *, FILE *, FILE *);
-void			 quark_event_dump(struct quark_event *);
+int	quark_init(void);
+int	quark_close(void);
+int	quark_queue_open(struct quark_queue *, int);
+void	quark_queue_close(struct quark_queue *);
+int	quark_queue_populate(struct quark_queue *);
+int	quark_queue_block(struct quark_queue *);
+int	quark_queue_get_events(struct quark_queue *, struct quark_event *, int);
+int	quark_queue_get_fds(struct quark_queue *, int *, int);
+int	quark_dump_graphviz(struct quark_queue *, FILE *, FILE *);
+int	quark_event_lookup(struct quark_queue *, struct quark_event *, int);
+void	quark_event_dump(struct quark_event *);
 
 /* btf.c */
 int	quark_btf_init(void);
@@ -85,7 +85,7 @@ extern struct kprobe *all_kprobes[];
 struct perf_sample_id {
 	u32	pid;
 	u32	tid;
-	u64	time;		/* See raw_evenr_insert() */
+	u64	time;		/* See raw_event_insert() */
 	u32	cpu;
 	u32	cpu_unused;
 };
@@ -347,6 +347,18 @@ RB_HEAD(raw_event_by_time, raw_event);
 RB_HEAD(raw_event_by_pidtime, raw_event);
 
 /*
+ * Event cache, used to enrich single events
+ */
+RB_HEAD(event_by_pid, quark_event);
+
+/*
+ * Event cache gc list, after they are marked for deletion, they still get a
+ * grace time of EVENT_CACHE_GRACETIME before removal, this is to allow lookups
+ * from users on processes that just vanished.
+ */
+TAILQ_HEAD(quark_event_list, quark_event);
+
+/*
  * List of all ring buffer leaders, we have on per cpu.
  */
 TAILQ_HEAD(perf_group_leaders, perf_group_leader);
@@ -362,6 +374,11 @@ TAILQ_HEAD(kprobe_states, kprobe_state);
  * be meaningful if flags & QUARK_EV_PROC.
  */
 struct quark_event {
+#define quark_event_zero_start	 entry_by_pid
+	RB_ENTRY(quark_event)	 entry_by_pid;
+	TAILQ_ENTRY(quark_event) entry_gc;
+	u64			 gc_time;
+#define quark_event_zero_end	 pid
 	/* Always present */
 	u32	pid;
 #define QUARK_EV_PROC		(1 << 0)
@@ -417,9 +434,12 @@ struct quark_queue {
 	struct kprobe_states		kprobe_states;
 	struct raw_event_by_time	raw_event_by_time;
 	struct raw_event_by_pidtime	raw_event_by_pidtime;
+	struct event_by_pid		event_by_pid;
+	struct quark_event_list		event_gc;
 	struct quark_queue_stats	stats;
 #define QQ_THREAD_EVENTS		(1 << 0)
 #define QQ_PERF_TASK_EVENTS		(1 << 1)
+#define QQ_NO_CACHE			(1 << 2)
 	int				flags;
 	int				length;
 	int				max_length;
