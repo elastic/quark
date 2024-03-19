@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type QuarkProcEvent struct {
+type QuarkProc struct {
 	CapInheritable uint64
 	CapPermitted   uint64
 	CapEffective   uint64
@@ -33,19 +33,19 @@ type QuarkProcEvent struct {
 	Egid           uint32
 }
 
-type QuarkExitEvent struct {
+type QuarkExit struct {
 	ExitCode      int32
 	ExitTimeEvent uint64
 }
 
 type QuarkEvent struct {
-	Pid       uint32          // Always present
-	Proc      *QuarkProcEvent // QUARK_EV_PROC
-	ExitEvent *QuarkExitEvent // QUARK_EV_EXIT
-	Comm      string          // QUARK_EV_COMM
-	Filename  string          // QUARK_EV_FILENAME
-	Cmdline   string          // QUARK_EV_CMDLINE
-	Cwd       string          // QUARK_EV_CWD
+	Pid       uint32     // Always present
+	Proc      *QuarkProc // QUARK_F_PROC
+	ExitEvent *QuarkExit // QUARK_F_EXIT
+	Comm      string     // QUARK_F_COMM
+	Filename  string     // QUARK_F_FILENAME
+	Cmdline   string     // QUARK_F_CMDLINE
+	Cwd       string     // QUARK_F_CWD
 }
 
 type QuarkQueue struct {
@@ -135,8 +135,8 @@ func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 	var qev QuarkEvent
 
 	qev.Pid = uint32(cev.pid)
-	if cev.flags&C.QUARK_EV_PROC != 0 {
-		qev.Proc = &QuarkProcEvent{
+	if cev.flags&C.QUARK_F_PROC != 0 {
+		qev.Proc = &QuarkProc{
 			CapInheritable: uint64(cev.proc_cap_inheritable),
 			CapPermitted:   uint64(cev.proc_cap_permitted),
 			CapEffective:   uint64(cev.proc_cap_effective),
@@ -154,22 +154,22 @@ func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 			Egid:           uint32(cev.proc_egid),
 		}
 	}
-	if cev.flags&C.QUARK_EV_EXIT != 0 {
-		var exit QuarkExitEvent
+	if cev.flags&C.QUARK_F_EXIT != 0 {
+		var exit QuarkExit
 		exit.ExitCode = int32(cev.exit_code)
 		exit.ExitTimeEvent = uint64(cev.exit_time_event)
 		qev.ExitEvent = &exit
 	}
-	if cev.flags&C.QUARK_EV_COMM != 0 {
+	if cev.flags&C.QUARK_F_COMM != 0 {
 		qev.Comm = C.GoString(&cev.comm[0])
 	}
-	if cev.flags&C.QUARK_EV_FILENAME != 0 {
+	if cev.flags&C.QUARK_F_FILENAME != 0 {
 		qev.Filename = C.GoString(&cev.filename[0])
 	}
-	if cev.flags&C.QUARK_EV_CMDLINE != 0 {
+	if cev.flags&C.QUARK_F_CMDLINE != 0 {
 		qev.Cmdline = C.GoString(&cev.cmdline[0])
 	}
-	if cev.flags&C.QUARK_EV_CWD != 0 {
+	if cev.flags&C.QUARK_F_CWD != 0 {
 		qev.Cwd = C.GoString(&cev.cwd[0])
 	}
 

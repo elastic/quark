@@ -371,8 +371,9 @@ TAILQ_HEAD(kprobe_states, kprobe_state);
 /*
  * Main external working set, user passes this back and forth, members only have
  * a meaning if its respective flag is set, say proc_cap_inheritable should only
- * be meaningful if flags & QUARK_EV_PROC.
+ * be meaningful if flags & QUARK_F_PROC.
  */
+
 struct quark_event {
 #define quark_event_zero_start	 entry_by_pid
 	RB_ENTRY(quark_event)	 entry_by_pid;
@@ -381,14 +382,22 @@ struct quark_event {
 #define quark_event_zero_end	 pid
 	/* Always present */
 	u32	pid;
-#define QUARK_EV_PROC		(1 << 0)
-#define QUARK_EV_EXIT		(1 << 1)
-#define QUARK_EV_COMM		(1 << 2)
-#define QUARK_EV_FILENAME	(1 << 3)
-#define QUARK_EV_CMDLINE	(1 << 4)
-#define QUARK_EV_CWD		(1 << 5)
+
+#define QUARK_EV_FORK		(1 << 0)
+#define QUARK_EV_EXEC		(1 << 1)
+#define QUARK_EV_EXIT		(1 << 2)
+#define QUARK_EV_SETPROCTITLE	(1 << 3)
+	u64	events;
+
+#define QUARK_F_PROC		(1 << 0)
+#define QUARK_F_EXIT		(1 << 1)
+#define QUARK_F_COMM		(1 << 2)
+#define QUARK_F_FILENAME	(1 << 3)
+#define QUARK_F_CMDLINE		(1 << 4)
+#define QUARK_F_CWD		(1 << 5)
 	u64	flags;
-	/* QUARK_EV_PROC */
+
+	/* QUARK_F_PROC */
 	u64	proc_cap_inheritable;
 	u64	proc_cap_permitted;
 	u64	proc_cap_effective;
@@ -404,16 +413,16 @@ struct quark_event {
 	u32	proc_sgid;
 	u32	proc_euid;
 	u32	proc_egid;
-	/* QUARK_EV_EXIT */
+	/* QUARK_F_EXIT */
 	s32	exit_code;
 	u64	exit_time_event;
-	/* QUARK_EV_COMM */
+	/* QUARK_F_COMM */
 	char	comm[16];
-	/* QUARK_EV_FILENAME */
+	/* QUARK_F_FILENAME */
 	char	filename[1024];
-	/* QUARK_EV_CMDLINE */
+	/* QUARK_F_CMDLINE */
 	char	cmdline[1024];
-	/* QUARK_EV_CWD */
+	/* QUARK_F_CWD */
 	char	cwd[1024];
 };
 
