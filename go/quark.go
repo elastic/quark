@@ -11,8 +11,8 @@ import "C"
 
 import (
 	"errors"
-
 	"golang.org/x/sys/unix"
+	"unsafe"
 )
 
 type QuarkProc struct {
@@ -49,9 +49,10 @@ type QuarkEvent struct {
 }
 
 type QuarkQueue struct {
-	qqc  C.struct_quark_queue
-	cevs []C.struct_quark_event
-	fds  []unix.PollFd
+	qqc      *C.struct_quark_queue
+	cevs     *C.struct_quark_event
+	num_cevs int
+	fds      []unix.PollFd
 }
 
 var ErrUndefined = errors.New("undefined")
@@ -80,18 +81,36 @@ func QuarkClose() {
 func QuarkQueueOpen(slots int) (*QuarkQueue, error) {
 	var qq QuarkQueue
 
-	r, err := C.quark_queue_open(&qq.qqc, 0)
-	if r == -1 {
+	p, err := C.calloc(C.size_t(1), C.sizeof_struct_quark_queue)
+	if p == nil {
 		return nil, wrapErrno(err)
 	}
-	qq.cevs = make([]C.struct_quark_event, slots)
+	qq.qqc = (*C.struct_quark_queue)(p)
+	p = nil
+
+	r, err := C.quark_queue_open(qq.qqc, C.int(0))
+	if r == -1 {
+		C.free(unsafe.Pointer(qq.qqc))
+		return nil, wrapErrno(err)
+	}
+
+	p, err = C.calloc(C.size_t(slots), C.sizeof_struct_quark_event)
+	if p == nil {
+		C.quark_queue_close(qq.qqc)
+		C.free(unsafe.Pointer(qq.qqc))
+		return nil, wrapErrno(err)
+	}
+	qq.cevs = (*C.struct_quark_event)(p)
+	qq.num_cevs = slots
+	p = nil
 
 	var fdsa [1024]C.int
-	nfds, err := C.quark_queue_get_fds(&qq.qqc, &fdsa[0], C.int(len(fdsa)))
+	nfds, err := C.quark_queue_get_fds(qq.qqc, &fdsa[0], C.int(len(fdsa)))
 	if nfds == -1 {
+		C.free(unsafe.Pointer(qq.qqc))
+		C.free(unsafe.Pointer(qq.cevs))
 		return nil, wrapErrno(err)
 	}
-
 	qq.fds = make([]unix.PollFd, nfds)
 	for i := range qq.fds {
 		qq.fds[i] = unix.PollFd{
@@ -104,19 +123,25 @@ func QuarkQueueOpen(slots int) (*QuarkQueue, error) {
 }
 
 func (qq *QuarkQueue) Close() {
-	C.quark_queue_close(&qq.qqc)
+	C.quark_queue_close(qq.qqc)
+	C.free(unsafe.Pointer(qq.qqc))
+	C.free(unsafe.Pointer(qq.cevs))
+	qq.qqc = nil
+}
+
+func cEventOfIdx(cevs *C.struct_quark_event, idx int) *C.struct_quark_event {
+	return (*C.struct_quark_event)(unsafe.Add(unsafe.Pointer(cevs), idx*C.sizeof_struct_quark_event))
 }
 
 func (qq *QuarkQueue) GetEvents() ([]QuarkEvent, error) {
-	n, err := C.quark_queue_get_events(&qq.qqc, &qq.cevs[0],
-		C.int(len(qq.cevs)))
+	n, err := C.quark_queue_get_events(qq.qqc, qq.cevs, C.int(qq.num_cevs))
 	if n == -1 {
 		return nil, wrapErrno(err)
 	}
 
 	qqevs := make([]QuarkEvent, n)
 	for i := range qqevs {
-		qev, err := eventToGo(&qq.cevs[i])
+		qev, err := cEventToGo(cEventOfIdx(qq.cevs, i))
 		if err != nil {
 			panic(err)
 		}
@@ -131,7 +156,7 @@ func (qq *QuarkQueue) Block() {
 	// TODO scan all fds for errors
 }
 
-func eventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
+func cEventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 	var qev QuarkEvent
 
 	qev.Pid = uint32(cev.pid)
