@@ -1,5 +1,7 @@
+#include <ctype.h>		/* is_digit(3) */
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -15,12 +17,9 @@ again:
 	if (n == -1) {
 		if (errno == EINTR)
 			goto again;
-		warn("read");
 		return (-1);
-	} else if (n == 0) {
-		warnx("read unexpected EOF");
+	} else if (n == 0)
 		return (-1);
-	}
 
 	return (n);
 }
@@ -43,6 +42,25 @@ qwrite(int fd, const void *buf, size_t count)
 	}
 
 	return (0);
+}
+
+/*
+ * Safer readlinkat(2), guarantees termination and returns strlen(pathname) so
+ * caller can check truncation, like strlcpy(). Compare to >= 0 if truncation is
+ * acceptable.
+ */
+ssize_t
+qreadlinkat(int dfd, const char *pathname, char *buf, size_t bufsiz)
+{
+	ssize_t n;
+
+	if (bufsiz < 2)
+		return (errno = EINVAL, -1);
+	if ((n = readlinkat(dfd, pathname, buf, bufsiz - 1)) == -1)
+		return (-1);
+	buf[n] = 0;
+
+	return (strlen(pathname));
 }
 
 void
@@ -85,7 +103,6 @@ qstr_memcpy(struct qstr *qstr, const void *src, size_t len)
 	return (0);
 }
 
-
 int
 qstr_strcpy(struct qstr *qstr, const char *src)
 {
@@ -101,3 +118,58 @@ qstr_free(struct qstr *qstr)
 	free(qstr->p);
 }
 
+int
+isnumber(const char *s)
+{
+	for (; *s != 0; s++) {
+		if (!isdigit(*s))
+			return (0);
+	}
+
+	return (1);
+}
+
+/*
+ * Reads a "single-lined" file. Returns size of the line excluding NUL and
+ * excluding \n, guarantees termination on >= 0, truncates silently.
+ */
+ssize_t
+readlineat(int dfd, const char *pathname, char *buf, size_t bufsiz)
+{
+	int	fd;
+	ssize_t n;
+
+	fd = openat(dfd, pathname, O_RDONLY);
+	if (fd == -1)
+		return (-1);
+	n = qread(fd, buf, bufsiz);
+	close(fd);
+	if (n == -1)
+		return (-1);
+	else if (n == 0) {
+		buf[0] = 0;
+		return (0);
+	}
+	buf[n - 1] = 0;
+
+	return (n - 1);
+}
+
+/*
+ * Like a strtoull but with proper detection.
+ */
+int
+strtou64(u64 *dst, const char *v, int base)
+{
+	char	*p;
+	u64	 u;
+
+	errno = 0;
+	u = strtoull(v, &p, base);
+	if (*p != 0 || (u == ULLONG_MAX && errno != 0))
+		return (-1);
+
+	*dst = u;
+
+	return (0);
+}

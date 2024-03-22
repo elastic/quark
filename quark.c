@@ -6,6 +6,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <fts.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -330,11 +331,16 @@ event_copy_out(struct quark_event *dst, struct quark_event *src)
 static struct quark_event *
 event_cache_lookup(struct quark_queue *qq, int pid)
 {
-	struct quark_event	key;
+	struct quark_event	 key;
+	struct quark_event	*qev;
 
 	key.pid = pid;
 
-	return (RB_FIND(event_by_pid, &qq->event_by_pid, &key));
+	qev = RB_FIND(event_by_pid, &qq->event_by_pid, &key);
+	if (qev == NULL)
+		errno = ESRCH;
+
+	return (qev);
 }
 
 static struct quark_event *
@@ -432,6 +438,8 @@ event_type_str(u64 event)
 		return "EXIT";
 	case QUARK_EV_SETPROCTITLE:
 		return "SETPROCTITLE";
+	case QUARK_EV_SNAPSHOT:
+		return "SNAPSHOT";
 	default:
 		return "?";
 	}
@@ -469,7 +477,7 @@ quark_event_lookup(struct quark_queue *qq, struct quark_event *dst, int pid)
 
 	qev = event_cache_lookup(qq, pid);
 	if (qev == NULL)
-		return (errno = ESRCH, -1);
+		return (-1);
 
 	event_copy_out(dst, qev);
 
@@ -1110,7 +1118,7 @@ fetch_tracing_id(const char *tail)
 
 	n = qread(fd, idbuf, sizeof(idbuf));
 	close(fd);
-	if (n == -1)
+	if (n <= 0)
 		return (-1);
 	idbuf[n - 1] = 0;
 	id = strtonum(idbuf, 1, MAX_SAMPLE_IDS - 1, &errstr);
@@ -1503,6 +1511,193 @@ perf_open_kprobe(struct kprobe *k, int cpu, int group_fd)
 	return (ks);
 }
 
+static int
+sproc_status_line(struct quark_event *qev, const char *k, const char *v)
+{
+	const char		*errstr;
+
+	if (*v == 0)
+		return (0);
+
+	if (!strcmp(k, "Pid")) {
+		qev->pid = strtonum(v, 0, UINT32_MAX, &errstr);
+		if (errstr != NULL)
+			return (-1);
+	} else if (!strcmp(k, "PPid")) {
+		qev->proc_ppid = strtonum(v, 0, UINT32_MAX, &errstr);
+		if (errstr != NULL)
+			return (-1);
+	} else if (!strcmp(k, "Uid")) {
+		if (sscanf(v, "%d %d %d\n",
+		    &qev->proc_uid, &qev->proc_euid, &qev->proc_suid) != 3)
+			return (-1);
+	} else if (!strcmp(k, "Gid")) {
+		if (sscanf(v, "%d %d %d\n",
+		    &qev->proc_gid, &qev->proc_egid, &qev->proc_sgid) != 3)
+			return (-1);
+	} else if (!strcmp(k, "CapInh")) {
+		if (strtou64(&qev->proc_cap_inheritable, v, 16) == -1)
+			return (-1);
+	} else if (!strcmp(k, "CapPrm")) {
+		if (strtou64(&qev->proc_cap_permitted, v, 16) == -1)
+			return (-1);
+	} else if (!strcmp(k, "CapEff")) {
+		if (strtou64(&qev->proc_cap_effective, v, 16) == -1)
+			return (-1);
+	} else if (!strcmp(k, "CapBnd")) {
+		if (strtou64(&qev->proc_cap_bset, v, 16) == -1)
+			return (-1);
+	} else if (!strcmp(k, "CapAmb")) {
+		if (strtou64(&qev->proc_cap_ambient, v, 16) == -1)
+			return (-1);
+	}
+
+	return (0);
+}
+
+static int
+sproc_status(struct quark_event *qev, int dfd)
+{
+	int			 fd, ret;
+	FILE			*f;
+	ssize_t			 n;
+	size_t			 line_len;
+	char			*line, *k, *v;
+
+	if ((fd = openat(dfd, "status", O_RDONLY)) == -1) {
+		warn("%s: open status", __func__);
+		return (-1);
+	}
+	f = fdopen(fd, "r");
+	if (f == NULL)
+		return (-1);
+
+	ret = 0;
+	line_len = 0;
+	line = NULL;
+	while ((n = getline(&line, &line_len, f)) != -1) {
+		/* k:\tv\n = 5 */
+		if (n < 5 || line[n - 1] != '\n') {
+			warnx("%s: bad line", __func__);
+			ret = -1;
+			break;
+		}
+		line[n - 1] = 0;
+		k = line;
+		v = strstr(line, ":\t");
+		if (v == NULL) {
+			warnx("%s: no `:\\t` found", __func__);
+			ret = -1;
+			break;
+		}
+		*v = 0;
+		v += 2;
+		if (sproc_status_line(qev, k, v) == -1) {
+			warnx("%s: can't handle %s", __func__, k);
+			ret = -1;
+			break;
+		}
+	}
+	free(line);
+	fclose(f);
+
+	return (ret);
+
+}
+
+static int
+sproc_pid(struct quark_queue *qq, int pid, int dfd)
+{
+	struct quark_event	*qev;
+
+	/*
+	 * This allocates and inserts it into the cache in case it's not already
+	 * there, if say, sproc_status() fails, process will be largely empty,
+	 * still we know there was a process there somewhere.
+	 */
+	qev = event_cache_get(qq, pid);
+	if (qev == NULL)
+		return (-1);
+
+	/* XXX missing times */
+	if (sproc_status(qev, dfd) == 0)
+		qev->flags |= QUARK_F_PROC;
+
+	/* QUARK_F_COMM */
+	if (readlineat(dfd, "comm", qev->comm, sizeof(qev->comm)) > 0)
+		qev->flags |= QUARK_F_COMM;
+	/* QUARK_F_FILENAME */
+	if (qreadlinkat(dfd, "exe", qev->filename, sizeof(qev->filename)) > 0)
+		qev->flags |= QUARK_F_FILENAME;
+	/* QUARK_F_CMDLINE */
+	if (readlineat(dfd, "cmdline", qev->cmdline, sizeof(qev->cmdline)) > 0)
+		qev->flags |= QUARK_F_CMDLINE;
+	/* QUARK_F_CWD */
+	if (qreadlinkat(dfd, "cwd", qev->cwd, sizeof(qev->cwd)) > 0)
+		qev->flags |= QUARK_F_CWD;
+
+	return (0);
+}
+
+static int
+sproc_scrape(struct quark_queue *qq)
+{
+	FTS	*tree;
+	FTSENT	*f, *p;
+	int	 dfd, rootfd;
+	char	*argv[] = { "/proc", NULL };
+
+	if ((tree = fts_open(argv, FTS_NOCHDIR, NULL)) == NULL)
+		return (-1);
+	if ((rootfd = open(argv[0], O_PATH)) == -1) {
+		fts_close(tree);
+		return (-1);
+	}
+
+	while ((f = fts_read(tree)) != NULL) {
+		if (f->fts_info == FTS_ERR || f->fts_info == FTS_NS)
+			warnx("%s: %s", f->fts_name, strerror(f->fts_errno));
+		if (f->fts_info != FTS_D)
+			continue;
+		fts_set(tree, f, FTS_SKIP);
+
+		if ((p = fts_children(tree, 0)) == NULL) {
+			warn("fts_children");
+			continue;
+		}
+		for (; p != NULL; p = p->fts_link) {
+			int		 pid;
+			const char	*errstr;
+
+			if (p->fts_info == FTS_ERR || p->fts_info == FTS_NS) {
+				warnx("%s: %s",
+				    p->fts_name, strerror(p->fts_errno));
+				continue;
+			}
+			if (p->fts_info != FTS_D || !isnumber(p->fts_name))
+				continue;
+
+			if ((dfd = openat(rootfd, p->fts_name, O_PATH)) == -1) {
+				warn("openat %s", p->fts_name);
+				continue;
+			}
+			pid = strtonum(p->fts_name, 1, UINT32_MAX, &errstr);
+			if (errstr != NULL) {
+				warnx("bad pid %s: %s", p->fts_name, errstr);
+				continue;
+			}
+			if (sproc_pid(qq, pid, dfd) == -1)
+				warnx("can't scrape %s\n", p->fts_name);
+			close(dfd);
+		}
+	}
+
+	close(rootfd);
+	fts_close(tree);
+
+	return (0);
+}
+
 #define P(_f, ...)				\
 	if (fprintf(_f, __VA_ARGS__) < 0)	\
 		return (-1);
@@ -1646,6 +1841,7 @@ quark_queue_block(struct quark_queue *qq)
 	leaders = &qq->perf_group_leaders;
 	nfds = qq->num_perf_group_leaders;
 	fds = calloc(sizeof(*fds), nfds);
+	/* XXX TODO move this inside qq */
 	if (fds == NULL)
 		err(1, "calloc");
 	i = 0;
@@ -1673,6 +1869,7 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	struct perf_group_leader	*pgl;
 	struct kprobe			*k;
 	struct kprobe_state		*ks;
+	struct quark_event		*qev;
 
 	bzero(qq, sizeof(*qq));
 
@@ -1689,10 +1886,8 @@ quark_queue_open(struct quark_queue *qq, int flags)
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
 		pgl = perf_open_group_leader(i);
-		if (pgl == NULL) {
-			quark_queue_close(qq);
-			return (-1);
-		}
+		if (pgl == NULL)
+			goto fail;
 		TAILQ_INSERT_TAIL(&qq->perf_group_leaders, pgl, entry);
 		qq->num_perf_group_leaders++;
 	}
@@ -1701,10 +1896,8 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	while ((k = all_kprobes[i++]) != NULL) {
 		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
 			ks = perf_open_kprobe(k, pgl->cpu, pgl->fd);
-			if (ks == NULL) {
-				quark_queue_close(qq);
-				return (-1);
-			}
+			if (ks == NULL)
+				goto fail;
 			TAILQ_INSERT_TAIL(&qq->kprobe_states, ks, entry);
 		}
 	}
@@ -1714,18 +1907,43 @@ quark_queue_open(struct quark_queue *qq, int flags)
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_RESET,
 		    PERF_IOC_FLAG_GROUP) == -1) {
 			warn("ioctl PERF_EVENT_IOC_RESET:");
-			quark_queue_close(qq);
-			return (-1);
+			goto fail;
 		}
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_ENABLE,
 		    PERF_IOC_FLAG_GROUP) == -1) {
 			warn("ioctl PERF_EVENT_IOC_ENABLE:");
-			quark_queue_close(qq);
-			return (-1);
+			goto fail;
 		}
 	}
 
+	/*
+	 * Now that the rings are opened, we can scrape proc. If we would scrape
+	 * before opening them, there would be a small window where we could
+	 * lose new processes.
+	 */
+	if (sproc_scrape(qq) == -1) {
+		warnx("can't scrape /proc");
+		goto fail;
+	}
+
+	/*
+	 * We want quark_get_events() to start by giving up a snapshot of
+	 * everything we scraped, this snapshot will end up being spread into
+	 * multiple quark_get_events() calls as there isn't enough storage for
+	 * all of them. We need a way to know where we are in the snapshot.
+	 */
+	qev = RB_MIN(event_by_pid, &qq->event_by_pid);
+	if (qev != NULL)
+		qq->snap_pid = qev->pid;
+	else
+		qq->snap_pid = -1;
+
 	return (0);
+
+fail:
+	quark_queue_close(qq);
+
+	return (-1);
 }
 
 /*
@@ -1882,15 +2100,38 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 
 	got = 0;
 	while (got != nqevs) {
-		raw = quark_queue_pop_raw(qq);
-		if (raw == NULL)
-			break;
-		if (raw_event_to_quark_event(qq, raw, qevs) == -1) {
+		/* Are we in the middle of a snapshot? */
+		if (unlikely(qq->snap_pid != -1)) {
+			struct quark_event	*qsev;
+
+			qsev = event_cache_lookup(qq, qq->snap_pid);
+			if (qsev == NULL) {
+				warnx("event vanished during snapshot, "
+				    "this is a bug\n");
+				qq->snap_pid = -1;
+				/* errno set by cache_lookup */
+				return (-1);
+			}
+			/* Copy out to user */
+			event_copy_out(qevs, qsev);
+			qevs->events = QUARK_EV_SNAPSHOT;
+			qsev = RB_NEXT(event_by_pid, &qq->event_by_pid, qsev);
+			/* Are we done with the snapshot? If not, record next */
+			if (qsev == NULL)
+				qq->snap_pid = -1;
+			else
+				qq->snap_pid = qsev->pid;
+		} else {
+			raw = quark_queue_pop_raw(qq);
+			if (raw == NULL)
+				break;
+			if (raw_event_to_quark_event(qq, raw, qevs) == -1) {
+				raw_event_free(raw);
+				warnx("raw_event_to_quark_event");
+				continue;
+			}
 			raw_event_free(raw);
-			warnx("raw_event_to_quark_event");
-			continue;
 		}
-		raw_event_free(raw);
 		got++;
 		qevs++;
 	}
