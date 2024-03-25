@@ -329,35 +329,26 @@ event_copy_out(struct quark_event *dst, struct quark_event *src)
 }
 
 static struct quark_event *
-event_cache_lookup(struct quark_queue *qq, int pid)
+event_cache_get(struct quark_queue *qq, int pid, int alloc)
 {
 	struct quark_event	 key;
 	struct quark_event	*qev;
 
 	key.pid = pid;
-
 	qev = RB_FIND(event_by_pid, &qq->event_by_pid, &key);
-	if (qev == NULL)
-		errno = ESRCH;
-
-	return (qev);
-}
-
-static struct quark_event *
-event_cache_get(struct quark_queue *qq, int pid)
-{
-	struct quark_event	*qev;
-
-	qev = event_cache_lookup(qq, pid);
 	if (qev != NULL)
 		return (qev);
+
+	if (!alloc) {
+		errno = ESRCH;
+		return (NULL);
+	}
 
 	qev = calloc(1, sizeof(*qev));
 	if (qev == NULL)
 		return (NULL);
 	qev->pid = pid;
-	if (RB_INSERT(event_by_pid, &qq->event_by_pid,
-	    qev) != NULL) {
+	if (RB_INSERT(event_by_pid, &qq->event_by_pid, qev) != NULL) {
 		warnx("collision, this is a bug");
 		free(qev);
 		return (NULL);
@@ -475,7 +466,7 @@ quark_event_lookup(struct quark_queue *qq, struct quark_event *dst, int pid)
 {
 	struct quark_event	*qev;
 
-	qev = event_cache_lookup(qq, pid);
+	qev = event_cache_get(qq, pid, 0);
 	if (qev == NULL)
 		return (-1);
 
@@ -552,7 +543,7 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 
 	if (do_cache) {
 		/* XXX pass if this is a fork down, so we can evict the old one XXX */
-		qev = event_cache_get(qq, raw->pid);
+		qev = event_cache_get(qq, raw->pid, 1);
 		if (qev == NULL)
 			return (-1);
 	} else {
@@ -1615,7 +1606,7 @@ sproc_pid(struct quark_queue *qq, int pid, int dfd)
 	 * there, if say, sproc_status() fails, process will be largely empty,
 	 * still we know there was a process there somewhere.
 	 */
-	qev = event_cache_get(qq, pid);
+	qev = event_cache_get(qq, pid, 1);
 	if (qev == NULL)
 		return (-1);
 
@@ -2104,7 +2095,7 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 		if (unlikely(qq->snap_pid != -1)) {
 			struct quark_event	*qsev;
 
-			qsev = event_cache_lookup(qq, qq->snap_pid);
+			qsev = event_cache_get(qq, qq->snap_pid, 0);
 			if (qsev == NULL) {
 				warnx("event vanished during snapshot, "
 				    "this is a bug\n");
