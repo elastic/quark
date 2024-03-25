@@ -1676,10 +1676,11 @@ sproc_scrape(struct quark_queue *qq)
 			pid = strtonum(p->fts_name, 1, UINT32_MAX, &errstr);
 			if (errstr != NULL) {
 				warnx("bad pid %s: %s", p->fts_name, errstr);
-				continue;
+				goto next;
 			}
 			if (sproc_pid(qq, pid, dfd) == -1)
 				warnx("can't scrape %s\n", p->fts_name);
+next:
 			close(dfd);
 		}
 	}
