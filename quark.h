@@ -383,16 +383,16 @@ struct quark_event {
 	RB_ENTRY(quark_event)	 entry_by_pid;
 	TAILQ_ENTRY(quark_event) entry_gc;
 	u64			 gc_time;
-#define quark_event_zero_end	 pid
-	/* Always present */
-	u32	pid;
-
 #define QUARK_EV_FORK		(1 << 0)
 #define QUARK_EV_EXEC		(1 << 1)
 #define QUARK_EV_EXIT		(1 << 2)
 #define QUARK_EV_SETPROCTITLE	(1 << 3)
 #define QUARK_EV_SNAPSHOT	(1 << 4)
 	u64	events;
+#define quark_event_zero_end	 pid
+
+	/* Always present */
+	u32	pid;
 
 #define QUARK_F_PROC		(1 << 0)
 #define QUARK_F_EXIT		(1 << 1)

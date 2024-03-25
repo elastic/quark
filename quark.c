@@ -321,11 +321,12 @@ args_to_spaces(char *dst, size_t dst_len, int argc, char *args)
 }
 
 static void
-event_copy_out(struct quark_event *dst, struct quark_event *src)
+event_copy_out(struct quark_event *dst, struct quark_event *src, u64 events)
 {
 	memcpy(dst, src, sizeof(*dst));
 	bzero(&dst->quark_event_zero_start,
 	    (char *)&dst->quark_event_zero_end - (char *)&dst->quark_event_zero_start);
+	dst->events = events;
 }
 
 static struct quark_event *
@@ -470,7 +471,7 @@ quark_event_lookup(struct quark_queue *qq, struct quark_event *dst, int pid)
 	if (qev == NULL)
 		return (-1);
 
-	event_copy_out(dst, qev);
+	event_copy_out(dst, qev, 0);
 
 	return (0);
 }
@@ -533,6 +534,7 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 	struct raw_exec                 *exec;
 	struct raw_exec_connector       *exec_connector;
 	int				 do_cache;
+	u64				 events;
 
 	task = NULL;
 	exit = NULL;
@@ -552,27 +554,27 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		qev->flags = 0;
 	}
 
-	qev->events = 0;
+	events = 0;
 
 	switch (raw->type) {
 	case RAW_WAKE_UP_NEW_TASK:
-		qev->events |= QUARK_EV_FORK;
+		events |= QUARK_EV_FORK;
 		task = &raw->task;
 		break;
 	case RAW_EXEC:
-		qev->events |= QUARK_EV_EXEC;
+		events |= QUARK_EV_EXEC;
 		exec = &raw->exec;
 		break;
 	case RAW_EXIT_THREAD:
-		qev->events |= QUARK_EV_EXIT;
+		events |= QUARK_EV_EXIT;
 		exit = &raw->task;
 		break;
 	case RAW_COMM:
-		qev->events |= QUARK_EV_SETPROCTITLE;
+		events |= QUARK_EV_SETPROCTITLE;
 		comm = &raw->comm;
 		break;
 	case RAW_EXEC_CONNECTOR:
-		qev->events |= QUARK_EV_EXEC;
+		events |= QUARK_EV_EXEC;
 		exec_connector = &raw->exec_connector;
 		break;
 	default:
@@ -584,22 +586,22 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		switch (agg->type) {
 		case RAW_WAKE_UP_NEW_TASK:
 			task = &agg->task;
-			qev->events |= QUARK_EV_FORK;
+			events |= QUARK_EV_FORK;
 			break;
 		case RAW_EXEC:
-			qev->events |= QUARK_EV_EXEC;
+			events |= QUARK_EV_EXEC;
 			exec = &agg->exec;
 			break;
 		case RAW_EXIT_THREAD:
-			qev->events |= QUARK_EV_EXIT;
+			events |= QUARK_EV_EXIT;
 			exit = &agg->task;
 			break;
 		case RAW_COMM:
-			qev->events |= QUARK_EV_SETPROCTITLE;
+			events |= QUARK_EV_SETPROCTITLE;
 			comm = &agg->comm;
 			break;
 		case RAW_EXEC_CONNECTOR:
-			qev->events |= QUARK_EV_EXEC;
+			events |= QUARK_EV_EXEC;
 			exec_connector = &agg->exec_connector;
 			break;
 		default:
@@ -662,9 +664,7 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		warnx("%s: no flags", __func__);
 
 	if (do_cache) {
-		event_copy_out(dst, qev);
-		/* No point in keeping events in cache */
-		qev->events = 0;
+		event_copy_out(dst, qev, events);
 
 		/*
 		 * On the very unlikely case that pids get re-used, we might
@@ -675,7 +675,8 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 			qev->gc_time = now64();
 			TAILQ_INSERT_TAIL(&qq->event_gc, qev, entry_gc);
 		}
-	}
+	} else
+		qev->events = events;
 
 	return (0);
 }
@@ -2104,8 +2105,7 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 				return (-1);
 			}
 			/* Copy out to user */
-			event_copy_out(qevs, qsev);
-			qevs->events = QUARK_EV_SNAPSHOT;
+			event_copy_out(qevs, qsev, QUARK_EV_SNAPSHOT);
 			qsev = RB_NEXT(event_by_pid, &qq->event_by_pid, qsev);
 			/* Are we done with the snapshot? If not, record next */
 			if (qsev == NULL)
