@@ -274,11 +274,13 @@ struct path_ctx {
  * Raw events
  */
 enum {
-	RAW_EXEC = 1,
+	RAW_INVALID,
+	RAW_EXEC,
 	RAW_WAKE_UP_NEW_TASK,
 	RAW_EXIT_THREAD,
 	RAW_COMM,
 	RAW_EXEC_CONNECTOR,
+	RAW_NUM_TYPES		/* must be last */
 };
 
 struct raw_exec {

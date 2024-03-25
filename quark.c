@@ -1984,27 +1984,74 @@ quark_queue_close(struct quark_queue *qq)
 		event_cache_delete(qq, qev);
 }
 
+enum agg_kind {
+	AGG_NONE,		/* Can't aggregate, must be zero */
+	AGG_SINGLE,		/* Can aggregate only one value */
+	AGG_MULTI		/* Can aggregate multiple values */
+};
+                  /* dst */      /* src */
+int agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= AGG_SINGLE,
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= AGG_SINGLE,
+	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXIT_THREAD]		= AGG_SINGLE,
+
+	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= AGG_SINGLE,
+	[RAW_EXEC][RAW_COMM]				= AGG_MULTI,
+	[RAW_EXEC][RAW_EXIT_THREAD]			= AGG_SINGLE,
+
+	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
+	[RAW_COMM][RAW_EXIT_THREAD]			= AGG_SINGLE,
+};
+
+static int
+can_aggregate(struct raw_event *dst, struct raw_event *src)
+{
+	int			 kind;
+	struct raw_event	*agg;
+
+	/* Different pids can't aggregate */
+	if (dst->pid != src->pid)
+		return (0);
+
+	if (dst->type >= RAW_NUM_TYPES || src->type >= RAW_NUM_TYPES ||
+	    dst->type < 1 || src->type < 1) {
+		warnx("type out of bounds dst=%d src=%d\n",
+		    dst->type, src->type);
+		return (0);
+	}
+
+	kind = agg_matrix[dst->type][src->type];
+
+	switch (kind) {
+	case AGG_NONE:
+		return (0);
+	case AGG_MULTI:
+		return (1);
+	case AGG_SINGLE:
+		TAILQ_FOREACH(agg, &dst->agg_queue, agg_entry) {
+			if (agg->type == src->type)
+				return (0);
+		}
+		return (1);
+	default:
+		warnx("unhandle agg kind %d\n", kind);
+		return (0);
+	}
+}
+
 static void
 quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 {
 	struct raw_event	*next, *aux;
-	int			 agg = 0;
+	int			 agg;
 
-	if (min->type != RAW_WAKE_UP_NEW_TASK) {
-		qq->stats.non_aggregations++;
-		return;
-	}
+	agg = 0;
+
 	next = RB_NEXT(raw_event_by_pidtime, &qq->raw_event_by_pidtime,
 	    min);
 	while (next != NULL) {
-		/* Different pids can't merge */
-		if (next->pid != min->pid)
-			break;
-		/* We only aggregate these into fork for now */
-		if (next->type != RAW_EXEC &&
-		    next->type != RAW_EXIT_THREAD &&
-		    next->type != RAW_COMM &&
-		    next->type != RAW_EXEC_CONNECTOR)
+		if (!can_aggregate(min, next))
 			break;
 		aux = next;
 		next = RB_NEXT(raw_event_by_pidtime,
