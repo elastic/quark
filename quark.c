@@ -1990,7 +1990,7 @@ enum agg_kind {
 	AGG_MULTI		/* Can aggregate multiple values */
 };
                   /* dst */      /* src */
-int agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
+u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
 	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= AGG_SINGLE,
 	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= AGG_SINGLE,
 	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
