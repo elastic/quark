@@ -172,3 +172,46 @@ strtou64(u64 *dst, const char *v, int base)
 
 	return (0);
 }
+
+char *
+find_line(FILE *f, const char *needle)
+{
+	char		*line, *found;
+	size_t		 line_len;
+	ssize_t		 n;
+	long		 old_pos;
+
+	old_pos = ftell(f);
+	if (old_pos == -1)
+		return (NULL);
+	rewind(f);
+	line = NULL;
+	line_len = 0;
+	found = NULL;
+	while ((n = getline(&line, &line_len, f)) != -1) {
+		if (line[n - 1] == '\n')
+			line[n - 1] = 0;
+		if (strncmp(line, needle, strlen(needle)))
+			continue;
+		found = strdup(line);
+		break;
+	}
+	free(line);
+	(void)fseek(f, old_pos, SEEK_SET);
+
+	return (found);
+}
+
+char *
+find_line_p(const char *path, const char *needle)
+{
+	FILE	*f;
+	char	*line;
+
+	if ((f = fopen(path, "r")) == NULL)
+		return (NULL);
+	line = find_line(f, needle);
+	fclose(f);
+
+	return (line);
+}

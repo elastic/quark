@@ -51,19 +51,21 @@ struct qstr {
 struct perf_record_sample;
 struct perf_sample_data_loc;
 
-ssize_t	qread(int, void *, size_t);
-int	qwrite(int, const void *, size_t);
-ssize_t	qreadlinkat(int, const char *, char *, size_t);
-void	qstr_init(struct qstr *);
-int	qstr_ensure(struct qstr *, size_t);
-int	qstr_copy_data_loc(struct qstr *, struct perf_record_sample *,
+ssize_t	 qread(int, void *, size_t);
+int	 qwrite(int, const void *, size_t);
+ssize_t	 qreadlinkat(int, const char *, char *, size_t);
+void	 qstr_init(struct qstr *);
+int	 qstr_ensure(struct qstr *, size_t);
+int	 qstr_copy_data_loc(struct qstr *, struct perf_record_sample *,
     struct perf_sample_data_loc *);
-int	qstr_memcpy(struct qstr *, const void *, size_t);
-int	qstr_strcpy(struct qstr *, const char *);
-void	qstr_free(struct qstr *);
-int	isnumber(const char *);
-ssize_t	readlineat(int, const char *, char *, size_t);
-int	strtou64(u64 *, const char *, int);
+int	 qstr_memcpy(struct qstr *, const void *, size_t);
+int	 qstr_strcpy(struct qstr *, const char *);
+void	 qstr_free(struct qstr *);
+int	 isnumber(const char *);
+ssize_t	 readlineat(int, const char *, char *, size_t);
+int	 strtou64(u64 *, const char *, int);
+char 	*find_line(FILE *, const char *);
+char	*find_line_p(const char *, const char *);
 
 /* kprobe.c */
 extern struct kprobe *all_kprobes[];

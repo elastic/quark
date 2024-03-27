@@ -3,6 +3,7 @@
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
 
+#include <ctype.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -34,12 +35,6 @@ int	quark_verbose;
 /* matches each sample event to a kind like EXEC_SAMPLE, FOO_SAMPLE */
 u8	id_to_sample_kind[MAX_SAMPLE_IDS];
 
-/*
- * This is the offset from the common area of a probe to the body. It is almost
- * always 8, but some older redhat kernels are different.
- */
-ssize_t	quark_probe_data_body_offset;
-
 RB_PROTOTYPE(event_by_pid, quark_event,
     entry_by_pid, event_by_pid_cmp);
 RB_GENERATE(event_by_pid, quark_event,
@@ -54,6 +49,17 @@ RB_PROTOTYPE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
 RB_GENERATE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
+
+struct {
+	unsigned int	hz;
+	u64		boottime;
+
+	/*
+	 * This is the offset from the common area of a probe to the body. It is almost
+	 * always 8, but some older redhat kernels are different.
+	 */
+	ssize_t		probe_data_body_offset;
+} hostinfo;
 
 static struct raw_event *
 raw_event_alloc(void)
@@ -726,7 +732,7 @@ sample_kind_of_id(int id)
 static inline void *
 sample_data_body(struct perf_record_sample *sample)
 {
-	return (sample->data + quark_probe_data_body_offset);
+	return (sample->data + hostinfo.probe_data_body_offset);
 }
 
 static inline int
@@ -1166,8 +1172,6 @@ parse_probe_data_body_offset(void)
 	}
 	free(line);
 	fclose(f);
-
-	quark_probe_data_body_offset = data_offset;
 
 	return (data_offset);
 }
@@ -1691,6 +1695,53 @@ next:
 	return (0);
 }
 
+static u64
+fetch_boottime(void)
+{
+	char		*line;
+	const char	*errstr, *needle;
+	u64		 btime;
+
+	needle = "btime ";
+	line = find_line_p("/proc/stat", needle);
+	if (line == NULL)
+		return (0);
+	btime = strtonum(line + strlen(needle), 1, LLONG_MAX, &errstr);
+	free(line);
+	if (errstr != NULL)
+		warnx("can't parse btime: %s", errstr);
+
+	return (btime);
+}
+
+static int
+hostinfo_init(void)
+{
+	unsigned int	hz;
+	u64		boottime;
+	ssize_t		dataoff;
+
+	if ((hz = sysconf(_SC_CLK_TCK)) == (unsigned int)-1) {
+		warn("%s: sysconf(_SC_CLK_TCK)", __func__);
+		return (-1);
+	}
+	if ((boottime = fetch_boottime()) == 0) {
+		warn("can't fetch btime");
+		return (-1);
+	}
+	if ((dataoff = parse_probe_data_body_offset()) == -1) {
+		warnx("%s: can't parse host probe data offset",
+		    __func__);
+		return (-1);
+	}
+
+	hostinfo.hz = hz;
+	hostinfo.boottime = boottime;
+	hostinfo.probe_data_body_offset = dataoff;
+
+	return (0);
+}
+
 #define P(_f, ...)				\
 	if (fprintf(_f, __VA_ARGS__) < 0)	\
 		return (-1);
@@ -2184,9 +2235,8 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 int
 quark_init(void)
 {
-	if (parse_probe_data_body_offset() == -1) {
-		warnx("%s: can't parse host probe data offset\n",
-		    __func__);
+	if (hostinfo_init() == -1) {
+		warn("%s: can't grab hostinfo", __func__);
 		return (-1);
 	}
 	if (quark_btf_init() == -1) {
