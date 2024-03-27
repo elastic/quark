@@ -215,3 +215,38 @@ find_line_p(const char *path, const char *needle)
 
 	return (line);
 }
+
+char *
+load_file_nostat(int fd)
+{
+	ssize_t		n, bufsize, copied;
+	char		*buf, *nbuf;
+
+	buf = NULL;
+	bufsize = 0;
+	copied = 0;
+	for (; ;) {
+		if (bufsize - copied == 0) {
+			bufsize = bufsize == 0 ? 4096 : bufsize * 2;
+			/* Grow with one extra for NUL */
+			nbuf = realloc(buf, bufsize + 1);
+			if (nbuf == NULL) {
+				free(buf);
+				return (NULL);
+			}
+			buf = nbuf;
+		}
+		n = qread(fd, buf + copied, bufsize - copied);
+		if (n == -1) {
+			free(buf);
+			return (NULL);
+		} else if (n == 0) {
+			/* We allocate an extra byte to guarantee NUL space */
+			buf[copied] = 0;
+			break;
+		}
+		copied += n;
+	}
+
+	return (buf);
+}

@@ -624,7 +624,7 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		qev->proc_cap_effective = task->cap_effective;
 		qev->proc_cap_bset = task->cap_bset;
 		qev->proc_cap_ambient = task->cap_ambient;
-		qev->proc_time_boot = task->start_boottime;
+		qev->proc_time_boot = hostinfo.boottime + task->start_boottime;
 		qev->proc_time_start_event = task->start_time_event;
 		qev->proc_time_start = task->start_time;
 		qev->proc_ppid = task->ppid;
@@ -1552,6 +1552,74 @@ sproc_status_line(struct quark_event *qev, const char *k, const char *v)
 }
 
 static int
+sproc_stat(struct quark_event *qev, int dfd)
+{
+	int			 fd, r, ret;
+	char			*buf, *p;
+	unsigned long long	 starttime;
+
+	buf = NULL;
+	ret = -1;
+
+	if ((fd = openat(dfd, "stat", O_RDONLY)) == -1) {
+		warn("%s: open stat", __func__);
+		return (-1);
+	}
+	buf = load_file_nostat(fd);
+	if (buf == NULL)
+		goto cleanup;
+
+	/*
+	 * comm might have spaces, newlines and whatnot, procfs is nice enough
+	 * to put parenthesis around them.
+	 */
+	p = strrchr(buf, ')');
+	if (p == NULL)
+		goto cleanup;
+	p++;			/* Skip over ") " */
+	while (isspace(*p))
+		p++;
+	starttime = 0;
+	r = sscanf(p,
+	    "%*s "		/* (3) state */
+	    "%*s "		/* (4) ppid */
+	    "%*s "		/* (5) pgrp */
+	    "%*s "		/* (6) session */
+	    "%*s "		/* (7) tty_nr */
+	    "%*s "		/* (8) tpgid */
+	    "%*s "		/* (9) flags */
+	    "%*s "		/* (10) minflt */
+	    "%*s "		/* (11) cminflt */
+	    "%*s "		/* (12) majflt */
+	    "%*s "		/* (13) cmajflt */
+	    "%*s "		/* (14) utime */
+	    "%*s "		/* (15) stime */
+	    "%*s "		/* (16) cutime */
+	    "%*s "		/* (17) cstime */
+	    "%*s "		/* (18) priority */
+	    "%*s "		/* (19) nice */
+	    "%*s "		/* (20) num_threads */
+	    "%*s "		/* (21) itrealvalue */
+	    "%llu ",		/* (22) starttime */
+				/* ... */
+	    &starttime);
+
+	if (r == 1) {
+		qev->proc_time_boot =
+		    hostinfo.boottime +
+		    (((u64)starttime / (u64)hostinfo.hz) * NS_PER_S);
+
+		ret = 0;
+	}
+
+cleanup:
+	free(buf);
+	close(fd);
+
+	return (ret);
+}
+
+static int
 sproc_status(struct quark_event *qev, int dfd)
 {
 	int			 fd, ret;
@@ -1615,8 +1683,7 @@ sproc_pid(struct quark_queue *qq, int pid, int dfd)
 	if (qev == NULL)
 		return (-1);
 
-	/* XXX missing times */
-	if (sproc_status(qev, dfd) == 0)
+	if (sproc_status(qev, dfd) == 0 && sproc_stat(qev, dfd) == 0)
 		qev->flags |= QUARK_F_PROC;
 
 	/* QUARK_F_COMM */
@@ -1711,7 +1778,7 @@ fetch_boottime(void)
 	if (errstr != NULL)
 		warnx("can't parse btime: %s", errstr);
 
-	return (btime);
+	return (btime * NS_PER_S);
 }
 
 static int

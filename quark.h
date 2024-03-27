@@ -66,6 +66,7 @@ ssize_t	 readlineat(int, const char *, char *, size_t);
 int	 strtou64(u64 *, const char *, int);
 char 	*find_line(FILE *, const char *);
 char	*find_line_p(const char *, const char *);
+char	*load_file_nostat(int);
 
 /* kprobe.c */
 extern struct kprobe *all_kprobes[];
@@ -74,15 +75,15 @@ extern struct kprobe *all_kprobes[];
  * Time helpers
  */
 #ifndef NS_PER_S
-#define NS_PER_S	1000000000L
+#define NS_PER_S	1000000000ULL
 #endif /* NS_PER_S */
 
 #ifndef NS_PER_MS
-#define NS_PER_MS	1000000L
+#define NS_PER_MS	1000000ULL
 #endif /* NS_PER_MS */
 
 #ifndef MS_TO_NS
-#define MS_TO_NS(_x)	((_x) * NS_PER_MS)
+#define MS_TO_NS(_x)	((u64)(_x) * NS_PER_MS)
 #endif /* MS_TO_NS */
 
 /*
