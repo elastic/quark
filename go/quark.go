@@ -24,8 +24,6 @@ type QuarkProc struct {
 	CapBset        uint64
 	CapAmbient     uint64
 	TimeBoot       uint64
-	TimeEvent      uint64
-	TimeStart      uint64
 	Ppid           uint32
 	Uid            uint32
 	Gid            uint32
@@ -170,8 +168,6 @@ func cEventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 			CapBset:        uint64(cev.proc_cap_bset),
 			CapAmbient:     uint64(cev.proc_cap_ambient),
 			TimeBoot:       uint64(cev.proc_time_boot),
-			TimeEvent:      uint64(cev.proc_time_start_event),
-			TimeStart:      uint64(cev.proc_time_start),
 			Ppid:           uint32(cev.proc_ppid),
 			Uid:            uint32(cev.proc_uid),
 			Gid:            uint32(cev.proc_gid),
