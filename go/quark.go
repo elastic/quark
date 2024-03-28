@@ -12,12 +12,13 @@ import "C"
 import (
 	"bytes"
 	"errors"
-	"golang.org/x/sys/unix"
 	"strings"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
-type QuarkProc struct {
+type Proc struct {
 	CapInheritable uint64
 	CapPermitted   uint64
 	CapEffective   uint64
@@ -33,22 +34,22 @@ type QuarkProc struct {
 	Egid           uint32
 }
 
-type QuarkExit struct {
+type Exit struct {
 	ExitCode      int32
 	ExitTimeEvent uint64
 }
 
-type QuarkEvent struct {
-	Pid       uint32     // Always present
-	Proc      *QuarkProc // QUARK_F_PROC
-	ExitEvent *QuarkExit // QUARK_F_EXIT
-	Comm      string     // QUARK_F_COMM
-	Filename  string     // QUARK_F_FILENAME
-	Cmdline   []string   // QUARK_F_CMDLINE
-	Cwd       string     // QUARK_F_CWD
+type Event struct {
+	Pid       uint32   // Always present
+	Proc      *Proc    // QUARK_F_PROC
+	ExitEvent *Exit    // QUARK_F_EXIT
+	Comm      string   // QUARK_F_COMM
+	Filename  string   // QUARK_F_FILENAME
+	Cmdline   []string // QUARK_F_CMDLINE
+	Cwd       string   // QUARK_F_CWD
 }
 
-type QuarkQueue struct {
+type Queue struct {
 	qqc      *C.struct_quark_queue
 	cevs     *C.struct_quark_event
 	num_cevs int
@@ -65,7 +66,7 @@ func wrapErrno(err error) error {
 	return err
 }
 
-func QuarkInit() error {
+func Init() error {
 	r, err := C.quark_init()
 	if r == -1 {
 		return wrapErrno(err)
@@ -74,12 +75,12 @@ func QuarkInit() error {
 	return nil
 }
 
-func QuarkClose() {
+func Close() {
 	C.quark_close()
 }
 
-func QuarkQueueOpen(slots int) (*QuarkQueue, error) {
-	var qq QuarkQueue
+func OpenQueue(slots int) (*Queue, error) {
+	var qq Queue
 
 	p, err := C.calloc(C.size_t(1), C.sizeof_struct_quark_queue)
 	if p == nil {
@@ -122,7 +123,7 @@ func QuarkQueueOpen(slots int) (*QuarkQueue, error) {
 	return &qq, nil
 }
 
-func (qq *QuarkQueue) Close() {
+func (qq *Queue) Close() {
 	C.quark_queue_close(qq.qqc)
 	C.free(unsafe.Pointer(qq.qqc))
 	C.free(unsafe.Pointer(qq.cevs))
@@ -133,13 +134,13 @@ func cEventOfIdx(cevs *C.struct_quark_event, idx int) *C.struct_quark_event {
 	return (*C.struct_quark_event)(unsafe.Add(unsafe.Pointer(cevs), idx*C.sizeof_struct_quark_event))
 }
 
-func (qq *QuarkQueue) GetEvents() ([]QuarkEvent, error) {
+func (qq *Queue) GetEvents() ([]Event, error) {
 	n, err := C.quark_queue_get_events(qq.qqc, qq.cevs, C.int(qq.num_cevs))
 	if n == -1 {
 		return nil, wrapErrno(err)
 	}
 
-	qqevs := make([]QuarkEvent, n)
+	qqevs := make([]Event, n)
 	for i := range qqevs {
 		qev, err := cEventToGo(cEventOfIdx(qq.cevs, i))
 		if err != nil {
@@ -151,17 +152,17 @@ func (qq *QuarkQueue) GetEvents() ([]QuarkEvent, error) {
 	return qqevs, nil
 }
 
-func (qq *QuarkQueue) Block() {
+func (qq *Queue) Block() {
 	unix.Poll(qq.fds, 100)
 	// TODO scan all fds for errors
 }
 
-func cEventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
-	var qev QuarkEvent
+func cEventToGo(cev *C.struct_quark_event) (Event, error) {
+	var qev Event
 
 	qev.Pid = uint32(cev.pid)
 	if cev.flags&C.QUARK_F_PROC != 0 {
-		qev.Proc = &QuarkProc{
+		qev.Proc = &Proc{
 			CapInheritable: uint64(cev.proc_cap_inheritable),
 			CapPermitted:   uint64(cev.proc_cap_permitted),
 			CapEffective:   uint64(cev.proc_cap_effective),
@@ -178,7 +179,7 @@ func cEventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 		}
 	}
 	if cev.flags&C.QUARK_F_EXIT != 0 {
-		var exit QuarkExit
+		var exit Exit
 		exit.ExitCode = int32(cev.exit_code)
 		exit.ExitTimeEvent = uint64(cev.exit_time_event)
 		qev.ExitEvent = &exit

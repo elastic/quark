@@ -6,11 +6,11 @@ import (
 )
 
 func main() {
-	err := quark.QuarkInit()
+	err := quark.Init()
 	if err != nil {
 		panic(err)
 	}
-	qq, err := quark.QuarkQueueOpen(64)
+	qq, err := quark.OpenQueue(64)
 	if err != nil {
 		panic(err)
 	}
@@ -31,5 +31,5 @@ func main() {
 		}
 	}
 	qq.Close()
-	quark.QuarkClose()
+	quark.Close()
 }
