@@ -528,6 +528,8 @@ quark_event_dump(struct quark_event *qev)
 		printf("  %.4s\texit_code=%d exit_time=%llu\n", flagname,
 		    qev->exit_code, qev->exit_time_event);
 	}
+
+	fflush(stdout);
 }
 
 static int
