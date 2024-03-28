@@ -48,6 +48,13 @@ struct qstr {
 	char	 small[64];
 };
 
+struct args {
+	char		*buf;
+	size_t		 buf_len;
+	int		 argc;
+	const char	*argv[];
+};
+
 struct perf_record_sample;
 struct perf_sample_data_loc;
 
@@ -66,7 +73,9 @@ ssize_t	 readlineat(int, const char *, char *, size_t);
 int	 strtou64(u64 *, const char *, int);
 char 	*find_line(FILE *, const char *);
 char	*find_line_p(const char *, const char *);
-char	*load_file_nostat(int);
+char	*load_file_nostat(int, size_t *);
+struct args *args_make(struct quark_event *);
+void	 args_free(struct args *);
 
 /* kprobe.c */
 extern struct kprobe *all_kprobes[];
@@ -316,8 +325,8 @@ struct raw_task {
 };
 
 struct raw_exec_connector {
-	int		argc;
 	struct qstr	args;
+	size_t		args_len;
 	char		comm[16];
 };
 
@@ -431,6 +440,7 @@ struct quark_event {
 	/* QUARK_F_FILENAME */
 	char	filename[1024];
 	/* QUARK_F_CMDLINE */
+	size_t	cmdline_len;
 	char	cmdline[1024];
 	/* QUARK_F_CWD */
 	char	cwd[1024];

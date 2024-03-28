@@ -302,28 +302,24 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 	fflush(stdout);
 }
 #endif
-static size_t
-args_to_spaces(char *dst, size_t dst_len, int argc, char *args)
+
+/* buf_len includes the terminating NUL */
+static int
+args_to_spaces(char *buf, size_t buf_len)
 {
-	char	*d, *s, *e;
+	char	*p, *last;
 
-	if (dst_len == 0 || argc == 0)
-		return (0);
-	s = args;
-	d = dst;
-	e = dst + dst_len;
-	while (argc-- > 0) {
-		while (d != e && (*d++ = *s++) != 0)
-			;
-		if (d > dst)
-			d[-1] = ' ';
-	}
-	if (d > dst)
-		d[-1] = 0;
-	else
-		d[0] = 0;
+	if (buf_len == 0)
+		return (-1);
 
-	return (d - dst);
+	/* last points to the last NUL */
+	last = &buf[buf_len - 1];
+	if (*last != 0)
+		return (-1);
+	for (p = buf + strlen(buf); p != last; p += strlen(p))
+		*p = ' ';
+
+	return (0);
 }
 
 static void
@@ -497,7 +493,29 @@ quark_event_dump(struct quark_event *qev)
 	}
 	if (qev->flags & QUARK_F_CMDLINE) {
 		flagname = event_flag_str(QUARK_F_CMDLINE);
-		printf("  %.4s\tcmdline=%s\n", flagname, qev->cmdline);
+
+		if (0) {
+			args_to_spaces(qev->cmdline, qev->cmdline_len);
+			printf("  %.4s\tcmdline=%s\n", flagname, qev->cmdline);
+		} else {
+			int		 i;
+			struct args	*args;
+
+			printf("  %.4s\tcmdline=", flagname);
+			printf("[ ");
+			args = args_make(qev);
+			if (args == NULL)
+				printf("(%s)", strerror(errno));
+			else {
+				for (i = 0; i < args->argc; i++) {
+					if (i > 0)
+						printf(", ");
+					printf("%s", args->argv[i]);
+				}
+			}
+			printf(" ]\n");
+			args_free(args);
+		}
 	}
 	if (qev->flags & QUARK_F_PROC) {
 		flagname = event_flag_str(QUARK_F_PROC);
@@ -653,11 +671,17 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		strlcpy(qev->filename, exec->filename.p, sizeof(qev->filename));
 	}
 	if (exec_connector != NULL) {
+		size_t		 copy_len;
+
 		qev->flags |= QUARK_F_CMDLINE;
 
 		qev->cmdline[0] = 0;
-		args_to_spaces(qev->cmdline, sizeof(qev->cmdline),
-		    exec_connector->argc, exec_connector->args.p);
+		copy_len = min(sizeof(qev->cmdline), exec_connector->args_len);
+		if (copy_len > 0) {
+			memcpy(qev->cmdline, exec_connector->args.p, copy_len);
+			qev->cmdline[copy_len - 1] = 0;
+		}
+		qev->cmdline_len = copy_len;
 
 		qev->flags |= QUARK_F_COMM;
 		strlcpy(qev->comm, exec_connector->comm, sizeof(qev->comm));
@@ -896,11 +920,14 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			p += strnlen(p, end - p) + 1;
 		if (p >= end)
 			p = end;
-		exec->argc = i;
-		if (qstr_memcpy(&exec->args, start, p - start) == -1)
-			warnx("can't copy args");
-		if (p == end)
-			exec->args.p[p - start - 1] = 0;
+		exec->args_len = p - start;
+		if (exec->args_len == 0)
+			exec->args.p[0] = 0;
+		else {
+			if (qstr_memcpy(&exec->args, start, exec->args_len) == -1)
+				warnx("can't copy args");
+			exec->args.p[exec->args_len - 1] = 0;
+		}
 		strlcpy(exec->comm, str_of_dataloc(sample, &exec_sample->comm),
 		    sizeof(exec->comm));
 		break;
@@ -1567,7 +1594,7 @@ sproc_stat(struct quark_event *qev, int dfd)
 		warn("%s: open stat", __func__);
 		return (-1);
 	}
-	buf = load_file_nostat(fd);
+	buf = load_file_nostat(fd, NULL);
 	if (buf == NULL)
 		goto cleanup;
 
@@ -1672,6 +1699,31 @@ sproc_status(struct quark_event *qev, int dfd)
 }
 
 static int
+sproc_cmdline(struct quark_event *qev, int dfd)
+{
+	int	 fd;
+	char	*buf;
+	size_t	 buf_len, copy_len;
+
+	if ((fd = openat(dfd, "cmdline", O_RDONLY)) == -1) {
+		warn("%s: open cmdline", __func__);
+		return (-1);
+	}
+	buf = load_file_nostat(fd, &buf_len);
+	close(fd);
+	if (buf == NULL)
+		return (-1);
+	copy_len = min(sizeof(qev->cmdline), buf_len);
+	memcpy(qev->cmdline, buf, copy_len);
+	free(buf);
+	/* paranoia */
+	qev->cmdline[copy_len - 1] = 0;
+	qev->cmdline_len = copy_len;
+
+	return (0);
+}
+
+static int
 sproc_pid(struct quark_queue *qq, int pid, int dfd)
 {
 	struct quark_event	*qev;
@@ -1695,7 +1747,7 @@ sproc_pid(struct quark_queue *qq, int pid, int dfd)
 	if (qreadlinkat(dfd, "exe", qev->filename, sizeof(qev->filename)) > 0)
 		qev->flags |= QUARK_F_FILENAME;
 	/* QUARK_F_CMDLINE */
-	if (readlineat(dfd, "cmdline", qev->cmdline, sizeof(qev->cmdline)) > 0)
+	if (sproc_cmdline(qev, dfd) == 0)
 		qev->flags |= QUARK_F_CMDLINE;
 	/* QUARK_F_CWD */
 	if (qreadlinkat(dfd, "cwd", qev->cwd, sizeof(qev->cwd)) > 0)

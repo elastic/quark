@@ -10,8 +10,10 @@ package quark
 import "C"
 
 import (
+	"bytes"
 	"errors"
 	"golang.org/x/sys/unix"
+	"strings"
 	"unsafe"
 )
 
@@ -44,7 +46,7 @@ type QuarkEvent struct {
 	ExitEvent *QuarkExit // QUARK_F_EXIT
 	Comm      string     // QUARK_F_COMM
 	Filename  string     // QUARK_F_FILENAME
-	Cmdline   string     // QUARK_F_CMDLINE
+	Cmdline   []string   // QUARK_F_CMDLINE
 	Cwd       string     // QUARK_F_CWD
 }
 
@@ -192,7 +194,10 @@ func cEventToGo(cev *C.struct_quark_event) (QuarkEvent, error) {
 		qev.Filename = C.GoString(&cev.filename[0])
 	}
 	if cev.flags&C.QUARK_F_CMDLINE != 0 {
-		qev.Cmdline = C.GoString(&cev.cmdline[0])
+		b := C.GoBytes(unsafe.Pointer(&cev.cmdline[0]), C.int(cev.cmdline_len))
+		nul := string(byte(0))
+		b = bytes.TrimRight(b, nul)
+		qev.Cmdline = strings.Split(string(b), nul)
 	}
 	if cev.flags&C.QUARK_F_CWD != 0 {
 		qev.Cwd = C.GoString(&cev.cwd[0])
