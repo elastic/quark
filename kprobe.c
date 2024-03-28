@@ -23,7 +23,6 @@
 	{ "cap_effective",	"di", "u64",	"task_struct.cred cred.cap_effective"								}, \
 	{ "cap_bset",		"di", "u64",	"task_struct.cred cred.cap_bset"								}, \
 	{ "cap_ambient",	"di", "u64",	"task_struct.cred cred.cap_ambient"								}, \
-	{ "start_time",		"di", "u64",	"task_struct.start_time"									}, \
 	{ "start_boottime",	"di", "u64",	"task_struct.start_boottime"									}, \
 	{ "root_k",		"di", "u64",	"task_struct.fs fs_struct.root.dentry"								}, \
 	{ "mnt_root_k",		"di", "u64",	"task_struct.fs fs_struct.pwd.mnt vfsmount.mnt_root"						}, \

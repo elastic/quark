@@ -249,10 +249,7 @@ raw_event_dump(struct raw_event *raw, int is_agg)
 		printf("pid=%d tid=%d uid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
 		    raw->pid, raw->tid, w->uid, w->gid, w->suid, w->sgid, w->euid,
 		    w->egid);
-		printf("\tstart_time=%llu start_boottime=%llu",
-		    w->start_time, w->start_boottime);
-		if (raw->type == RAW_WAKE_UP_NEW_TASK)
-			printf(" start_time_event=%llu", w->start_time_event);
+		printf("\tstart_boottime=%llu", w->start_boottime);
 
 		raw->type == RAW_WAKE_UP_NEW_TASK ? "start" : "end");
 		printf(" norm_%s=%llu", raw->time,
@@ -529,9 +526,7 @@ quark_event_dump(struct quark_event *qev)
 		    qev->proc_cap_permitted, qev->proc_cap_effective);
 		printf("  %.4s\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    flagname, qev->proc_cap_bset, qev->proc_cap_ambient);
-		printf("  %.4s\ttime_boot=%llu time_event=%llu time_start=%llu\n",
-		    flagname, qev->proc_time_boot, qev->proc_time_start_event,
-		    qev->proc_time_start);
+		printf("  %.4s\ttime_boot=%llu\n", flagname, qev->proc_time_boot);
 	}
 	if (qev->flags & QUARK_F_CWD) {
 		flagname = event_flag_str(QUARK_F_CWD);
@@ -645,8 +640,6 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		qev->proc_cap_bset = task->cap_bset;
 		qev->proc_cap_ambient = task->cap_ambient;
 		qev->proc_time_boot = hostinfo.boottime + task->start_boottime;
-		qev->proc_time_start_event = task->start_time_event;
-		qev->proc_time_start = task->start_time;
 		qev->proc_ppid = task->ppid;
 		qev->proc_uid = task->uid;
 		qev->proc_gid = task->gid;
@@ -872,7 +865,6 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 				warn("can't build path");
 			raw->task.exit_code = -1;
 			raw->task.exit_time_event = 0;
-			raw->task.start_time_event = sample->sample_id.time;
 		} else {
 			raw->type = RAW_EXIT_THREAD;
 			/*
@@ -890,7 +882,6 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		raw->task.cap_effective = w->cap_effective;
 		raw->task.cap_bset = w->cap_bset;
 		raw->task.cap_ambient = w->cap_ambient;
-		raw->task.start_time = w->start_time;
 		raw->task.start_boottime = w->start_boottime;
 		raw->task.uid = w->uid;
 		raw->task.gid = w->gid;

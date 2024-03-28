@@ -211,7 +211,6 @@ struct task_sample {
 	u64	cap_effective;
 	u64	cap_bset;
 	u64	cap_ambient;
-	u64	start_time;
 	u64	start_boottime;
 	u64	root_k;
 	u64	mnt_root_k;
@@ -309,9 +308,7 @@ struct raw_task {
 	u64		cap_effective;
 	u64		cap_bset;
 	u64		cap_ambient;
-	u64		start_time;
 	u64		start_boottime;
-	u64		start_time_event;	/* Unavailable at exit */
 	u32		uid;
 	u32		gid;
 	u32		suid;
@@ -423,8 +420,6 @@ struct quark_event {
 	u64	proc_cap_bset;
 	u64	proc_cap_ambient;
 	u64	proc_time_boot;
-	u64	proc_time_start_event;
-	u64	proc_time_start;
 	u32	proc_ppid;
 	u32	proc_uid;
 	u32	proc_gid;

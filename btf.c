@@ -40,7 +40,6 @@ struct target {
 	{ "task_struct.mm",		-1 },
 	{ "task_struct.pid",		-1 },
 	{ "task_struct.start_boottime",	-1 },
-	{ "task_struct.start_time",	-1 },
 	{ "task_struct.tgid",		-1 },
 	{ "vfsmount.mnt_root",		-1 },
 	{ NULL,				-1 },
