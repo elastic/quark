@@ -320,12 +320,56 @@ args_to_spaces(char *buf, size_t buf_len)
 }
 
 static void
+event_copy_fields(struct quark_event *dst, struct quark_event *src)
+{
+#define MCPY(_f, _l)	memcpy(dst->_f, src->_f, src->_l)
+#define STCPY(_f)	strlcpy(dst->_f, src->_f, sizeof(dst->_f))
+#define CPY(_f)		dst->_f = src->_f
+
+	CPY(flags);
+
+	if (src->flags & QUARK_F_PROC) {
+		CPY(proc_cap_inheritable);
+		CPY(proc_cap_permitted);
+		CPY(proc_cap_effective);
+		CPY(proc_cap_bset);
+		CPY(proc_cap_ambient);
+		CPY(proc_time_boot);
+		CPY(proc_ppid);
+		CPY(proc_uid);
+		CPY(proc_gid);
+		CPY(proc_suid);
+		CPY(proc_sgid);
+		CPY(proc_euid);
+		CPY(proc_egid);
+	}
+	if (src->flags & QUARK_F_EXIT) {
+		CPY(exit_code);
+		CPY(exit_time_event);
+	}
+	if (src->flags & QUARK_F_COMM)
+		STCPY(comm);
+	if (src->flags & QUARK_F_FILENAME)
+		STCPY(filename);
+	if (src->flags & QUARK_F_CMDLINE) {
+		CPY(cmdline_len);
+		MCPY(cmdline, cmdline_len);
+	}
+	if (src->flags & QUARK_F_CWD)
+		STCPY(cwd);
+
+#undef CPY
+#undef STCPY
+#undef MCPY
+}
+
+static void
 event_copy_out(struct quark_event *dst, struct quark_event *src, u64 events)
 {
-	memcpy(dst, src, sizeof(*dst));
 	bzero(&dst->quark_event_zero_start,
 	    (char *)&dst->quark_event_zero_end - (char *)&dst->quark_event_zero_start);
 	dst->events = events;
+	event_copy_fields(dst, src);
 }
 
 static struct quark_event *
@@ -355,6 +399,30 @@ event_cache_get(struct quark_queue *qq, int pid, int alloc)
 	}
 
 	return (qev);
+}
+
+static void
+event_cache_inherit(struct quark_queue *qq, struct quark_event *qev, int ppid)
+{
+	struct quark_event	*parent;
+
+	if ((parent = event_cache_get(qq, ppid, 0)) == NULL)
+		return;
+
+	if (parent->flags & QUARK_F_COMM) {
+		qev->flags |= QUARK_F_COMM;
+		strlcpy(qev->comm, parent->comm, sizeof(qev->comm));
+	}
+	if (parent->flags & QUARK_F_FILENAME) {
+		qev->flags |= QUARK_F_FILENAME;
+		strlcpy(qev->filename, parent->filename, sizeof(qev->filename));
+	}
+	/* Do we really want CMDLINE? */
+	if (parent->flags & QUARK_F_CMDLINE) {
+		qev->flags |= QUARK_F_CMDLINE;
+		qev->cmdline_len = parent->cmdline_len;
+		memcpy(qev->cmdline, parent->cmdline, parent->cmdline_len);
+	}
 }
 
 static void
@@ -633,6 +701,9 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 	/* QUARK_F_PROC */
 	if (task != NULL) {
 		qev->flags |= QUARK_F_PROC;
+
+		if (events & QUARK_EV_FORK)
+			event_cache_inherit(qq, qev, task->ppid);
 
 		qev->proc_cap_inheritable = task->cap_inheritable;
 		qev->proc_cap_permitted = task->cap_permitted;
