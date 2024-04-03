@@ -48,7 +48,7 @@ LIBBPF_SRC:= libbpf/src
 LIBBPF_STATIC:= $(LIBBPF_SRC)/libbpf.a
 LIBBPF_DEPS:= $(wildcard libbpf/src/*.[ch]) $(wildcard libbpf/include/*.[ch])
 
-all: $(LIBBPF_STATIC) $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon quark-btf
+all: $(LIBBPF_STATIC) $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon quark-btf README.md
 
 $(LIBBPF_STATIC): $(LIBBPF_DEPS)
 	$(call msg,MAKE,$@)
@@ -75,6 +75,10 @@ quark-mon: quark-mon.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC)
 quark-btf: quark-btf.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
+
+README.md: quark.7
+	$(call msg, MANDOC,$@)
+	$(Q)mandoc -T markdown $< > $@
 
 clean:
 	$(call msg,CLEAN)
