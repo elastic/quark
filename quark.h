@@ -156,6 +156,13 @@ struct perf_record_sample {
 	char				data[];
 };
 
+struct perf_record_lost {
+	struct perf_event_header	header;
+	u64				id;
+	u64				lost;
+	struct perf_sample_id		sample_id;
+};
+
 struct perf_event {
 	union {
 		struct perf_event_header	header;
@@ -163,6 +170,7 @@ struct perf_event {
 		struct perf_record_exit		exit;
 		struct perf_record_comm		comm;
 		struct perf_record_sample	sample;
+		struct perf_record_lost		lost;
 	};
 };
 
@@ -446,6 +454,7 @@ struct quark_queue_stats {
 	u64	removals;
 	u64	aggregations;
 	u64	non_aggregations;
+	u64	lost;
 	/* TODO u64	peak_nodes; */
 };
 /*

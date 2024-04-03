@@ -1047,6 +1047,9 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		 * behaviour.
 		 */
 		break;
+	case PERF_RECORD_LOST:
+		qq->stats.lost += ev->lost.lost;
+		break;
 	default:
 		warnx("%s unhandled type %d\n", __func__, ev->header.type);
 		return (NULL);

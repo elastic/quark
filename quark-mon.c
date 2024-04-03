@@ -15,8 +15,10 @@ static void
 quark_queue_dump_stats(struct quark_queue *qq)
 {
 	struct quark_queue_stats *s = &qq->stats;
-	printf("%8llu insertions %8llu removals %8llu aggregations %8llu non-aggregations\n",
-	    s->insertions, s->removals, s->aggregations, s->non_aggregations);
+	printf("%8llu insertions %8llu removals %8llu aggregations "
+	    "%8llu non-aggregations %8llu lost\n",
+	    s->insertions, s->removals, s->aggregations,
+	    s->non_aggregations, s->lost);
 }
 
 static void
