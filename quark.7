@@ -1,0 +1,118 @@
+.\" quark man page
+.Dd April 3, 2024
+.Dt QUARK 7
+.Os
+.Sh NAME
+.Nm quark
+.Nd unified system process telemetry library
+.Sh DESCRIPTION
+The
+.Nm quark
+library provides a way to retrieve and listen to process events in linux
+systems.
+Its main purpose is to abstract different backends and providing common
+API for listening to system-wide events like
+.Fn fork 2 ,
+.Fn exec 3 ,
+.Fn exit 2
+and others.
+.Pp
+.Nm quark
+not only provides an API for listening to events, but also handles ordering,
+buffering and aggregation of said events.
+In its most basic form, a short lived process consisting of
+.Fn fork
++
+.Fn exec
++
+.Fn exit
+will be aggregated into one
+.Vt quark_event .
+An internal event cache is also kept that can be looked up via
+.Fn quark_event_lookup 3 .
+This cache keeps soon-to-be-purged elements for a little while so that you can
+still lookup a process that just exited.
+.Sh CONVENTIONS
+.Nm quark
+library calls all fail with -1 unless otherwise stated, and
+.Vt errno
+is set.
+.Pp
+.Nm quark
+does not create any threads and does not return pointers to internal state
+during runtime, the data is allocated by the caller and the library copies the
+data out.
+Access to a
+.Vt quark_queue
+must be synchronized by the caller in the case of multithreading.
+.Sh BASIC USAGE
+The ball starts with
+.Fn quark_init 3
+followed by
+.Fn quark_queue_open 3 .
+.Pp
+.Fn quark_init 3
+initializes internal global state for the library that should be paired with
+.Fn quark_close 3
+on exit.
+At the time of this writing, this is basically initializing some
+per-host state, trying to read
+.Vt BTF
+from the host and initilizing
+.Vt kprobes .
+.Pp
+.Fn quark_queue_open 3
+initializes a
+.Vt quark_queue
+which holds majority of runtime state used by library, this includes creating
+perf-rings, file descriptors, buffering data-structures and the likes.
+It must be paired with a
+.Fn quark_queue_close 3
+on exit.
+.Pp
+.Fn quark_queue_get_events 3
+Is the main driver of the library, it does the buffering, per-ring scanning,
+aggregation and event cache garbage collecting.
+In case there are no events it
+returns zero and the user is expected to call
+.Fn quark_queue_block 3
+or equivalent.
+.Sh EXAMPLE
+.Bd -literal -offset indent
+struct quark_queue qq;
+struct quark_event qevs[32], *qev;
+int n, i;
+
+if (quark_init() == -1)
+	err(1, "quark_init");
+if (quark_queue_open(qq, qq_flags) == -1)
+	err(1, "quark_queue_open");
+
+for (; ;) {
+	n = quark_queue_get_events(&qq, qevs, 32);
+	if (n == -1)
+		err(1, "quark_queue_get_events");
+	/* Scan each event */
+	for (i = 0, qev = qevs; i < n; i++, qev++)
+		quark_event_dump(qev);
+	if (n == 0)
+		quark_queue_block(&qq);
+}
+
+quark_queue_close(&qq);
+quark_close();
+.Ed
+.Sh SEE ALSO
+.Xr quark_close 3 ,
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_fds 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
+.Sh HISTORY
+.Nm quark
+started in April 2024.
