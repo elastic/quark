@@ -69,7 +69,7 @@ from the host and initilizing
 initializes a
 *quark\_queue*
 which holds majority of runtime state used by library, this includes creating
-perf-rings, file descriptors, buffering data-structures and the likes.
+perf-rings, file descriptors, buffering data-structures and the like.
 It must be paired with a
 **quark\_queue\_close**(*3*)
 on exit.
@@ -90,7 +90,7 @@ or equivalent.
 	
 	if (quark_init() == -1)
 		err(1, "quark_init");
-	if (quark_queue_open(qq, qq_flags) == -1)
+	if (quark_queue_open(qq, 0) == -1)
 		err(1, "quark_queue_open");
 	
 	for (; ;) {
