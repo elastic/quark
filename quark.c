@@ -369,6 +369,7 @@ event_copy_out(struct quark_event *dst, struct quark_event *src, u64 events)
 	bzero(&dst->quark_event_zero_start,
 	    (char *)&dst->quark_event_zero_end - (char *)&dst->quark_event_zero_start);
 	dst->events = events;
+	dst->pid = src->pid;
 	event_copy_fields(dst, src);
 }
 
