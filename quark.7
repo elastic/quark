@@ -35,7 +35,7 @@ still lookup a process that just exited.
 .Sh CONVENTIONS
 .Nm quark
 library calls all fail with -1 unless otherwise stated, and
-.Vt errno
+.Va errno
 is set.
 .Pp
 .Nm quark
@@ -58,8 +58,7 @@ on exit.
 At the time of this writing, this is basically initializing some
 per-host state, trying to read
 .Vt BTF
-from the host and initilizing
-.Vt kprobes .
+from the host and initilizing kprobes .
 .Pp
 .Fn quark_queue_open 3
 initializes a
