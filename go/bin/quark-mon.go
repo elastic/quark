@@ -14,6 +14,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	pid1 := qq.Lookup(1)
+	if pid1 != nil {
+		fmt.Printf("Yey for pid1\n %#v", pid1)
+	}
+
 	for {
 		qevs, err := qq.GetEvents()
 		if err != nil {

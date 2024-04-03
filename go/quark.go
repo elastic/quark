@@ -54,6 +54,7 @@ type Queue struct {
 	cevs     *C.struct_quark_event
 	num_cevs int
 	fds      []unix.PollFd
+	tmpev    *C.struct_quark_event // Used as storage for lookups
 }
 
 var ErrUndefined = errors.New("undefined")
@@ -119,6 +120,8 @@ func OpenQueue(slots int) (*Queue, error) {
 			Events: unix.POLLIN | unix.POLLHUP,
 		}
 	}
+	// Cgo malloc doesn't fail, it panics
+	qq.tmpev = (*C.struct_quark_event)(C.malloc(C.sizeof_struct_quark_event))
 
 	return &qq, nil
 }
@@ -127,6 +130,7 @@ func (qq *Queue) Close() {
 	C.quark_queue_close(qq.qqc)
 	C.free(unsafe.Pointer(qq.qqc))
 	C.free(unsafe.Pointer(qq.cevs))
+	C.free(unsafe.Pointer(qq.tmpev))
 	qq.qqc = nil
 }
 
@@ -144,12 +148,27 @@ func (qq *Queue) GetEvents() ([]Event, error) {
 	for i := range qqevs {
 		qev, err := cEventToGo(cEventOfIdx(qq.cevs, i))
 		if err != nil {
-			panic(err)
+			panic(err) // XXX remove me
 		}
 		qqevs[i] = qev
 	}
 
 	return qqevs, nil
+}
+
+func (qq *Queue) Lookup(pid int) (*Event) {
+	r, _ := C.quark_event_lookup(qq.qqc, qq.tmpev, C.int(pid))
+
+	if r != 0 {
+		return nil
+	}
+
+	qev, err := cEventToGo(qq.tmpev)
+	if err != nil {
+		panic(err) // XXX remove me
+	}
+
+	return &qev
 }
 
 func (qq *Queue) Block() {
