@@ -62,8 +62,7 @@ on exit.
 At the time of this writing, this is basically initializing some
 per-host state, trying to read
 *BTF*
-from the host and initilizing
-*kprobes*.
+from the host and initilizing kprobes .
 
 **quark\_queue\_open**(*3*)
 initializes a
