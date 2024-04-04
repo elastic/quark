@@ -1,0 +1,75 @@
+.Dd $Mdocdate: December 1 2017 $
+.Dt quark_event_dump 3
+.Os
+.Sh NAME
+.Nm quark_event_dump
+.Nd dump a
+.Vt
+quark_event
+to a
+.Vt FILE
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_event_dump "struct quark_event *qev" "FILE *file"
+.Sh DESCRIPTION
+.Nm
+dumps a human readable format of the event pointed to by
+.Fa qev
+to the file specified in
+.Fa file .
+.Sh OUTPUT EXAMPLE
+.Bd -literal
+->818621 (FORK+EXEC+EXIT)
+  COMM  comm=git
+  CMDL  cmdline=[ /usr/bin/git, --no-pager, ls-tree, --name-only, -z, HEAD, --, quark_event_dump.3 ]
+  PROC  ppid=5082
+  PROC  uid=1000 gid=1000 suid=1000 sgid=1000 euid=1000 egid=1000
+  PROC  cap_inheritable=0x0 cap_permitted=0x0 cap_effective=0x0
+  PROC  cap_bset=0x1ffffffffff cap_ambient=0x0
+  PROC  time_boot=1712219191035753014
+  CWD   cwd=/home/haesbaert
+  FILE  filename=/usr/bin/git
+  EXIT  exit_code=0 exit_time=72031260061483
+.Ed
+.Sh FORMAT
+The number
+.Sy 818621
+after the
+.Sy ->
+is the pid of the originating event.
+The string
+.Sy (FORK+EXEC+EXIT)
+describes what is aggregated in
+.Sy this
+specific event.
+The following fields contain all the data we know about pid
+.Sy 818621 ,
+which originates both from this event, and whatever has been learned before and
+is cached.
+.Pp
+The first column of the subsequent lines is a description of the
+.Vt flag
+from where the fields in the second column originates from.
+For example
+.Sy PROC
+is
+.Dv QUARK_F_PROC
+and produces the fields
+.Sy ppid ,
+.Sy uid ,
+.Sy gid ,
+.Sy suid ...
+.Sh RETURN VALUES
+Zero on success, -1 in error from
+.Fn fwrite 3 .
+.Sh SEE ALSO
+.Xr quark_close 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_fds 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
