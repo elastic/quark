@@ -75,15 +75,12 @@ main(int argc, char *argv[])
 	qq_flags = dump_perf = do_drop = 0;
 	nqevs = 32;
 
-	while ((ch = getopt(argc, argv, "Dfm:tv")) != -1) {
+	while ((ch = getopt(argc, argv, "Dm:tv")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
 		case 'D':
 			do_drop = 1;
-			break;
-		case 'f':
-			qq_flags |= QQ_PERF_TASK_EVENTS;
 			break;
 		case 'm':
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);

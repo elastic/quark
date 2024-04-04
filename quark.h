@@ -471,8 +471,7 @@ struct quark_queue {
 	struct quark_event_list		event_gc;
 	struct quark_queue_stats	stats;
 #define QQ_THREAD_EVENTS		(1 << 0)
-#define QQ_PERF_TASK_EVENTS		(1 << 1)
-#define QQ_NO_CACHE			(1 << 2)
+#define QQ_NO_CACHE			(1 << 1)
 	int				flags;
 	int				length;
 	int				max_length;
