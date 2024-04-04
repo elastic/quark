@@ -1,0 +1,77 @@
+.Dd $Mdocdate: December 1 2017 $
+.Dt quark_queue_open 3
+.Os
+.Sh NAME
+.Nm quark_queue_open
+.Nd initialize a
+.Vt quark_queue
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_queue_open "struct quark_queue *qq" "int flags"
+.Sh DESCRIPTION
+.Nm
+initializes the
+.Vt quark_queue
+pointed to by
+.Fa qq .
+.Pp
+A
+.Vt quark_queue
+is the main runtime datastructure of quark, it is loosely called a queue as it's
+where events will originate from.
+Events will be collected into the queue, buffered, aggregated and filtered if
+necessary.
+.Pp
+The
+.Nm
+function does the following:
+.Bl -bullet
+.It
+Initializes the various lists and internal buffers of
+.Fa qq .
+.It
+Initializes ones perf-ring per-cpu in order to collect process events, which
+creates a file descriptor per perf-ring.
+.It
+Scrapes
+.Pa /proc
+for a snapshot of the existing processes in the system.
+.Nm
+is smart enough to open the rings before the scraping, as to be make sure no
+process is lost.
+These initial process events will be available on the first call to
+.Fn quark_queue_get_events 3
+with the
+.Vt events
+member set to
+.Dv QUARK_EV_SNAPSHOT .
+.El
+.Pp
+.Fa flags
+is a bitmask that changes the default queue behaviour with the following values:
+.Pp
+.Bl -tag -width QQ_THREAD_EVENTS -offset indent -compact
+.It Dv QQ_THREAD_EVENTS
+Include per-thread events, instead of per-process events.
+This option will be removed in the future, but it may be useful for debugging.
+.It Dv QQ_NO_CACHE
+Don't use the internal process cache to enrich events, normally when quark
+receives an event, it will include all the cached information it had about that
+process so that the event has more context, passing this flag will get you
+"naked" events.
+.El
+.Sh RETURN VALUES
+Zero on success, -1 otherwise and
+.Va errno
+is set.
+.Sh SEE ALSO
+.Xr quark_close 3 ,
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_fds 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8

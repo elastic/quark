@@ -1,0 +1,29 @@
+.Dd $Mdocdate: December 1 2017 $
+.Dt quark_close 3
+.Os
+.Sh NAME
+.Nm quark_close
+.Nd cleanup quark global state
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_close void
+.Sh DESCRIPTION
+Cleans up any state initialized by
+.Fn quark_init 3 .
+It is an error to call this function without a prior
+.Fn quark_init 3 .
+.Sh RETURN VALUES
+Zero on success, -1 otherwise and
+.Va errno
+is set.
+.Sh SEE ALSO
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_fds 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
