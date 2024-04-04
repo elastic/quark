@@ -98,7 +98,7 @@ or equivalent.
 			err(1, "quark_queue_get_events");
 		/* Scan each event */
 		for (i = 0, qev = qevs; i < n; i++, qev++)
-			quark_event_dump(qev);
+			quark_event_dump(qev, stdio);
 		if (n == 0)
 			quark_queue_block(&qq);
 	}
