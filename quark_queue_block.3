@@ -1,0 +1,44 @@
+.Dd $Mdocdate: December 1 2017 $
+.Dt quark_queue_block 3
+.Os
+.Sh NAME
+.Nm quark_queue_block
+.Nd block waiting for quark events
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_queue_block "struct quark_queue *qq"
+.Sh DESCRIPTION
+.Nm
+blocks the calling process until there would be events to be read with
+.Fn quark_queue_get_events 3 .
+.Pp
+Internally this will call
+.Fn poll 2
+for every file descriptor quark is interested, the call is also arranged with a
+reasonable timeout, this is need because perf-ring file descriptors only become
+readable once a certain amount of data surpasses a threshold.
+On the return from
+.Nm ,
+the caller should call
+.Fn quark_queue_get_events 3
+until it returns zero, signifying there are no more events to be read.
+See
+.Xr quark 7
+for an example.
+.Sh RETURN VALUES
+Zero on success, -1 otherwise and
+.Va errno
+is set.
+.Sh SEE ALSO
+.Xr quark_close 3 ,
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_fds 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark 7 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
