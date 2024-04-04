@@ -1,0 +1,129 @@
+.Dd $Mdocdate: December 1 2017 $
+.Dt quark_queue_get_events 3
+.Os
+.Sh NAME
+.Nm quark_queue_get_events
+.Nd main quark driver
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_queue_get_events "struct quark_queue *qq" "struct quark_event *qev" "int nqev"
+.Sh DESCRIPTION
+.Nm
+fills the array of events pointed to by
+.Fa qev
+to a maximum of
+.Fa neqv
+entries.
+.Pp
+This function is the main driver of quark.
+Quark doesn't create threads or introduces hidden control flows, all its state
+is mutated through this function call. For a better explanation of quark's
+design, refer to
+.Xr quark 7 .
+Roughly speaking we can summarize what this function does in the following
+steps:
+.Bl -bullet
+.It
+Populates its priority queue with raw events by scanning all perf-rings for
+pending events.
+.It
+Attempts to collect raw events that are deemed old enough from its priority
+queue, if successfull tries to aggregate such events.
+.It
+Converts the collected raw events into proper
+.Vt quark_events .
+This involves consulting its internal cache and enriching said events.
+These
+.Vt quark_events
+are then passed to the user via
+.Fa qev .
+.It
+Garbage collects cached events that are marked for deletion and are old enough.
+When a process exits, its event cache is marked for deletion, but a grace time
+is given before purging it so that the user might still query it for some time.
+.El
+.Pp
+A
+.Vt quark_event
+has three main members:
+.Bl -tag -width "events"
+.It Em pid
+The pid of the originating event.
+.It Em events
+A bitmask representing the events that originated this
+.Vt quark_event :
+\" .Bl -tag -width "QUARK_EV_SETPROCTITLE"
+.Bl -tag -width "QUARK_EV_SETPROCTITLE" -compact
+.It Dv QUARK_EV_FORK
+New process, result of a fork.
+.It Dv QUARK_EV_EXEC
+Process changed image, result of an exec.
+.It Dv QUARK_EV_EXIT
+Process exited.
+.It Dv QUARK_EV_SETPROCTITLE
+Process changed its name (COMM).
+.El
+.Pp
+It's important to notice that
+.Vt events
+is what triggered the event, not what is known about the event, that's expressed
+in
+.Em flags
+below.
+.Pp
+It might also be more than one value as events get
+aggregated.
+For example, a short lived process will have the following mask:
+.Dv QUARK_EV_FORK | QUARK_EV_EXEC | QUARK_EV_EXIT .
+.It Em flags
+A bit mask representing the fields which are known about this pid, these can be
+cached and originate from previous events. Each bit in the set represents one or
+more members of the structure, if the bit is unset, the respective members are
+invalid/unknown.
+.Pp
+.Bl -tag -width "QUARK_F_FILENAME" -compact
+.It Dv QUARK_F_PROC
+.Em proc_
+members are valid.
+.It Dv QUARK_F_EXIT
+.Em exit_code
+is valid.
+.It Dv QUARK_F_COMM
+.Em comm
+is valid.
+.It Dv QUARK_F_FILENAME
+.Em filename
+is valid.
+.It Dv QUARK_F_CMDLINE
+.Em cmdline
+and
+.Em cmdline_len
+are valid.
+.It Dv QUARK_F_CWD
+.Em cwd
+is valid.
+.El
+.El
+.Sh RETURN VALUES
+The number of filled events via
+.Fa qev
+to a maximum of
+.Fa nqev .
+If zero is returned, the user should consider calling
+.Fn quark_queue_block 3 .
+In the case of an internal error, -1 is returned and
+.Va errno
+is set.
+.Sh SEE ALSO
+.Xr quark_close 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_event_dump 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_fds 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
