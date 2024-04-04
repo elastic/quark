@@ -36,7 +36,7 @@ int	quark_queue_get_events(struct quark_queue *, struct quark_event *, int);
 int	quark_queue_get_fds(struct quark_queue *, int *, int);
 int	quark_dump_graphviz(struct quark_queue *, FILE *, FILE *);
 int	quark_event_lookup(struct quark_queue *, struct quark_event *, int);
-void	quark_event_dump(struct quark_event *);
+int	quark_event_dump(struct quark_event *, FILE *);
 
 /* btf.c */
 int	quark_btf_init(void);

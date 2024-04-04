@@ -544,75 +544,83 @@ quark_event_lookup(struct quark_queue *qq, struct quark_event *dst, int pid)
 	return (0);
 }
 
-void
-quark_event_dump(struct quark_event *qev)
+#define P(...)						\
+	do {						\
+		if (fprintf(f, __VA_ARGS__) < 0)	\
+			return (-1);			\
+	} while(0)
+int
+quark_event_dump(struct quark_event *qev, FILE *f)
 {
 	const char	*flagname;
 	char		 events[1024];
 
 	/* TODO: add tid */
 	events_type_str(qev->events, events, sizeof(events));
-	printf("->%d (%s)\n", qev->pid, events);
+	P("->%d (%s)\n", qev->pid, events);
 	if (qev->flags & QUARK_F_COMM) {
 		flagname = event_flag_str(QUARK_F_COMM);
-		printf("  %.4s\tcomm=%s\n", flagname, qev->comm);
+		P("  %.4s\tcomm=%s\n", flagname, qev->comm);
 	}
 	if (qev->flags & QUARK_F_CMDLINE) {
 		flagname = event_flag_str(QUARK_F_CMDLINE);
 
 		if (0) {
 			args_to_spaces(qev->cmdline, qev->cmdline_len);
-			printf("  %.4s\tcmdline=%s\n", flagname, qev->cmdline);
+			P("  %.4s\tcmdline=%s\n", flagname, qev->cmdline);
 		} else {
 			int		 i;
 			struct args	*args;
 
-			printf("  %.4s\tcmdline=", flagname);
-			printf("[ ");
+			P("  %.4s\tcmdline=", flagname);
+			P("[ ");
 			args = args_make(qev);
 			if (args == NULL)
-				printf("(%s)", strerror(errno));
+				P("(%s)", strerror(errno));
 			else {
 				for (i = 0; i < args->argc; i++) {
 					if (i > 0)
-						printf(", ");
-					printf("%s", args->argv[i]);
+						P(", ");
+					P("%s", args->argv[i]);
 				}
 			}
-			printf(" ]\n");
+			P(" ]\n");
 			args_free(args);
 		}
 	}
 	if (qev->flags & QUARK_F_PROC) {
 		flagname = event_flag_str(QUARK_F_PROC);
-		printf("  %.4s\tppid=%d\n", flagname, qev->proc_ppid);
-		printf("  %.4s\tuid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
+		P("  %.4s\tppid=%d\n", flagname, qev->proc_ppid);
+		P("  %.4s\tuid=%d gid=%d suid=%d sgid=%d euid=%d egid=%d\n",
 		    flagname, qev->proc_uid, qev->proc_gid, qev->proc_suid,
 		    qev->proc_sgid, qev->proc_euid, qev->proc_egid);
-		printf("  %.4s\tcap_inheritable=0x%llx cap_permitted=0x%llx "
+		P("  %.4s\tcap_inheritable=0x%llx cap_permitted=0x%llx "
 		    "cap_effective=0x%llx\n",
 		    flagname, qev->proc_cap_inheritable,
 		    qev->proc_cap_permitted, qev->proc_cap_effective);
-		printf("  %.4s\tcap_bset=0x%llx cap_ambient=0x%llx\n",
+		P("  %.4s\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    flagname, qev->proc_cap_bset, qev->proc_cap_ambient);
-		printf("  %.4s\ttime_boot=%llu\n", flagname, qev->proc_time_boot);
+		P("  %.4s\ttime_boot=%llu\n", flagname, qev->proc_time_boot);
 	}
 	if (qev->flags & QUARK_F_CWD) {
 		flagname = event_flag_str(QUARK_F_CWD);
-		printf("  %.4s\tcwd=%s\n", flagname, qev->cwd);
+		P("  %.4s\tcwd=%s\n", flagname, qev->cwd);
 	}
 	if (qev->flags & QUARK_F_FILENAME) {
 		flagname = event_flag_str(QUARK_F_FILENAME);
-		printf("  %.4s\tfilename=%s\n", flagname, qev->filename);
+		P("  %.4s\tfilename=%s\n", flagname, qev->filename);
 	}
 	if (qev->flags & QUARK_F_EXIT) {
 		flagname = event_flag_str(QUARK_F_EXIT);
-		printf("  %.4s\texit_code=%d exit_time=%llu\n", flagname,
+		P("  %.4s\texit_code=%d exit_time=%llu\n", flagname,
 		    qev->exit_code, qev->exit_time_event);
 	}
 
-	fflush(stdout);
+	fflush(f);
+
+	return (0);
 }
+#undef P
 
 static int
 raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct quark_event *dst)
@@ -1929,9 +1937,11 @@ hostinfo_init(void)
 	return (0);
 }
 
-#define P(_f, ...)				\
-	if (fprintf(_f, __VA_ARGS__) < 0)	\
-		return (-1);
+#define P(_f, ...)					\
+	do {						\
+		if (fprintf(_f, __VA_ARGS__) < 0)	\
+			return (-1);			\
+	} while(0)
 static int
 write_node_attr(FILE *f, struct raw_event *raw, char *key)
 {
