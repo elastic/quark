@@ -90,4 +90,8 @@ cleanall: clean
 	$(Q)rm -f $(SVGS)
 	$(Q)make -C $(LIBBPF_SRC) clean
 
-.PHONY: all clean cleanall
+manlint:
+	$(call msg, MANDOC)
+	$(Q)mandoc -Tlint *.[378] || true
+
+.PHONY: all clean cleanall manlint

@@ -18,7 +18,6 @@ the process must be able to create kprobes as well as read
 cleans up all the state allocated by
 .Fn quark_init 3 .
 The following roughly summarizes what this function does:
-.Pp
 .Bl -bullet
 .It
 Basic host attributes discovery, HZ and offsets
@@ -47,8 +46,8 @@ are possible.
 .Xr quark_event_lookup 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
-.Xr quark_queue_get_fds 3 ,
 .Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_fds 3 ,
 .Xr quark 7 ,
 .Xr quark-btf 8 ,
 .Xr quark-mon 8
