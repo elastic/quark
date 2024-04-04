@@ -32,7 +32,10 @@ Initializes the various lists and internal buffers of
 .Fa qq .
 .It
 Initializes ones perf-ring per-cpu in order to collect process events, which
-creates a file descriptor per perf-ring.
+creates a file descriptor per perf-ring. The file descriptors can be retrieved
+bt the caller with
+.Fn quark_queue_get_fds 3 .
+This can be useful for integrating it in an existing main loop.
 .It
 Scrapes
 .Pa /proc
@@ -64,7 +67,9 @@ process so that the event has more context, passing this flag will get you
 .Sh RETURN VALUES
 Zero on success, -1 otherwise and
 .Va errno
-is set.
+is set. In the case of an error, the internal state is cleared up and a
+.Fn quark_queue_close 3
+should NOT be issued.
 .Sh SEE ALSO
 .Xr quark_close 3 ,
 .Xr quark_event_dump 3 ,

@@ -1,0 +1,32 @@
+.Dd $Mdocdate: December 1 2017 $
+.Dt quark_queue_close 3
+.Os
+.Sh NAME
+.Nm quark_queue_close
+.Nd closes a
+.Vt quark_queue
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_queue_close "struct quark_queue *qq"
+.Sh DESCRIPTION
+.Nm
+closes the
+.Vt quark_queue
+pointed to by
+.Fa qq ,
+which must have been previously opened with
+.Fn quark_queue_open 3 .
+.Sh RETURN VALUES
+Zero on success, -1 otherwise and
+.Va errno
+is set.
+.Sh SEE ALSO
+.Xr quark_close 3 ,
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_get_fds 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
