@@ -1,0 +1,47 @@
+.Dd $Mdocdate: December 1 2017 $
+.Dt quark_queue_get_fds 3
+.Os
+.Sh NAME
+.Nm quark_queue_get_fds
+.Nd fetch all readable file descriptors from a
+.Vt quark_queue
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_queue_get_fds "struct quark_queue *qq" "int *fds" "int maxfds"
+.Sh DESCRIPTION
+.Nm
+stores the internal file descriptors that quark is interested in reading in the
+.Fa fds
+pointer up to a maximum of
+.Fa maxfds .
+Ideally you should just pass a number that is big enough, 256 is more than safe.
+Getting these file descriptors is useful if you would like to not call
+.Fn quark_queue_block 3 ,
+possibly for integrating quark into an existing main-loop.
+.Pp
+While it should be perfectly safe to block on the file descriptors provided by
+this function, the user should still call
+.Fn quark_get_events 3
+periodically, as the file descriptors from perf-rings only become readable when
+a certain data threshold is met.  100ms is a reasonable value.
+.Sh RETURN VALUES
+Returns the number of file descriptors filled in
+.Fa fds ,
+in case this number is
+.Fa maxfds
+it's likely the result got truncated and you should use a bigger value.
+-1 is returned on error and
+.Va errno
+is set.
+.Sh SEE ALSO
+.Xr quark_close 3 ,
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
