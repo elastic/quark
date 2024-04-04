@@ -67,7 +67,7 @@ from the host and initilizing kprobes .
 **quark\_queue\_open**(*3*)
 initializes a
 *quark\_queue*
-which holds majority of runtime state used by library, this includes creating
+which holds the majority of runtime state used by library, this includes
 perf-rings, file descriptors, buffering data-structures and the like.
 It must be paired with a
 **quark\_queue\_close**(*3*)
