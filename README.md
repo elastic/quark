@@ -125,4 +125,4 @@ quark-mon(8)
 **quark**
 started in April 2024.
 
-Linux 6.7.11-100.fc38.x86\_64 - April 4, 2024
+Linux - April 4, 2024

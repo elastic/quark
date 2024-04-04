@@ -78,7 +78,7 @@ quark-btf: quark-btf.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC)
 
 README.md: quark.7
 	$(call msg, MANDOC,$@)
-	$(Q)mandoc -T markdown $< > $@
+	$(Q)mandoc -T markdown -I os=$(shell uname -s) $< > $@
 
 clean:
 	$(call msg,CLEAN)
