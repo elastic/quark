@@ -1,0 +1,42 @@
+.Dd $Mdocdate: December 1 2017 $
+.Dt quark_event_lookup 3
+.Os
+.Sh NAME
+.Nm quark_event_lookup
+.Nd lookup a
+.Vt quark_event
+in quark's cache
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_event_lookup "struct quark_queue *qq" "struct quark_event *qev" "int pid"
+.Sh DESCRIPTION
+.Nm
+looks for the cached event referenced by
+.Fa pid
+and fills
+.Fa qev
+with the result if successfull.
+.Pp
+Quark's internal cache keeps processes that exited for a grace time, meaning
+you can still lookup them for a little while before they're garbage
+collected.
+At the time of this writing, this is hardcoded to 4 seconds.
+.Sh RETURN VALUES
+Zero if the event was cached and
+.Fa qev
+is filled. -1 otherwise and
+.Va errno
+is set to
+.Er ESRCH .
+.Sh SEE ALSO
+.Xr quark_close 3 ,
+.Xr quark_event_dump 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_fds 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
