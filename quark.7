@@ -5,45 +5,186 @@
 .Nm quark
 .Nd unified system process telemetry library
 .Sh DESCRIPTION
-The
-.Nm quark
-library provides a way to retrieve and listen to process events in linux
-systems.
-Its main purpose is to abstract different backends and providing common
+.Nm
+is a library that provides a way to retrieve and listen to process events in
+linux systems.
+Its main purpose is to abstract different backends and to provide a common
 API for listening to system-wide events like
 .Fn fork 2 ,
 .Fn exec 3 ,
-.Fn exit 2
+.Fn exit 3
 and others.
 .Pp
 .Nm quark
 not only provides an API for listening to events, but also handles ordering,
 buffering and aggregation of said events.
 In its most basic form, a short lived process consisting of
-.Fn fork
+.Fn fork 2
 +
-.Fn exec
+.Fn exec 3
 +
-.Fn exit
+.Fn exit 3
 will be aggregated into one
 .Vt quark_event .
 An internal event cache is also kept that can be looked up via
 .Fn quark_event_lookup 3 .
+.Sh FEATURES
+.Bl -ohang
+.It Em ORDERING
+.Nm
+tries to guarantee event ordering as much as possible.
+Ordering must be done in userland for some backends, notably anything that
+uses perf-rings.
+.Nm
+uses two
+.Em Rank Balanced Trees
+for ordering and aggregation.
+.Pp
+The first tree is basically a priority queue, ordered by the time of the
+event.
+The second tree is ordered by time of the event + pid and it's used for event
+aggregation.
+.It Em AGGREGATION
+.Nm
+buffers and aggregates related events that happened close enough.
+The common case is generating a single event for the triple:
+.Fn fork 2 ,
+.Fn exec 3 ,
+.Fn exit 3 .
+There are rules on what can be aggregated, and only events of the same pid are
+aggregated.
+For example:
+.Nm
+won't aggregate two
+.Fn exec 3
+events, otherwise we would lose the effects of the first one.
+These rules will be exposed and configurable in the future.
+.It Em BUFFERING
+For aggregation and ordering to work,
+.Nm
+needs to be able to buffer events, this means holding them before presenting
+them to the user.
+.Nm
+employs an ageing timeout that is a stepped function of the number of currently
+buffered events, the more events you have, the shorter the timeout will be, so
+memory can be bound.
+A
+.Vt quark_event
+is only given to the user when it has a certain age.
+From quark.c:
+.Bd -literal -offset indent
+/*
+ * Target age is the duration in ns of how long should we hold the event in the
+ * tree before processing it. It's a function of the number of items in the tree
+ * and its maximum capacity:
+ * from [0; 10%]    -> 1000ms
+ * from [90%; 100%] -> 0ms
+ * from (10%; 90%)  -> linear from 1000ms -> 100ms
+ */
+.Ed
+.It Em ENRICHMENT
+The library tries to give as much context for an event as possible.
+Depending on the backend, the events we read from the kernel can be limited in
+context.
+.Nm
+maintains an internal process table with what has been learned about the process
+so far, this context is then included in each event given to the user.
+The process table can also be queried, see below.
+.It Em PROCESS TABLE
+An internal cache of process events is kept that can be looked up via
+.Fn quark_event_lookup 3 .
 This cache keeps soon-to-be-purged elements for a little while so that you can
 still lookup a process that just exited.
+The table is initialized by scraping
+.Pa /proc .
+.It Em TRANSPARENCY
+.Nm
+tries to be as transparent as possible about what it knows, there are counters
+for lost events, and each piece of information of a
+.Vt quark_event
+is guarded by a flag, meaning the user might get incomplete events in the case
+of lost events, it's the user responsability to decide what to do with it.
+.Pp
+Depending on load, the user might see an event as the aggregation of multiple
+events, or as independent events.
+The content remains the same.
+.It Em LANGUAGE BINDINGS
+.Nm
+is written in C, but Go bindings are also provided.
+Ideally we will be able to provide bindings for other languages in the future.
+.It Em MULTIPLE BACKENDS No (future)
+Currently only a kprobe-based backend is provided, but we would like to add
+eBPF and AUDIT support as well.
+The user API should remain the same, so if we do this right, the user shouldn't
+even know which backend is being used.
+Proper runtime discovery is needed to know what we can use.
+.El
+.Nm
+attempts to
+.Sh BUILDING
+.Em make
+generates a
+.Pa libquark.a
+that can be linked with the user binary, be sure to clone the repository with
+.Em "git clone --recursive" .
+.Pp
+.Nm
+builds its own
+.Em libbpf
+since it needs BTF support from it.
+At the time of this writing,
+.Pa libquark.a
+also needs symbols from
+.Em libz
+and
+.Em libelf .
+An option will be given in the future to include both in the archive.
+.Pp
+Other useful build targets include:
+.Bl -tag -width "manlint"
+.It Em manlint
+Calls the linter for all manpages.
+.It Em svg
+Builds an SVG out of the DOT files produced by
+.Xr quark-mon 8 .
+.It Em README.md
+Generate
+.Pa README.md
+out of
+.Pa quark.7 .
+.El
+.Sh LINKING
+.Bd -literal
+cc -o myprogram myprogram.c -lelf -lz libquark.a libbpf/src/libbpf.a
+.Ed
+.Sh INCLUDED BINARIES
+.Xr quark-mon 8
+is a program that dumps
+.Vt quark_events
+to stdout and can be used for demo and debugging.
+It has a neat feature: can be run without priviledges, while useless in this
+small program, it aims to demonstrate how a user could implement the same.
+.Pp
+.Xr quark-btf 8
+is a program for dumping BTF information used by
+.Nm .
 .Sh CONVENTIONS
-.Nm quark
-library calls all fail with -1 unless otherwise stated, and
+.Bl -bullet
+.It
+Library calls fail with -1 unless otherwise stated, and
 .Va errno
 is set.
-.Pp
-.Nm quark
-does not create any threads and does not return pointers to internal state
-during runtime, the data is allocated by the caller and the library copies the
-data out.
+.It
+No pointers to internal state are returned, data is allocated by the caller and
+the library copies out.
+.It
+No threads are created, the library is driven solely through
+.Fn quark_queue_get_events 3 .
+.It
 Access to a
 .Vt quark_queue
-must be synchronized by the caller in the case of multithreading.
+must be synchronized by the user in the case of multithreading.
+.El
 .Sh BASIC USAGE
 The ball starts with
 .Fn quark_init 3
@@ -75,31 +216,50 @@ In case there are no events it
 returns zero and the user is expected to call
 .Fn quark_queue_block 3
 or equivalent.
-.Sh EXAMPLE
+.Sh EXAMPLES
 .Bd -literal -offset indent
-struct quark_queue qq;
-struct quark_event qevs[32], *qev;
-int n, i;
+#include <err.h>
+#include <quark.h>
+#include <stdio.h>
 
-if (quark_init() == -1)
-	err(1, "quark_init");
-if (quark_queue_open(qq, 0) == -1)
-	err(1, "quark_queue_open");
+int
+main(void)
+{
+	struct quark_queue	qq;
+	struct quark_event	qevs[32], *qev;
+	int			n, i;
 
-for (; ;) {
-	n = quark_queue_get_events(&qq, qevs, 32);
-	if (n == -1)
-		err(1, "quark_queue_get_events");
-	/* Scan each event */
-	for (i = 0, qev = qevs; i < n; i++, qev++)
-		quark_event_dump(qev, stdio);
-	if (n == 0)
-		quark_queue_block(&qq);
+	if (quark_init() == -1)
+		err(1, "quark_init");
+	if (quark_queue_open(&qq, 0) == -1)
+		err(1, "quark_queue_open");
+
+	for (; ;) {
+		n = quark_queue_get_events(&qq, qevs, 32);
+		if (n == -1) {
+			warn("quark_queue_get_events");
+			break;
+		}
+		/* Scan each event */
+		for (i = 0, qev = qevs; i < n; i++, qev++)
+			quark_event_dump(qev, stdout);
+		if (n == 0)
+			quark_queue_block(&qq);
+	}
+
+	quark_queue_close(&qq);
+	quark_close();
+
+	return (1);
 }
-
-quark_queue_close(&qq);
-quark_close();
 .Ed
+.Sh FURTHER READING
+.Xr quark_queue_get_events 3
+is the meat of the library and contains further useful documentation.
+.Pp
+.Xr quark-mon 8
+is the easiest way to get started with
+.Nm .
 .Sh SEE ALSO
 .Xr quark_close 3 ,
 .Xr quark_event_dump 3 ,
