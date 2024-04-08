@@ -127,9 +127,6 @@ The user API should remain the same, so if we do this right, the user shouldn't
 even know which backend is being used.
 Proper runtime discovery is needed to know what we can use.
 
-**quark**
-attempts to
-
 # BUILDING
 
 *make*
