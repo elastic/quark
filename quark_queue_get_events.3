@@ -18,11 +18,10 @@ entries.
 .Pp
 This function is the main driver of quark.
 Quark doesn't create threads or introduces hidden control flows, all its state
-is mutated through this function call. For a better explanation of quark's
-design, refer to
+is mutated through this function call.
+For a better explanation of quark's design, refer to
 .Xr quark 7 .
-Roughly speaking we can summarize what this function does in the following
-steps:
+A summary of what this function does:
 .Bl -bullet
 .It
 Populates its priority queue with raw events by scanning all perf-rings for
@@ -53,7 +52,6 @@ The pid of the originating event.
 .It Em events
 A bitmask representing the events that originated this
 .Vt quark_event :
-\" .Bl -tag -width "QUARK_EV_SETPROCTITLE"
 .Bl -tag -width "QUARK_EV_SETPROCTITLE" -compact
 .It Dv QUARK_EV_FORK
 New process, result of a fork.
@@ -78,9 +76,9 @@ For example, a short lived process will have the following mask:
 .Dv QUARK_EV_FORK | QUARK_EV_EXEC | QUARK_EV_EXIT .
 .It Em flags
 A bit mask representing the fields which are known about this pid, these can be
-cached and originate from previous events. Each bit in the set represents one or
-more members of the structure, if the bit is unset, the respective members are
-invalid/unknown.
+cached and originate from previous events.
+Each bit in the set represents one or more members of the structure, if the bit
+is unset, the respective members are invalid/unknown.
 .Pp
 .Bl -tag -width "QUARK_F_FILENAME" -compact
 .It Dv QUARK_F_PROC
@@ -117,12 +115,11 @@ In the case of an internal error, -1 is returned and
 is set.
 .Sh SEE ALSO
 .Xr quark_close 3 ,
-.Xr quark_event_lookup 3 ,
 .Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
 .Xr quark_init 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
-.Xr quark_queue_get_events 3 ,
 .Xr quark_queue_get_fds 3 ,
 .Xr quark_queue_open 3 ,
 .Xr quark-btf 8 ,
