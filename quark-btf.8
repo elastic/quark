@@ -1,0 +1,73 @@
+.Dd $Mdocdate$
+.Dt QUARK-BTF 8
+.Os
+.Sh NAME
+.Nm quark-btf
+.Nd query quark BTF offsets
+.Sh SYNOPSIS
+.Nm quark-btf
+.Op Fl b
+.Op Ar targets ...
+.Sh DESCRIPTION
+The
+.Nm
+program prints out the kernel structures offsets used by quark.
+.Pp
+If operands are given, the output is curbed for those specified
+.Ar targets .
+.Pp
+The options are as follows:
+.Bl -tag -width Dtb
+.It Fl b
+Also print the offset in bits.
+.El
+.Sh EXIT STATUS
+.Nm
+exits with 0 if all targets were found, or 1 otherwise.
+.Sh EXAMPLES
+Running:
+.Dl $ quark-btf
+.Pp
+outputs:
+.Bd -literal
+cred.cap_ambient             80
+cred.cap_bset                72
+cred.cap_effective           64
+cred.cap_inheritable         48
+cred.cap_permitted           56
+cred.egid                    28
+cred.euid                    24
+cred.gid                     12
+cred.sgid                    20
+cred.suid                    16
+cred.uid                     8
+cred.user                    136
+dentry.d_name.name           40
+dentry.d_parent              24
+fs_struct.pwd.dentry         48
+fs_struct.pwd.mnt            40
+fs_struct.root.dentry        32
+mm_struct.(anon).start_stack 368
+mount.mnt                    32
+mount.mnt_mountpoint         24
+task_struct.comm             3008
+task_struct.cred             2992
+task_struct.exit_code        2364
+task_struct.fs               3056
+task_struct.mm               2336
+task_struct.pid              2464
+task_struct.start_boottime   2816
+task_struct.tgid             2468
+vfsmount.mnt_root            0
+.Ed
+.Sh SEE ALSO
+.Xr quark_close 3 ,
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_fds 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark-mon 8
