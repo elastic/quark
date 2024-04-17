@@ -1,0 +1,94 @@
+.Dd $Mdocdate$
+.Dt QUARK-MON 8
+.Os
+.Sh NAME
+.Nm quark-mon
+.Nd Monitor and print quark
+.Sh SYNOPSIS
+.Nm quark-mon
+.Op Fl Dtv
+.Op Fl m Ar maxnodes
+.Sh DESCRIPTION
+The
+.Nm
+program listen to all incoming
+.Xr quark 7
+events and prints them to stdout, the format used is the one by
+.Fn quark_event_dump 3 .
+.Pp
+The main utility is for testing and debugging quark, it's also a good
+introduction to the code base.
+.Nm
+runs until a SIGINT is received.
+.Pp
+The options are as follows:
+.Bl -tag -width Dtb
+.It Fl D
+Drop priviledges to nobody and chroot to /var/empty, useful to show how quark
+can run without priviledges.
+.It Fl t
+Don't supress thread events, this is only useful for debugging and will likely
+be zapped in the future.
+.It Fl v
+Increase verbosity, can be specified multiple times for more verbosity.
+.It Fl m Ar maxnodes
+Don't really process events, just collect
+.Ar maxnodes
+in the sorting tree
+and output
+.Pa quark_by_time.dot
+and
+.Pa quark_by_pidtime.dot .
+The first is events sorted by time, and the second by pid plus time.
+Exits after
+.Ar maxnodes
+has been reached.
+.El
+.Sh EXIT STATUS
+.Nm
+exits with 0 in if a SIGINT was sent, or 1 in case of error.
+.Sh EXAMPLES
+Running:
+.Dl $ quark-mon
+.Pp
+outputs:
+.Bd -literal
+->1607007 (FORK+EXEC+EXIT)
+  COMM  comm=locale
+  CMDL  cmdline=[ locale, charmap ]
+  PROC  ppid=1607003
+  PROC  uid=1000 gid=1000 suid=1000 sgid=1000 euid=1000 egid=1000
+  PROC  cap_inheritable=0x0 cap_permitted=0x0 cap_effective=0x0
+  PROC  cap_bset=0x1ffffffffff cap_ambient=0x0
+  PROC  time_boot=1713340073284870415
+  CWD   cwd=/d/e/quark
+  FILE  filename=/usr/bin/locale
+  EXIT  exit_code=0 exit_time=434523672438062
+->1607008 (FORK+EXEC+EXIT)
+  COMM  comm=groff
+  CMDL  cmdline=[ groff, -mtty-char, -Tutf8, -mandoc, -rLL=109n, -rLT=109n, -P-c ]
+  PROC  ppid=1607003
+  PROC  uid=1000 gid=1000 suid=1000 sgid=1000 euid=1000 egid=1000
+  PROC  cap_inheritable=0x0 cap_permitted=0x0 cap_effective=0x0
+  PROC  cap_bset=0x1ffffffffff cap_ambient=0x0
+  PROC  time_boot=1713340073288110375
+  CWD   cwd=/d/e/quark
+  FILE  filename=/usr/bin/groff
+  EXIT  exit_code=0 exit_time=434523688177774
+  ...
+.Ed
+.Pp
+Refer to
+.Fn quark_event_dump 3
+for the output format description.
+.Sh SEE ALSO
+.Xr quark_close 3 ,
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_init 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_fds 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark-btf 8
