@@ -1086,7 +1086,7 @@ perf_mmap_init(struct perf_mmap *mm, int fd)
 	mm->mapped_size = (1 + PERF_MMAP_PAGES) * getpagesize();
 	mm->metadata = mmap(NULL, mm->mapped_size, PROT_READ|PROT_WRITE,
 	    MAP_SHARED, fd, 0);
-	if (mm->metadata == NULL)
+	if (mm->metadata == MAP_FAILED)
 		return (-1);
 	mm->data_size = PERF_MMAP_PAGES * getpagesize();
 	mm->data_mask = mm->data_size - 1;
