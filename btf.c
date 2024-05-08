@@ -143,6 +143,10 @@ quark_btf_init(void)
 	struct btf	*btf;
 	int		 failed;
 	struct target	*ta;
+	static int	 btf_ok;
+
+	if (btf_ok)
+		return (0);
 
 	errno = 0;
 	btf = btf__load_vmlinux_btf();
@@ -170,7 +174,12 @@ quark_btf_init(void)
 
 	btf__free(btf);
 
-	return (failed ? (errno = ENOTSUP, -1) : 0);
+	if (failed)
+		return (errno = ENOTSUP, -1);
+
+	btf_ok = 1;
+
+	return (0);
 }
 
 ssize_t

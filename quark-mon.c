@@ -75,12 +75,18 @@ main(int argc, char *argv[])
 	qq_flags = dump_perf = do_drop = 0;
 	nqevs = 32;
 
-	while ((ch = getopt(argc, argv, "Dm:tv")) != -1) {
+	while ((ch = getopt(argc, argv, "bDkm:tv")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
+		case 'b':
+			qq_flags |= QQ_EBPF;
+			break;
 		case 'D':
 			do_drop = 1;
+			break;
+		case 'k':
+			qq_flags |= QQ_KPROBE;
 			break;
 		case 'm':
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);
@@ -104,8 +110,6 @@ main(int argc, char *argv[])
 	if (sigaction(SIGINT, &sigact, NULL) == -1)
 		err(1, "sigaction");
 
-	if (quark_init() == -1)
-		errx(1, "quark_init");
 	if ((qq = calloc(1, sizeof(*qq))) == NULL)
 		err(1, "calloc");
 	if (quark_queue_open(qq, qq_flags) != 0)
@@ -158,8 +162,6 @@ main(int argc, char *argv[])
 	quark_queue_dump_stats(qq);
 	quark_queue_close(qq);
 	free(qq);
-	if (!do_drop)
-		quark_close();
 
 	return (0);
 }

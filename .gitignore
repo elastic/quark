@@ -6,3 +6,4 @@ cscope.*
 quark-mon
 quark-btf
 libquark.a
+bpf_prog_skel.h

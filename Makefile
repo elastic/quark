@@ -34,10 +34,16 @@ CDIAGFLAGS+= -Wunused
 CDIAGFLAGS+= -Wno-unused-parameter
 
 CC?= cc
+CLANG?= clang
+BPFTOOL?= bpftool
+
+# All EEBPF files we track for dependency
+EEBPF_FILES:= $(shell find ./elastic-ebpf)
+EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/x86_64
 
 # LIBQUARK
-LIBQUARK_HEADERS:= $(wildcard *.h)
-LIBQUARK_SRCS:= $(filter-out quark-mon.c quark-btf.c,$(wildcard *.c))
+LIBQUARK_DEPS:= $(wildcard *.h) bpf_prog_skel.h $(EEBPF_FILES)
+LIBQUARK_SRCS:= $(filter-out bpf_prog.c quark-mon.c quark-btf.c,$(wildcard *.c))
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
@@ -48,7 +54,11 @@ LIBBPF_SRC:= libbpf/src
 LIBBPF_STATIC:= $(LIBBPF_SRC)/libbpf.a
 LIBBPF_DEPS:= $(wildcard libbpf/src/*.[ch]) $(wildcard libbpf/include/*.[ch])
 
-all: $(LIBBPF_STATIC) $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon quark-btf README.md
+# BPFPROG (kernel side)
+BPFPROG_OBJ:= bpf_prog.o
+BPFPROG_DEPS:= bpf_prog.c $(LIBBPF_DEPS) $(EEBPF_FILES)
+
+all: $(LIBBPF_STATIC) $(BPFPROG_OBJ) $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon quark-btf README.md
 
 $(LIBBPF_STATIC): $(LIBBPF_DEPS)
 	$(call msg,MAKE,$@)
@@ -58,7 +68,20 @@ $(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
 	$(call msg,AR,$@)
 	$(Q)ar rcs $@ $^
 
-%.o: %.c $(LIBQUARK_HEADERS)
+$(BPFPROG_OBJ): $(BPFPROG_DEPS)
+	$(call msg,CLANG,bpf_prog.tmp.o)
+	$(Q)$(CLANG) -g -O2 -target bpf -D__KERNEL__ -D__TARGET_ARCH_x86 \
+		-Ilibbpf/include/uapi -Ilibbpf/src $(EEBPF_INCLUDES) \
+		-c bpf_prog.c -o bpf_prog.tmp.o
+	$(call msg,BPFTOOL,$@)
+	$(Q)$(BPFTOOL) gen object $@ bpf_prog.tmp.o
+	$(Q)rm bpf_prog.tmp.o
+	$(call msg,BPFTOOL,bpf_prog_skel.h)
+	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_prog_skel.h
+	$(call msg,SED,bpf_prog_skel.h)
+	$(Q)sed -i 's/<bpf\/libbpf.h>/\"libbpf\/src\/libbpf.h\"/' bpf_prog_skel.h
+
+%.o: %.c $(LIBQUARK_DEPS)
 	$(call msg,CC,$@)
 	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
 
@@ -80,10 +103,15 @@ README.md: quark.7
 	$(call msg, MANDOC,$@)
 	$(Q)mandoc -T markdown -I os=$(shell uname -s) $< > $@
 
+eebpf-sync:
+	$(Q)test $(EEBPF_PATH) || \
+		(echo "usage: make eebpf-sync EEBPF_PATH=/elastic-ebpf-path"; exit 1)
+	$(call msg,SHELL,./elastic-ebpf/sync.sh $(EEBPF_PATH))
+	$(Q)./elastic-ebpf/sync.sh $(EEBPF_PATH)
+
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -f $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) \
-		quark-mon quark-mon.o quark-btf quark-btf.o
+	$(Q)rm -f *.o *.a quark-mon quark-btf bpf_prog_skel.h
 
 cleanall: clean
 	$(call msg,CLEANALL)
@@ -94,4 +122,4 @@ manlint:
 	$(call msg, MANDOC)
 	$(Q)mandoc -Tlint *.[378] || true
 
-.PHONY: all clean cleanall manlint
+.PHONY: all clean cleanall manlint eebpf-sync

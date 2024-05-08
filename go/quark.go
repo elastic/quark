@@ -67,19 +67,6 @@ func wrapErrno(err error) error {
 	return err
 }
 
-func Init() error {
-	r, err := C.quark_init()
-	if r == -1 {
-		return wrapErrno(err)
-	}
-
-	return nil
-}
-
-func Close() {
-	C.quark_close()
-}
-
 func OpenQueue(slots int) (*Queue, error) {
 	var qq Queue
 

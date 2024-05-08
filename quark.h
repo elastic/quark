@@ -26,8 +26,9 @@ extern int	quark_verbose;
 struct raw_event;
 struct quark_event;
 struct quark_queue;
-int	quark_init(void);
-int	quark_close(void);
+struct raw_event *raw_event_alloc(void);
+void	raw_event_free(struct raw_event *);
+void	raw_event_insert(struct quark_queue *, struct raw_event *);
 int	quark_queue_open(struct quark_queue *, int);
 void	quark_queue_close(struct quark_queue *);
 int	quark_queue_populate(struct quark_queue *);
@@ -47,6 +48,12 @@ struct qstr {
 	char	*p;
 	char	 small[64];
 };
+
+/* bpf_queue.c */
+int	bpf_queue_open(struct quark_queue *);
+
+/* kprobe_queue.c */
+int	kprobe_queue_open(struct quark_queue *);
 
 struct args {
 	char		*buf;
@@ -229,6 +236,7 @@ struct task_sample {
 	struct perf_sample_data_loc mnt_root_s;
 	struct perf_sample_data_loc mnt_mountpoint_s;
 	struct perf_sample_data_loc pwd_s[MAX_PWD];
+	/* XXX add comm XXX */
 	u32	uid;
 	u32	gid;
 	u32	suid;
@@ -260,7 +268,7 @@ struct kprobe_arg {
 };
 
 struct kprobe {
-	const char		*name;
+	char			 name[256];
 	const char		*target;
 	int			 sample_kind;
 	int			 is_kret;
@@ -302,10 +310,6 @@ enum {
 	RAW_NUM_TYPES		/* must be last */
 };
 
-struct raw_exec {
-	struct qstr		filename;
-};
-
 struct raw_comm {
 	char			comm[16];
 };
@@ -327,6 +331,20 @@ struct raw_task {
 	s32		exit_code;		/* Unavailable at fork */
 	u64		exit_time_event;	/* Unavailable at fork */
 	struct qstr	cwd;
+};
+
+struct raw_exec {
+#define RAW_EXEC_F_EXT	(1 << 0)
+	int		flags;
+	struct qstr	filename;
+	/* available if RAW_EXEC_F_EXT */
+
+	struct {
+		struct raw_task task;
+		struct qstr	args;
+		size_t		args_len;
+		char		comm[16]; /* XXX move me inside task */
+	} ext;
 };
 
 struct raw_exec_connector {
@@ -457,26 +475,41 @@ struct quark_queue_stats {
 	u64	lost;
 	/* TODO u64	peak_nodes; */
 };
+
+struct quark_queue_ops {
+	int	(*open)(struct quark_queue *);
+	int	(*populate)(struct quark_queue *);
+	int	(*block)(struct quark_queue *);
+	void	(*close)(struct quark_queue *);
+};
+
 /*
  * Quark Queue (qq) is the main structure the user interacts with, it acts as
  * our main storage datastructure.
  */
+struct ring_buffer;
 struct quark_queue {
-	struct perf_group_leaders	perf_group_leaders;
-	int				num_perf_group_leaders;
-	struct kprobe_states		kprobe_states;
-	struct raw_event_by_time	raw_event_by_time;
-	struct raw_event_by_pidtime	raw_event_by_pidtime;
-	struct event_by_pid		event_by_pid;
-	struct quark_event_list		event_gc;
-	struct quark_queue_stats	stats;
-#define QQ_THREAD_EVENTS		(1 << 0)
-#define QQ_NO_CACHE			(1 << 1)
-	int				flags;
-	int				length;
-	int				max_length;
+	struct raw_event_by_time	 raw_event_by_time;
+	struct raw_event_by_pidtime	 raw_event_by_pidtime;
+	struct event_by_pid		 event_by_pid;
+	struct quark_event_list		 event_gc;
+	struct quark_queue_stats	 stats;
+#define QQ_THREAD_EVENTS	(1 << 0)
+#define QQ_NO_CACHE		(1 << 1)
+#define QQ_KPROBE		(1 << 2)
+#define QQ_EBPF			(1 << 3)
+	int				 flags;
+	int				 length;
+	int				 max_length;
 	/* Next pid to be sent out of a snapshot */
-	int				snap_pid;
+	int				 snap_pid;
+	/* Backend related state */
+	struct quark_queue_ops		*queue_ops;
+	struct perf_group_leaders	 perf_group_leaders;
+	int				 num_perf_group_leaders;
+	struct kprobe_states		 kprobe_states;
+	struct bpf_prog			*bpf_prog;
+	struct ring_buffer		*ringbuf;
 };
 
 #endif /* _QUARK_H_ */
