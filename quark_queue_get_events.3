@@ -24,8 +24,8 @@ For a better explanation of quark's design, refer to
 A summary of what this function does:
 .Bl -bullet
 .It
-Populates its priority queue with raw events by scanning all perf-rings for
-pending events.
+Populates its priority queue with raw events by calling into the backend
+populate function.
 .It
 Attempts to collect raw events that are deemed old enough from its priority
 queue, if successfull tries to aggregate such events.
@@ -114,10 +114,8 @@ In the case of an internal error, -1 is returned and
 .Va errno
 is set.
 .Sh SEE ALSO
-.Xr quark_close 3 ,
 .Xr quark_event_dump 3 ,
 .Xr quark_event_lookup 3 ,
-.Xr quark_init 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_get_fds 3 ,

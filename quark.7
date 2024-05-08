@@ -112,12 +112,12 @@ The content remains the same.
 .Nm
 is written in C, but Go bindings are also provided.
 Ideally we will be able to provide bindings for other languages in the future.
-.It Em MULTIPLE BACKENDS No (future)
-Currently only a kprobe-based backend is provided, but we would like to add
-eBPF and AUDIT support as well.
-The user API should remain the same, so if we do this right, the user shouldn't
-even know which backend is being used.
-Proper runtime discovery is needed to know what we can use.
+.It Em MULTIPLE BACKENDS
+Currently, EBPF and a kprobe-based backend are provided, but we would like
+to add AUDIT support as well.
+The backend in use is transparent to the user and unless specified,
+.Nm
+will try to use the EBPF, falling back to KPROBE if it failed.
 .El
 .Sh BUILDING
 .Em make
@@ -138,6 +138,17 @@ and
 .Em libelf .
 An option will be given in the future to include both in the archive.
 .Pp
+While
+.Nm
+doesn't build
+.Em elastic/ebpf ,
+it does use the EBPF programs from that repository, only the files needed are
+included in
+.Nm ,
+as
+.Em elastic/ebpf
+is quite big.
+.Pp
 Other useful build targets include:
 .Bl -tag -width "manlint"
 .It Em manlint
@@ -150,6 +161,13 @@ Generate
 .Pa README.md
 out of
 .Pa quark.7 .
+.It Em eebpf-sync
+Copies the files from EEBPF_PATH used by
+.Nm .
+Usage:
+.Bd -literal
+make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf
+.Ed
 .El
 .Sh LINKING
 .Bd -literal
@@ -185,30 +203,20 @@ must be synchronized by the user in the case of multithreading.
 .El
 .Sh BASIC USAGE
 The ball starts with
-.Fn quark_init 3
-followed by
 .Fn quark_queue_open 3 .
-.Pp
-.Fn quark_init 3
-initializes internal global state for the library that should be paired with
-.Fn quark_close 3
-on exit.
-At the time of this writing, this is basically initializing some
-per-host state, trying to read
-.Vt BTF
-from the host and initilizing kprobes .
 .Pp
 .Fn quark_queue_open 3
 initializes a
 .Vt quark_queue
 which holds the majority of runtime state used by library, this includes
-perf-rings, file descriptors, buffering data-structures and the like.
+perf-rings, file descriptors, EBPF programs buffering data-structures and the
+like.
 It must be paired with a
 .Fn quark_queue_close 3
 on exit.
 .Pp
 .Fn quark_queue_get_events 3
-Is the main driver of the library, it does the buffering, per-ring scanning,
+is the main driver of the library, it does the buffering, per-ring scanning,
 aggregation and event cache garbage collecting.
 In case there are no events it
 returns zero and the user is expected to call
@@ -227,8 +235,6 @@ main(void)
 	struct quark_event	qevs[32], *qev;
 	int			n, i;
 
-	if (quark_init() == -1)
-		err(1, "quark_init");
 	if (quark_queue_open(&qq, 0) == -1)
 		err(1, "quark_queue_open");
 
@@ -246,23 +252,23 @@ main(void)
 	}
 
 	quark_queue_close(&qq);
-	quark_close();
 
 	return (1);
 }
 .Ed
 .Sh FURTHER READING
-.Xr quark_queue_get_events 3
+.Fn quark_queue_get_events 3
 is the meat of the library and contains further useful documentation.
 .Pp
-.Xr quark-mon 8
+.Fn quark-mon 8
 is the easiest way to get started with
 .Nm .
+.Pp
+.Fn quark_queue_open 3
+describes initialization options that can be useful.
 .Sh SEE ALSO
-.Xr quark_close 3 ,
 .Xr quark_event_dump 3 ,
 .Xr quark_event_lookup 3 ,
-.Xr quark_init 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_get_events 3 ,

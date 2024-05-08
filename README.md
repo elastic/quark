@@ -120,12 +120,12 @@ The content remains the same.
 is written in C, but Go bindings are also provided.
 Ideally we will be able to provide bindings for other languages in the future.
 
-*MULTIPLE BACKENDS* (future)  
-Currently only a kprobe-based backend is provided, but we would like to add
-eBPF and AUDIT support as well.
-The user API should remain the same, so if we do this right, the user shouldn't
-even know which backend is being used.
-Proper runtime discovery is needed to know what we can use.
+*MULTIPLE BACKENDS*  
+Currently, EBPF and a kprobe-based backend are provided, but we would like
+to add AUDIT support as well.
+The backend in use is transparent to the user and unless specified,
+**quark**
+will try to use the EBPF, falling back to KPROBE if it failed.
 
 # BUILDING
 
@@ -147,6 +147,17 @@ and
 *libelf*.
 An option will be given in the future to include both in the archive.
 
+While
+**quark**
+doesn't build
+*elastic/ebpf*,
+it does use the EBPF programs from that repository, only the files needed are
+included in
+**quark**,
+as
+*elastic/ebpf*
+is quite big.
+
 Other useful build targets include:
 
 *manlint*
@@ -164,6 +175,14 @@ Other useful build targets include:
 > *README.md*
 > out of
 > *quark.7*.
+
+*eebpf-sync*
+
+> Copies the files from EEBPF\_PATH used by
+> **quark**.
+> Usage:
+
+> > make eebpf-sync EEBPF\_PATH=/my/path/to/elastic/ebpf
 
 # LINKING
 
@@ -201,30 +220,20 @@ is a program for dumping BTF information used by
 # BASIC USAGE
 
 The ball starts with
-**quark\_init**(*3*)
-followed by
 **quark\_queue\_open**(*3*).
-
-**quark\_init**(*3*)
-initializes internal global state for the library that should be paired with
-**quark\_close**(*3*)
-on exit.
-At the time of this writing, this is basically initializing some
-per-host state, trying to read
-*BTF*
-from the host and initilizing kprobes .
 
 **quark\_queue\_open**(*3*)
 initializes a
 *quark\_queue*
 which holds the majority of runtime state used by library, this includes
-perf-rings, file descriptors, buffering data-structures and the like.
+perf-rings, file descriptors, EBPF programs buffering data-structures and the
+like.
 It must be paired with a
 **quark\_queue\_close**(*3*)
 on exit.
 
 **quark\_queue\_get\_events**(*3*)
-Is the main driver of the library, it does the buffering, per-ring scanning,
+is the main driver of the library, it does the buffering, per-ring scanning,
 aggregation and event cache garbage collecting.
 In case there are no events it
 returns zero and the user is expected to call
@@ -244,8 +253,6 @@ or equivalent.
 		struct quark_event	qevs[32], *qev;
 		int			n, i;
 	
-		if (quark_init() == -1)
-			err(1, "quark_init");
 		if (quark_queue_open(&qq, 0) == -1)
 			err(1, "quark_queue_open");
 	
@@ -263,26 +270,26 @@ or equivalent.
 		}
 	
 		quark_queue_close(&qq);
-		quark_close();
 	
 		return (1);
 	}
 
 # FURTHER READING
 
-quark\_queue\_get\_events(3)
+**quark\_queue\_get\_events**(*3*)
 is the meat of the library and contains further useful documentation.
 
-quark-mon(8)
+**quark-mon**(*8*)
 is the easiest way to get started with
 **quark**.
 
+**quark\_queue\_open**(*3*)
+describes initialization options that can be useful.
+
 # SEE ALSO
 
-quark\_close(3),
 quark\_event\_dump(3),
 quark\_event\_lookup(3),
-quark\_init(3),
 quark\_queue\_block(3),
 quark\_queue\_close(3),
 quark\_queue\_get\_events(3),
@@ -296,4 +303,4 @@ quark-mon(8)
 **quark**
 started in April 2024.
 
-Linux - April 8, 2024
+Linux - May 8, 2024

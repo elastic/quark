@@ -28,14 +28,24 @@ The
 function does the following:
 .Bl -bullet
 .It
+Attempts to use the best backend available unless otherwise especified.
+This includes loading the EBPF programs for EBPF or the probes for KPROBES.
+Only one backend is used and it defaults to EBPF and fallsback to KPROBE.
+.It
+On its first call it will also initialize global host state, like BTF offsets
+and HZ.
+.It
 Initializes the various lists and internal buffers of
 .Fa qq .
 .It
-Initializes ones perf-ring per-cpu in order to collect process events, which
-creates a file descriptor per perf-ring.
+If KPROBES is selected, it initializes one perf-ring per-cpu in order to
+collect process events, which creates a file descriptor per perf-ring.
 The file descriptors can be retrieved by the caller with
 .Fn quark_queue_get_fds 3 .
 This can be useful for integrating it in an existing main loop.
+.It
+If EBPF is selected, it initializes an EBPF ringbuffer, support for
+old style perf-rings with EBPF is currently not supported.
 .It
 Scrapes
 .Pa /proc
@@ -55,6 +65,15 @@ member set to
 is a bitmask that changes the default queue behaviour with the following values:
 .Pp
 .Bl -tag -width QQ_THREAD_EVENTS -offset indent -compact
+.It Dv QQ_EBPF
+Enable the EBPF backend, in case neither
+.Dv QQ_EBPF
+or
+.Dv QQ_KPROBE
+are specified, it defaults to both.
+EBPF is attempted first and fallsback to KPROBE if it failed.
+.It Dv QQ_KPROBE
+Enable the KPROBE backend, see above.
 .It Dv QQ_THREAD_EVENTS
 Include per-thread events, instead of per-process events.
 This option will be removed in the future, but it may be useful for debugging.
@@ -72,10 +91,8 @@ In the case of an error, the internal state is cleared up and a
 .Fn quark_queue_close 3
 should NOT be issued.
 .Sh SEE ALSO
-.Xr quark_close 3 ,
 .Xr quark_event_dump 3 ,
 .Xr quark_event_lookup 3 ,
-.Xr quark_init 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_get_events 3 ,
@@ -83,3 +100,12 @@ should NOT be issued.
 .Xr quark 7 ,
 .Xr quark-btf 8 ,
 .Xr quark-mon 8
+.Sh CAVEATS
+Multiple queues are supported, but discouraged.
+Opening and closing (but not using!) queues from different
+threads must be synchronized by the caller, this is because there is global
+internal state that might change in
+.Nm
+and
+.Fn quark_queue_close 3 .
+Notably there is a single KPROBE installation shared by all queues.

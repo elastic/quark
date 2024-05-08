@@ -6,7 +6,7 @@
 .Nd monitor and print quark
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl Dtv
+.Op Fl bDktv
 .Op Fl m Ar maxnodes
 .Sh DESCRIPTION
 The
@@ -23,9 +23,13 @@ runs until a SIGINT is received.
 .Pp
 The options are as follows:
 .Bl -tag -width Dtb
+.It Fl b
+Attempt EBPF as the backend.
 .It Fl D
 Drop priviledges to nobody and chroot to /var/empty, useful to show how quark
 can run without priviledges.
+.It Fl k
+Attempt kprobe as the backend.
 .It Fl t
 Don't supress thread events, this is only useful for debugging and will likely
 be zapped in the future.
@@ -44,6 +48,17 @@ Exits after
 .Ar maxnodes
 has been reached.
 .El
+.Sh BACKEND SELECTION
+If no backend option is specified,
+.Nm
+will attempt EBPF, and then kprobe if EBPF failed.
+If only one of
+.Fl b
+or
+.Fl k
+is passed, then
+.Nm
+will be restricted to that option only.
 .Sh EXIT STATUS
 .Nm
 exits with 0 in if a SIGINT was sent, or 1 in case of error.
@@ -82,10 +97,8 @@ Refer to
 .Fn quark_event_dump 3
 for the output format description.
 .Sh SEE ALSO
-.Xr quark_close 3 ,
 .Xr quark_event_dump 3 ,
 .Xr quark_event_lookup 3 ,
-.Xr quark_init 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_get_events 3 ,
