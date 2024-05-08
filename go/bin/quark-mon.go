@@ -28,7 +28,10 @@ func main() {
 			fmt.Printf("\n")
 		}
 		if len(qevs) == 0 {
-			qq.Block()
+			err = qq.Block()
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 	qq.Close()

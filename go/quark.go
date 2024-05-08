@@ -13,9 +13,8 @@ import (
 	"bytes"
 	"errors"
 	"strings"
+	"syscall"
 	"unsafe"
-
-	"golang.org/x/sys/unix"
 )
 
 type Proc struct {
@@ -53,7 +52,7 @@ type Queue struct {
 	qqc      *C.struct_quark_queue
 	cevs     *C.struct_quark_event
 	num_cevs int
-	fds      []unix.PollFd
+	epollfd  int
 	tmpev    *C.struct_quark_event // Used as storage for lookups
 }
 
@@ -93,21 +92,7 @@ func OpenQueue(slots int) (*Queue, error) {
 	qq.num_cevs = slots
 	p = nil
 
-	var fdsa [1024]C.int
-	nfds, err := C.quark_queue_get_fds(qq.qqc, &fdsa[0], C.int(len(fdsa)))
-	if nfds == -1 {
-		C.free(unsafe.Pointer(qq.qqc))
-		C.free(unsafe.Pointer(qq.cevs))
-		return nil, wrapErrno(err)
-	}
-	qq.fds = make([]unix.PollFd, nfds)
-	for i := range qq.fds {
-		qq.fds[i] = unix.PollFd{
-			Fd:     int32(fdsa[i]),
-			Events: unix.POLLIN | unix.POLLHUP,
-		}
-	}
-	// Cgo malloc doesn't fail, it panics
+	qq.epollfd = int(C.quark_queue_get_epollfd(qq.qqc))
 	qq.tmpev = (*C.struct_quark_event)(C.malloc(C.sizeof_struct_quark_event))
 
 	return &qq, nil
@@ -158,9 +143,15 @@ func (qq *Queue) Lookup(pid int) (*Event) {
 	return &qev
 }
 
-func (qq *Queue) Block() {
-	unix.Poll(qq.fds, 100)
-	// TODO scan all fds for errors
+func (qq *Queue) Block() error {
+	event := make([]syscall.EpollEvent, 1)
+	for {
+		_, err := syscall.EpollWait(qq.epollfd, event, 100)
+		if err != nil && errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		return err
+	}
 }
 
 func cEventToGo(cev *C.struct_quark_event) (Event, error) {

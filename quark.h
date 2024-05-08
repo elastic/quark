@@ -34,7 +34,7 @@ void	quark_queue_close(struct quark_queue *);
 int	quark_queue_populate(struct quark_queue *);
 int	quark_queue_block(struct quark_queue *);
 int	quark_queue_get_events(struct quark_queue *, struct quark_event *, int);
-int	quark_queue_get_fds(struct quark_queue *, int *, int);
+int	quark_queue_get_epollfd(struct quark_queue *);
 int	quark_dump_graphviz(struct quark_queue *, FILE *, FILE *);
 int	quark_event_lookup(struct quark_queue *, struct quark_event *, int);
 int	quark_event_dump(struct quark_event *, FILE *);
@@ -479,7 +479,6 @@ struct quark_queue_stats {
 struct quark_queue_ops {
 	int	(*open)(struct quark_queue *);
 	int	(*populate)(struct quark_queue *);
-	int	(*block)(struct quark_queue *);
 	void	(*close)(struct quark_queue *);
 };
 
@@ -503,6 +502,7 @@ struct quark_queue {
 	int				 max_length;
 	/* Next pid to be sent out of a snapshot */
 	int				 snap_pid;
+	int				 epollfd;
 	/* Backend related state */
 	struct quark_queue_ops		*queue_ops;
 	struct kprobe_queue {

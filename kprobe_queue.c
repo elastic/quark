@@ -1,3 +1,4 @@
+#include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -30,13 +31,11 @@ ssize_t	probe_data_body_offset = -1;
 int	kprobe_queue_refs;
 
 static int	kprobe_queue_populate(struct quark_queue *);
-static int	kprobe_queue_block(struct quark_queue *);
 static void	kprobe_queue_close(struct quark_queue *);
 
 struct quark_queue_ops queue_ops_kprobe = {
 	.open	  = kprobe_queue_open,
 	.populate = kprobe_queue_populate,
-	.block	  = kprobe_queue_block,
 	.close	  = kprobe_queue_close,
 };
 
@@ -916,6 +915,7 @@ kprobe_queue_open(struct quark_queue *qq)
 	struct perf_group_leader	*pgl;
 	struct kprobe			*k;
 	struct kprobe_state		*ks;
+	struct epoll_event		 ev;
 	int				 i;
 
 	if ((qq->flags & QQ_KPROBE) == 0)
@@ -947,12 +947,27 @@ kprobe_queue_open(struct quark_queue *qq)
 		/* XXX PERF_IOC_FLAG_GROUP see bugs */
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_RESET,
 		    PERF_IOC_FLAG_GROUP) == -1) {
-			warn("ioctl PERF_EVENT_IOC_RESET:");
+			warn("ioctl PERF_EVENT_IOC_RESET");
 			goto fail;
 		}
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_ENABLE,
 		    PERF_IOC_FLAG_GROUP) == -1) {
-			warn("ioctl PERF_EVENT_IOC_ENABLE:");
+			warn("ioctl PERF_EVENT_IOC_ENABLE");
+			goto fail;
+		}
+	}
+
+	qq->epollfd = epoll_create1(EPOLL_CLOEXEC);
+	if (qq->epollfd == -1) {
+		warn("epoll_create1");
+		goto fail;
+	}
+	TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry) {
+		bzero(&ev, sizeof(ev));
+		ev.events = EPOLLIN;
+		ev.data.fd = pgl->fd;
+		if (epoll_ctl(qq->epollfd, EPOLL_CTL_ADD, pgl->fd, &ev) == -1) {
+			warn("epoll_ctl");
 			goto fail;
 		}
 	}
@@ -962,9 +977,8 @@ kprobe_queue_open(struct quark_queue *qq)
 	return (0);
 
 fail:
-	qq->queue_ops = &queue_ops_kprobe;
-	quark_queue_close(qq);
-	qq->queue_ops = NULL;
+	kprobe_queue_close(qq);
+
 	return (-1);
 }
 
@@ -1007,40 +1021,6 @@ kprobe_queue_populate(struct quark_queue *qq)
 	return (npop);
 }
 
-static int
-kprobe_queue_block(struct quark_queue *qq)
-{
-	struct kprobe_queue		*kqq = &qq->kprobe_queue;
-	struct perf_group_leaders	*leaders;
-	struct perf_group_leader	*pgl;
-	struct pollfd			*fds;
-	struct timespec			 ts;
-	int				 i, nfds, r;
-
-	leaders = &kqq->perf_group_leaders;
-	nfds = kqq->num_perf_group_leaders;
-	fds = calloc(sizeof(*fds), nfds);
-	/* XXX TODO move this inside qq */
-	if (fds == NULL)
-		err(1, "calloc");
-	i = 0;
-	TAILQ_FOREACH(pgl, leaders, entry) {
-		fds[i].fd = pgl->fd;
-		fds[i].events = POLLIN | POLLRDHUP;
-		i++;
-	}
-	ts.tv_sec = 0;
-	ts.tv_nsec = MS_TO_NS(100); /* XXX hardcoded for now */
-	r = ppoll(fds, nfds, &ts, NULL);
-#if 0
-	for (i = 0; i < nfds; i++)
-		printf("fd%d events=0x%x\n", fds[i].fd, fds[i].revents);
-#endif
-	free(fds);
-
-	return (r);
-}
-
 static void
 kprobe_queue_close(struct quark_queue *qq)
 {
@@ -1069,6 +1049,11 @@ kprobe_queue_close(struct quark_queue *qq)
 			close(ks->fd);
 		TAILQ_REMOVE(&kqq->kprobe_states, ks, entry);
 		free(ks);
+	}
+	/* Clean up epoll instance */
+	if (qq->epollfd != -1) {
+		close(qq->epollfd);
+		qq->epollfd = -1;
 	}
 	/* Remove kprobes from tracefs */
 	kprobe_unref();

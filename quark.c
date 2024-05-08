@@ -1,3 +1,5 @@
+#include <sys/epoll.h>
+
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
@@ -1235,31 +1237,23 @@ quark_dump_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 }
 #undef P
 
-/* XXX broken, this must be per backend in queue_ops */
 int
-quark_queue_get_fds(struct quark_queue *qq, int *fds, int fds_len)
+quark_queue_get_epollfd(struct quark_queue *qq)
 {
-	struct kprobe_queue		*kqq = &qq->kprobe_queue;
-	struct perf_group_leader	*pgl;
-	int				 nfds;
-
-	if (TAILQ_EMPTY(&kqq->perf_group_leaders))
-		return (errno = EINVAL, -1);
-	nfds = 0;
-	TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry) {
-		if (nfds == fds_len)
-			return (errno = ENOBUFS, -1);
-		*fds++ = pgl->fd;
-		nfds++;
-	}
-
-	return (nfds);
+	return (qq->epollfd);
 }
 
 int
 quark_queue_block(struct quark_queue *qq)
 {
-	return (qq->queue_ops->block(qq));
+	struct epoll_event	 ev;
+
+	if (qq->epollfd == -1)
+		return (errno = EINVAL, -1);
+	if (epoll_wait(qq->epollfd, &ev, 1, 1000) == -1)
+		return (-1);
+
+	return (0);
 }
 
 int
@@ -1284,6 +1278,7 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	RB_INIT(&qq->raw_event_by_pidtime);
 	RB_INIT(&qq->event_by_pid);
 	TAILQ_INIT(&qq->event_gc);
+	qq->epollfd = -1;
 	qq->flags = flags;
 	qq->length = 0;
 	qq->max_length = 10000;

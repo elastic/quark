@@ -11,13 +11,11 @@
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
 static int	bpf_queue_populate(struct quark_queue *);
-static int	bpf_queue_block(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
 
 struct quark_queue_ops queue_ops_bpf = {
 	.open	  = bpf_queue_open,
 	.populate = bpf_queue_populate,
-	.block	  = bpf_queue_block,
 	.close	  = bpf_queue_close,
 };
 
@@ -205,9 +203,7 @@ int
 bpf_queue_open(struct quark_queue *qq)
 {
 	struct bpf_queue	*bqq = &qq->bpf_queue;
-	struct ring_buffer	*ringbuf;
 	struct ring_buffer_opts	 ringbuf_opts;
-	struct bpf_prog		*bpf_prog;
 	struct bpf_program	*bp;
 	int			 error;
 
@@ -216,8 +212,8 @@ bpf_queue_open(struct quark_queue *qq)
 
 	libbpf_set_print(libbpf_print_fn);
 
-	bpf_prog = bpf_prog__open();
-	if (bpf_prog == NULL) {
+	bqq->prog = bpf_prog__open();
+	if (bqq->prog == NULL) {
 		warn("bpf_prog__open");
 		return (-1);
 	}
@@ -225,29 +221,29 @@ bpf_queue_open(struct quark_queue *qq)
 	/*
 	 * Unload everything since it has way more than we want
 	 */
-	bpf_object__for_each_program(bp, bpf_prog->obj)
+	bpf_object__for_each_program(bp, bqq->prog->obj)
 		bpf_program__set_autoload(bp, 0);
 	/*
 	 * Load just the bits we want
 	 */
-	bpf_program__set_autoload(bpf_prog->progs.sched_process_fork, 1);
-	bpf_program__set_autoload(bpf_prog->progs.sched_process_exec, 1);
-	bpf_program__set_autoload(bpf_prog->progs.kprobe__taskstats_exit, 1);
+	bpf_program__set_autoload(bqq->prog->progs.sched_process_fork, 1);
+	bpf_program__set_autoload(bqq->prog->progs.sched_process_exec, 1);
+	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
 
-	error = bpf_map__set_max_entries(bpf_prog->maps.event_buffer_map,
+	error = bpf_map__set_max_entries(bqq->prog->maps.event_buffer_map,
 	    get_nprocs_conf());
 	if (error != 0) {
 		warn("bpf_map__set_max_entries");
 		goto fail;
 	}
 
-	error = bpf_prog__load(bpf_prog);
+	error = bpf_prog__load(bqq->prog);
 	if (error) {
 		warn("bpf_prog__load");
 		goto fail;
 	}
 
-	error = bpf_prog__attach(bpf_prog);
+	error = bpf_prog__attach(bqq->prog);
 	if (error) {
 		warn("bpf_prog__attach");
 		goto fail;
@@ -257,20 +253,23 @@ bpf_queue_open(struct quark_queue *qq)
 	 * There doesn't seem to be a watermark setting for ebpf!
 	 */
 	ringbuf_opts.sz = sizeof(ringbuf_opts);
-	ringbuf = ring_buffer__new(bpf_map__fd(bpf_prog->maps.ringbuf),
+	bqq->ringbuf = ring_buffer__new(bpf_map__fd(bqq->prog->maps.ringbuf),
 	    bpf_ringbuf_cb, qq, &ringbuf_opts);
-	if (ringbuf == NULL) {
+	if (bqq->ringbuf == NULL) {
 		warn("ring_buffer__new");
 		goto fail;
 	}
 
-	bqq->prog = bpf_prog;
-	bqq->ringbuf = ringbuf;
+	qq->epollfd = ring_buffer__epoll_fd(bqq->ringbuf);
+	if (qq->epollfd < 0)
+		goto fail;
+
 	qq->queue_ops = &queue_ops_bpf;
 
 	return (0);
 fail:
-	bpf_prog__destroy(bpf_prog);
+	bpf_queue_close(qq);
+
 	return (-1);
 }
 
@@ -291,23 +290,6 @@ bpf_queue_populate(struct quark_queue *qq)
 	return (npop < 0 ? -1 : npop);
 }
 
-static int
-bpf_queue_block(struct quark_queue *qq)
-{
-	struct bpf_queue	*bqq = &qq->bpf_queue;
-	int			 fd;
-	struct epoll_event	 ev;
-
-	fd = ring_buffer__epoll_fd(bqq->ringbuf);
-	if (fd < 0)
-		return (-1);
-
-	if (epoll_wait(fd, &ev, 1, 100) == -1)
-		return (-1);
-
-	return (0);
-}
-
 static void
 bpf_queue_close(struct quark_queue *qq)
 {
@@ -321,4 +303,6 @@ bpf_queue_close(struct quark_queue *qq)
 		ring_buffer__free(bqq->ringbuf);
 		bqq->ringbuf = NULL;
 	}
+	/* Closed in ring_buffer__free() */
+	qq->epollfd = -1;
 }
