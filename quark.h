@@ -505,11 +505,15 @@ struct quark_queue {
 	int				 snap_pid;
 	/* Backend related state */
 	struct quark_queue_ops		*queue_ops;
-	struct perf_group_leaders	 perf_group_leaders;
-	int				 num_perf_group_leaders;
-	struct kprobe_states		 kprobe_states;
-	struct bpf_prog			*bpf_prog;
-	struct ring_buffer		*ringbuf;
+	struct kprobe_queue {
+		struct perf_group_leaders	 perf_group_leaders;
+		int				 num_perf_group_leaders;
+		struct kprobe_states		 kprobe_states;
+	} kprobe_queue;
+	struct bpf_queue {
+		struct bpf_prog			*prog;
+		struct ring_buffer		*ringbuf;
+	} bpf_queue;
 };
 
 #endif /* _QUARK_H_ */

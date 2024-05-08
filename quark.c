@@ -1235,16 +1235,18 @@ quark_dump_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 }
 #undef P
 
+/* XXX broken, this must be per backend in queue_ops */
 int
 quark_queue_get_fds(struct quark_queue *qq, int *fds, int fds_len)
 {
+	struct kprobe_queue		*kqq = &qq->kprobe_queue;
 	struct perf_group_leader	*pgl;
 	int				 nfds;
 
-	if (TAILQ_EMPTY(&qq->perf_group_leaders))
+	if (TAILQ_EMPTY(&kqq->perf_group_leaders))
 		return (errno = EINVAL, -1);
 	nfds = 0;
-	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+	TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry) {
 		if (nfds == fds_len)
 			return (errno = ENOBUFS, -1);
 		*fds++ = pgl->fd;
@@ -1263,6 +1265,7 @@ quark_queue_block(struct quark_queue *qq)
 int
 quark_queue_open(struct quark_queue *qq, int flags)
 {
+	struct kprobe_queue		*kqq = &qq->kprobe_queue;
 	struct quark_event		*qev;
 
 	if (quark_init() == -1)
@@ -1274,9 +1277,9 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	if (!(flags & (QQ_KPROBE | QQ_EBPF)))
 		flags |= QQ_KPROBE | QQ_EBPF;
 
-	TAILQ_INIT(&qq->perf_group_leaders);
-	qq->num_perf_group_leaders = 0;
-	TAILQ_INIT(&qq->kprobe_states);
+	TAILQ_INIT(&kqq->perf_group_leaders);
+	kqq->num_perf_group_leaders = 0;
+	TAILQ_INIT(&kqq->kprobe_states);
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
 	RB_INIT(&qq->event_by_pid);
