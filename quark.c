@@ -1340,7 +1340,8 @@ quark_queue_close(struct quark_queue *qq)
 	while ((qev = RB_ROOT(&qq->event_by_pid)) != NULL)
 		event_cache_delete(qq, qev);
 	/* Clean up backend */
-	qq->queue_ops->close(qq);
+	if (qq->queue_ops != NULL)
+		qq->queue_ops->close(qq);
 }
 
 enum agg_kind {
