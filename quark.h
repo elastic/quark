@@ -320,6 +320,7 @@ struct quark_queue_stats {
 struct quark_queue_ops {
 	int	(*open)(struct quark_queue *);
 	int	(*populate)(struct quark_queue *);
+	int	(*update_stats)(struct quark_queue *);
 	void	(*close)(struct quark_queue *);
 };
 

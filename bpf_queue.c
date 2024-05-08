@@ -11,17 +11,19 @@
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
 struct bpf_queue {
-	struct bpf_prog			*prog;
-	struct ring_buffer		*ringbuf;
+	struct bpf_prog		*prog;
+	struct ring_buffer	*ringbuf;
 };
 
 static int	bpf_queue_populate(struct quark_queue *);
+static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
 
 struct quark_queue_ops queue_ops_bpf = {
-	.open	  = bpf_queue_open,
-	.populate = bpf_queue_populate,
-	.close	  = bpf_queue_close,
+	.open	      = bpf_queue_open,
+	.populate     = bpf_queue_populate,
+	.update_stats = bpf_queue_update_stats,
+	.close	      = bpf_queue_close,
 };
 
 static int
@@ -262,7 +264,6 @@ bpf_queue_populate(struct quark_queue *qq)
 	struct bpf_queue	*bqq = qq->queue_be;
 	int			 npop, space_left;
 
-	npop = 0;
 	space_left = qq->length >= qq->max_length ?
 	    0 : qq->max_length - qq->length;
 	if (space_left == 0)
@@ -271,6 +272,24 @@ bpf_queue_populate(struct quark_queue *qq)
 	npop = ring_buffer__consume_n(bqq->ringbuf, space_left);
 
 	return (npop < 0 ? -1 : npop);
+}
+
+static int
+bpf_queue_update_stats(struct quark_queue *qq)
+{
+	struct bpf_queue	*bqq  = qq->queue_be;
+	struct ebpf_event_stats	 pcpu_ees[libbpf_num_possible_cpus()];
+	u32			 zero = 0;
+	int			 i;
+
+	if (bpf_map__lookup_elem(bqq->prog->maps.ringbuf_stats, &zero,
+	    sizeof(zero), pcpu_ees, sizeof(pcpu_ees), 0) != 0)
+		return (-1);
+
+	for (i = 0; i < libbpf_num_possible_cpus(); i++)
+		qq->stats.lost = pcpu_ees[i].lost;
+
+	return (0);
 }
 
 static void
