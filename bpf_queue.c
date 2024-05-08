@@ -204,6 +204,7 @@ bpf_ringbuf_cb(void *vqq, void *vdata, size_t len)
 int
 bpf_queue_open(struct quark_queue *qq)
 {
+	struct bpf_queue	*bqq = &qq->bpf_queue;
 	struct ring_buffer	*ringbuf;
 	struct ring_buffer_opts	 ringbuf_opts;
 	struct bpf_prog		*bpf_prog;
@@ -263,8 +264,8 @@ bpf_queue_open(struct quark_queue *qq)
 		goto fail;
 	}
 
-	qq->bpf_prog = bpf_prog;
-	qq->ringbuf = ringbuf;
+	bqq->prog = bpf_prog;
+	bqq->ringbuf = ringbuf;
 	qq->queue_ops = &queue_ops_bpf;
 
 	return (0);
@@ -276,7 +277,8 @@ fail:
 static int
 bpf_queue_populate(struct quark_queue *qq)
 {
-	int	npop, space_left;
+	struct bpf_queue	*bqq = &qq->bpf_queue;
+	int			 npop, space_left;
 
 	npop = 0;
 	space_left = qq->length >= qq->max_length ?
@@ -284,7 +286,7 @@ bpf_queue_populate(struct quark_queue *qq)
 	if (space_left == 0)
 		return (0);
 
-	npop = ring_buffer__consume_n(qq->ringbuf, space_left);
+	npop = ring_buffer__consume_n(bqq->ringbuf, space_left);
 
 	return (npop < 0 ? -1 : npop);
 }
@@ -292,10 +294,11 @@ bpf_queue_populate(struct quark_queue *qq)
 static int
 bpf_queue_block(struct quark_queue *qq)
 {
-	int			fd;
-	struct epoll_event	ev;
+	struct bpf_queue	*bqq = &qq->bpf_queue;
+	int			 fd;
+	struct epoll_event	 ev;
 
-	fd = ring_buffer__epoll_fd(qq->ringbuf);
+	fd = ring_buffer__epoll_fd(bqq->ringbuf);
 	if (fd < 0)
 		return (-1);
 
@@ -308,12 +311,14 @@ bpf_queue_block(struct quark_queue *qq)
 static void
 bpf_queue_close(struct quark_queue *qq)
 {
-	if (qq->bpf_prog) {
-		bpf_prog__destroy(qq->bpf_prog);
-		qq->bpf_prog = NULL;
+	struct bpf_queue	*bqq = &qq->bpf_queue;
+
+	if (bqq->prog) {
+		bpf_prog__destroy(bqq->prog);
+		bqq->prog = NULL;
 	}
-	if (qq->ringbuf) {
-		ring_buffer__free(qq->ringbuf);
-		qq->ringbuf = NULL;
+	if (bqq->ringbuf) {
+		ring_buffer__free(bqq->ringbuf);
+		bqq->ringbuf = NULL;
 	}
 }

@@ -912,6 +912,7 @@ perf_open_kprobe(struct kprobe *k, int cpu, int group_fd)
 int
 kprobe_queue_open(struct quark_queue *qq)
 {
+	struct kprobe_queue		*kqq = &qq->kprobe_queue;
 	struct perf_group_leader	*pgl;
 	struct kprobe			*k;
 	struct kprobe_state		*ks;
@@ -928,21 +929,21 @@ kprobe_queue_open(struct quark_queue *qq)
 		pgl = perf_open_group_leader(i);
 		if (pgl == NULL)
 			goto fail;
-		TAILQ_INSERT_TAIL(&qq->perf_group_leaders, pgl, entry);
-		qq->num_perf_group_leaders++;
+		TAILQ_INSERT_TAIL(&kqq->perf_group_leaders, pgl, entry);
+		kqq->num_perf_group_leaders++;
 	}
 
 	i = 0;
 	while ((k = all_kprobes[i++]) != NULL) {
-		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+		TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry) {
 			ks = perf_open_kprobe(k, pgl->cpu, pgl->fd);
 			if (ks == NULL)
 				goto fail;
-			TAILQ_INSERT_TAIL(&qq->kprobe_states, ks, entry);
+			TAILQ_INSERT_TAIL(&kqq->kprobe_states, ks, entry);
 		}
 	}
 
-	TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+	TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry) {
 		/* XXX PERF_IOC_FLAG_GROUP see bugs */
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_RESET,
 		    PERF_IOC_FLAG_GROUP) == -1) {
@@ -970,12 +971,13 @@ fail:
 static int
 kprobe_queue_populate(struct quark_queue *qq)
 {
+	struct kprobe_queue		*kqq = &qq->kprobe_queue;
 	int				 empty_rings, num_rings, npop;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
 
-	num_rings = qq->num_perf_group_leaders;
+	num_rings = kqq->num_perf_group_leaders;
 	npop = 0;
 
 	/*
@@ -984,7 +986,7 @@ kprobe_queue_populate(struct quark_queue *qq)
 	 */
 	while (qq->length < qq->max_length) {
 		empty_rings = 0;
-		TAILQ_FOREACH(pgl, &qq->perf_group_leaders, entry) {
+		TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry) {
 			ev = perf_mmap_read(&pgl->mmap);
 			if (ev == NULL) {
 				empty_rings++;
@@ -1008,14 +1010,15 @@ kprobe_queue_populate(struct quark_queue *qq)
 static int
 kprobe_queue_block(struct quark_queue *qq)
 {
+	struct kprobe_queue		*kqq = &qq->kprobe_queue;
 	struct perf_group_leaders	*leaders;
 	struct perf_group_leader	*pgl;
 	struct pollfd			*fds;
 	struct timespec			 ts;
 	int				 i, nfds, r;
 
-	leaders = &qq->perf_group_leaders;
-	nfds = qq->num_perf_group_leaders;
+	leaders = &kqq->perf_group_leaders;
+	nfds = kqq->num_perf_group_leaders;
 	fds = calloc(sizeof(*fds), nfds);
 	/* XXX TODO move this inside qq */
 	if (fds == NULL)
@@ -1041,11 +1044,12 @@ kprobe_queue_block(struct quark_queue *qq)
 static void
 kprobe_queue_close(struct quark_queue *qq)
 {
+	struct kprobe_queue		*kqq = &qq->kprobe_queue;
 	struct perf_group_leader	*pgl;
 	struct kprobe_state		*ks;
 
 	/* Stop and close the perf rings */
-	while ((pgl = TAILQ_FIRST(&qq->perf_group_leaders)) != NULL) {
+	while ((pgl = TAILQ_FIRST(&kqq->perf_group_leaders)) != NULL) {
 		/* XXX PERF_IOC_FLAG_GROUP see bugs */
 		if (pgl->fd != -1) {
 			if (ioctl(pgl->fd, PERF_EVENT_IOC_DISABLE,
@@ -1056,14 +1060,14 @@ kprobe_queue_close(struct quark_queue *qq)
 		if (pgl->mmap.metadata != NULL)
 			if (munmap(pgl->mmap.metadata, pgl->mmap.mapped_size) != 0)
 				warn("munmap");
-		TAILQ_REMOVE(&qq->perf_group_leaders, pgl, entry);
+		TAILQ_REMOVE(&kqq->perf_group_leaders, pgl, entry);
 		free(pgl);
 	}
 	/* Clean up all state allocated to kprobes */
-	while ((ks = TAILQ_FIRST(&qq->kprobe_states)) != NULL) {
+	while ((ks = TAILQ_FIRST(&kqq->kprobe_states)) != NULL) {
 		if (ks->fd != -1)
 			close(ks->fd);
-		TAILQ_REMOVE(&qq->kprobe_states, ks, entry);
+		TAILQ_REMOVE(&kqq->kprobe_states, ks, entry);
 		free(ks);
 	}
 	/* Remove kprobes from tracefs */
