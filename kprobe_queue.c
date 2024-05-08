@@ -266,12 +266,14 @@ struct kprobe_queue {
 };
 
 static int	kprobe_queue_populate(struct quark_queue *);
+static int	kprobe_queue_update_stats(struct quark_queue *);
 static void	kprobe_queue_close(struct quark_queue *);
 
 struct quark_queue_ops queue_ops_kprobe = {
-	.open	  = kprobe_queue_open,
-	.populate = kprobe_queue_populate,
-	.close	  = kprobe_queue_close,
+	.open	      = kprobe_queue_open,
+	.populate     = kprobe_queue_populate,
+	.update_stats = kprobe_queue_update_stats,
+	.close	      = kprobe_queue_close,
 };
 
 static char *
@@ -1296,6 +1298,13 @@ kprobe_queue_populate(struct quark_queue *qq)
 	}
 
 	return (npop);
+}
+
+static int
+kprobe_queue_update_stats(struct quark_queue *qq)
+{
+	/* NADA */
+	return (0);
 }
 
 static void

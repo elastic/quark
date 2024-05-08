@@ -1597,6 +1597,7 @@ quark_queue_get_epollfd(struct quark_queue *qq)
 void
 quark_queue_get_stats(struct quark_queue *qq, struct quark_queue_stats *qs)
 {
+	qq->queue_ops->update_stats(qq);
 	*qs = qq->stats;
 }
 
