@@ -145,13 +145,11 @@ func (qq *Queue) Lookup(pid int) (*Event) {
 
 func (qq *Queue) Block() error {
 	event := make([]syscall.EpollEvent, 1)
-	for {
-		_, err := syscall.EpollWait(qq.epollfd, event, 100)
-		if err != nil && errors.Is(err, syscall.EINTR) {
-			continue
-		}
-		return err
+	_, err := syscall.EpollWait(qq.epollfd, event, 100)
+	if err != nil && errors.Is(err, syscall.EINTR) {
+		err = nil
 	}
+	return err
 }
 
 func cEventToGo(cev *C.struct_quark_event) (Event, error) {
