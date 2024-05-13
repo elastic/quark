@@ -150,10 +150,8 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	switch (kind) {
 	case EXEC_SAMPLE: {
 		struct exec_sample *exec = sample_data_body(sample);
-		if ((raw = raw_event_alloc()) == NULL)
+		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
 			return (NULL);
-		raw->type = RAW_EXEC;
-		qstr_init(&raw->exec.filename);
 		n = qstr_copy_data_loc(&raw->exec.filename, sample, &exec->filename);
 		if (n == -1)
 			warnx("can't copy exec filename");
@@ -171,10 +169,9 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		if ((qq->flags & QQ_THREAD_EVENTS) == 0
 		    && w->pid != w->tid)
 			return (NULL);
-		if ((raw = raw_event_alloc()) == NULL)
-			return (NULL);
 		if (kind == WAKE_UP_NEW_TASK_SAMPLE) {
-			raw->type = RAW_WAKE_UP_NEW_TASK;
+			if ((raw = raw_event_alloc(RAW_WAKE_UP_NEW_TASK)) == NULL)
+				return (NULL);
 			/*
 			 * Cheat, make this look like a child event.
 			 */
@@ -193,13 +190,13 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 				    &w->pwd_s[i]);
 				pctx.pwd[i].pwd_k = w->pwd_k[i];
 			}
-			qstr_init(&raw->task.cwd);
 			if (build_path(&pctx, &raw->task.cwd) == -1)
 				warn("can't build path");
 			raw->task.exit_code = -1;
 			raw->task.exit_time_event = 0;
 		} else {
-			raw->type = RAW_EXIT_THREAD;
+			if ((raw = raw_event_alloc(RAW_EXIT_THREAD)) == NULL)
+				return (NULL);
 			/*
 			 * We derive ppid from the incoming sample header as
 			 * it's originally an event of the parent, since exit is
@@ -231,11 +228,9 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		struct exec_connector_sample	*exec_sample = sample_data_body(sample);
 		struct raw_exec_connector	*exec;
 
-		if ((raw = raw_event_alloc()) == NULL)
+		if ((raw = raw_event_alloc(RAW_EXEC_CONNECTOR)) == NULL)
 			return (NULL);
-		raw->type = RAW_EXEC_CONNECTOR;
 		exec = &raw->exec_connector;
-		qstr_init(&exec->args);
 
 		start = p = (char *)&exec_sample->stack[0];
 		end = start + sizeof(exec_sample->stack);
@@ -287,9 +282,8 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		if ((qq->flags & QQ_THREAD_EVENTS) == 0 &&
 		    ev->comm.pid != ev->comm.tid)
 			return (NULL);
-		if ((raw = raw_event_alloc()) == NULL)
+		if ((raw = raw_event_alloc(RAW_COMM)) == NULL)
 			return (NULL);
-		raw->type = RAW_COMM;
 		n = strlcpy(raw->comm.comm, ev->comm.comm,
 		    sizeof(raw->comm.comm));
 		/*

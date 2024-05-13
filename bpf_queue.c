@@ -27,7 +27,7 @@ libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 
 	return (0);
 }
-
+#if 0
 static const char *
 ebpf_events_type_to_str(u64 type)
 {
@@ -48,7 +48,7 @@ ebpf_events_type_to_str(u64 type)
 		return "unknown";
 	}
 }
-
+#endif
 static void
 ebpf_events_to_task(struct ebpf_pid_info *pids, struct ebpf_cred_info *creds,
     struct raw_task *task, u32 *pid)
@@ -67,9 +67,7 @@ ebpf_events_to_task(struct ebpf_pid_info *pids, struct ebpf_cred_info *creds,
 	task->sgid = creds->sgid;
 	task->euid = creds->euid;
 	task->egid = creds->egid;
-	task->exit_code = -1;
 	task->exit_time_event = 0;
-	qstr_init(&task->cwd);
 }
 
 static struct raw_event *
@@ -84,25 +82,13 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 	raw = NULL;
 
 	switch (ev->type) {
-	case EBPF_EVENT_PROCESS_FORK: /* FALLTHROUGH */
-	case EBPF_EVENT_PROCESS_EXIT: /* FALLTHROUGH */
-	case EBPF_EVENT_PROCESS_EXEC:
-		if ((raw = raw_event_alloc()) == NULL)
-			goto bad;
-		raw->time = ev->ts;
-		break;
-	default:
-		warnx("%s:%d unhandled type %s\n", __func__, __LINE__,
-		    ebpf_events_type_to_str(ev->type));
-		goto bad;
-	}
-
-	switch (ev->type) {
 	case EBPF_EVENT_PROCESS_FORK:
 		fork = (struct ebpf_process_fork_event *)ev;
 		if (fork->child_pids.tid != fork->child_pids.tgid)
 			goto bad;
-		raw->type = RAW_WAKE_UP_NEW_TASK;
+		if ((raw = raw_event_alloc(RAW_WAKE_UP_NEW_TASK)) == NULL)
+			goto bad;
+		raw->time = ev->ts;
 		ebpf_events_to_task(&fork->child_pids, &fork->creds,
 		    &raw->task, &raw->pid);
 		/* the macro doesn't take a pointer so we can't pass down :) */
@@ -118,9 +104,11 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		break;
 	case EBPF_EVENT_PROCESS_EXIT:
 		exit = (struct ebpf_process_exit_event *)ev;
-		raw->type = RAW_EXIT_THREAD;
 		if (exit->pids.tid != exit->pids.tgid)
 			goto bad;
+		if ((raw = raw_event_alloc(RAW_EXIT_THREAD)) == NULL)
+			goto bad;
+		raw->time = ev->ts;
 		ebpf_events_to_task(&exit->pids, &exit->creds,
 		    &raw->task, &raw->pid);
 		raw->task.exit_code = exit->exit_code;
@@ -138,13 +126,12 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		break;
 	case EBPF_EVENT_PROCESS_EXEC:
 		exec = (struct ebpf_process_exec_event *)ev;
-		raw->type = RAW_EXEC;
+		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
+			goto bad;
+		raw->time = ev->ts;
 		raw->exec.flags |= RAW_EXEC_F_EXT;
 		ebpf_events_to_task(&exec->pids, &exec->creds,
 		    &raw->exec.ext.task, &raw->pid);
-		qstr_init(&raw->exec.filename);
-		qstr_init(&raw->exec.ext.args);
-		qstr_init(&raw->exec.ext.task.cwd);
 		strlcpy(raw->exec.ext.comm, exec->comm,
 		    sizeof(raw->exec.ext.comm));
 		FOR_EACH_VARLEN_FIELD(exec->vl_fields, field) {
@@ -171,15 +158,13 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		}
 		break;
 	default:
-		warnx("%s:%d\n unhandled type %s\n", __func__, __LINE__,
-		    ebpf_events_type_to_str(ev->type));
+		warnx("%s unhandled type %lu", __func__, ev->type);
 		goto bad;
 	}
 
 	return (raw);
 
 bad:
-	/* XXX redo raw_event_alloc pass the type and init all qstr */
 	if (raw != NULL)
 		raw_event_free(raw);
 	return (NULL);

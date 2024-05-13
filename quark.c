@@ -46,13 +46,37 @@ struct quark {
 } quark;
 
 struct raw_event *
-raw_event_alloc(void)
+raw_event_alloc(int type)
 {
 	struct raw_event *raw;
 
-	raw = calloc(1, sizeof(*raw));
-	if (raw != NULL)
-		TAILQ_INIT(&raw->agg_queue);
+	if ((raw = calloc(1, sizeof(*raw))) == NULL)
+		return (NULL);
+
+	raw->type = type;
+	TAILQ_INIT(&raw->agg_queue);
+
+	switch (raw->type) {
+	case RAW_WAKE_UP_NEW_TASK: /* FALLTHROUGH */
+	case RAW_EXIT_THREAD:
+		raw->task.exit_code = -1;
+		qstr_init(&raw->task.cwd);
+		break;
+	case RAW_EXEC:
+		qstr_init(&raw->exec.filename);
+		qstr_init(&raw->exec.ext.args);
+		qstr_init(&raw->exec.ext.task.cwd);
+		break;
+	case RAW_EXEC_CONNECTOR:
+		qstr_init(&raw->exec_connector.args);
+		break;
+	case RAW_COMM:		/* nada */
+		break;
+	default:
+		warnx("%s: unhandled raw_type %d", __func__, raw->type);
+		free(raw);
+		return (NULL);
+	}
 
 	return (raw);
 }
@@ -63,21 +87,22 @@ raw_event_free(struct raw_event *raw)
 	struct raw_event *aux;
 
 	switch (raw->type) {
-	case RAW_EXEC:
-		qstr_free(&raw->exec.filename);
-		if (raw->exec.flags & RAW_EXEC_F_EXT) {
-			qstr_free(&raw->exec.ext.task.cwd);
-			qstr_free(&raw->exec.ext.args);
-		}
-		break;
 	case RAW_WAKE_UP_NEW_TASK:
 	case RAW_EXIT_THREAD:
 		qstr_free(&raw->task.cwd);
 		break;
+	case RAW_EXEC:
+		qstr_free(&raw->exec.filename);
+		qstr_free(&raw->exec.ext.task.cwd);
+		qstr_free(&raw->exec.ext.args);
+		break;
 	case RAW_EXEC_CONNECTOR:
 		qstr_free(&raw->exec_connector.args);
 		break;
+	case RAW_COMM:		/* nada */
+		break;
 	default:
+		warnx("%s: unhandled raw_type %d", __func__, raw->type);
 		break;
 	}
 
