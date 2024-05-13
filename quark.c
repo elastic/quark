@@ -678,6 +678,7 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		qev->proc_egid = raw_task->egid;
 
 		cwd = raw_task->cwd.p;
+		comm = raw_task->comm;
 	}
 	if (raw_exit != NULL) {
 		qev->flags |= QUARK_F_EXIT;
@@ -704,7 +705,7 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		args_len = raw_exec_connector->args_len;
 	}
 	if (raw_comm != NULL)
-		comm = raw_comm->comm;
+		comm = raw_comm->comm; /* raw_comm always overrides */
 	/*
 	 * Field pointer checking, stuff the block above sets so we save some
 	 * code.

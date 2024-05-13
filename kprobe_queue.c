@@ -176,6 +176,8 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			raw->task.exit_code = (w->exit_code >> 8) & 0xff;
 			raw->task.exit_time_event = sample->sample_id.time;
 		}
+		strlcpy(raw->task.comm, str_of_dataloc(sample, &w->comm),
+		    sizeof(raw->task.comm));
 		raw->task.cap_inheritable = w->cap_inheritable;
 		raw->task.cap_permitted = w->cap_permitted;
 		raw->task.cap_effective = w->cap_effective;

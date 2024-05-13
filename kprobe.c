@@ -44,6 +44,7 @@
 	{ "pwd_s4",		"di", "string",	PWD_S(0, 4)											}, \
 	{ "pwd_s5",		"di", "string",	PWD_S(0, 5)											}, \
 	{ "pwd_s6",		"di", "string",	PWD_S(0, 6)											}, \
+	{ "comm",		"di", "string",	"task_struct.comm"										}, \
 	{ "uid",		"di", "u32",	"task_struct.cred cred.uid"									}, \
 	{ "gid",		"di", "u32",	"task_struct.cred cred.gid"									}, \
 	{ "suid",		"di", "u32",	"task_struct.cred cred.suid"									}, \
@@ -53,7 +54,6 @@
 	{ "pid",		"di", "u32",	"task_struct.tgid"										}, \
 	{ "tid",		"di", "u32",	"task_struct.pid"										}, \
 	{ "exit_code",		"di", "s32",	"task_struct.exit_code"										}, \
-	{ "comm",		"di", "string",	"task_struct.comm"										}, \
 	{ NULL,			NULL, NULL,	NULL												}}
 
 struct kprobe kp_wake_up_new_task = {

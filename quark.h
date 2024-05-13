@@ -236,7 +236,7 @@ struct task_sample {
 	struct perf_sample_data_loc mnt_root_s;
 	struct perf_sample_data_loc mnt_mountpoint_s;
 	struct perf_sample_data_loc pwd_s[MAX_PWD];
-	/* XXX add comm XXX */
+	struct perf_sample_data_loc comm;
 	u32	uid;
 	u32	gid;
 	u32	suid;
@@ -331,6 +331,7 @@ struct raw_task {
 	s32		exit_code;		/* Unavailable at fork */
 	u64		exit_time_event;	/* Unavailable at fork */
 	struct qstr	cwd;
+	char		comm[16];
 };
 
 struct raw_exec {
