@@ -10,6 +10,11 @@
 #include "bpf_prog_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
+struct bpf_queue {
+	struct bpf_prog			*prog;
+	struct ring_buffer		*ringbuf;
+};
+
 static int	bpf_queue_populate(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
 
@@ -166,7 +171,7 @@ bpf_ringbuf_cb(void *vqq, void *vdata, size_t len)
 int
 bpf_queue_open(struct quark_queue *qq)
 {
-	struct bpf_queue	*bqq = &qq->bpf_queue;
+	struct bpf_queue	*bqq;
 	struct ring_buffer_opts	 ringbuf_opts;
 	struct bpf_program	*bp;
 	int			 error;
@@ -176,10 +181,15 @@ bpf_queue_open(struct quark_queue *qq)
 
 	libbpf_set_print(libbpf_print_fn);
 
+	if ((bqq = calloc(1, sizeof(*bqq))) == NULL)
+		return (-1);
+
+	qq->bpf_queue = bqq;
+
 	bqq->prog = bpf_prog__open();
 	if (bqq->prog == NULL) {
 		warn("bpf_prog__open");
-		return (-1);
+		goto fail;
 	}
 
 	/*
@@ -240,7 +250,7 @@ fail:
 static int
 bpf_queue_populate(struct quark_queue *qq)
 {
-	struct bpf_queue	*bqq = &qq->bpf_queue;
+	struct bpf_queue	*bqq = qq->bpf_queue;
 	int			 npop, space_left;
 
 	npop = 0;
@@ -257,15 +267,20 @@ bpf_queue_populate(struct quark_queue *qq)
 static void
 bpf_queue_close(struct quark_queue *qq)
 {
-	struct bpf_queue	*bqq = &qq->bpf_queue;
+	struct bpf_queue	*bqq = qq->bpf_queue;
 
-	if (bqq->prog) {
-		bpf_prog__destroy(bqq->prog);
-		bqq->prog = NULL;
-	}
-	if (bqq->ringbuf) {
-		ring_buffer__free(bqq->ringbuf);
-		bqq->ringbuf = NULL;
+	if (bqq != NULL) {
+		if (bqq->prog != NULL) {
+			bpf_prog__destroy(bqq->prog);
+			bqq->prog = NULL;
+		}
+		if (bqq->ringbuf != NULL) {
+			ring_buffer__free(bqq->ringbuf);
+			bqq->ringbuf = NULL;
+		}
+		free(bqq);
+		bqq = NULL;
+		qq->bpf_queue = NULL;
 	}
 	/* Closed in ring_buffer__free() */
 	qq->epollfd = -1;

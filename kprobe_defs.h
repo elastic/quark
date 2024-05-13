@@ -1,4 +1,5 @@
-#include "quark.h"
+#ifndef _KPROBE_DEFS_H
+#define _KPROBE_DEFS_H
 
 #define RPT0(_x)
 #define RPT1(_x) _x
@@ -206,3 +207,5 @@ struct kprobe *all_kprobes[] = {
 	&kp_exec_connector,
 	NULL
 };
+
+#endif	/* _KPROBE_DEFS_H */

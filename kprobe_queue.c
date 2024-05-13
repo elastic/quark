@@ -1,6 +1,10 @@
+#include <linux/perf_event.h>
+#include <linux/hw_breakpoint.h>
+
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/param.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
 
@@ -19,6 +23,223 @@
 #include "quark.h"
 
 #define PERF_MMAP_PAGES		16		/* Must be power of 2 */
+
+struct perf_sample_id {
+	u32	pid;
+	u32	tid;
+	u64	time;		/* See raw_event_insert() */
+	u32	cpu;
+	u32	cpu_unused;
+};
+
+struct perf_record_fork {
+	struct perf_event_header	header;
+	u32				pid;
+	u32				ppid;
+	u32				tid;
+	u32				ptid;
+	u64				time;
+	struct perf_sample_id		sample_id;
+};
+
+struct perf_record_exit {
+	struct perf_event_header	header;
+	u32				pid;
+	u32				ppid;
+	u32				tid;
+	u32				ptid;
+	u64				time;
+	struct perf_sample_id		sample_id;
+};
+
+struct perf_record_comm {
+	struct perf_event_header	header;
+	u32				pid;
+	u32				tid;
+	char				comm[];
+	/* followed by sample_id */
+};
+
+/*
+ * Kernels might actually have a different common area, so far we only
+ * need common_type, so hold onto that
+ */
+struct perf_sample_data_hdr {
+	/* this is the actual id from tracefs eg: sched_process_exec/id */
+	u16	 common_type;
+	/* ... */
+};
+
+struct perf_sample_data_loc {
+	u16	offset;
+	u16	size;
+};
+
+struct perf_record_sample {
+	struct perf_event_header	header;
+	struct perf_sample_id		sample_id;
+	u32				data_size;
+	char				data[];
+};
+
+struct perf_record_lost {
+	struct perf_event_header	header;
+	u64				id;
+	u64				lost;
+	struct perf_sample_id		sample_id;
+};
+
+struct perf_event {
+	union {
+		struct perf_event_header	header;
+		struct perf_record_fork		fork;
+		struct perf_record_exit		exit;
+		struct perf_record_comm		comm;
+		struct perf_record_sample	sample;
+		struct perf_record_lost		lost;
+	};
+};
+
+struct perf_mmap {
+	struct perf_event_mmap_page	*metadata;
+	size_t				 mapped_size;
+	size_t				 data_size;
+	size_t				 data_mask;
+	u8				*data_start;
+	u64				 data_tmp_tail;
+	u8				 wrapped_event_buf[4096] __aligned(8);
+};
+
+struct perf_group_leader {
+	TAILQ_ENTRY(perf_group_leader)	 entry;
+	int				 fd;
+	int				 cpu;
+	struct perf_event_attr		 attr;
+	struct perf_mmap		 mmap;
+};
+
+struct exec_sample {
+	struct perf_sample_data_loc	filename;
+	s32				pid;
+	s32				old_pid;
+};
+
+#define MAX_PWD		7
+
+/* Sorted by alignment restriction, 64->32->16->8 */
+struct task_sample {
+	/* 64bit */
+	u64	probe_ip;
+	u64	cap_inheritable;
+	u64	cap_permitted;
+	u64	cap_effective;
+	u64	cap_bset;
+	u64	cap_ambient;
+	u64	start_boottime;
+	u64	root_k;
+	u64	mnt_root_k;
+	u64	mnt_mountpoint_k;
+	u64	pwd_k[MAX_PWD];
+	/* 32bit */
+	struct perf_sample_data_loc root_s;
+	struct perf_sample_data_loc mnt_root_s;
+	struct perf_sample_data_loc mnt_mountpoint_s;
+	struct perf_sample_data_loc pwd_s[MAX_PWD];
+	struct perf_sample_data_loc comm;
+	u32	uid;
+	u32	gid;
+	u32	suid;
+	u32	sgid;
+	u32	euid;
+	u32	egid;
+	u32	pid;
+	u32	tid;
+	s32	exit_code;
+	/* 16bit */
+	/* 8bit */
+};
+
+struct exec_connector_sample {
+	u64				probe_ip;
+	u64				argc;
+	u64				stack[100];
+	struct perf_sample_data_loc	comm;
+};
+
+struct kprobe_state {
+	TAILQ_ENTRY(kprobe_state)	 entry;
+	struct kprobe			*k;
+	struct perf_event_attr		 attr;
+	int				 fd;
+	int				 cpu;
+	int				 group_fd;
+};
+
+struct kprobe_arg {
+	const char	*name;
+	const char	*reg;
+	const char	*typ;
+	const char	*arg_dsl;
+};
+
+struct kprobe {
+	char			 name[256];
+	const char		*target;
+	int			 sample_kind;
+	int			 is_kret;
+	struct kprobe_arg	 args[];
+};
+
+struct path_ctx {
+	char	*root;
+	u64	 root_k;
+	char	*mnt_root;
+	u64	 mnt_root_k;
+	char	*mnt_mountpoint;
+	u64	 mnt_mountpoint_k;
+	struct {
+		char	*pwd;
+		u64	 pwd_k;
+	} pwd[MAX_PWD];
+};
+
+/*
+ * Kprobe sample formats
+ */
+enum sample_kinds {
+	EXEC_SAMPLE = 1,
+	WAKE_UP_NEW_TASK_SAMPLE,
+	EXIT_THREAD_SAMPLE,
+	EXEC_CONNECTOR_SAMPLE
+};
+
+/*
+ * The actual probe definitions, they're too big and ugly so they get a separate
+ * file
+ */
+#include "kprobe_defs.h"
+
+/*
+ * Queue backend state
+ */
+TAILQ_HEAD(perf_group_leaders, perf_group_leader);
+TAILQ_HEAD(kprobe_states, kprobe_state);
+
+struct kprobe_queue {
+	struct perf_group_leaders	 perf_group_leaders;
+	int				 num_perf_group_leaders;
+	struct kprobe_states		 kprobe_states;
+};
+
+static int	kprobe_queue_populate(struct quark_queue *);
+static void	kprobe_queue_close(struct quark_queue *);
+
+struct quark_queue_ops queue_ops_kprobe = {
+	.open	  = kprobe_queue_open,
+	.populate = kprobe_queue_populate,
+	.close	  = kprobe_queue_close,
+};
+
 #define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
 
 /* matches each sample event to a kind like EXEC_SAMPLE, FOO_SAMPLE */
@@ -29,15 +250,6 @@ u8	id_to_sample_kind[MAX_SAMPLE_IDS];
  */
 ssize_t	probe_data_body_offset = -1;
 int	kprobe_queue_refs;
-
-static int	kprobe_queue_populate(struct quark_queue *);
-static void	kprobe_queue_close(struct quark_queue *);
-
-struct quark_queue_ops queue_ops_kprobe = {
-	.open	  = kprobe_queue_open,
-	.populate = kprobe_queue_populate,
-	.close	  = kprobe_queue_close,
-};
 
 static char *
 str_of_dataloc(struct perf_record_sample *sample,
@@ -104,6 +316,18 @@ build_path(struct path_ctx *ctx, struct qstr *dst)
 
 	/* XXX double copy XXX */
 	return (qstr_strcpy(dst, p));
+}
+
+static int
+qstr_copy_data_loc(struct qstr *qstr,
+    struct perf_record_sample *sample, struct perf_sample_data_loc *data_loc)
+{
+	/* size includes NUL */
+	if (qstr_ensure(qstr, data_loc->size) == -1)
+		return (-1);
+	memcpy(qstr->p, sample->data + data_loc->offset, data_loc->size);
+
+	return (data_loc->size);
 }
 
 static struct raw_event *
@@ -854,7 +1078,7 @@ perf_open_kprobe(struct kprobe *k, int cpu, int group_fd)
 int
 kprobe_queue_open(struct quark_queue *qq)
 {
-	struct kprobe_queue		*kqq = &qq->kprobe_queue;
+	struct kprobe_queue		*kqq;
 	struct perf_group_leader	*pgl;
 	struct kprobe			*k;
 	struct kprobe_state		*ks;
@@ -867,6 +1091,14 @@ kprobe_queue_open(struct quark_queue *qq)
 	/* Don't go to fail since it will kprobe_unref() */
 	if (kprobe_ref() == -1)
 		return (-1);
+
+	if ((kqq = calloc(1, sizeof(*kqq))) == NULL)
+		goto fail;
+
+	TAILQ_INIT(&kqq->perf_group_leaders);
+	kqq->num_perf_group_leaders = 0;
+	TAILQ_INIT(&kqq->kprobe_states);
+	qq->kprobe_queue = kqq;
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
 		pgl = perf_open_group_leader(i);
@@ -928,7 +1160,7 @@ fail:
 static int
 kprobe_queue_populate(struct quark_queue *qq)
 {
-	struct kprobe_queue		*kqq = &qq->kprobe_queue;
+	struct kprobe_queue		*kqq = qq->kprobe_queue;
 	int				 empty_rings, num_rings, npop;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
@@ -967,31 +1199,39 @@ kprobe_queue_populate(struct quark_queue *qq)
 static void
 kprobe_queue_close(struct quark_queue *qq)
 {
-	struct kprobe_queue		*kqq = &qq->kprobe_queue;
+	struct kprobe_queue		*kqq = qq->kprobe_queue;
 	struct perf_group_leader	*pgl;
 	struct kprobe_state		*ks;
 
-	/* Stop and close the perf rings */
-	while ((pgl = TAILQ_FIRST(&kqq->perf_group_leaders)) != NULL) {
-		/* XXX PERF_IOC_FLAG_GROUP see bugs */
-		if (pgl->fd != -1) {
-			if (ioctl(pgl->fd, PERF_EVENT_IOC_DISABLE,
-			    PERF_IOC_FLAG_GROUP) == -1)
-				warnx("ioctl PERF_EVENT_IOC_DISABLE:");
-			close(pgl->fd);
+	if (kqq != NULL) {
+		/* Stop and close the perf rings */
+		while ((pgl = TAILQ_FIRST(&kqq->perf_group_leaders)) != NULL) {
+			/* XXX PERF_IOC_FLAG_GROUP see bugs */
+			if (pgl->fd != -1) {
+				if (ioctl(pgl->fd, PERF_EVENT_IOC_DISABLE,
+				    PERF_IOC_FLAG_GROUP) == -1)
+					warnx("ioctl PERF_EVENT_IOC_DISABLE:");
+				close(pgl->fd);
+			}
+			if (pgl->mmap.metadata != NULL) {
+				if (munmap(pgl->mmap.metadata,
+				    pgl->mmap.mapped_size) != 0)
+					warn("munmap");
+			}
+			TAILQ_REMOVE(&kqq->perf_group_leaders, pgl, entry);
+			free(pgl);
 		}
-		if (pgl->mmap.metadata != NULL)
-			if (munmap(pgl->mmap.metadata, pgl->mmap.mapped_size) != 0)
-				warn("munmap");
-		TAILQ_REMOVE(&kqq->perf_group_leaders, pgl, entry);
-		free(pgl);
-	}
-	/* Clean up all state allocated to kprobes */
-	while ((ks = TAILQ_FIRST(&kqq->kprobe_states)) != NULL) {
-		if (ks->fd != -1)
-			close(ks->fd);
-		TAILQ_REMOVE(&kqq->kprobe_states, ks, entry);
-		free(ks);
+		/* Clean up all state allocated to kprobes */
+		while ((ks = TAILQ_FIRST(&kqq->kprobe_states)) != NULL) {
+			if (ks->fd != -1)
+				close(ks->fd);
+			TAILQ_REMOVE(&kqq->kprobe_states, ks, entry);
+			free(ks);
+		}
+
+		free(kqq);
+		kqq = NULL;
+		qq->kprobe_queue = NULL;
 	}
 	/* Clean up epoll instance */
 	if (qq->epollfd != -1) {

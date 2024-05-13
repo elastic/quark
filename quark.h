@@ -1,13 +1,6 @@
 #ifndef _QUARK_H_
 #define _QUARK_H_
 
-/* Linux specific */
-#include <linux/perf_event.h>
-#include <linux/hw_breakpoint.h>
-
-/* Sys */
-#include <sys/param.h>		/* MAXPATHLEN */
-
 /* Misc types */
 #include <stdio.h>
 
@@ -43,18 +36,13 @@ int	quark_event_dump(struct quark_event *, FILE *);
 int	quark_btf_init(void);
 ssize_t	quark_btf_offset(const char *);
 
-/* qutil.c */
-struct qstr {
-	char	*p;
-	char	 small[64];
-};
-
 /* bpf_queue.c */
 int	bpf_queue_open(struct quark_queue *);
 
 /* kprobe_queue.c */
 int	kprobe_queue_open(struct quark_queue *);
 
+/* XXX terrible name XXX */
 struct args {
 	char		*buf;
 	size_t		 buf_len;
@@ -62,16 +50,17 @@ struct args {
 	const char	*argv[];
 };
 
-struct perf_record_sample;
-struct perf_sample_data_loc;
+/* qutil.c */
+struct qstr {
+	char	*p;
+	char	 small[64];
+};
 
 ssize_t	 qread(int, void *, size_t);
 int	 qwrite(int, const void *, size_t);
 ssize_t	 qreadlinkat(int, const char *, char *, size_t);
 void	 qstr_init(struct qstr *);
 int	 qstr_ensure(struct qstr *, size_t);
-int	 qstr_copy_data_loc(struct qstr *, struct perf_record_sample *,
-    struct perf_sample_data_loc *);
 int	 qstr_memcpy(struct qstr *, const void *, size_t);
 int	 qstr_strcpy(struct qstr *, const char *);
 void	 qstr_free(struct qstr *);
@@ -83,9 +72,6 @@ char	*find_line_p(const char *, const char *);
 char	*load_file_nostat(int, size_t *);
 struct args *args_make(struct quark_event *);
 void	 args_free(struct args *);
-
-/* kprobe.c */
-extern struct kprobe *all_kprobes[];
 
 /*
  * Time helpers
@@ -101,201 +87,6 @@ extern struct kprobe *all_kprobes[];
 #ifndef MS_TO_NS
 #define MS_TO_NS(_x)	((u64)(_x) * NS_PER_MS)
 #endif /* MS_TO_NS */
-
-/*
- * Perf related declarations
- */
-struct perf_sample_id {
-	u32	pid;
-	u32	tid;
-	u64	time;		/* See raw_event_insert() */
-	u32	cpu;
-	u32	cpu_unused;
-};
-
-struct perf_record_fork {
-	struct perf_event_header	header;
-	u32				pid;
-	u32				ppid;
-	u32				tid;
-	u32				ptid;
-	u64				time;
-	struct perf_sample_id		sample_id;
-};
-
-struct perf_record_exit {
-	struct perf_event_header	header;
-	u32				pid;
-	u32				ppid;
-	u32				tid;
-	u32				ptid;
-	u64				time;
-	struct perf_sample_id		sample_id;
-};
-
-struct perf_record_comm {
-	struct perf_event_header	header;
-	u32				pid;
-	u32				tid;
-	char				comm[];
-	/* followed by sample_id */
-};
-
-/*
- * Kernels might actually have a different common area, so far we only
- * need common_type, so hold onto that
- */
-struct perf_sample_data_hdr {
-	/* this is the actual id from tracefs eg: sched_process_exec/id */
-	u16	 common_type;
-	/* ... */
-};
-
-struct perf_sample_data_loc {
-	u16	offset;
-	u16	size;
-};
-
-struct perf_record_sample {
-	struct perf_event_header	header;
-	struct perf_sample_id		sample_id;
-	u32				data_size;
-	char				data[];
-};
-
-struct perf_record_lost {
-	struct perf_event_header	header;
-	u64				id;
-	u64				lost;
-	struct perf_sample_id		sample_id;
-};
-
-struct perf_event {
-	union {
-		struct perf_event_header	header;
-		struct perf_record_fork		fork;
-		struct perf_record_exit		exit;
-		struct perf_record_comm		comm;
-		struct perf_record_sample	sample;
-		struct perf_record_lost		lost;
-	};
-};
-
-struct perf_mmap {
-	struct perf_event_mmap_page	*metadata;
-	size_t				 mapped_size;
-	size_t				 data_size;
-	size_t				 data_mask;
-	u8				*data_start;
-	u64				 data_tmp_tail;
-	u8				 wrapped_event_buf[4096] __aligned(8);
-};
-
-struct perf_group_leader {
-	TAILQ_ENTRY(perf_group_leader)	 entry;
-	int				 fd;
-	int				 cpu;
-	struct perf_event_attr		 attr;
-	struct perf_mmap		 mmap;
-};
-
-/*
- * Quark sample formats
- */
-enum sample_kinds {
-	EXEC_SAMPLE = 1,
-	WAKE_UP_NEW_TASK_SAMPLE,
-	EXIT_THREAD_SAMPLE,
-	EXEC_CONNECTOR_SAMPLE
-};
-
-struct exec_sample {
-	struct perf_sample_data_loc	filename;
-	s32				pid;
-	s32				old_pid;
-};
-
-#define MAX_PWD		7
-
-/* Sorted by alignment restriction, 64->32->16->8 */
-struct task_sample {
-	/* 64bit */
-	u64	probe_ip;
-	u64	cap_inheritable;
-	u64	cap_permitted;
-	u64	cap_effective;
-	u64	cap_bset;
-	u64	cap_ambient;
-	u64	start_boottime;
-	u64	root_k;
-	u64	mnt_root_k;
-	u64	mnt_mountpoint_k;
-	u64	pwd_k[MAX_PWD];
-	/* 32bit */
-	struct perf_sample_data_loc root_s;
-	struct perf_sample_data_loc mnt_root_s;
-	struct perf_sample_data_loc mnt_mountpoint_s;
-	struct perf_sample_data_loc pwd_s[MAX_PWD];
-	struct perf_sample_data_loc comm;
-	u32	uid;
-	u32	gid;
-	u32	suid;
-	u32	sgid;
-	u32	euid;
-	u32	egid;
-	u32	pid;
-	u32	tid;
-	s32	exit_code;
-	/* 16bit */
-	/* 8bit */
-};
-
-struct exec_connector_sample {
-	u64				probe_ip;
-	u64				argc;
-	u64				stack[100];
-	struct perf_sample_data_loc	comm;
-};
-
-/*
- * Kprobe related declarations
- */
-struct kprobe_arg {
-	const char	*name;
-	const char	*reg;
-	const char	*typ;
-	const char	*arg_dsl;
-};
-
-struct kprobe {
-	char			 name[256];
-	const char		*target;
-	int			 sample_kind;
-	int			 is_kret;
-	struct kprobe_arg	 args[];
-};
-
-struct kprobe_state {
-	TAILQ_ENTRY(kprobe_state)	 entry;
-	struct kprobe			*k;
-	struct perf_event_attr		 attr;
-	int				 fd;
-	int				 cpu;
-	int				 group_fd;
-};
-
-struct path_ctx {
-	char	*root;
-	u64	 root_k;
-	char	*mnt_root;
-	u64	 mnt_root_k;
-	char	*mnt_mountpoint;
-	u64	 mnt_mountpoint_k;
-	struct {
-		char	*pwd;
-		u64	 pwd_k;
-	} pwd[MAX_PWD];
-};
 
 /*
  * Raw events
@@ -401,16 +192,6 @@ RB_HEAD(event_by_pid, quark_event);
 TAILQ_HEAD(quark_event_list, quark_event);
 
 /*
- * List of all ring buffer leaders, we have on per cpu.
- */
-TAILQ_HEAD(perf_group_leaders, perf_group_leader);
-
-/*
- * List of online kprobes.
- */
-TAILQ_HEAD(kprobe_states, kprobe_state);
-
-/*
  * Main external working set, user passes this back and forth, members only have
  * a meaning if its respective flag is set, say proc_cap_inheritable should only
  * be meaningful if flags & QUARK_F_PROC.
@@ -487,7 +268,8 @@ struct quark_queue_ops {
  * Quark Queue (qq) is the main structure the user interacts with, it acts as
  * our main storage datastructure.
  */
-struct ring_buffer;
+struct bpf_queue;
+struct kprobe_queue;
 struct quark_queue {
 	struct raw_event_by_time	 raw_event_by_time;
 	struct raw_event_by_pidtime	 raw_event_by_pidtime;
@@ -506,15 +288,8 @@ struct quark_queue {
 	int				 epollfd;
 	/* Backend related state */
 	struct quark_queue_ops		*queue_ops;
-	struct kprobe_queue {
-		struct perf_group_leaders	 perf_group_leaders;
-		int				 num_perf_group_leaders;
-		struct kprobe_states		 kprobe_states;
-	} kprobe_queue;
-	struct bpf_queue {
-		struct bpf_prog			*prog;
-		struct ring_buffer		*ringbuf;
-	} bpf_queue;
+	struct kprobe_queue		*kprobe_queue;
+	struct bpf_queue		*bpf_queue;
 };
 
 #endif /* _QUARK_H_ */

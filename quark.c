@@ -5,13 +5,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fts.h>
-#include <poll.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "quark.h"
 
@@ -1213,7 +1214,6 @@ quark_queue_block(struct quark_queue *qq)
 int
 quark_queue_open(struct quark_queue *qq, int flags)
 {
-	struct kprobe_queue		*kqq = &qq->kprobe_queue;
 	struct quark_event		*qev;
 
 	if (quark_init() == -1)
@@ -1225,9 +1225,6 @@ quark_queue_open(struct quark_queue *qq, int flags)
 	if (!(flags & (QQ_KPROBE | QQ_EBPF)))
 		flags |= QQ_KPROBE | QQ_EBPF;
 
-	TAILQ_INIT(&kqq->perf_group_leaders);
-	kqq->num_perf_group_leaders = 0;
-	TAILQ_INIT(&kqq->kprobe_states);
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
 	RB_INIT(&qq->event_by_pid);

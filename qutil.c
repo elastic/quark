@@ -2,8 +2,10 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "quark.h"
 
@@ -78,18 +80,6 @@ qstr_ensure(struct qstr *qstr, size_t n)
 	}
 
 	return (0);
-}
-
-int
-qstr_copy_data_loc(struct qstr *qstr,
-    struct perf_record_sample *sample, struct perf_sample_data_loc *data_loc)
-{
-	/* size includes NUL */
-	if (qstr_ensure(qstr, data_loc->size) == -1)
-		return (-1);
-	memcpy(qstr->p, sample->data + data_loc->offset, data_loc->size);
-
-	return (data_loc->size);
 }
 
 int
