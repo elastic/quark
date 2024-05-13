@@ -27,28 +27,7 @@ libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 
 	return (0);
 }
-#if 0
-static const char *
-ebpf_events_type_to_str(u64 type)
-{
-	switch (type) {
-	case EBPF_EVENT_PROCESS_FORK:
-		return "EBPF_EVENT_PROCESS_FORK";
-	case EBPF_EVENT_PROCESS_EXEC:
-		return "EBPF_EVENT_PROCESS_EXEC";
-	case EBPF_EVENT_PROCESS_EXIT:
-		return "EBPF_EVENT_PROCESS_EXIT";
-	case EBPF_EVENT_PROCESS_SETSID:
-		return "EBPF_EVENT_PROCESS_SETSID";
-	case EBPF_EVENT_PROCESS_SETUID:
-		return "EBPF_EVENT_PROCESS_SETUID";
-	case EBPF_EVENT_PROCESS_SETGID:
-		return "EBPF_EVENT_PROCESS_SETGID";
-	default:
-		return "unknown";
-	}
-}
-#endif
+
 static void
 ebpf_events_to_task(struct ebpf_pid_info *pids, struct ebpf_cred_info *creds,
     struct raw_task *task, u32 *pid)

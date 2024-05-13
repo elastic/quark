@@ -46,30 +46,6 @@ str_of_dataloc(struct perf_record_sample *sample,
 	return (sample->data + data_loc->offset);
 }
 
-#if 0
-/*
- * Copies out the string pointed to by data size, if retval is >= than dst_size,
- * it means we truncated. May return -1 on bad values.
- */
-static ssize_t
-strlcpy_data_loc(void *dst, ssize_t dst_size,
-    struct perf_record_sample *sample, struct perf_sample_data_loc *data_loc)
-{
-	ssize_t				 n;
-	char				*p = dst, *data;
-
-	p = dst;
-	n = min(dst_size, data_loc->size);
-	if (n <= 0)
-		return (-1);
-	data = sample->data;
-	memcpy(p, data + data_loc->offset, n);
-	/* never trust the kernel */
-	p[n - 1] = 0;
-
-	return (n - 1);
-}
-#endif
 static inline int
 sample_kind_of_id(int id)
 {
@@ -93,13 +69,6 @@ sample_data_id(struct perf_record_sample *sample)
 	struct perf_sample_data_hdr *h = (struct perf_sample_data_hdr *)sample->data;
 	return (h->common_type);
 }
-#if 0
-static inline int
-sample_kind(struct perf_record_sample *sample)
-{
-	return (sample_kind_of_id(sample_data_id(sample)));
-}
-#endif
 
 static int
 build_path(struct path_ctx *ctx, struct qstr *dst)
@@ -668,29 +637,7 @@ kprobe_build_string(struct kprobe *k)
 
 	return (p);
 }
-#if 0
-static int
-kprobe_toggle(struct kprobe *k, int enable)
-{
-	int	fd;
-	ssize_t n;
 
-	if ((fd = open_tracing(O_WRONLY, "events/kprobes/%s/enable", k->name))
-	    == -1)
-		return (-1);
-	if (enable)
-		n = qwrite(fd, "1", 1);
-	else
-		n = qwrite(fd, "0", 1);
-	close(fd);
-	if (n == -1)
-		return (-1);
-
-	return (0);
-}
-#define kprobe_enable(_k)	kprobe_toggle((_k), 1)
-#define kprobe_disable(_k)	kprobe_toggle((_k), 0)
-#endif
 static int
 kprobe_uninstall(struct kprobe *k)
 {
