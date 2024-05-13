@@ -100,8 +100,9 @@ quark-btf: quark-btf.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
 
 README.md: quark.7
-	$(call msg, MANDOC,$@)
+	$(call msg,MANDOC,$@)
 	$(Q)mandoc -T markdown -I os=$(shell uname -s) $< > $@
+	$(Q)sed -i '$$ d' $@ # Chomp last line
 
 eebpf-sync:
 	$(Q)test $(EEBPF_PATH) || \

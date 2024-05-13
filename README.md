@@ -303,4 +303,3 @@ quark-mon(8)
 **quark**
 started in April 2024.
 
-Linux - May 8, 2024
