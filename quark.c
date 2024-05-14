@@ -1227,7 +1227,7 @@ quark_queue_block(struct quark_queue *qq)
 
 	if (qq->epollfd == -1)
 		return (errno = EINVAL, -1);
-	if (epoll_wait(qq->epollfd, &ev, 1, 1000) == -1)
+	if (epoll_wait(qq->epollfd, &ev, 1, 100) == -1)
 		return (-1);
 
 	return (0);
