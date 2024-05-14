@@ -104,6 +104,8 @@ README.md: quark.7
 	$(Q)mandoc -T markdown -I os=$(shell uname -s) $< > $@
 	$(Q)sed -i '$$ d' $@ # Chomp last line
 
+doc: manlint manhtml README.md
+
 eebpf-sync:
 	$(Q)test $(EEBPF_PATH) || \
 		(echo "usage: make eebpf-sync EEBPF_PATH=/elastic-ebpf-path"; exit 1)
@@ -119,8 +121,16 @@ cleanall: clean
 	$(Q)rm -f $(SVGS)
 	$(Q)make -C $(LIBBPF_SRC) clean
 
+manhtml:
+	$(call msg,MKDIR)
+	$(Q)mkdir -p manhtml
+	$(call msg,MANDOC)
+	$(Q)for x in *.[378]; do \
+		mandoc -Thtml -Oman=%N.%S.html $$x > manhtml/$$x.html; \
+	done
+
 manlint:
-	$(call msg, MANDOC)
+	$(call msg,MANDOC)
 	$(Q)mandoc -Tlint *.[378] || true
 
-.PHONY: all clean cleanall manlint eebpf-sync
+.PHONY: all doc eebpf-sync clean cleanall manhtml manlint

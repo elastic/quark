@@ -160,9 +160,17 @@ is quite big.
 
 Other useful build targets include:
 
+*doc*
+
+> Shorthand for manlint+manhtml+README.md, see below.
+
 *manlint*
 
 > Calls the linter for all manpages.
+
+*manhtml*
+
+> Generates HTML files for the manpges in manhtml/.
 
 *svg*
 
@@ -171,7 +179,7 @@ Other useful build targets include:
 
 *README.md*
 
-> Generate
+> Generates
 > *README.md*
 > out of
 > *quark.7*.

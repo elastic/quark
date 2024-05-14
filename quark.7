@@ -151,13 +151,17 @@ is quite big.
 .Pp
 Other useful build targets include:
 .Bl -tag -width "manlint"
+.It Em doc
+Shorthand for manlint+manhtml+README.md, see below.
 .It Em manlint
 Calls the linter for all manpages.
+.It Em manhtml
+Generates HTML files for the manpges in manhtml/.
 .It Em svg
 Builds an SVG out of the DOT files produced by
 .Xr quark-mon 8 .
 .It Em README.md
-Generate
+Generates
 .Pa README.md
 out of
 .Pa quark.7 .
