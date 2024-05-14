@@ -1,0 +1,67 @@
+.Dd $Mdocdate$
+.Dt QUARK_QUEUE_GET_EPOLLFD 3
+.Os
+.Sh NAME
+.Nm quark_queue_get_epollfd
+.Nd fetch a file descriptor suitable for blocking with
+.Fn epoll_wait 2
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_queue_get_pollfd "struct quark_queue *qq"
+.Sh DESCRIPTION
+.Nm
+retrieves a epoll file descriptor with all the backend related descriptors
+already registered to it.
+This is to be used for integrating quark into an existing main-loop, as in, not
+calling
+.Fn quark_queue_block 3
+at all.
+.Pp
+It is
+.Em VERY IMPORTANT
+to establish a reasonable timeout when you call
+.Fn epoll_wait 2
+on it.
+Some backends will only make the file descriptor readable once a certain
+watermark of bytes have been read, so without the timeout you might get very
+late events.
+100ms is a safe value, the user should then call
+.Fn quark_queue_get_events 3
+to fetch the expired events.
+.Sh RETURN VALUES
+Returns the epoll file descriptor or -1 if deemed invalid, as trying to get the
+descriptor of a closed queue.
+.Va errno
+is set.
+.Sh EXAMPLES
+.Bd -literal -offset indent
+#include <sys/epoll.h>
+
+#include <quark.h>
+
+static int
+my_own_blocking(struct quark_queue *qq)
+{
+	int epollfd;
+
+	epollfd = quark_queue_get_epollfd(qq);
+	if (epollfd == -1)
+		return (-1);
+	if (epoll_wait(qq->epollfd, &ev, 1, 100) == -1)
+		return (-1);
+
+	return (0);
+}
+.Ed
+.Sh SEE ALSO
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_stats 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark 7 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8

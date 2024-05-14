@@ -39,10 +39,10 @@ Initializes the various lists and internal buffers of
 .Fa qq .
 .It
 If KPROBES is selected, it initializes one perf-ring per-cpu in order to
-collect process events, which creates a file descriptor per perf-ring.
-The file descriptors can be retrieved by the caller with
-.Fn quark_queue_get_fds 3 .
-This can be useful for integrating it in an existing main loop.
+collect process events, see
+.Fn quark_queue_get_epollfd 3
+and
+.Fn quark_queue_block 3 .
 .It
 If EBPF is selected, it initializes an EBPF ringbuffer, support for
 old style perf-rings with EBPF is currently not supported.
@@ -95,8 +95,8 @@ should NOT be issued.
 .Xr quark_event_lookup 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
+.Xr quark_queue_get_epollfd 3 ,
 .Xr quark_queue_get_events 3 ,
-.Xr quark_queue_get_fds 3 ,
 .Xr quark_queue_get_stats 3 ,
 .Xr quark 7 ,
 .Xr quark-btf 8 ,

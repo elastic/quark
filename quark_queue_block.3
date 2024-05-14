@@ -14,10 +14,12 @@ blocks the calling process until there would be events to be read with
 .Fn quark_queue_get_events 3 .
 .Pp
 Internally this will call
-.Fn poll 2
-for every file descriptor quark is interested, the call is also arranged with a
-reasonable timeout, this is need because perf-ring file descriptors only become
-readable once a certain amount of data surpasses a threshold.
+.Fn epoll_wait 2
+on the descriptor returned by
+.Fn quark_queue_get_epollfd 3 ,
+the call is also arranged with a reasonable timeout, this is needed because
+perf-ring file descriptors only become readable once a certain amount of data
+surpasses a threshold.
 On the return from
 .Nm ,
 the caller should call
@@ -34,8 +36,8 @@ is set.
 .Xr quark_event_dump 3 ,
 .Xr quark_event_lookup 3 ,
 .Xr quark_queue_close 3 ,
+.Xr quark_queue_get_epollfd 3 ,
 .Xr quark_queue_get_events 3 ,
-.Xr quark_queue_get_fds 3 ,
 .Xr quark_queue_get_stats 3 ,
 .Xr quark_queue_open 3 ,
 .Xr quark 7 ,

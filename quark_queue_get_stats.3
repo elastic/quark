@@ -44,7 +44,7 @@ It is increased by one when we didn't aggregate.
 .It Em lost
 A a counter of missed backend events.
 This can happen if the user didn't call
-.Em quark_queue_get_events 3
+.Fn quark_queue_get_events 3
 fast enough or if
 .Em quark
 simply can't handle the load, the former is way more likely.
