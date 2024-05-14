@@ -118,6 +118,7 @@ clean:
 
 cleanall: clean
 	$(call msg,CLEANALL)
+	$(Q)rm -rf manhtml
 	$(Q)rm -f $(SVGS)
 	$(Q)make -C $(LIBBPF_SRC) clean
 
