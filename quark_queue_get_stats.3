@@ -1,0 +1,63 @@
+.Dd $Mdocdate$
+.Dt QUARK_QUEUE_GET_STATS 3
+.Os
+.Sh NAME
+.Nm quark_queue_get_stats
+.Nd fetch queue statistics
+.Sh SYNOPSIS
+.In quark.h
+.Ft void
+.Fn quark_queue_get_stats "struct quark_queue *qq" "struct quark_queue_stats *qs"
+.Sh DESCRIPTION
+.Nm
+copies out all internal statistics from
+.Fa qq
+into
+.Fa qs .
+.Vt quark_queue_stats
+is defined as:
+.Bd -literal -offset indent
+struct quark_queue_stats {
+	u64	insertions;
+	u64	removals;
+	u64	aggregations;
+	u64	non_aggregations;
+	u64	lost;
+};
+.Ed
+.Bl -tag -width "non_aggregations"
+.It Em insertions
+A counter of all events that were inserted into the queue
+sorting/buffering structures, this is roughly 1:1 with the actual events we read
+from the backend.
+.It Em removals
+A counter of removals of the above, you can count alive items by
+counting the difference.
+.It Em aggregations
+A counter of how many events were aggregated, this is an absolute
+counter, meaning a FORK+EXEC+EXIT counts as 1 aggregation, which consumes 3
+events.
+.It Em non_aggregations
+The opposite of
+.Em aggregations .
+It is increased by one when we didn't aggregate.
+.It Em lost
+A a counter of missed backend events.
+This can happen if the user didn't call
+.Em quark_queue_get_events 3
+fast enough or if
+.Em quark
+simply can't handle the load, the former is way more likely.
+It is a state counter representing total loss, the user should compare to an old
+reading to know if it increased.
+.El
+.Sh SEE ALSO
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark 7 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8

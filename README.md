@@ -294,6 +294,7 @@ quark\_queue\_block(3),
 quark\_queue\_close(3),
 quark\_queue\_get\_events(3),
 quark\_queue\_get\_fds(3),
+quark\_queue\_get\_stats(3),
 quark\_queue\_open(3),
 quark-btf(8),
 quark-mon(8)

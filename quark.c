@@ -1214,6 +1214,12 @@ quark_queue_get_epollfd(struct quark_queue *qq)
 	return (qq->epollfd);
 }
 
+void
+quark_queue_get_stats(struct quark_queue *qq, struct quark_queue_stats *qs)
+{
+	*qs = qq->stats;
+}
+
 int
 quark_queue_block(struct quark_queue *qq)
 {
