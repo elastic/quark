@@ -1098,7 +1098,7 @@ kprobe_queue_open(struct quark_queue *qq)
 	TAILQ_INIT(&kqq->perf_group_leaders);
 	kqq->num_perf_group_leaders = 0;
 	TAILQ_INIT(&kqq->kprobe_states);
-	qq->kprobe_queue = kqq;
+	qq->queue_be = kqq;
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
 		pgl = perf_open_group_leader(i);
@@ -1160,7 +1160,7 @@ fail:
 static int
 kprobe_queue_populate(struct quark_queue *qq)
 {
-	struct kprobe_queue		*kqq = qq->kprobe_queue;
+	struct kprobe_queue		*kqq = qq->queue_be;
 	int				 empty_rings, num_rings, npop;
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
@@ -1199,7 +1199,7 @@ kprobe_queue_populate(struct quark_queue *qq)
 static void
 kprobe_queue_close(struct quark_queue *qq)
 {
-	struct kprobe_queue		*kqq = qq->kprobe_queue;
+	struct kprobe_queue		*kqq = qq->queue_be;
 	struct perf_group_leader	*pgl;
 	struct kprobe_state		*ks;
 
@@ -1231,7 +1231,7 @@ kprobe_queue_close(struct quark_queue *qq)
 
 		free(kqq);
 		kqq = NULL;
-		qq->kprobe_queue = NULL;
+		qq->queue_be = NULL;
 	}
 	/* Clean up epoll instance */
 	if (qq->epollfd != -1) {

@@ -184,7 +184,7 @@ bpf_queue_open(struct quark_queue *qq)
 	if ((bqq = calloc(1, sizeof(*bqq))) == NULL)
 		return (-1);
 
-	qq->bpf_queue = bqq;
+	qq->queue_be = bqq;
 
 	bqq->prog = bpf_prog__open();
 	if (bqq->prog == NULL) {
@@ -250,7 +250,7 @@ fail:
 static int
 bpf_queue_populate(struct quark_queue *qq)
 {
-	struct bpf_queue	*bqq = qq->bpf_queue;
+	struct bpf_queue	*bqq = qq->queue_be;
 	int			 npop, space_left;
 
 	npop = 0;
@@ -267,7 +267,7 @@ bpf_queue_populate(struct quark_queue *qq)
 static void
 bpf_queue_close(struct quark_queue *qq)
 {
-	struct bpf_queue	*bqq = qq->bpf_queue;
+	struct bpf_queue	*bqq = qq->queue_be;
 
 	if (bqq != NULL) {
 		if (bqq->prog != NULL) {
@@ -280,7 +280,7 @@ bpf_queue_close(struct quark_queue *qq)
 		}
 		free(bqq);
 		bqq = NULL;
-		qq->bpf_queue = NULL;
+		qq->queue_be = NULL;
 	}
 	/* Closed in ring_buffer__free() */
 	qq->epollfd = -1;

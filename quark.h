@@ -288,8 +288,7 @@ struct quark_queue {
 	int				 epollfd;
 	/* Backend related state */
 	struct quark_queue_ops		*queue_ops;
-	struct kprobe_queue		*kprobe_queue;
-	struct bpf_queue		*bpf_queue;
+	void				*queue_be;
 };
 
 #endif /* _QUARK_H_ */
