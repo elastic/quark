@@ -687,7 +687,7 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		qev->exit_code = raw_exit->exit_code;
 		if (raw_exit->exit_time_event)
 			qev->exit_time_event = quark.boottime + raw_exit->exit_time_event;
-		/* XXX considering updating task values since we have it here XXX */
+		/* XXX consider updating task values since we have them here XXX */
 	}
 	if (raw_exec != NULL) {
 		qev->flags |= QUARK_F_FILENAME;
@@ -701,9 +701,25 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		}
 	}
 	if (raw_exec_connector != NULL) {
+		qev->flags |= QUARK_F_PROC;
+
 		comm = raw_exec_connector->comm;
 		args = raw_exec_connector->args.p;
 		args_len = raw_exec_connector->args_len;
+		qev->proc_cap_inheritable = raw_exec_connector->cap_inheritable;
+		qev->proc_cap_permitted = raw_exec_connector->cap_permitted;
+		qev->proc_cap_effective = raw_exec_connector->cap_effective;
+		qev->proc_cap_bset = raw_exec_connector->cap_bset;
+		qev->proc_cap_ambient = raw_exec_connector->cap_ambient;
+		qev->proc_time_boot = quark.boottime + raw_exec_connector->start_boottime;
+		/* XXX No ppid for now, see how raw_task gets it */
+		/* qev->proc_ppid = raw_exec_connector->ppid; */
+		qev->proc_uid = raw_exec_connector->uid;
+		qev->proc_gid = raw_exec_connector->gid;
+		qev->proc_suid = raw_exec_connector->suid;
+		qev->proc_sgid = raw_exec_connector->sgid;
+		qev->proc_euid = raw_exec_connector->euid;
+		qev->proc_egid = raw_exec_connector->egid;
 	}
 	if (raw_comm != NULL)
 		comm = raw_comm->comm; /* raw_comm always overrides */

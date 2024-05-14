@@ -160,10 +160,26 @@ struct task_sample {
 };
 
 struct exec_connector_sample {
+	/* 64bit */
 	u64				probe_ip;
 	u64				argc;
-	u64				stack[100];
+	u64				stack[90];
+	u64				cap_inheritable;
+	u64				cap_permitted;
+	u64				cap_effective;
+	u64				cap_bset;
+	u64				cap_ambient;
+	u64				start_boottime;
+	/* 32bit */
 	struct perf_sample_data_loc	comm;
+	u32				uid;
+	u32				gid;
+	u32				suid;
+	u32				sgid;
+	u32				euid;
+	u32				egid;
+	/* 16bit */
+	/* 8bit */
 };
 
 struct kprobe_state {
@@ -442,6 +458,18 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 				warnx("can't copy args");
 			exec->args.p[exec->args_len - 1] = 0;
 		}
+		exec->cap_inheritable = exec_sample->cap_inheritable;
+		exec->cap_permitted = exec_sample->cap_permitted;
+		exec->cap_effective = exec_sample->cap_effective;
+		exec->cap_bset = exec_sample->cap_bset;
+		exec->cap_ambient = exec_sample->cap_ambient;
+		exec->start_boottime = exec_sample->start_boottime;
+		exec->uid = exec_sample->uid;
+		exec->gid = exec_sample->gid;
+		exec->suid = exec_sample->suid;
+		exec->sgid = exec_sample->sgid;
+		exec->euid = exec_sample->euid;
+		exec->egid = exec_sample->egid;
 		strlcpy(exec->comm, str_of_dataloc(sample, &exec_sample->comm),
 		    sizeof(exec->comm));
 		break;

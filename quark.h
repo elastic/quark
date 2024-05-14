@@ -142,6 +142,19 @@ struct raw_exec {
 struct raw_exec_connector {
 	struct qstr	args;
 	size_t		args_len;
+	u64		cap_inheritable;
+	u64		cap_permitted;
+	u64		cap_effective;
+	u64		cap_bset;
+	u64		cap_ambient;
+	u64		start_boottime;
+	/* XXX missing ppid see how raw_task derives it */
+	u32		uid;
+	u32		gid;
+	u32		suid;
+	u32		sgid;
+	u32		euid;
+	u32		egid;
 	char		comm[16];
 };
 
