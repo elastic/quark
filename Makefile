@@ -118,7 +118,7 @@ clean:
 
 cleanall: clean
 	$(call msg,CLEANALL)
-	$(Q)rm -rf manhtml
+	$(Q)rm -rf manhtml/*.html
 	$(Q)rm -f $(SVGS)
 	$(Q)make -C $(LIBBPF_SRC) clean
 
@@ -127,7 +127,7 @@ manhtml:
 	$(Q)mkdir -p manhtml
 	$(call msg,MANDOC)
 	$(Q)for x in *.[378]; do \
-		mandoc -Thtml -Oman=%N.%S.html $$x > manhtml/$$x.html; \
+		mandoc -Thtml -Ostyle=mandoc.css,man=%N.%S.html $$x > manhtml/$$x.html; \
 	done
 
 manlint:
