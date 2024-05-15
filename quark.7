@@ -10,24 +10,24 @@ is a library that provides a way to retrieve and listen to process events in
 linux systems.
 Its main purpose is to abstract different backends and to provide a common
 API for listening to system-wide events like
-.Fn fork 2 ,
-.Fn exec 3 ,
-.Fn exit 3
+.Xr fork 2 ,
+.Xr exec 3 ,
+.Xr exit 3
 and others.
 .Pp
 .Nm quark
 not only provides an API for listening to events, but also handles ordering,
 buffering and aggregation of said events.
 In its most basic form, a short lived process consisting of
-.Fn fork 2
+.Xr fork 2
 +
-.Fn exec 3
+.Xr exec 3
 +
-.Fn exit 3
+.Xr exit 3
 will be aggregated into one
 .Vt quark_event .
 An internal event cache is also kept that can be looked up via
-.Fn quark_event_lookup 3 .
+.Xr quark_event_lookup 3 .
 .Sh FEATURES
 .Bl -ohang
 .It Em ORDERING
@@ -48,15 +48,15 @@ aggregation.
 .Nm
 buffers and aggregates related events that happened close enough.
 The common case is generating a single event for the triple:
-.Fn fork 2 ,
-.Fn exec 3 ,
-.Fn exit 3 .
+.Xr fork 2 ,
+.Xr exec 3 ,
+.Xr exit 3 .
 There are rules on what can be aggregated, and only events of the same pid are
 aggregated.
 For example:
 .Nm
 won't aggregate two
-.Fn exec 3
+.Xr exec 3
 events, otherwise we would lose the effects of the first one.
 These rules will be exposed and configurable in the future.
 .It Em BUFFERING
@@ -92,7 +92,7 @@ so far, this context is then included in each event given to the user.
 The process table can also be queried, see below.
 .It Em PROCESS TABLE
 An internal cache of process events is kept that can be looked up via
-.Fn quark_event_lookup 3 .
+.Xr quark_event_lookup 3 .
 This cache keeps soon-to-be-purged elements for a little while so that you can
 still lookup a process that just exited.
 The table is initialized by scraping
@@ -199,7 +199,7 @@ No pointers to internal state are returned, data is allocated by the caller and
 the library copies out.
 .It
 No threads are created, the library is driven solely through
-.Fn quark_queue_get_events 3 .
+.Xr quark_queue_get_events 3 .
 .It
 Access to a
 .Vt quark_queue
@@ -207,24 +207,24 @@ must be synchronized by the user in the case of multithreading.
 .El
 .Sh BASIC USAGE
 The ball starts with
-.Fn quark_queue_open 3 .
+.Xr quark_queue_open 3 .
 .Pp
-.Fn quark_queue_open 3
+.Xr quark_queue_open 3
 initializes a
 .Vt quark_queue
 which holds the majority of runtime state used by library, this includes
 perf-rings, file descriptors, EBPF programs buffering data-structures and the
 like.
 It must be paired with a
-.Fn quark_queue_close 3
+.Xr quark_queue_close 3
 on exit.
 .Pp
-.Fn quark_queue_get_events 3
+.Xr quark_queue_get_events 3
 is the main driver of the library, it does the buffering, per-ring scanning,
 aggregation and event cache garbage collecting.
 In case there are no events it
 returns zero and the user is expected to call
-.Fn quark_queue_block 3
+.Xr quark_queue_block 3
 or equivalent.
 .Sh EXAMPLES
 .Bd -literal -offset indent
@@ -261,14 +261,14 @@ main(void)
 }
 .Ed
 .Sh FURTHER READING
-.Fn quark_queue_get_events 3
+.Xr quark_queue_get_events 3
 is the meat of the library and contains further useful documentation.
 .Pp
-.Fn quark-mon 8
+.Xr quark-mon 8
 is the easiest way to get started with
 .Nm .
 .Pp
-.Fn quark_queue_open 3
+.Xr quark_queue_open 3
 describes initialization options that can be useful.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,

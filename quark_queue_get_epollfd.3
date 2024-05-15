@@ -4,30 +4,30 @@
 .Sh NAME
 .Nm quark_queue_get_epollfd
 .Nd fetch a file descriptor suitable for blocking with
-.Fn epoll_wait 2
+.Xr epoll_wait 2
 .Sh SYNOPSIS
 .In quark.h
 .Ft int
-.Fn quark_queue_get_pollfd "struct quark_queue *qq"
+.Fn quark_queue_get_epollfd "struct quark_queue *qq"
 .Sh DESCRIPTION
 .Nm
 retrieves a epoll file descriptor with all the backend related descriptors
 already registered to it.
 This is to be used for integrating quark into an existing main-loop, as in, not
 calling
-.Fn quark_queue_block 3
+.Xr quark_queue_block 3
 at all.
 .Pp
 It is
 .Em VERY IMPORTANT
 to establish a reasonable timeout when you call
-.Fn epoll_wait 2
+.Xr epoll_wait 2
 on it.
 Some backends will only make the file descriptor readable once a certain
 watermark of bytes have been read, so without the timeout you might get very
 late events.
 100ms is a safe value, the user should then call
-.Fn quark_queue_get_events 3
+.Xr quark_queue_get_events 3
 to fetch the expired events.
 .Sh RETURN VALUES
 Returns the epoll file descriptor or -1 if deemed invalid, as trying to get the

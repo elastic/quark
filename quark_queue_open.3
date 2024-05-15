@@ -40,9 +40,9 @@ Initializes the various lists and internal buffers of
 .It
 If KPROBES is selected, it initializes one perf-ring per-cpu in order to
 collect process events, see
-.Fn quark_queue_get_epollfd 3
+.Xr quark_queue_get_epollfd 3
 and
-.Fn quark_queue_block 3 .
+.Xr quark_queue_block 3 .
 .It
 If EBPF is selected, it initializes an EBPF ringbuffer, support for
 old style perf-rings with EBPF is currently not supported.
@@ -54,7 +54,7 @@ for a snapshot of the existing processes in the system.
 is smart enough to open the rings before the scraping, as to be make sure no
 process is lost.
 These initial process events will be available on the first call to
-.Fn quark_queue_get_events 3
+.Xr quark_queue_get_events 3
 with the
 .Vt events
 member set to
@@ -88,7 +88,7 @@ Zero on success, -1 otherwise and
 .Va errno
 is set.
 In the case of an error, the internal state is cleared up and a
-.Fn quark_queue_close 3
+.Xr quark_queue_close 3
 should NOT be issued.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
@@ -108,5 +108,5 @@ threads must be synchronized by the caller, this is because there is global
 internal state that might change in
 .Nm
 and
-.Fn quark_queue_close 3 .
+.Xr quark_queue_close 3 .
 Notably there is a single KPROBE installation shared by all queues.

@@ -11,24 +11,24 @@ is a library that provides a way to retrieve and listen to process events in
 linux systems.
 Its main purpose is to abstract different backends and to provide a common
 API for listening to system-wide events like
-**fork**(*2*),
-**exec**(*3*),
-**exit**(*3*)
+fork(2),
+exec(3),
+exit(3)
 and others.
 
 **quark**
 not only provides an API for listening to events, but also handles ordering,
 buffering and aggregation of said events.
 In its most basic form, a short lived process consisting of
-**fork**(*2*)
+fork(2)
 \+
-**exec**(*3*)
+exec(3)
 \+
-**exit**(*3*)
+exit(3)
 will be aggregated into one
 *quark\_event*.
 An internal event cache is also kept that can be looked up via
-**quark\_event\_lookup**(*3*).
+quark\_event\_lookup(3).
 
 # FEATURES
 
@@ -51,15 +51,15 @@ aggregation.
 **quark**
 buffers and aggregates related events that happened close enough.
 The common case is generating a single event for the triple:
-**fork**(*2*),
-**exec**(*3*),
-**exit**(*3*).
+fork(2),
+exec(3),
+exit(3).
 There are rules on what can be aggregated, and only events of the same pid are
 aggregated.
 For example:
 **quark**
 won't aggregate two
-**exec**(*3*)
+exec(3)
 events, otherwise we would lose the effects of the first one.
 These rules will be exposed and configurable in the future.
 
@@ -97,7 +97,7 @@ The process table can also be queried, see below.
 
 *PROCESS TABLE*  
 An internal cache of process events is kept that can be looked up via
-**quark\_event\_lookup**(*3*).
+quark\_event\_lookup(3).
 This cache keeps soon-to-be-purged elements for a little while so that you can
 still lookup a process that just exited.
 The table is initialized by scraping
@@ -219,7 +219,7 @@ is a program for dumping BTF information used by
 	the library copies out.
 
 *	No threads are created, the library is driven solely through
-	**quark\_queue\_get\_events**(*3*).
+	quark\_queue\_get\_events(3).
 
 *	Access to a
 	*quark\_queue*
@@ -228,24 +228,24 @@ is a program for dumping BTF information used by
 # BASIC USAGE
 
 The ball starts with
-**quark\_queue\_open**(*3*).
+quark\_queue\_open(3).
 
-**quark\_queue\_open**(*3*)
+quark\_queue\_open(3)
 initializes a
 *quark\_queue*
 which holds the majority of runtime state used by library, this includes
 perf-rings, file descriptors, EBPF programs buffering data-structures and the
 like.
 It must be paired with a
-**quark\_queue\_close**(*3*)
+quark\_queue\_close(3)
 on exit.
 
-**quark\_queue\_get\_events**(*3*)
+quark\_queue\_get\_events(3)
 is the main driver of the library, it does the buffering, per-ring scanning,
 aggregation and event cache garbage collecting.
 In case there are no events it
 returns zero and the user is expected to call
-**quark\_queue\_block**(*3*)
+quark\_queue\_block(3)
 or equivalent.
 
 # EXAMPLES
@@ -284,14 +284,14 @@ or equivalent.
 
 # FURTHER READING
 
-**quark\_queue\_get\_events**(*3*)
+quark\_queue\_get\_events(3)
 is the meat of the library and contains further useful documentation.
 
-**quark-mon**(*8*)
+quark-mon(8)
 is the easiest way to get started with
 **quark**.
 
-**quark\_queue\_open**(*3*)
+quark\_queue\_open(3)
 describes initialization options that can be useful.
 
 # SEE ALSO

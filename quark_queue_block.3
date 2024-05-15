@@ -11,19 +11,19 @@
 .Sh DESCRIPTION
 .Nm
 blocks the calling process until there would be events to be read with
-.Fn quark_queue_get_events 3 .
+.Xr quark_queue_get_events 3 .
 .Pp
 Internally this will call
-.Fn epoll_wait 2
+.Xr epoll_wait 2
 on the descriptor returned by
-.Fn quark_queue_get_epollfd 3 ,
+.Xr quark_queue_get_epollfd 3 ,
 the call is also arranged with a reasonable timeout, this is needed because
 perf-ring file descriptors only become readable once a certain amount of data
 surpasses a threshold.
 On the return from
 .Nm ,
 the caller should call
-.Fn quark_queue_get_events 3
+.Xr quark_queue_get_events 3
 until it returns zero, signifying there are no more events to be read.
 See
 .Xr quark 7
