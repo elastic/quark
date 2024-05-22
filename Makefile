@@ -8,7 +8,7 @@ endif
 
 CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
 
-CPPFLAGS?=-D_GNU_SOURCE
+CPPFLAGS?= -D_GNU_SOURCE -Ilibbpf/src
 
 CDIAGFLAGS+= -Wall
 CDIAGFLAGS+= -Wextra
@@ -38,7 +38,7 @@ CLANG?= clang
 BPFTOOL?= bpftool
 
 # All EEBPF files we track for dependency
-EEBPF_FILES:= $(shell find ./elastic-ebpf)
+EEBPF_FILES:= $(shell find elastic-ebpf)
 EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/x86_64
 
 # LIBQUARK
@@ -48,30 +48,53 @@ LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
 
+# BSD elftoolchain
+ELFTOOLCHAIN_SRC:= elftoolchain
+ELFTOOLCHAIN_FILES:= $(shell find elftoolchain/{common,libelf} -name '*.[ch]')
+ELFTOOLCHAIN_FILES:= $(filter-out elftoolchain/libelftc/elftc_version.c, $(ELFTOOLCHAIN_FILES))
+ELFTOOLCHAIN_STATIC:= $(ELFTOOLCHAIN_SRC)/libelf/libelf_pic.a
+
 # Embedded LIBBPF
-LDFLAGS+= -lelf -lz
+LDFLAGS+= -lz
 LIBBPF_SRC:= libbpf/src
 LIBBPF_STATIC:= $(LIBBPF_SRC)/libbpf.a
-LIBBPF_DEPS:= $(wildcard libbpf/src/*.[ch]) $(wildcard libbpf/include/*.[ch])
+LIBBPF_DEPS:=	$(wildcard libbpf/src/*.[ch]) 		\
+		$(wildcard libbpf/include/*.[ch])	\
+		$(ELFTOOLCHAIN_FILES)
 
 # BPFPROG (kernel side)
 BPFPROG_OBJ:= bpf_prog.o
 BPFPROG_DEPS:= bpf_prog.c $(LIBBPF_DEPS) $(EEBPF_FILES)
 
-all: $(LIBBPF_STATIC) $(BPFPROG_OBJ) $(LIBQUARK_OBJS) $(LIBQUARK_STATIC) quark-mon quark-btf README.md
+all:	$(ELFTOOLCHAIN_STATIC)		\
+	$(LIBBPF_STATIC)		\
+	$(BPFPROG_OBJ)			\
+	$(LIBQUARK_STATIC)		\
+	quark-mon			\
+	quark-btf			\
+	README.md
+
+$(ELFTOOLCHAIN_STATIC): $(ELFTOOLCHAIN_FILES)
+	$(Q)make -C elftoolchain/libelf
 
 $(LIBBPF_STATIC): $(LIBBPF_DEPS)
-	$(call msg,MAKE,$@)
-	$(Q)make -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=y EXTRA_CFLAGS=-fPIC
+	$(Q)make -C $(LIBBPF_SRC)				\
+		BUILD_STATIC_ONLY=y				\
+		EXTRA_CFLAGS="-DQUARK -fPIC -I../../elftoolchain/libelf -I../../elftoolchain/common"
 
 $(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
 	$(call msg,AR,$@)
 	$(Q)ar rcs $@ $^
 
+%.o: %.c $(LIBQUARK_DEPS)
+	$(call msg,CC,$@)
+	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
+
 $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 	$(call msg,CLANG,bpf_prog.tmp.o)
-	$(Q)$(CLANG) -g -O2 -target bpf -D__KERNEL__ -D__TARGET_ARCH_x86 \
-		-Ilibbpf/include/uapi -Ilibbpf/src $(EEBPF_INCLUDES) \
+	$(Q)$(CLANG) -g -O2 -target bpf -D__KERNEL__ -D__TARGET_ARCH_x86	\
+		-Ilibbpf/include/uapi						\
+		-Ilibbpf/src $(EEBPF_INCLUDES)					\
 		-c bpf_prog.c -o bpf_prog.tmp.o
 	$(call msg,BPFTOOL,$@)
 	$(Q)$(BPFTOOL) gen object $@ bpf_prog.tmp.o
@@ -79,11 +102,7 @@ $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 	$(call msg,BPFTOOL,bpf_prog_skel.h)
 	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_prog_skel.h
 	$(call msg,SED,bpf_prog_skel.h)
-	$(Q)sed -i 's/<bpf\/libbpf.h>/\"libbpf\/src\/libbpf.h\"/' bpf_prog_skel.h
-
-%.o: %.c $(LIBQUARK_DEPS)
-	$(call msg,CC,$@)
-	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
+	$(Q)sed -i 's/<bpf\/libbpf.h>/\"libbpf.h\"/' bpf_prog_skel.h
 
 %.svg: %.dot
 	$(call msg,DOT,$@)
@@ -91,11 +110,11 @@ $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 
 svg: $(SVGS)
 
-quark-mon: quark-mon.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC)
+quark-mon: quark-mon.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
 
-quark-btf: quark-btf.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC)
+quark-btf: quark-btf.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
 
@@ -121,6 +140,7 @@ cleanall: clean
 	$(Q)rm -rf manhtml/*.html
 	$(Q)rm -f $(SVGS)
 	$(Q)make -C $(LIBBPF_SRC) clean
+	$(Q)make -C $(ELFTOOLCHAIN_SRC)/libelf clean
 
 manhtml:
 	$(call msg,MKDIR)
