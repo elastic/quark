@@ -141,11 +141,10 @@ builds its own
 since it needs BTF support from it.
 At the time of this writing,
 *libquark.a*
-also needs symbols from
-*libz*
-and
-*libelf*.
-An option will be given in the future to include both in the archive.
+also needs external symbols from
+*libz*.
+An embedded BSD libelf (elftoolchain) is included in the archive.
+An option will be given in the future for lean or full archives.
 
 While
 **quark**
