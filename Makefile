@@ -18,6 +18,7 @@ CDIAGFLAGS+= -Wcomment
 CDIAGFLAGS+= -Wformat
 CDIAGFLAGS+= -Wformat-security
 CDIAGFLAGS+= -Wimplicit
+CDIAGFLAGS+= -Wimplicit-fallthrough
 CDIAGFLAGS+= -Winline
 CDIAGFLAGS+= -Wmissing-declarations
 CDIAGFLAGS+= -Wmissing-prototypes
