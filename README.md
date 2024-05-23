@@ -194,7 +194,7 @@ Other useful build targets include:
 
 # LINKING
 
-	cc -o myprogram myprogram.c -lelf -lz libquark.a libbpf/src/libbpf.a
+	cc -o myprogram myprogram.c -lz libquark.a libbpf/src/libbpf.a
 
 # INCLUDED BINARIES
 
