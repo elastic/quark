@@ -48,6 +48,7 @@ LIBQUARK_DEPS:= $(wildcard *.h) bpf_prog_skel.h $(EEBPF_FILES)
 LIBQUARK_SRCS:= $(filter-out bpf_prog.c quark-mon.c quark-btf.c,$(wildcard *.c))
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
+LIBQUARK_STATIC_BIG:= libquark_big.a
 SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
 
 # ZLIB
@@ -81,6 +82,7 @@ all:	$(ZLIB_STATIC)			\
 	$(LIBBPF_STATIC)		\
 	$(BPFPROG_OBJ)			\
 	$(LIBQUARK_STATIC)		\
+	$(LIBQUARK_STATIC_BIG)		\
 	quark-mon			\
 	quark-btf			\
 	README.md
@@ -100,6 +102,12 @@ $(LIBBPF_STATIC): $(LIBBPF_DEPS)
 $(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
 	$(call msg,AR,$@)
 	$(Q)ar rcs $@ $^
+	$(call msg,AR,libquark_big.a)
+	$(Q)ar -M < libquark_big.mri
+
+$(LIBQUARK_STATIC_BIG): $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC) $(ZLIB_STATIC)
+	$(call msg,AR,$@)
+	$(Q)ar -M < libquark_big.mri
 
 %.o: %.c $(LIBQUARK_DEPS)
 	$(call msg,CC,$@)
@@ -125,11 +133,11 @@ $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 
 svg: $(SVGS)
 
-quark-mon: quark-mon.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC) $(ZLIB_STATIC)
+quark-mon: quark-mon.c $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
 
-quark-btf: quark-btf.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC) $(ZLIB_STATIC)
+quark-btf: quark-btf.c $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
 

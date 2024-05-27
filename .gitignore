@@ -6,6 +6,7 @@ cscope.*
 quark-mon
 quark-btf
 libquark.a
+libquark_big.a
 bpf_prog_skel.h
 manhtml/*.html
 elftoolchain/libelf/libelf_pic.a

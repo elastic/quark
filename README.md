@@ -129,23 +129,27 @@ will try to use the EBPF, falling back to KPROBE if it failed.
 
 # BUILDING
 
-*make*
-generates a
-*libquark.a*
-that can be linked with the user binary, be sure to clone the repository with
+Make sure to clone the repository recursively:
 *git clone --recursive*.
 
-**quark**
-builds its own
-*libbpf*
-since it needs BTF support from it.
+*make*
+generates a
+*libquark\_big.a*
+and a
+*libquark.a*.
 
-**quark**
-depends on symbols from libelf and libz, it includes its own build of a
+*libquark\_big.a*
+includes all needed dependencies in one big archive.
+This includes a
+*libbpf.a*,
 *libelf\_pic.a*
-from the elftoolchain project (BSD license), as well as a
+(from the elftoolchain project, BSD license),
+and a
 *libz.a*
-from zlib (zlib/LICENSE).
+(see zlib/LICENSE).
+See
+*LINKING*
+to lean how to link either.
 
 While
 **quark**
@@ -207,6 +211,8 @@ Other useful build targets include:
 
 # LINKING
 
+	cc -o myprogram myprogram.c libquark_big.a
+	OR
 	cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a
 
 # INCLUDED BINARIES

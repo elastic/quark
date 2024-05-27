@@ -120,23 +120,27 @@ The backend in use is transparent to the user and unless specified,
 will try to use the EBPF, falling back to KPROBE if it failed.
 .El
 .Sh BUILDING
-.Em make
-generates a
-.Pa libquark.a
-that can be linked with the user binary, be sure to clone the repository with
+Make sure to clone the repository recursively:
 .Em "git clone --recursive" .
 .Pp
-.Nm
-builds its own
-.Em libbpf
-since it needs BTF support from it.
+.Em make
+generates a
+.Pa libquark_big.a
+and a
+.Pa libquark.a .
 .Pp
-.Nm
-depends on symbols from libelf and libz, it includes its own build of a
+.Pa libquark_big.a
+includes all needed dependencies in one big archive.
+This includes a
+.Pa libbpf.a ,
 .Pa libelf_pic.a
-from the elftoolchain project (BSD license), as well as a
+(from the elftoolchain project, BSD license),
+and a
 .Pa libz.a
-from zlib (zlib/LICENSE).
+(see zlib/LICENSE).
+See
+.Sx LINKING
+to lean how to link either.
 .Pp
 While
 .Nm
@@ -184,6 +188,8 @@ make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf
 .El
 .Sh LINKING
 .Bd -literal
+cc -o myprogram myprogram.c libquark_big.a
+OR
 cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a
 .Ed
 .Sh INCLUDED BINARIES
