@@ -241,10 +241,16 @@ enum sample_kinds {
 TAILQ_HEAD(perf_group_leaders, perf_group_leader);
 TAILQ_HEAD(kprobe_states, kprobe_state);
 
+#define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
+
 struct kprobe_queue {
 	struct perf_group_leaders	 perf_group_leaders;
 	int				 num_perf_group_leaders;
 	struct kprobe_states		 kprobe_states;
+	ssize_t				 data_offset; /* body data off within a probe */
+	int				 qid;
+	/* matches each sample event to a kind like EXEC_SAMPLE, FOO_SAMPLE */
+	u8				 id_to_sample_kind[MAX_SAMPLE_IDS];
 };
 
 static int	kprobe_queue_populate(struct quark_queue *);
@@ -256,17 +262,6 @@ struct quark_queue_ops queue_ops_kprobe = {
 	.close	  = kprobe_queue_close,
 };
 
-#define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
-
-/* matches each sample event to a kind like EXEC_SAMPLE, FOO_SAMPLE */
-u8	id_to_sample_kind[MAX_SAMPLE_IDS];
-/*
- * This is the offset from the common area of a probe to the body. It is
- * almost always 8, but some older redhat kernels are different.
- */
-ssize_t	probe_data_body_offset = -1;
-int	kprobe_queue_refs;
-
 static char *
 str_of_dataloc(struct perf_record_sample *sample,
     struct perf_sample_data_loc *data_loc)
@@ -275,20 +270,20 @@ str_of_dataloc(struct perf_record_sample *sample,
 }
 
 static inline int
-sample_kind_of_id(int id)
+sample_kind_of_id(struct kprobe_queue *kqq, int id)
 {
 	if (unlikely(id <= 0 || id >= MAX_SAMPLE_IDS)) {
 		warnx("%s: invalid id %d", __func__, id);
 		return (errno = ERANGE, -1);
 	}
 
-	return (id_to_sample_kind[id]);
+	return (kqq->id_to_sample_kind[id]);
 }
 
 static inline void *
-sample_data_body(struct perf_record_sample *sample)
+sample_data_body(struct kprobe_queue *kqq, struct perf_record_sample *sample)
 {
-	return (sample->data + probe_data_body_offset);
+	return (sample->data + kqq->data_offset);
 }
 
 static inline int
@@ -349,16 +344,17 @@ qstr_copy_data_loc(struct qstr *qstr,
 static struct raw_event *
 perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 {
+	struct kprobe_queue	*kqq = qq->queue_be;
 	int			 id, kind;
 	ssize_t			 n;
 	struct raw_event	*raw = NULL;
 
 	id = sample_data_id(sample);
-	kind = sample_kind_of_id(id);
+	kind = sample_kind_of_id(kqq, id);
 
 	switch (kind) {
 	case EXEC_SAMPLE: {
-		struct exec_sample *exec = sample_data_body(sample);
+		struct exec_sample *exec = sample_data_body(kqq, sample);
 		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
 			return (NULL);
 		n = qstr_copy_data_loc(&raw->exec.filename, sample, &exec->filename);
@@ -368,7 +364,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
 	case EXIT_THREAD_SAMPLE: {
-		struct task_sample	*w = sample_data_body(sample);
+		struct task_sample	*w = sample_data_body(kqq, sample);
 		struct path_ctx		 pctx;
 		int			 i;
 		/*
@@ -436,7 +432,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	case EXEC_CONNECTOR_SAMPLE: {
 		char				*start, *p, *end;
 		int				 i;
-		struct exec_connector_sample	*exec_sample = sample_data_body(sample);
+		struct exec_connector_sample	*exec_sample = sample_data_body(kqq, sample);
 		struct raw_exec_connector	*exec;
 
 		if ((raw = raw_event_alloc(RAW_EXEC_CONNECTOR)) == NULL)
@@ -701,8 +697,8 @@ fetch_tracing_id(const char *tail)
 	return (id);
 }
 
-static int
-parse_probe_data_body_offset(void)
+static ssize_t
+parse_data_offset(void)
 {
 	int		 fd;
 	FILE		*f;
@@ -711,9 +707,6 @@ parse_probe_data_body_offset(void)
 	ssize_t		 n, data_offset;
 	size_t		 line_len;
 	int		 past_common;
-
-	if (probe_data_body_offset != -1)
-		return (0);
 
 	fd = open_tracing(O_RDONLY, "events/sched/sched_process_exec/format");
 	if (fd == -1)
@@ -748,13 +741,12 @@ parse_probe_data_body_offset(void)
 	}
 	free(line);
 	fclose(f);
-	probe_data_body_offset = data_offset;
 
-	return (0);
+	return (data_offset);
 }
 
 static int
-kprobe_exp(char *exp, ssize_t *off1)
+kprobe_exp(char *exp, ssize_t *off1, struct quark_btf *qbtf)
 {
 	ssize_t		 off;
 
@@ -782,12 +774,12 @@ kprobe_exp(char *exp, ssize_t *off1)
 			return (-1);
 		}
 		*p = 0;
-		if (kprobe_exp(pa, &ia) == -1) {
+		if (kprobe_exp(pa, &ia, qbtf) == -1) {
 			warnx("%s: %s is unresolved\n", __func__, pa);
 			free(o);
 			return (-1);
 		}
-		if (kprobe_exp(pb, &ib) == -1) {
+		if (kprobe_exp(pb, &ib, qbtf) == -1) {
 			warnx("%s: %s is unresolved\n", __func__, pb);
 			free(o);
 			return (-1);
@@ -802,7 +794,7 @@ kprobe_exp(char *exp, ssize_t *off1)
 		off = strtonum(exp, INT32_MIN, INT32_MAX, &errstr);
 		if (errstr == NULL)
 			break;
-		if ((off = quark_btf_offset(exp)) == -1) {
+		if ((off = quark_btf_offset(qbtf, exp)) == -1) {
 			warnx("%s: %s is unresolved\n", __func__, exp);
 			return (-1);
 		}
@@ -815,7 +807,7 @@ kprobe_exp(char *exp, ssize_t *off1)
 }
 
 static char *
-kprobe_make_arg(struct kprobe_arg *karg)
+kprobe_make_arg(struct kprobe_arg *karg, struct quark_btf *qbtf)
 {
 	int	 i;
 	ssize_t	 off;
@@ -844,7 +836,7 @@ kprobe_make_arg(struct kprobe_arg *karg)
 	for (pp = tokens; *pp != NULL; pp++) {
 		p = *pp;
 		last = kstr;
-		if (kprobe_exp(p, &off) == -1 ||
+		if (kprobe_exp(p, &off, qbtf) == -1 ||
 		    asprintf(&kstr, "+%zd(%s)", off, last) == -1) {
 			free(arg_dsl);
 			free(last);
@@ -864,19 +856,25 @@ kprobe_make_arg(struct kprobe_arg *karg)
 	return (kstr);
 }
 
+static void
+kprobe_tracefs_name(struct kprobe *k, u64 qid, char *buf, size_t len)
+{
+	snprintf(buf, len, "%s_%llu_%llu", k->name, (u64)getpid(), qid);
+}
+
 static char *
-kprobe_build_string(struct kprobe *k)
+kprobe_build_string(struct kprobe *k, char *name, struct quark_btf *qbtf)
 {
 	struct kprobe_arg	*karg;
 	char			*p, *o, *a;
 	int			 r;
 
-	r = asprintf(&p, "%c:%s %s", k->is_kret ? 'r' : 'p', k->name,
-	    k->target);
+	r = asprintf(&p, "%c:%s %s", k->is_kret ? 'r' : 'p',
+	    name, k->target);
 	if (r == -1)
 		return (NULL);
 	for (karg = k->args; karg->name != NULL; karg++) {
-		a = kprobe_make_arg(karg);
+		a = kprobe_make_arg(karg, qbtf);
 		if (a == NULL) {
 			free(p);
 			return (NULL);
@@ -893,15 +891,18 @@ kprobe_build_string(struct kprobe *k)
 }
 
 static int
-kprobe_uninstall(struct kprobe *k)
+kprobe_uninstall(struct kprobe *k, u64 qid)
 {
 	char	buf[4096];
 	ssize_t n;
 	int	fd;
+	char	fsname[MAXPATHLEN];
+
+	kprobe_tracefs_name(k, qid, fsname, sizeof(fsname));
 
 	if ((fd = open_tracing(O_WRONLY | O_APPEND, "kprobe_events")) == -1)
 		return (-1);
-	if (snprintf(buf, sizeof(buf), "-:%s", k->name) >=
+	if (snprintf(buf, sizeof(buf), "-:%s", fsname) >=
 	    (int)sizeof(buf)) {
 		close(fd);
 		return (-1);
@@ -920,15 +921,18 @@ kprobe_uninstall(struct kprobe *k)
  * easier.
  */
 static int
-kprobe_install(struct kprobe *k)
+kprobe_install(struct kprobe *k, u64 qid, struct quark_btf *qbtf)
 {
 	int	 fd;
 	ssize_t	 n;
 	char	*kstr;
+	char	 fsname[MAXPATHLEN];
 
-	if (kprobe_uninstall(k) == -1 && errno != ENOENT)
+	kprobe_tracefs_name(k, qid, fsname, sizeof(fsname));
+
+	if (kprobe_uninstall(k, qid) == -1 && errno != ENOENT)
 		warn("kprobe_uninstall");
-	if ((kstr = kprobe_build_string(k)) == NULL)
+	if ((kstr = kprobe_build_string(k, fsname, qbtf)) == NULL)
 		return (-1);
 	if ((fd = open_tracing(O_WRONLY, "kprobe_events")) == -1) {
 		free(kstr);
@@ -944,58 +948,41 @@ kprobe_install(struct kprobe *k)
 }
 
 static int
-kprobe_ref(void)
+kprobe_install_all(u64 qid)
 {
-	int		 i;
-	char		 pid[16];
-	static int	 renamed;
+	int			 i, r;
+	struct quark_btf	*qbtf;
 
-	/* Other live queues already installed it */
-	if (kprobe_queue_refs > 0)
-		goto done;
-	if (parse_probe_data_body_offset() != 0) {
-		warnx("%s: can't parse host probe data offset",
-		    __func__);
-		return (-1);
-	}
-	if (quark_btf_init() != 0) {
+	if ((qbtf = quark_btf_open()) == NULL) {
 		warnx("%s: can't initialize btf", __func__);
 		return (-1);
 	}
-	if (!renamed) {
-		snprintf(pid, sizeof(pid), "_%llu", (u64)getpid());
-		for (i = 0; all_kprobes[i] != NULL; i++) {
-			strlcat(all_kprobes[i]->name, pid,
-			    sizeof(all_kprobes[i]->name));
-		}
-		renamed = 1;
-	}
 
+	r = 0;
 	for (i = 0; all_kprobes[i] != NULL; i++) {
-		if (kprobe_install(all_kprobes[i]) == -1) {
+		if (kprobe_install(all_kprobes[i], qid, qbtf) == -1) {
 			warnx("%s: kprobe %s failed", __func__,
 			    all_kprobes[i]->name);
 			/* Uninstall the ones that succeeded */
 			while (--i >= 0)
-				kprobe_uninstall(all_kprobes[i]);
-			return (-1);
+				kprobe_uninstall(all_kprobes[i], qid);
+
+			r = -1;
+			break;
 		}
 	}
-done:
-	kprobe_queue_refs++;
+	free(qbtf);
 
-	return (0);
+	return (r);
 }
 
 static void
-kprobe_unref(void)
+kprobe_uninstall_all(u64 qid)
 {
 	int	i;
 
-	if (--kprobe_queue_refs > 0)
-		return;
 	for (i = 0; all_kprobes[i] != NULL; i++)
-		kprobe_uninstall(all_kprobes[i]);
+		kprobe_uninstall(all_kprobes[i], qid);
 }
 
 static void
@@ -1023,7 +1010,7 @@ perf_attr_init(struct perf_event_attr *attr, int id)
 }
 
 static struct perf_group_leader *
-perf_open_group_leader(int cpu)
+perf_open_group_leader(struct kprobe_queue *kqq, int cpu)
 {
 	struct perf_group_leader	*pgl;
 	int				 id;
@@ -1059,23 +1046,27 @@ perf_open_group_leader(int cpu)
 		return (NULL);
 	}
 	pgl->cpu = cpu;
-	id_to_sample_kind[id] = EXEC_SAMPLE;
+	kqq->id_to_sample_kind[id] = EXEC_SAMPLE;
 
 	return (pgl);
 }
 
 static struct kprobe_state *
-perf_open_kprobe(struct kprobe *k, int cpu, int group_fd)
+perf_open_kprobe(struct kprobe_queue *kqq, struct kprobe *k,
+    u64 qid, int cpu, int group_fd)
 {
 	int			 id;
 	char			 buf[MAXPATHLEN];
+	char			 fsname[MAXPATHLEN];
 	struct kprobe_state	*ks;
+
+	kprobe_tracefs_name(k, qid, fsname, sizeof(fsname));
 
 	ks = calloc(1, sizeof(*ks));
 	if (ks == NULL)
 		return (NULL);
-	if (snprintf(buf, sizeof(buf), "events/kprobes/%s/id", k->name)
-	    >= (int)sizeof(buf)) {
+	if (snprintf(buf, sizeof(buf), "events/kprobes/%s/id",
+	    fsname) >= (int)sizeof(buf)) {
 		free(ks);
 		return (errno = ENAMETOOLONG, NULL);
 	}
@@ -1098,7 +1089,7 @@ perf_open_kprobe(struct kprobe *k, int cpu, int group_fd)
 	ks->k = k;
 	ks->cpu = cpu;
 	ks->group_fd = group_fd;
-	id_to_sample_kind[id] = ks->k->sample_kind;
+	kqq->id_to_sample_kind[id] = ks->k->sample_kind;
 
 	return (ks);
 }
@@ -1111,25 +1102,31 @@ kprobe_queue_open(struct quark_queue *qq)
 	struct kprobe			*k;
 	struct kprobe_state		*ks;
 	struct epoll_event		 ev;
+	ssize_t				 data_offset;
 	int				 i;
+	u64				 qid;
+	static u64			 qids;
 
 	if ((qq->flags & QQ_KPROBE) == 0)
 		return (errno = ENOTSUP, -1);
 
-	/* Don't go to fail since it will kprobe_unref() */
-	if (kprobe_ref() == -1)
-		return (-1);
-
+	qid = __atomic_fetch_add(&qids, 1, __ATOMIC_RELAXED);
+	if ((data_offset = parse_data_offset()) == -1)
+		goto fail;
+	if (kprobe_install_all(qid) == -1)
+		goto fail;
 	if ((kqq = calloc(1, sizeof(*kqq))) == NULL)
 		goto fail;
 
 	TAILQ_INIT(&kqq->perf_group_leaders);
 	kqq->num_perf_group_leaders = 0;
 	TAILQ_INIT(&kqq->kprobe_states);
+	kqq->qid = qid;
+	kqq->data_offset = data_offset;
 	qq->queue_be = kqq;
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
-		pgl = perf_open_group_leader(i);
+		pgl = perf_open_group_leader(kqq, i);
 		if (pgl == NULL)
 			goto fail;
 		TAILQ_INSERT_TAIL(&kqq->perf_group_leaders, pgl, entry);
@@ -1139,7 +1136,7 @@ kprobe_queue_open(struct quark_queue *qq)
 	i = 0;
 	while ((k = all_kprobes[i++]) != NULL) {
 		TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry) {
-			ks = perf_open_kprobe(k, pgl->cpu, pgl->fd);
+			ks = perf_open_kprobe(kqq, k, kqq->qid, pgl->cpu, pgl->fd);
 			if (ks == NULL)
 				goto fail;
 			TAILQ_INSERT_TAIL(&kqq->kprobe_states, ks, entry);
@@ -1257,6 +1254,7 @@ kprobe_queue_close(struct quark_queue *qq)
 			free(ks);
 		}
 
+		kprobe_uninstall_all(kqq->qid);
 		free(kqq);
 		kqq = NULL;
 		qq->queue_be = NULL;
@@ -1266,6 +1264,4 @@ kprobe_queue_close(struct quark_queue *qq)
 		close(qq->epollfd);
 		qq->epollfd = -1;
 	}
-	/* Remove kprobes from tracefs */
-	kprobe_unref();
 }

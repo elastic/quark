@@ -1,6 +1,7 @@
 #include <err.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "quark.h"
 
@@ -9,10 +10,7 @@
 
 s32	btf_root_offset(struct btf *, const char *);
 
-struct target {
-	const char	*dotname;
-	ssize_t		 offset; /* in bytes, not bits */
-} targets[] = {
+struct quark_btf targets[] = {
 	{ "cred.cap_ambient",		-1 },
 	{ "cred.cap_bset",		-1 },
 	{ "cred.cap_effective",		-1 },
@@ -137,27 +135,27 @@ btf_root_offset(struct btf *btf, const char *dotname)
 	return (off / 8);
 }
 
-int
-quark_btf_init(void)
+struct quark_btf *
+quark_btf_open(void)
 {
-	struct btf	*btf;
-	int		 failed;
-	struct target	*ta;
-	static int	 btf_ok;
+	struct btf		*btf;
+	int			 failed;
+	struct quark_btf	*ta, *qbtf;
 
-	if (btf_ok)
-		return (0);
-
+	failed = 0;
 	errno = 0;
 	btf = btf__load_vmlinux_btf();
 	if (IS_ERR_OR_NULL(btf)) {
 		if (errno == 0)
 			errno = ENOTSUP;
-		return (-1);
+		return (NULL);
 	}
 
-	failed = 0;
-	for (ta = targets; ta->dotname != NULL; ta++) {
+	if ((qbtf = malloc(sizeof(targets))) == NULL)
+		return (NULL);
+	memcpy(qbtf, targets, sizeof(targets));
+
+	for (ta = qbtf; ta->dotname != NULL; ta++) {
 		ta->offset = btf_root_offset(btf, ta->dotname);
 		if (ta->offset == -1) {
 			warnx("%s: dotname=%s failed",
@@ -166,28 +164,32 @@ quark_btf_init(void)
 		}
 	}
 
-	if (quark_verbose)
-		for (ta = targets; ta->dotname != NULL; ta++) {
-			fprintf(stderr, "%s: dotname=%s off=%ld (bitoff=%ld)\n",
-			    __func__, ta->dotname, ta->offset, ta->offset * 8);
-		}
+	for (ta = qbtf; quark_verbose && ta->dotname != NULL; ta++)
+		fprintf(stderr, "%s: dotname=%s off=%ld (bitoff=%ld)\n",
+		    __func__, ta->dotname, ta->offset, ta->offset * 8);
 
 	btf__free(btf);
 
-	if (failed)
-		return (errno = ENOTSUP, -1);
+	if (failed) {
+		quark_btf_close(qbtf);
+		return (errno = ENOTSUP, NULL);
+	}
 
-	btf_ok = 1;
+	return (qbtf);
+}
 
-	return (0);
+void
+quark_btf_close(struct quark_btf *qbtf)
+{
+	free(qbtf);
 }
 
 ssize_t
-quark_btf_offset(const char *dotname)
+quark_btf_offset(struct quark_btf *qbtf, const char *dotname)
 {
-	struct target *ta;
+	struct quark_btf *ta;
 
-	for (ta = targets; ta->dotname != NULL; ta++) {
+	for (ta = qbtf; ta->dotname != NULL; ta++) {
 		if (!strcmp(ta->dotname, dotname)) {
 			if (ta->offset != -1)
 				return (ta->offset);

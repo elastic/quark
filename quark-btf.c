@@ -18,7 +18,6 @@ struct target {
 	ssize_t		 offset;
 };
 
-extern struct target	targets[];
 static size_t		longest;
 static int		bflag;
 
@@ -48,9 +47,9 @@ printit(const char *t, ssize_t off)
 int
 main(int argc, char *argv[])
 {
-	int		 i, ch, failed;
-	struct btf	*btf;
-	struct target	*ta;
+	int			 i, ch, failed;
+	struct btf		*btf;
+	struct quark_btf	*qbtf, *ta;
 
 	while ((ch = getopt(argc, argv, "b")) != -1) {
 		switch (ch) {
@@ -67,16 +66,17 @@ main(int argc, char *argv[])
 	failed = 0;
 
 	if (argc == 0) {
-		if (quark_btf_init() != 0)
-			err(1, "quark_btf_init");
-		for (ta = targets, longest = 0; ta->dotname != NULL; ta++)
+		if ((qbtf = quark_btf_open()) == NULL)
+			err(1, "quark_btf_open");
+		for (ta = qbtf, longest = 0; ta->dotname != NULL; ta++)
 			if (strlen(ta->dotname) > longest)
 				longest = strlen(ta->dotname);
-		for (ta = targets; ta->dotname != NULL; ta++) {
+		for (ta = qbtf; ta->dotname != NULL; ta++) {
 			if (ta->offset == -1)
 				failed = 1;
 			printit(ta->dotname, ta->offset);
 		}
+		quark_btf_close(qbtf);
 
 		return (failed);
 	}
