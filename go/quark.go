@@ -2,7 +2,7 @@ package quark
 
 /*
    #cgo CFLAGS: -I${SRCDIR}/..
-   #cgo LDFLAGS: ${SRCDIR}/../libquark.a ${SRCDIR}/../libbpf/src/libbpf.a ${SRCDIR}/../elftoolchain/libelf/libelf_pic.a ${SRCDIR}/../zlib/libz.a
+   #cgo LDFLAGS: ${SRCDIR}/../libquark_big.a
 
    #include <stdlib.h>
    #include "quark.h"
