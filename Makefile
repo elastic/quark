@@ -81,6 +81,7 @@ all:	$(ZLIB_STATIC)			\
 	$(ELFTOOLCHAIN_STATIC)		\
 	$(LIBBPF_STATIC)		\
 	$(BPFPROG_OBJ)			\
+	.WAIT				\
 	$(LIBQUARK_STATIC)		\
 	$(LIBQUARK_STATIC_BIG)		\
 	quark-mon			\
@@ -102,14 +103,12 @@ $(LIBBPF_STATIC): $(LIBBPF_DEPS)
 $(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
 	$(call msg,AR,$@)
 	$(Q)ar rcs $@ $^
-	$(call msg,AR,libquark_big.a)
-	$(Q)ar -M < libquark_big.mri
 
 $(LIBQUARK_STATIC_BIG): $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC) $(ZLIB_STATIC)
 	$(call msg,AR,$@)
 	$(Q)ar -M < libquark_big.mri
 
-%.o: %.c $(LIBQUARK_DEPS)
+$(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
 	$(call msg,CC,$@)
 	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
 
@@ -179,3 +178,7 @@ manlint:
 	$(Q)mandoc -Tlint *.[378] || true
 
 .PHONY: all doc eebpf-sync clean cleanall manhtml manlint
+
+.SUFFIXES:
+
+.NOTPARALLEL:
