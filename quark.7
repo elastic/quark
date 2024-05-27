@@ -184,7 +184,7 @@ make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf
 .El
 .Sh LINKING
 .Bd -literal
-cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a zlib/libz.a
+cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a
 .Ed
 .Sh INCLUDED BINARIES
 .Xr quark-mon 8

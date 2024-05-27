@@ -207,7 +207,7 @@ Other useful build targets include:
 
 # LINKING
 
-	cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a zlib/libz.a
+	cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a
 
 # INCLUDED BINARIES
 
