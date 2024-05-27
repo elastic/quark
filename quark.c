@@ -264,8 +264,30 @@ args_to_spaces(char *buf, size_t buf_len)
 static void
 event_copy_fields(struct quark_event *dst, struct quark_event *src)
 {
-#define MCPY(_f, _l)	memcpy(dst->_f, src->_f, src->_l)
-#define STCPY(_f)	strlcpy(dst->_f, src->_f, sizeof(dst->_f))
+	char	*p;
+	u_int	 i;
+
+#define MCPY(_f, _l)						\
+	do {							\
+		memcpy(dst->_f, src->_f, src->_l);		\
+		for (i = 0; i < src->_l; i++) {			\
+			p = (char *)dst->_f + i;		\
+			if (*p == 0)				\
+				continue;			\
+			if (!isprint(*p))			\
+				*p = '?';			\
+		}						\
+	} while (0)
+
+#define STCPY(_f)						\
+	do {							\
+		strlcpy(dst->_f, src->_f, sizeof(dst->_f));	\
+		for (p = dst->_f; *p != 0; p++)	{		\
+			if (!isprint(*p))			\
+				*p = '?';			\
+		}						\
+	} while (0)
+
 #define CPY(_f)		dst->_f = src->_f
 
 	CPY(flags);
