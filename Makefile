@@ -81,7 +81,6 @@ all:	$(ZLIB_STATIC)			\
 	$(ELFTOOLCHAIN_STATIC)		\
 	$(LIBBPF_STATIC)		\
 	$(BPFPROG_OBJ)			\
-	.WAIT				\
 	$(LIBQUARK_STATIC)		\
 	$(LIBQUARK_STATIC_BIG)		\
 	quark-mon			\
@@ -112,6 +111,12 @@ $(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
 	$(call msg,CC,$@)
 	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
 
+bpf_prog_skel.h: $(BPFPROG_OBJ)
+	$(call msg,BPFTOOL,bpf_prog_skel.h)
+	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_prog_skel.h
+	$(call msg,SED,bpf_prog_skel.h)
+	$(Q)sed -i 's/<bpf\/libbpf.h>/\"libbpf.h\"/' bpf_prog_skel.h
+
 $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 	$(call msg,CLANG,bpf_prog.tmp.o)
 	$(Q)$(CLANG) -g -O2 -target bpf -D__KERNEL__ -D__TARGET_ARCH_x86	\
@@ -121,10 +126,6 @@ $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 	$(call msg,BPFTOOL,$@)
 	$(Q)$(BPFTOOL) gen object $@ bpf_prog.tmp.o
 	$(Q)rm bpf_prog.tmp.o
-	$(call msg,BPFTOOL,bpf_prog_skel.h)
-	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_prog_skel.h
-	$(call msg,SED,bpf_prog_skel.h)
-	$(Q)sed -i 's/<bpf\/libbpf.h>/\"libbpf.h\"/' bpf_prog_skel.h
 
 %.svg: %.dot
 	$(call msg,DOT,$@)
@@ -180,5 +181,3 @@ manlint:
 .PHONY: all doc eebpf-sync clean cleanall manhtml manlint
 
 .SUFFIXES:
-
-.NOTPARALLEL:
