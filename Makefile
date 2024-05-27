@@ -4,6 +4,7 @@ ifeq ($(V),1)
 else
 	Q = @
 	msg = @printf '  %-8s %s%s\n' "$(1)" "$(2)" "$(if $(3), $(3))";
+	QREDIR = > /dev/null
 endif
 
 CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
@@ -49,6 +50,15 @@ LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
 
+# ZLIB
+ZLIB_SRC:= zlib
+ZLIB_FILES:= $(shell find $(ZLIB_SRC) \(\
+	-name '*.[ch]' -o \
+	-name Makefile -o \
+	-name configure \
+\))
+ZLIB_STATIC:= $(ZLIB_SRC)/libz.a
+
 # BSD elftoolchain
 ELFTOOLCHAIN_SRC:= elftoolchain
 ELFTOOLCHAIN_FILES:= $(shell find elftoolchain/{common,libelf} -name '*.[ch]')
@@ -56,7 +66,6 @@ ELFTOOLCHAIN_FILES:= $(filter-out elftoolchain/libelftc/elftc_version.c, $(ELFTO
 ELFTOOLCHAIN_STATIC:= $(ELFTOOLCHAIN_SRC)/libelf/libelf_pic.a
 
 # Embedded LIBBPF
-LDFLAGS+= -lz
 LIBBPF_SRC:= libbpf/src
 LIBBPF_STATIC:= $(LIBBPF_SRC)/libbpf.a
 LIBBPF_DEPS:=	$(wildcard libbpf/src/*.[ch]) 		\
@@ -67,13 +76,18 @@ LIBBPF_DEPS:=	$(wildcard libbpf/src/*.[ch]) 		\
 BPFPROG_OBJ:= bpf_prog.o
 BPFPROG_DEPS:= bpf_prog.c $(LIBBPF_DEPS) $(EEBPF_FILES)
 
-all:	$(ELFTOOLCHAIN_STATIC)		\
+all:	$(ZLIB_STATIC)			\
+	$(ELFTOOLCHAIN_STATIC)		\
 	$(LIBBPF_STATIC)		\
 	$(BPFPROG_OBJ)			\
 	$(LIBQUARK_STATIC)		\
 	quark-mon			\
 	quark-btf			\
 	README.md
+
+$(ZLIB_STATIC): $(ZLIB_FILES)
+	@cd zlib && ./configure --static $(QREDIR)
+	@make -C zlib libz.a
 
 $(ELFTOOLCHAIN_STATIC): $(ELFTOOLCHAIN_FILES)
 	$(Q)make -C elftoolchain/libelf
@@ -111,13 +125,13 @@ $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 
 svg: $(SVGS)
 
-quark-mon: quark-mon.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC)
+quark-mon: quark-mon.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC) $(ZLIB_STATIC)
 	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
 
-quark-btf: quark-btf.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC)
+quark-btf: quark-btf.c $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC) $(ZLIB_STATIC)
 	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $(LDFLAGS) -o $@ $^
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
 
 README.md: quark.7
 	$(call msg,MANDOC,$@)
@@ -142,6 +156,7 @@ cleanall: clean
 	$(Q)rm -f $(SVGS)
 	$(Q)make -C $(LIBBPF_SRC) clean
 	$(Q)make -C $(ELFTOOLCHAIN_SRC)/libelf clean
+	$(Q)make -C $(ZLIB_SRC) clean || true
 
 manhtml:
 	$(call msg,MKDIR)

@@ -1,0 +1,5 @@
+Zlib@Quark
+~~~~~~~~~~~~~~~~~~
+  No changes to source code, only makefile tweaks to the printed output.
+  Only libz.a is build and it's included since we can't expect users of the
+  static library to build their own.

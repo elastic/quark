@@ -14,3 +14,7 @@ elftoolchain/libelf/libelf_convert.c
 elftoolchain/libelf/libelf_fsize.c
 elftoolchain/libelf/libelf_msize.c
 elftoolchain/common/sys/elfdefinitions.h
+zlib/Makefile
+zlib/zconf.h
+zlib/configure.log
+zlib/libz.a
