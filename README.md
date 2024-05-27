@@ -149,7 +149,7 @@ and a
 (see zlib/LICENSE).
 See
 *LINKING*
-to lean how to link either.
+to learn how to link either.
 
 While
 **quark**
