@@ -130,12 +130,13 @@ that can be linked with the user binary, be sure to clone the repository with
 builds its own
 .Em libbpf
 since it needs BTF support from it.
-At the time of this writing,
-.Pa libquark.a
-also needs external symbols from
-.Em libz .
-An embedded BSD libelf (elftoolchain) is included in the archive.
-An option will be given in the future for lean or full archives.
+.Pp
+.Nm
+depends on symbols from libelf and libz, it includes its own build of a
+.Pa libelf_pic.a
+from the elftoolchain project (BSD license), as well as a
+.Pa libz.a
+from zlib (zlib/LICENSE).
 .Pp
 While
 .Nm
@@ -150,6 +151,15 @@ is quite big.
 .Pp
 Other useful build targets include:
 .Bl -tag -width "manlint"
+.It Em clean
+Clean object files from
+.Nm .
+.It Em cleanall
+Clean all object files, including the ones from
+.Em libbpf ,
+.Em libz
+and
+.Em libelf .
 .It Em doc
 Shorthand for manlint+manhtml+README.md, see below.
 .It Em manlint
@@ -174,7 +184,7 @@ make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf
 .El
 .Sh LINKING
 .Bd -literal
-cc -o myprogram myprogram.c -lz libquark.a libbpf/src/libbpf.a
+cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a zlib/libz.a
 .Ed
 .Sh INCLUDED BINARIES
 .Xr quark-mon 8

@@ -139,12 +139,13 @@ that can be linked with the user binary, be sure to clone the repository with
 builds its own
 *libbpf*
 since it needs BTF support from it.
-At the time of this writing,
-*libquark.a*
-also needs external symbols from
-*libz*.
-An embedded BSD libelf (elftoolchain) is included in the archive.
-An option will be given in the future for lean or full archives.
+
+**quark**
+depends on symbols from libelf and libz, it includes its own build of a
+*libelf\_pic.a*
+from the elftoolchain project (BSD license), as well as a
+*libz.a*
+from zlib (zlib/LICENSE).
 
 While
 **quark**
@@ -158,6 +159,19 @@ as
 is quite big.
 
 Other useful build targets include:
+
+*clean*
+
+> Clean object files from
+> **quark**.
+
+*cleanall*
+
+> Clean all object files, including the ones from
+> *libbpf*,
+> *libz*
+> and
+> *libelf*.
 
 *doc*
 
@@ -193,7 +207,7 @@ Other useful build targets include:
 
 # LINKING
 
-	cc -o myprogram myprogram.c -lz libquark.a libbpf/src/libbpf.a
+	cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a zlib/libz.a
 
 # INCLUDED BINARIES
 
