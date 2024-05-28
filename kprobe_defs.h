@@ -52,6 +52,7 @@
 	{ "sgid",		"di", "u32",	"task_struct.cred cred.sgid"									}, \
 	{ "euid",		"di", "u32",	"task_struct.cred cred.euid"									}, \
 	{ "egid",		"di", "u32",	"task_struct.cred cred.egid"									}, \
+	{ "sid",		"di", "u32",	"task_struct.group_leader task_struct.signal (signal_struct.pids+24) (pid.numbers+0).upid.nr"	}, \
 	{ "pid",		"di", "u32",	"task_struct.tgid"										}, \
 	{ "tid",		"di", "u32",	"task_struct.pid"										}, \
 	{ "exit_code",		"di", "s32",	"task_struct.exit_code"										}, \

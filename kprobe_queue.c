@@ -152,6 +152,7 @@ struct task_sample {
 	u32	sgid;
 	u32	euid;
 	u32	egid;
+	u32	sid;
 	u32	pid;
 	u32	tid;
 	s32	exit_code;
@@ -426,6 +427,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		raw->task.sgid = w->sgid;
 		raw->task.euid = w->euid;
 		raw->task.egid = w->egid;
+		raw->task.sid = w->sid;
 
 		break;
 	}
@@ -784,8 +786,21 @@ kprobe_exp(char *exp, ssize_t *off1, struct quark_btf *qbtf)
 			free(o);
 			return (-1);
 		}
-		free(o);
 		off = c == '+' ? ia + ib : ia - ib;
+
+		/* Jump over `)` */
+		p++;
+		/* Walk the original expression, there more after `)` */
+		exp += p - o;
+		free(o);
+		/* If there is a dot after `)`, recurse */
+		if (*exp++ == '.') {
+			if (kprobe_exp(exp, &ia, qbtf) == -1) {
+				warnx("%s: %s is unresolved\n", __func__, exp);
+				return (-1);
+			}
+			off += ia;
+		}
 		break;
 	}
 	default: {

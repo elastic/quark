@@ -51,6 +51,7 @@ ebpf_events_to_task(struct ebpf_pid_info *pids, struct ebpf_cred_info *creds,
 	task->sgid = creds->sgid;
 	task->euid = creds->euid;
 	task->egid = creds->egid;
+	task->sid = pids->sid;
 	task->exit_time_event = 0;
 }
 

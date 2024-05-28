@@ -125,6 +125,7 @@ struct raw_task {
 	u32		sgid;
 	u32		euid;
 	u32		egid;
+	u32		sid;
 	u32		ppid;			/* Unavailable at exit */
 	s32		exit_code;		/* Unavailable at fork */
 	u64		exit_time_event;	/* Unavailable at fork */
@@ -255,6 +256,7 @@ struct quark_event {
 	u32	proc_sgid;
 	u32	proc_euid;
 	u32	proc_egid;
+	u32	proc_sid;
 	/* QUARK_F_EXIT */
 	s32	exit_code;
 	u64	exit_time_event;
