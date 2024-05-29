@@ -63,12 +63,15 @@ const (
 	QQ_NO_CACHE      = int(C.QQ_NO_CACHE)
 	QQ_KPROBE        = int(C.QQ_KPROBE)
 	QQ_EBPF          = int(C.QQ_EBPF)
+	QQ_NO_SNAPSHOT   = int(C.QQ_NO_SNAPSHOT)
 	QQ_ALL_BACKENDS  = int(C.QQ_ALL_BACKENDS)
 )
 
 type QueueAttr struct {
-	Flags     int
-	MaxLength int
+	Flags          int
+	MaxLength      int
+	CacheGraceTime int
+	HoldTime       int
 }
 
 var ErrUndefined = errors.New("undefined")
@@ -87,8 +90,10 @@ func DefaultQueueAttr() QueueAttr {
 	C.quark_queue_default_attr(&attr)
 
 	return QueueAttr{
-		Flags:     int(attr.flags),
-		MaxLength: int(attr.max_length),
+		Flags:          int(attr.flags),
+		MaxLength:      int(attr.max_length),
+		CacheGraceTime: int(attr.cache_grace_time),
+		HoldTime:       int(attr.hold_time),
 	}
 }
 
@@ -103,8 +108,10 @@ func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
 	p = nil
 
 	cattr := C.struct_quark_queue_attr{
-		flags:      C.int(attr.Flags),
-		max_length: C.int(attr.MaxLength),
+		flags:            C.int(attr.Flags),
+		max_length:       C.int(attr.MaxLength),
+		cache_grace_time: C.int(attr.CacheGraceTime),
+		hold_time:        C.int(attr.HoldTime),
 	}
 	r, err := C.quark_queue_open(qq.qqc, &cattr)
 	if r == -1 {

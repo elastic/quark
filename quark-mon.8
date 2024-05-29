@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl bDktv
+.Op Fl bDkstv
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
 .Sh DESCRIPTION
@@ -36,6 +36,8 @@ Maximum lenght of the quark queue, essentially how much quark is willing to
 buffer, refer to
 .Xr quark_queue_open 3
 for further details.
+.It Fl t
+Don't create a snapshot of current processes by scraping /proc.
 .It Fl t
 Don't supress thread events, this is only useful for debugging and will likely
 be zapped in the future.

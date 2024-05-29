@@ -209,7 +209,7 @@ RB_HEAD(event_by_pid, quark_event);
 
 /*
  * Event cache gc list, after they are marked for deletion, they still get a
- * grace time of EVENT_CACHE_GRACETIME before removal, this is to allow lookups
+ * grace time of qq->cache_grace_time before removal, this is to allow lookups
  * from users on processes that just vanished.
  */
 TAILQ_HEAD(quark_event_list, quark_event);
@@ -293,10 +293,12 @@ struct quark_queue_attr {
 #define QQ_NO_CACHE		(1 << 1)
 #define QQ_KPROBE		(1 << 2)
 #define QQ_EBPF			(1 << 3)
+#define QQ_NO_SNAPSHOT		(1 << 4)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
-	int	 flags;
-	int	 max_length;
-	/* int holdoff_time */
+	int	flags;
+	int	max_length;
+	int	cache_grace_time;	/* in ms */
+	int	hold_time;		/* in ms */
 };
 
 /*
@@ -313,6 +315,8 @@ struct quark_queue {
 	int				 flags;
 	int				 length;
 	int				 max_length;
+	u64				 cache_grace_time;	/* in ns */
+	int				 hold_time;		/* in ms */
 	int				 snap_pid;
 	int				 epollfd;
 	/* Backend related state */

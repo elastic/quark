@@ -81,7 +81,7 @@ main(int argc, char *argv[])
 	do_drop = 0;
 	nqevs = 32;
 
-	while ((ch = getopt(argc, argv, "bDklm:tv")) != -1) {
+	while ((ch = getopt(argc, argv, "bDklm:tsv")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -104,6 +104,9 @@ main(int argc, char *argv[])
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);
 			if (errstr != NULL)
 				errx(1, "invalid maxnodes: %s", errstr);
+			break;
+		case 's':
+			qa.flags |= QQ_NO_SNAPSHOT;
 			break;
 		case 't':
 			qa.flags |= QQ_THREAD_EVENTS;

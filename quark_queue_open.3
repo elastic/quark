@@ -77,6 +77,8 @@ is defined as:
 struct quark_queue_attr {
 	int	 flags;
 	int	 max_length;
+	int	 cache_grace_time;	/* in milliseconds */
+	int	 hold_time;		/* in milliseconds */
 	...
 };
 .Ed
@@ -89,6 +91,8 @@ Enable the EBPF backend.
 EBPF is attempted first and falls back to KPROBE if both were specified.
 .It Dv QQ_KPROBE
 Enable the KPROBE backend, see above.
+.It Dv QQ_ALL_BACKENDS
+Shorthand for (QQ_EBPF | QQ_KPROBE).
 .It Dv QQ_THREAD_EVENTS
 Include per-thread events, instead of per-process events.
 This option will be removed in the future, but it may be useful for debugging.
@@ -97,8 +101,9 @@ Don't use the internal process cache to enrich events, normally when quark
 receives an event, it will include all the cached information it had about that
 process so that the event has more context, passing this flag will get you
 "naked" events.
-.It Dv QQ_ALL_BACKENDS
-Shorthand for (QQ_EBPF | QQ_KPROBE).
+.It Dv QQ_NO_SNAPSHOT
+Don't send a snapshot of the existing processes by scraping
+.Pa /proc .
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.
@@ -107,6 +112,26 @@ Quark buffers each event for a computed interval in order to sort and aggregate
 multiple events into one.
 The closer the queue is to being full, the smaller the interval: until quark
 decides to not buffer events at all.
+.It Em cache_grace_time
+The grace period for removing an event from the cache.
+.Pp
+When a process exits, it is removed from the cache, but only after
+.Em cache_grace_time ,
+this gives the user a small window where it can still query a terminated process
+via
+.Xr quark_event_lookup 3 .
+.It Em hold_time
+How long to buffer (hold) an event before delivering it to the user via
+.Xr quark_queue_get_events 3 .
+.Pp
+Events received from the backend are not immediately forwarded to the user, this
+allows multiple events to be aggregated as well as ordered by time.
+In case quark is overloaded, it will use a stepping function where
+.Em hold_time
+decreases the more loaded it is.
+.Pp
+Details are described in
+.Xr quark 7 .
 .El
 .Sh RETURN VALUES
 Zero on success, -1 otherwise and

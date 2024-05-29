@@ -17,7 +17,6 @@
 #include "quark.h"
 
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
-#define EVENT_CACHE_GRACETIME	MS_TO_NS(4000) /* 4 seconds is probably too much */
 
 static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
@@ -165,15 +164,16 @@ raw_event_age(struct raw_event *raw, u64 now)
  * from (10%; 90%)  -> linear from 1000ms -> 100ms
  */
 static u64
-raw_event_target_age(int maxn, int n)
+raw_event_target_age(struct quark_queue *qq)
 {
 	int	v;
 
-	if (n < (maxn / 10))
-		v = 1000;
-	else if (n < ((maxn / 10) * 9))
-		v = 1000 - (n / (maxn / 1000)) + 1;
-	else
+	if (qq->length < (qq->max_length / 10))
+		v = qq->hold_time;
+	else if (qq->length < ((qq->max_length / 10) * 9)) {
+		v = qq->hold_time -
+		    (qq->length / (qq->max_length / qq->hold_time)) + 1;
+	} else
 		v = 0;
 
 	return ((u64)MS_TO_NS(v));
@@ -184,7 +184,7 @@ raw_event_expired(struct quark_queue *qq, struct raw_event *raw, u64 now)
 {
 	u64	target;
 
-	target = raw_event_target_age(qq->max_length, qq->length);
+	target = raw_event_target_age(qq);
 	return (raw_event_age(raw, now) >= target);
 }
 
@@ -410,7 +410,7 @@ event_cache_gc(struct quark_queue *qq)
 	now = now64();
 	n = 0;
 	while ((qev = TAILQ_FIRST(&qq->event_gc)) != NULL) {
-		if (AGE(qev->gc_time, now) < EVENT_CACHE_GRACETIME)
+		if (AGE(qev->gc_time, now) < qq->cache_grace_time)
 			break;
 		event_cache_delete(qq, qev);
 		n++;
@@ -1029,6 +1029,9 @@ sproc_scrape(struct quark_queue *qq)
 	int	 dfd, rootfd;
 	char	*argv[] = { "/proc", NULL };
 
+	if (qq->flags & QQ_NO_SNAPSHOT)
+		return (0);
+
 	if ((tree = fts_open(argv, FTS_NOCHDIR, NULL)) == NULL)
 		return (-1);
 	if ((rootfd = open(argv[0], O_PATH)) == -1) {
@@ -1269,6 +1272,8 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 
 	qa->flags = QQ_ALL_BACKENDS;
 	qa->max_length = 10000;
+	qa->cache_grace_time = 4000;	/* four seconds */
+	qa->hold_time = 1000;		/* one second */
 }
 
 int
@@ -1283,7 +1288,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	}
 
 	if ((qa->flags & QQ_ALL_BACKENDS) == 0 ||
-	    qa->max_length <= 0)
+	    qa->max_length <= 0 ||
+	    qa->cache_grace_time < 0 ||
+	    qa->hold_time < 10)
 		return (errno = EINVAL, -1);
 
 	if (quark_init() == -1)
@@ -1297,6 +1304,8 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	TAILQ_INIT(&qq->event_gc);
 	qq->flags = qa->flags;
 	qq->max_length = qa->max_length;
+	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
+	qq->hold_time = qa->hold_time;
 	qq->length = 0;
 	qq->epollfd = -1;
 
@@ -1490,7 +1499,7 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 			qsev = event_cache_get(qq, qq->snap_pid, 0);
 			if (qsev == NULL) {
 				warnx("event vanished during snapshot, "
-				    "this is a bug\n");
+				    "this is a bug");
 				qq->snap_pid = -1;
 				/* errno set by cache_lookup */
 				return (-1);
