@@ -57,6 +57,20 @@ type Queue struct {
 	tmpev    *C.struct_quark_event // Used as storage for lookups
 }
 
+const (
+	// quark_queue_attr{} flags
+	QQ_THREAD_EVENTS = int(C.QQ_THREAD_EVENTS)
+	QQ_NO_CACHE      = int(C.QQ_NO_CACHE)
+	QQ_KPROBE        = int(C.QQ_KPROBE)
+	QQ_EBPF          = int(C.QQ_EBPF)
+	QQ_ALL_BACKENDS  = int(C.QQ_ALL_BACKENDS)
+)
+
+type QueueAttr struct {
+	Flags     int
+	MaxLength int
+}
+
 var ErrUndefined = errors.New("undefined")
 
 func wrapErrno(err error) error {
@@ -67,7 +81,18 @@ func wrapErrno(err error) error {
 	return err
 }
 
-func OpenQueue(slots int) (*Queue, error) {
+func DefaultQueueAttr() QueueAttr {
+	var attr C.struct_quark_queue_attr
+
+	C.quark_queue_default_attr(&attr)
+
+	return QueueAttr{
+		Flags:     int(attr.flags),
+		MaxLength: int(attr.max_length),
+	}
+}
+
+func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
 	var qq Queue
 
 	p, err := C.calloc(C.size_t(1), C.sizeof_struct_quark_queue)
@@ -77,7 +102,11 @@ func OpenQueue(slots int) (*Queue, error) {
 	qq.qqc = (*C.struct_quark_queue)(p)
 	p = nil
 
-	r, err := C.quark_queue_open(qq.qqc, C.int(0))
+	cattr := C.struct_quark_queue_attr{
+		flags:      C.int(attr.Flags),
+		max_length: C.int(attr.MaxLength),
+	}
+	r, err := C.quark_queue_open(qq.qqc, &cattr)
 	if r == -1 {
 		C.free(unsafe.Pointer(qq.qqc))
 		return nil, wrapErrno(err)
@@ -129,7 +158,7 @@ func (qq *Queue) GetEvents() ([]Event, error) {
 	return qqevs, nil
 }
 
-func (qq *Queue) Lookup(pid int) (*Event) {
+func (qq *Queue) Lookup(pid int) *Event {
 	r, _ := C.quark_event_lookup(qq.qqc, qq.tmpev, C.int(pid))
 
 	if r != 0 {

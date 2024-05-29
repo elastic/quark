@@ -6,7 +6,7 @@ import (
 )
 
 func main() {
-	qq, err := quark.OpenQueue(64)
+	qq, err := quark.OpenQueue(quark.DefaultQueueAttr(), 64)
 	if err != nil {
 		panic(err)
 	}

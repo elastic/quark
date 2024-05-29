@@ -1262,28 +1262,43 @@ quark_queue_block(struct quark_queue *qq)
 	return (0);
 }
 
+void
+quark_queue_default_attr(struct quark_queue_attr *qa)
+{
+	bzero(qa, sizeof(*qa));
+
+	qa->flags = QQ_ALL_BACKENDS;
+	qa->max_length = 10000;
+}
+
 int
-quark_queue_open(struct quark_queue *qq, int flags)
+quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 {
 	struct quark_event		*qev;
+	struct quark_queue_attr		 qa_default;
+
+	if (qa == NULL) {
+		quark_queue_default_attr(&qa_default);
+		qa = &qa_default;
+	}
+
+	if ((qa->flags & QQ_ALL_BACKENDS) == 0 ||
+	    qa->max_length <= 0)
+		return (errno = EINVAL, -1);
 
 	if (quark_init() == -1)
 		return (-1);
 
 	bzero(qq, sizeof(*qq));
 
-	/* If no backend flags, default to all */
-	if (!(flags & (QQ_KPROBE | QQ_EBPF)))
-		flags |= QQ_KPROBE | QQ_EBPF;
-
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
 	RB_INIT(&qq->event_by_pid);
 	TAILQ_INIT(&qq->event_gc);
-	qq->epollfd = -1;
-	qq->flags = flags;
+	qq->flags = qa->flags;
+	qq->max_length = qa->max_length;
 	qq->length = 0;
-	qq->max_length = 10000;
+	qq->epollfd = -1;
 
 	if (bpf_queue_open(qq) && kprobe_queue_open(qq)) {
 		warnx("all backends failed");
