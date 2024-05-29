@@ -19,11 +19,13 @@ extern int	quark_verbose;
 struct raw_event;
 struct quark_event;
 struct quark_queue;
+struct quark_queue_attr;
 struct quark_queue_stats;
 struct raw_event *raw_event_alloc(int);
 void	raw_event_free(struct raw_event *);
 void	raw_event_insert(struct quark_queue *, struct raw_event *);
-int	quark_queue_open(struct quark_queue *, int);
+void	quark_queue_default_attr(struct quark_queue_attr *);
+int	quark_queue_open(struct quark_queue *, struct quark_queue_attr *);
 void	quark_queue_close(struct quark_queue *);
 int	quark_queue_populate(struct quark_queue *);
 int	quark_queue_block(struct quark_queue *);
@@ -286,26 +288,31 @@ struct quark_queue_ops {
 	void	(*close)(struct quark_queue *);
 };
 
+struct quark_queue_attr {
+#define QQ_THREAD_EVENTS	(1 << 0)
+#define QQ_NO_CACHE		(1 << 1)
+#define QQ_KPROBE		(1 << 2)
+#define QQ_EBPF			(1 << 3)
+#define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
+	int	 flags;
+	int	 max_length;
+	/* int holdoff_time */
+};
+
 /*
  * Quark Queue (qq) is the main structure the user interacts with, it acts as
  * our main storage datastructure.
  */
-struct bpf_queue;
-struct kprobe_queue;
 struct quark_queue {
 	struct raw_event_by_time	 raw_event_by_time;
 	struct raw_event_by_pidtime	 raw_event_by_pidtime;
 	struct event_by_pid		 event_by_pid;
 	struct quark_event_list		 event_gc;
 	struct quark_queue_stats	 stats;
-#define QQ_THREAD_EVENTS	(1 << 0)
-#define QQ_NO_CACHE		(1 << 1)
-#define QQ_KPROBE		(1 << 2)
-#define QQ_EBPF			(1 << 3)
+	/* Next pid to be sent out of a snapshot */
 	int				 flags;
 	int				 length;
 	int				 max_length;
-	/* Next pid to be sent out of a snapshot */
 	int				 snap_pid;
 	int				 epollfd;
 	/* Backend related state */

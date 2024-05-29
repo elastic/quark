@@ -68,29 +68,37 @@ int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes, n, i;
-	int				 dump_perf, qq_flags;
 	int				 do_drop, nqevs;
 	struct quark_queue		*qq;
+	struct quark_queue_attr		 qa;
 	struct quark_event		*qev, *qevs;
 	struct sigaction		 sigact;
 	FILE				*graph_by_time, *graph_by_pidtime;
 
+	quark_queue_default_attr(&qa);
+	qa.flags &= ~QQ_ALL_BACKENDS;
 	maxnodes = -1;
-	qq_flags = dump_perf = do_drop = 0;
+	do_drop = 0;
 	nqevs = 32;
 
-	while ((ch = getopt(argc, argv, "bDkm:tv")) != -1) {
+	while ((ch = getopt(argc, argv, "bDklm:tv")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
 		case 'b':
-			qq_flags |= QQ_EBPF;
+			qa.flags |= QQ_EBPF;
 			break;
 		case 'D':
 			do_drop = 1;
 			break;
 		case 'k':
-			qq_flags |= QQ_KPROBE;
+			qa.flags |= QQ_KPROBE;
+			break;
+		case 'l':
+			qa.max_length = strtonum(optarg, 1, INTMAX_MAX,
+			    &errstr);
+			if (errstr != NULL)
+				errx(1, "invalid max length: %s", errstr);
 			break;
 		case 'm':
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);
@@ -98,7 +106,7 @@ main(int argc, char *argv[])
 				errx(1, "invalid maxnodes: %s", errstr);
 			break;
 		case 't':
-			qq_flags |= QQ_THREAD_EVENTS;
+			qa.flags |= QQ_THREAD_EVENTS;
 			break;
 		case 'v':
 			quark_verbose++;
@@ -107,6 +115,8 @@ main(int argc, char *argv[])
 			usage();
 		}
 	}
+	if ((qa.flags & QQ_ALL_BACKENDS) == 0)
+		qa.flags |= QQ_ALL_BACKENDS;
 
 	bzero(&sigact, sizeof(sigact));
 	sigact.sa_flags = SA_RESTART | SA_RESETHAND;
@@ -116,7 +126,7 @@ main(int argc, char *argv[])
 
 	if ((qq = calloc(1, sizeof(*qq))) == NULL)
 		err(1, "calloc");
-	if (quark_queue_open(qq, qq_flags) != 0)
+	if (quark_queue_open(qq, &qa) != 0)
 		errx(1, "quark_queue_open");
 	if ((qevs = calloc(nqevs, sizeof(*qevs))) == NULL)
 		err(1, "calloc");

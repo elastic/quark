@@ -7,6 +7,7 @@
 .Sh SYNOPSIS
 .Nm quark-mon
 .Op Fl bDktv
+.Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
 .Sh DESCRIPTION
 The
@@ -30,6 +31,11 @@ Drop priviledges to nobody and chroot to /var/empty, useful to show how quark
 can run without priviledges.
 .It Fl k
 Attempt kprobe as the backend.
+.It Fl l Ar maxlength
+Maximum lenght of the quark queue, essentially how much quark is willing to
+buffer, refer to
+.Xr quark_queue_open 3
+for further details.
 .It Fl t
 Don't supress thread events, this is only useful for debugging and will likely
 be zapped in the future.

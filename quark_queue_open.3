@@ -8,13 +8,15 @@
 .Sh SYNOPSIS
 .In quark.h
 .Ft int
-.Fn quark_queue_open "struct quark_queue *qq" "int flags"
+.Fn quark_queue_open "struct quark_queue *qq" "struct quark_queue_attr *attr"
 .Sh DESCRIPTION
 .Nm
 initializes the
 .Vt quark_queue
 pointed to by
-.Fa qq .
+.Fa qq
+with the attributes pointed to by
+.Fa attr .
 .Pp
 A
 .Vt quark_queue
@@ -30,7 +32,7 @@ function does the following:
 .It
 Attempts to use the best backend available unless otherwise especified.
 This includes loading the EBPF programs for EBPF or the probes for KPROBES.
-Only one backend is used and it defaults to EBPF and fallsback to KPROBE.
+Only one backend is used and it defaults to EBPF and falls back to KPROBE.
 .It
 On its first call it will also initialize global host state, like BTF offsets
 and HZ.
@@ -61,17 +63,30 @@ member set to
 .Dv QUARK_EV_SNAPSHOT .
 .El
 .Pp
-.Fa flags
-is a bitmask that changes the default queue behaviour with the following values:
+Default queue behaviour can be tweaked with
+.Fa attr .
+A default configuration for tweaking can be acquired via
+.Xr quark_queue_default_attr 3 .
+In case
+.Fa attr
+is NULL, the default configuration is used.
 .Pp
-.Bl -tag -width QQ_THREAD_EVENTS -offset indent -compact
+.Fa struct quark_queue_attr
+is defined as:
+.Bd -literal -offset indent
+struct quark_queue_attr {
+	int	 flags;
+	int	 max_length;
+	...
+};
+.Ed
+.Bl -tag -width "max_length"
+.It Em flags
+Bitmask of:
+.Bl -tag -width QQ_THREAD_EVENTS
 .It Dv QQ_EBPF
-Enable the EBPF backend, in case neither
-.Dv QQ_EBPF
-or
-.Dv QQ_KPROBE
-are specified, it defaults to both.
-EBPF is attempted first and fallsback to KPROBE if it failed.
+Enable the EBPF backend.
+EBPF is attempted first and falls back to KPROBE if both were specified.
 .It Dv QQ_KPROBE
 Enable the KPROBE backend, see above.
 .It Dv QQ_THREAD_EVENTS
@@ -82,6 +97,16 @@ Don't use the internal process cache to enrich events, normally when quark
 receives an event, it will include all the cached information it had about that
 process so that the event has more context, passing this flag will get you
 "naked" events.
+.It Dv QQ_ALL_BACKENDS
+Shorthand for (QQ_EBPF | QQ_KPROBE).
+.El
+.It Em max_length
+The maximum size of the internal buffering queue in number of events.
+.Pp
+Quark buffers each event for a computed interval in order to sort and aggregate
+multiple events into one.
+The closer the queue is to being full, the smaller the interval: until quark
+decides to not buffer events at all.
 .El
 .Sh RETURN VALUES
 Zero on success, -1 otherwise and
@@ -95,18 +120,10 @@ should NOT be issued.
 .Xr quark_event_lookup 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
+.Xr quark_queue_default_attr 3 ,
 .Xr quark_queue_get_epollfd 3 ,
 .Xr quark_queue_get_events 3 ,
 .Xr quark_queue_get_stats 3 ,
 .Xr quark 7 ,
 .Xr quark-btf 8 ,
 .Xr quark-mon 8
-.Sh CAVEATS
-Multiple queues are supported, but discouraged.
-Opening and closing (but not using!) queues from different
-threads must be synchronized by the caller, this is because there is global
-internal state that might change in
-.Nm
-and
-.Xr quark_queue_close 3 .
-Notably there is a single KPROBE installation shared by all queues.

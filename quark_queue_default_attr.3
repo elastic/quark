@@ -1,0 +1,28 @@
+.Dd $Mdocdate$
+.Dt QUARK_QUEUE_DEFAULT_ATTR 3
+.Os
+.Sh NAME
+.Nm quark_queue_default_attr
+.Nd fetch default attributes for
+.Xr quark_queue_open 3
+.Sh SYNOPSIS
+.In quark.h
+.Ft void
+.Fn quark_queue_default_attr "struct quark_queue_attr *attr"
+.Sh DESCRIPTION
+.Nm
+copies out default attributes for opening a quark_queue.
+.Pp
+Refer to
+.Xr quark_queue_open 3
+for an in depth explanation of each member.
+.Sh SEE ALSO
+.Xr quark_event_dump 3 ,
+.Xr quark_event_lookup 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark 7 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
