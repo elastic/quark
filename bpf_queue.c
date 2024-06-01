@@ -38,7 +38,7 @@ ebpf_events_to_task(struct ebpf_pid_info *pids, struct ebpf_cred_info *creds,
     struct raw_task *task, u32 *pid)
 {
 	*pid = pids->tid;
-	task->ppid = pids->pgid;
+	task->ppid = pids->ppid;
 	task->start_boottime = pids->start_time_ns; /* XXX check format */
 	task->cap_inheritable = 0; /* unavailable */
 	task->cap_permitted = creds->cap_permitted;
