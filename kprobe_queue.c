@@ -152,6 +152,7 @@ struct task_sample {
 	u32	sgid;
 	u32	euid;
 	u32	egid;
+	u32	pgid;
 	u32	sid;
 	u32	pid;
 	u32	tid;
@@ -427,6 +428,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		raw->task.sgid = w->sgid;
 		raw->task.euid = w->euid;
 		raw->task.egid = w->egid;
+		raw->task.pgid = w->pgid;
 		raw->task.sid = w->sid;
 
 		break;

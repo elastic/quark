@@ -306,6 +306,7 @@ event_copy_fields(struct quark_event *dst, struct quark_event *src)
 		CPY(proc_sgid);
 		CPY(proc_euid);
 		CPY(proc_egid);
+		CPY(proc_pgid);
 		CPY(proc_sid);
 	}
 	if (src->flags & QUARK_F_EXIT) {
@@ -557,10 +558,10 @@ quark_event_dump(struct quark_event *qev, FILE *f)
 		flagname = event_flag_str(QUARK_F_PROC);
 		P("  %.4s\tppid=%d\n", flagname, qev->proc_ppid);
 		P("  %.4s\tuid=%d gid=%d suid=%d sgid=%d "
-		    "euid=%d egid=%d sid=%d\n",
+		    "euid=%d egid=%d pgid=%d sid=%d\n",
 		    flagname, qev->proc_uid, qev->proc_gid, qev->proc_suid,
 		    qev->proc_sgid, qev->proc_euid, qev->proc_egid,
-		    qev->proc_sid);
+		    qev->proc_pgid, qev->proc_sid);
 		P("  %.4s\tcap_inheritable=0x%llx cap_permitted=0x%llx "
 		    "cap_effective=0x%llx\n",
 		    flagname, qev->proc_cap_inheritable,
@@ -702,6 +703,7 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		qev->proc_sgid = raw_task->sgid;
 		qev->proc_euid = raw_task->euid;
 		qev->proc_egid = raw_task->egid;
+		qev->proc_pgid = raw_task->pgid;
 		qev->proc_sid = raw_task->sid;
 
 		cwd = raw_task->cwd.p;
@@ -847,7 +849,7 @@ sproc_stat(struct quark_event *qev, int dfd)
 {
 	int			 fd, r, ret;
 	char			*buf, *p;
-	u32			 sid;
+	u32			 pgid, sid;
 	unsigned long long	 starttime;
 
 	buf = NULL;
@@ -875,7 +877,7 @@ sproc_stat(struct quark_event *qev, int dfd)
 	r = sscanf(p,
 	    "%*s "		/* (3) state */
 	    "%*s "		/* (4) ppid */
-	    "%*s "		/* (5) pgrp */
+	    "%d "		/* (5) pgrp */
 	    "%d "		/* (6) session */
 	    "%*s "		/* (7) tty_nr */
 	    "%*s "		/* (8) tpgid */
@@ -894,10 +896,12 @@ sproc_stat(struct quark_event *qev, int dfd)
 	    "%*s "		/* (21) itrealvalue */
 	    "%llu ",		/* (22) starttime */
 				/* ... */
+	    &pgid,
 	    &sid,
 	    &starttime);
 
-	if (r == 2) {
+	if (r == 3) {
+		qev->proc_pgid = pgid;
 		qev->proc_sid = sid;
 		qev->proc_time_boot =
 		    quark.boottime +
