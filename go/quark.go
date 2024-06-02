@@ -31,6 +31,7 @@ type Proc struct {
 	Sgid           uint32
 	Euid           uint32
 	Egid           uint32
+	Pgid           uint32
 	Sid            uint32
 }
 
@@ -208,6 +209,7 @@ func cEventToGo(cev *C.struct_quark_event) (Event, error) {
 			Sgid:           uint32(cev.proc_sgid),
 			Euid:           uint32(cev.proc_euid),
 			Egid:           uint32(cev.proc_egid),
+			Pgid:           uint32(cev.proc_pgid),
 			Sid:            uint32(cev.proc_sid),
 		}
 	}
