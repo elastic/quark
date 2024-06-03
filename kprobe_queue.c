@@ -136,6 +136,7 @@ struct task_sample {
 	u64	cap_bset;
 	u64	cap_ambient;
 	u64	start_boottime;
+	u64	tty_addr;
 	u64	root_k;
 	u64	mnt_root_k;
 	u64	mnt_mountpoint_k;
@@ -157,6 +158,9 @@ struct task_sample {
 	u32	pid;
 	u32	tid;
 	s32	exit_code;
+	u32	tty_major;
+	u32	tty_minor_start;
+	u32	tty_minor_index;
 	/* 16bit */
 	/* 8bit */
 };
@@ -165,13 +169,14 @@ struct exec_connector_sample {
 	/* 64bit */
 	u64				probe_ip;
 	u64				argc;
-	u64				stack[90];
+	u64				stack[87];	/* sync with kprobe_defs */
 	u64				cap_inheritable;
 	u64				cap_permitted;
 	u64				cap_effective;
 	u64				cap_bset;
 	u64				cap_ambient;
 	u64				start_boottime;
+	u64				tty_addr;
 	/* 32bit */
 	struct perf_sample_data_loc	comm;
 	u32				uid;
@@ -180,6 +185,9 @@ struct exec_connector_sample {
 	u32				sgid;
 	u32				euid;
 	u32				egid;
+	u32				tty_major;
+	u32				tty_minor_start;
+	u32				tty_minor_index;
 	/* 16bit */
 	/* 8bit */
 };
@@ -401,6 +409,11 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 				warn("can't build path");
 			raw->task.exit_code = -1;
 			raw->task.exit_time_event = 0;
+			if (w->tty_addr) {
+				raw->task.tty_major = w->tty_major;
+				raw->task.tty_minor = w->tty_minor_start +
+				    w->tty_minor_index;
+			}
 		} else {
 			if ((raw = raw_event_alloc(RAW_EXIT_THREAD)) == NULL)
 				return (NULL);
@@ -470,6 +483,11 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		exec->sgid = exec_sample->sgid;
 		exec->euid = exec_sample->euid;
 		exec->egid = exec_sample->egid;
+		if (exec_sample->tty_addr) {
+			exec->tty_major = exec_sample->tty_major;
+			exec->tty_minor =  (exec_sample->tty_minor_start +
+			    exec_sample->tty_minor_index);
+		}
 		strlcpy(exec->comm, str_of_dataloc(sample, &exec_sample->comm),
 		    sizeof(exec->comm));
 		break;

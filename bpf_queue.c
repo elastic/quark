@@ -35,7 +35,7 @@ libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 
 static void
 ebpf_events_to_task(struct ebpf_pid_info *pids, struct ebpf_cred_info *creds,
-    struct raw_task *task, u32 *pid)
+    struct ebpf_tty_dev *tty, struct raw_task *task, u32 *pid)
 {
 	*pid = pids->tid;
 	task->ppid = pids->ppid;
@@ -53,6 +53,14 @@ ebpf_events_to_task(struct ebpf_pid_info *pids, struct ebpf_cred_info *creds,
 	task->egid = creds->egid;
 	task->pgid = pids->pgid;
 	task->sid = pids->sid;
+	/* currently unavailable at fork, to be upstreamed */
+	if (tty != NULL) {
+		task->tty_major = tty->major;
+		task->tty_minor = tty->minor;
+	} else {
+		task->tty_major = 0;
+		task->tty_minor = 0;
+	}
 	task->exit_time_event = 0;
 }
 
@@ -75,7 +83,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		if ((raw = raw_event_alloc(RAW_WAKE_UP_NEW_TASK)) == NULL)
 			goto bad;
 		raw->time = ev->ts;
-		ebpf_events_to_task(&fork->child_pids, &fork->creds,
+		ebpf_events_to_task(&fork->child_pids, &fork->creds, NULL,
 		    &raw->task, &raw->pid);
 		/* the macro doesn't take a pointer so we can't pass down :) */
 		FOR_EACH_VARLEN_FIELD(fork->vl_fields, field) {
@@ -95,7 +103,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		if ((raw = raw_event_alloc(RAW_EXIT_THREAD)) == NULL)
 			goto bad;
 		raw->time = ev->ts;
-		ebpf_events_to_task(&exit->pids, &exit->creds,
+		ebpf_events_to_task(&exit->pids, &exit->creds, NULL,
 		    &raw->task, &raw->pid);
 		raw->task.exit_code = exit->exit_code;
 		raw->task.exit_time_event = raw->time;
@@ -116,7 +124,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 			goto bad;
 		raw->time = ev->ts;
 		raw->exec.flags |= RAW_EXEC_F_EXT;
-		ebpf_events_to_task(&exec->pids, &exec->creds,
+		ebpf_events_to_task(&exec->pids, &exec->creds, &exec->ctty,
 		    &raw->exec.ext.task, &raw->pid);
 		strlcpy(raw->exec.ext.comm, exec->comm,
 		    sizeof(raw->exec.ext.comm));

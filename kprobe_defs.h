@@ -18,6 +18,9 @@
 #define XS(_a)		S(_a)
 #define PWD_K(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent))
 #define PWD_S(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent)) " dentry.d_name.name +0"
+#define TTY_MAJOR	"task_struct.signal signal_struct.tty tty_struct.driver tty_driver.major"
+#define TTY_MINOR_START	"task_struct.signal signal_struct.tty tty_struct.driver tty_driver.minor_start"
+#define TTY_MINOR_INDEX	"task_struct.signal signal_struct.tty tty_struct.index"
 #define TASK_SAMPLE {							\
 	{ "cap_inheritable",	"di", "u64",	"task_struct.cred cred.cap_inheritable"								}, \
 	{ "cap_permitted",	"di", "u64",	"task_struct.cred cred.cap_permitted",								}, \
@@ -25,6 +28,7 @@
 	{ "cap_bset",		"di", "u64",	"task_struct.cred cred.cap_bset"								}, \
 	{ "cap_ambient",	"di", "u64",	"task_struct.cred cred.cap_ambient"								}, \
 	{ "start_boottime",	"di", "u64",	"task_struct.start_boottime"									}, \
+	{ "tty_addr",		"di", "u64",	"task_struct.signal signal_struct.tty"								}, \
 	{ "root_k",		"di", "u64",	"task_struct.fs fs_struct.root.dentry"								}, \
 	{ "mnt_root_k",		"di", "u64",	"task_struct.fs fs_struct.pwd.mnt vfsmount.mnt_root"						}, \
 	{ "mnt_mountpoint_k",	"di", "u64",	"task_struct.fs fs_struct.pwd.mnt (mount.mnt_mountpoint-mount.mnt)"				}, \
@@ -57,6 +61,9 @@
 	{ "pid",		"di", "u32",	"task_struct.tgid"										}, \
 	{ "tid",		"di", "u32",	"task_struct.pid"										}, \
 	{ "exit_code",		"di", "s32",	"task_struct.exit_code"										}, \
+	{ "tty_major",		"di", "u32",	TTY_MAJOR											}, \
+	{ "tty_minor_start",	"di", "u32",	TTY_MINOR_START											}, \
+	{ "tty_minor_index",	"di", "u32",	TTY_MINOR_INDEX											}, \
 	{ NULL,			NULL, NULL,	NULL												}}
 
 struct kprobe kp_wake_up_new_task = {
@@ -169,15 +176,13 @@ struct kprobe kp_exec_connector = {
 	{ "stack_84",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +680"	},
 	{ "stack_85",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +688"	},
 	{ "stack_86",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +696"	},
-	{ "stack_87",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +704"	},
-	{ "stack_88",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +712"	},
-	{ "stack_89",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +720"	},
 	{ "cap_inheritable",	"di",	"u64",	  "task_struct.cred cred.cap_inheritable"		},
 	{ "cap_permitted",	"di",	"u64",	  "task_struct.cred cred.cap_permitted",		},
 	{ "cap_effective",	"di",	"u64",	  "task_struct.cred cred.cap_effective"			},
 	{ "cap_bset",		"di",	"u64",	  "task_struct.cred cred.cap_bset"			},
 	{ "cap_ambient",	"di",	"u64",	  "task_struct.cred cred.cap_ambient"			},
 	{ "start_boottime",	"di",	"u64",	  "task_struct.start_boottime"				},
+	{ "tty_addr",		"di",	"u64",	  "task_struct.signal signal_struct.tty"		},
 	{ "comm",		"di",	"string", "task_struct.comm"					},
 	{ "uid",		"di",	"u32",	  "task_struct.cred cred.uid"				},
 	{ "gid",		"di",	"u32",	  "task_struct.cred cred.gid"				},
@@ -185,9 +190,15 @@ struct kprobe kp_exec_connector = {
 	{ "sgid",		"di",	"u32",	  "task_struct.cred cred.sgid"				},
 	{ "euid",		"di",	"u32",	  "task_struct.cred cred.euid"				},
 	{ "egid",		"di",	"u32",	  "task_struct.cred cred.egid"				},
+	{ "tty_major",		"di",	"u32",	  TTY_MAJOR						},
+	{ "tty_minor_start",	"di",	"u32",	  TTY_MINOR_START					},
+	{ "tty_minor_index",	"di",	"u32",	  TTY_MINOR_INDEX					},
 	{ NULL,			NULL,	NULL,	  NULL							},
 }};
 
+#undef TTY_MINOR_INDEX
+#undef TTY_MINOR_START
+#undef TTY_MAJOR
 #undef PWD_S
 #undef PWD_K
 #undef XS

@@ -33,6 +33,8 @@ type Proc struct {
 	Egid           uint32
 	Pgid           uint32
 	Sid            uint32
+	TtyMajor       uint32
+	TtyMinor       uint32
 }
 
 type Exit struct {
@@ -211,6 +213,8 @@ func cEventToGo(cev *C.struct_quark_event) (Event, error) {
 			Egid:           uint32(cev.proc_egid),
 			Pgid:           uint32(cev.proc_pgid),
 			Sid:            uint32(cev.proc_sid),
+			TtyMajor:       uint32(cev.proc_tty_major),
+			TtyMinor:       uint32(cev.proc_tty_minor),
 		}
 	}
 	if cev.flags&C.QUARK_F_EXIT != 0 {

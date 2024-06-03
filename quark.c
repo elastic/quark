@@ -308,6 +308,8 @@ event_copy_fields(struct quark_event *dst, struct quark_event *src)
 		CPY(proc_egid);
 		CPY(proc_pgid);
 		CPY(proc_sid);
+		CPY(proc_tty_major);
+		CPY(proc_tty_minor);
 	}
 	if (src->flags & QUARK_F_EXIT) {
 		CPY(exit_code);
@@ -568,7 +570,9 @@ quark_event_dump(struct quark_event *qev, FILE *f)
 		    qev->proc_cap_permitted, qev->proc_cap_effective);
 		P("  %.4s\tcap_bset=0x%llx cap_ambient=0x%llx\n",
 		    flagname, qev->proc_cap_bset, qev->proc_cap_ambient);
-		P("  %.4s\ttime_boot=%llu\n", flagname, qev->proc_time_boot);
+		P("  %.4s\ttime_boot=%llu tty_major=%d tty_minor=%d\n",
+		    flagname, qev->proc_time_boot,
+		    qev->proc_tty_major, qev->proc_tty_minor);
 	}
 	if (qev->flags & QUARK_F_CWD) {
 		flagname = event_flag_str(QUARK_F_CWD);
@@ -705,6 +709,8 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		qev->proc_egid = raw_task->egid;
 		qev->proc_pgid = raw_task->pgid;
 		qev->proc_sid = raw_task->sid;
+		qev->proc_tty_major = raw_task->tty_major;
+		qev->proc_tty_minor = raw_task->tty_minor;
 
 		cwd = raw_task->cwd.p;
 		comm = raw_task->comm;
@@ -726,6 +732,8 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 			args_len = raw_exec->ext.args_len;
 			cwd = raw_exec->ext.task.cwd.p;
 			comm = raw_exec->ext.comm;
+			qev->proc_tty_major = raw_exec->ext.task.tty_major;
+			qev->proc_tty_minor = raw_exec->ext.task.tty_minor;
 		}
 	}
 	if (raw_exec_connector != NULL) {
@@ -748,6 +756,8 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		qev->proc_sgid = raw_exec_connector->sgid;
 		qev->proc_euid = raw_exec_connector->euid;
 		qev->proc_egid = raw_exec_connector->egid;
+		qev->proc_tty_major = raw_exec_connector->tty_major;
+		qev->proc_tty_minor = raw_exec_connector->tty_minor;
 	}
 	if (raw_comm != NULL)
 		comm = raw_comm->comm; /* raw_comm always overrides */
@@ -849,7 +859,7 @@ sproc_stat(struct quark_event *qev, int dfd)
 {
 	int			 fd, r, ret;
 	char			*buf, *p;
-	u32			 pgid, sid;
+	u32			 pgid, sid, tty;
 	unsigned long long	 starttime;
 
 	buf = NULL;
@@ -879,7 +889,7 @@ sproc_stat(struct quark_event *qev, int dfd)
 	    "%*s "		/* (4) ppid */
 	    "%d "		/* (5) pgrp */
 	    "%d "		/* (6) session */
-	    "%*s "		/* (7) tty_nr */
+	    "%d "		/* (7) tty_nr */
 	    "%*s "		/* (8) tpgid */
 	    "%*s "		/* (9) flags */
 	    "%*s "		/* (10) minflt */
@@ -898,11 +908,15 @@ sproc_stat(struct quark_event *qev, int dfd)
 				/* ... */
 	    &pgid,
 	    &sid,
+	    &tty,
 	    &starttime);
 
-	if (r == 3) {
+	if (r == 4) {
 		qev->proc_pgid = pgid;
 		qev->proc_sid = sid;
+		/* See proc(5) */
+		qev->proc_tty_major = (tty >> 8) & 0xff;
+		qev->proc_tty_minor = ((tty >> 12) & 0xfff00) | (tty & 0xff);
 		qev->proc_time_boot =
 		    quark.boottime +
 		    (((u64)starttime / (u64)quark.hz) * NS_PER_S);
