@@ -185,6 +185,7 @@ struct kprobe kp_exec_connector = {
 	{ "sgid",		"di",	"u32",	  "task_struct.cred cred.sgid"				},
 	{ "euid",		"di",	"u32",	  "task_struct.cred cred.euid"				},
 	{ "egid",		"di",	"u32",	  "task_struct.cred cred.egid"				},
+	{ NULL,			NULL,	NULL,	  NULL							},
 }};
 
 #undef PWD_S
