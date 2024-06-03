@@ -44,6 +44,7 @@ type Exit struct {
 
 type Event struct {
 	Pid       uint32   // Always present
+	Events    uint64   // Bitmask of events for this Event
 	Proc      *Proc    // QUARK_F_PROC
 	ExitEvent *Exit    // QUARK_F_EXIT
 	Comm      string   // QUARK_F_COMM
@@ -68,6 +69,13 @@ const (
 	QQ_EBPF          = int(C.QQ_EBPF)
 	QQ_NO_SNAPSHOT   = int(C.QQ_NO_SNAPSHOT)
 	QQ_ALL_BACKENDS  = int(C.QQ_ALL_BACKENDS)
+
+	// Event.events
+	QUARK_EV_FORK         = int(C.QUARK_EV_FORK)
+	QUARK_EV_EXEC         = int(C.QUARK_EV_EXEC)
+	QUARK_EV_EXIT         = int(C.QUARK_EV_EXIT)
+	QUARK_EV_SETPROCTITLE = int(C.QUARK_EV_SETPROCTITLE)
+	QUARK_EV_SNAPSHOT     = int(C.QUARK_EV_SNAPSHOT)
 )
 
 type QueueAttr struct {
@@ -196,6 +204,7 @@ func cEventToGo(cev *C.struct_quark_event) (Event, error) {
 	var qev Event
 
 	qev.Pid = uint32(cev.pid)
+	qev.Events = uint64(cev.events)
 	if cev.flags&C.QUARK_F_PROC != 0 {
 		qev.Proc = &Proc{
 			CapInheritable: uint64(cev.proc_cap_inheritable),
