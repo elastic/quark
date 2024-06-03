@@ -132,6 +132,8 @@ struct raw_task {
 	u32		ppid;			/* Unavailable at exit */
 	s32		exit_code;		/* Unavailable at fork */
 	u64		exit_time_event;	/* Unavailable at fork */
+	u32		tty_major;
+	u32		tty_minor;
 	struct qstr	cwd;
 	char		comm[16];
 };
@@ -140,8 +142,8 @@ struct raw_exec {
 #define RAW_EXEC_F_EXT	(1 << 0)
 	int		flags;
 	struct qstr	filename;
-	/* available if RAW_EXEC_F_EXT */
 
+	/* available if RAW_EXEC_F_EXT */
 	struct {
 		struct raw_task task;
 		struct qstr	args;
@@ -166,6 +168,8 @@ struct raw_exec_connector {
 	u32		sgid;
 	u32		euid;
 	u32		egid;
+	u32		tty_major;
+	u32		tty_minor;
 	char		comm[16];
 };
 
@@ -261,6 +265,8 @@ struct quark_event {
 	u32	proc_egid;
 	u32	proc_pgid;
 	u32	proc_sid;
+	u32	proc_tty_major;
+	u32	proc_tty_minor;
 	/* QUARK_F_EXIT */
 	s32	exit_code;
 	u64	exit_time_event;
