@@ -124,7 +124,7 @@ $(LIBELF_STATIC): $(OBJS)
 
 $(GENSRCS): $(GENDEPS)
 	$(call msg,M4,$@)
-	$(Q)$(M4) -D SRCDIR=/d/e/quark/elftoolchain/libelf $(@:.c=.m4) > $@
+	$(Q)$(M4) -D SRCDIR=. $(@:.c=.m4) > $@
 
 $(ELFDEFS): $(ELFDEPS)
 	$(call msg,M4,$@)
@@ -132,7 +132,7 @@ $(ELFDEFS): $(ELFDEPS)
 
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -f $(OBJS) $(LIBELF_STATIC) $(ELFDEFS)
+	$(Q)rm -f $(OBJS) $(LIBELF_STATIC) $(ELFDEFS) $(GENSRCS)
 
 .PHONY: all clean
 
