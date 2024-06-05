@@ -68,6 +68,7 @@ const (
 	QQ_KPROBE        = int(C.QQ_KPROBE)
 	QQ_EBPF          = int(C.QQ_EBPF)
 	QQ_NO_SNAPSHOT   = int(C.QQ_NO_SNAPSHOT)
+	QQ_MIN_AGG       = int(C.QQ_MIN_AGG)
 	QQ_ALL_BACKENDS  = int(C.QQ_ALL_BACKENDS)
 
 	// Event.events

@@ -29,6 +29,10 @@ Attempt EBPF as the backend.
 .It Fl D
 Drop priviledges to nobody and chroot to /var/empty, useful to show how quark
 can run without priviledges.
+.It Fl g
+Use minimal aggregation, fork, exec and exit will
+.Em not
+be aggregated.
 .It Fl k
 Attempt kprobe as the backend.
 .It Fl l Ar maxlength

@@ -81,7 +81,7 @@ main(int argc, char *argv[])
 	do_drop = 0;
 	nqevs = 32;
 
-	while ((ch = getopt(argc, argv, "bDklm:tsv")) != -1) {
+	while ((ch = getopt(argc, argv, "bDgklm:tsv")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -90,6 +90,9 @@ main(int argc, char *argv[])
 			break;
 		case 'D':
 			do_drop = 1;
+			break;
+		case 'g':
+			qa.flags |= QQ_MIN_AGG;
 			break;
 		case 'k':
 			qa.flags |= QQ_KPROBE;

@@ -302,6 +302,7 @@ struct quark_queue_attr {
 #define QQ_KPROBE		(1 << 2)
 #define QQ_EBPF			(1 << 3)
 #define QQ_NO_SNAPSHOT		(1 << 4)
+#define QQ_MIN_AGG		(1 << 5)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;
@@ -319,12 +320,13 @@ struct quark_queue {
 	struct event_by_pid		 event_by_pid;
 	struct quark_event_list		 event_gc;
 	struct quark_queue_stats	 stats;
-	/* Next pid to be sent out of a snapshot */
+	const u8			(*agg_matrix)[RAW_NUM_TYPES];
 	int				 flags;
 	int				 length;
 	int				 max_length;
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
+	/* Next pid to be sent out of a snapshot */
 	int				 snap_pid;
 	int				 epollfd;
 	/* Backend related state */

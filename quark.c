@@ -1121,6 +1121,49 @@ fetch_boottime(void)
 	return (btime * NS_PER_S);
 }
 
+/*
+ * Aggregation is a relationship between a parent event and a child event. In a
+ * fork+exec cenario, fork is the parent, exec is the child.
+ * Aggregation can be confiured as AGG_SINGLE or AGG_MULTI.
+ *
+ * AGG_SINGLE aggregate a single child: fork+exec+exec would result
+ * in two events: (fork+exec); (exec).
+ *
+ * AGG_MULTI just smashes everything together, a fork+comm+comm+comm would
+ * result in one event: (fork+comm), the intermediary comm values are lost.
+ */
+
+enum agg_kind {
+	AGG_NONE,		/* Can't aggregate, must be zero */
+	AGG_SINGLE,		/* Can aggregate only one value */
+	AGG_MULTI		/* Can aggregate multiple values */
+};
+		     /* parent */   /* child */
+const u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= AGG_SINGLE,
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= AGG_SINGLE,
+	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXIT_THREAD]		= AGG_SINGLE,
+
+	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= AGG_SINGLE,
+	[RAW_EXEC][RAW_COMM]				= AGG_MULTI,
+	[RAW_EXEC][RAW_EXIT_THREAD]			= AGG_SINGLE,
+
+	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
+	[RAW_COMM][RAW_EXIT_THREAD]			= AGG_SINGLE,
+};
+
+/* used if qq->flags & QQ_MIN_AGG */
+			 /* parent */   /* child */
+const u8 agg_matrix_min[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
+	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
+
+	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= AGG_SINGLE,
+	[RAW_EXEC][RAW_COMM]				= AGG_MULTI,
+
+	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
+};
+
 static int
 quark_init(void)
 {
@@ -1326,6 +1369,10 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->hold_time = qa->hold_time;
 	qq->length = 0;
 	qq->epollfd = -1;
+	if (qq->flags & QQ_MIN_AGG)
+		qq->agg_matrix = agg_matrix_min;
+	else
+		qq->agg_matrix = agg_matrix;
 
 	if (bpf_queue_open(qq) && kprobe_queue_open(qq)) {
 		warnx("all backends failed");
@@ -1386,44 +1433,23 @@ quark_queue_close(struct quark_queue *qq)
 		qq->queue_ops->close(qq);
 }
 
-enum agg_kind {
-	AGG_NONE,		/* Can't aggregate, must be zero */
-	AGG_SINGLE,		/* Can aggregate only one value */
-	AGG_MULTI		/* Can aggregate multiple values */
-};
-                  /* dst */      /* src */
-u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= AGG_SINGLE,
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= AGG_SINGLE,
-	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXIT_THREAD]		= AGG_SINGLE,
-
-	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= AGG_SINGLE,
-	[RAW_EXEC][RAW_COMM]				= AGG_MULTI,
-	[RAW_EXEC][RAW_EXIT_THREAD]			= AGG_SINGLE,
-
-	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
-	[RAW_COMM][RAW_EXIT_THREAD]			= AGG_SINGLE,
-};
-
 static int
-can_aggregate(struct raw_event *dst, struct raw_event *src)
+can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 {
 	int			 kind;
 	struct raw_event	*agg;
 
 	/* Different pids can't aggregate */
-	if (dst->pid != src->pid)
+	if (p->pid != c->pid)
 		return (0);
 
-	if (dst->type >= RAW_NUM_TYPES || src->type >= RAW_NUM_TYPES ||
-	    dst->type < 1 || src->type < 1) {
-		warnx("type out of bounds dst=%d src=%d\n",
-		    dst->type, src->type);
+	if (p->type >= RAW_NUM_TYPES || c->type >= RAW_NUM_TYPES ||
+	    p->type <= RAW_INVALID || c->type <= RAW_INVALID) {
+		warnx("type out of bounds p=%d c=%d", p->type, c->type);
 		return (0);
 	}
 
-	kind = agg_matrix[dst->type][src->type];
+	kind = qq->agg_matrix[p->type][c->type];
 
 	switch (kind) {
 	case AGG_NONE:
@@ -1431,13 +1457,13 @@ can_aggregate(struct raw_event *dst, struct raw_event *src)
 	case AGG_MULTI:
 		return (1);
 	case AGG_SINGLE:
-		TAILQ_FOREACH(agg, &dst->agg_queue, agg_entry) {
-			if (agg->type == src->type)
+		TAILQ_FOREACH(agg, &p->agg_queue, agg_entry) {
+			if (agg->type == c->type)
 				return (0);
 		}
 		return (1);
 	default:
-		warnx("unhandle agg kind %d\n", kind);
+		warnx("unhandle agg kind %d", kind);
 		return (0);
 	}
 }
@@ -1453,7 +1479,7 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 	next = RB_NEXT(raw_event_by_pidtime, &qq->raw_event_by_pidtime,
 	    min);
 	while (next != NULL) {
-		if (!can_aggregate(min, next))
+		if (!can_aggregate(qq, min, next))
 			break;
 		aux = next;
 		next = RB_NEXT(raw_event_by_pidtime,
