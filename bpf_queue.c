@@ -53,7 +53,6 @@ ebpf_events_to_task(struct ebpf_pid_info *pids, struct ebpf_cred_info *creds,
 	task->egid = creds->egid;
 	task->pgid = pids->pgid;
 	task->sid = pids->sid;
-	/* currently unavailable at fork, to be upstreamed */
 	if (tty != NULL) {
 		task->tty_major = tty->major;
 		task->tty_minor = tty->minor;
@@ -83,7 +82,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		if ((raw = raw_event_alloc(RAW_WAKE_UP_NEW_TASK)) == NULL)
 			goto bad;
 		raw->time = ev->ts;
-		ebpf_events_to_task(&fork->child_pids, &fork->creds, NULL,
+		ebpf_events_to_task(&fork->child_pids, &fork->creds, &fork->ctty,
 		    &raw->task, &raw->pid);
 		/* the macro doesn't take a pointer so we can't pass down :) */
 		FOR_EACH_VARLEN_FIELD(fork->vl_fields, field) {
