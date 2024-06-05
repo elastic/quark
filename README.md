@@ -280,7 +280,7 @@ or equivalent.
 		struct quark_event	qevs[32], *qev;
 		int			n, i;
 	
-		if (quark_queue_open(&qq, 0) == -1)
+		if (quark_queue_open(&qq, NULL) == -1)
 			err(1, "quark_queue_open");
 	
 		for (; ;) {
