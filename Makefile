@@ -105,7 +105,15 @@ $(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
 
 $(LIBQUARK_STATIC_BIG): $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC) $(ZLIB_STATIC)
 	$(call msg,AR,$@)
-	$(Q)ar -M < libquark_big.mri
+	$(Q)printf "\
+	create libquark_big.a\n\
+	addlib libquark.a\n\
+	addlib libbpf/src/libbpf.a\n\
+	addlib elftoolchain/libelf/libelf_pic.a\n\
+	addlib zlib/libz.a\n\
+	save\n\
+	end\n" | ar -M
+
 
 $(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
 	$(call msg,CC,$@)

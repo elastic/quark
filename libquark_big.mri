@@ -1,7 +1,0 @@
-create libquark_big.a
-addlib libquark.a
-addlib libbpf/src/libbpf.a
-addlib elftoolchain/libelf/libelf_pic.a
-addlib zlib/libz.a
-save
-end
