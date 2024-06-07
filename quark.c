@@ -242,6 +242,22 @@ raw_event_remove(struct quark_queue *qq, struct raw_event *raw)
 	qq->stats.removals++;
 }
 
+static int
+tty_type(int major, int minor)
+{
+	if (major >= 136 && major <= 143)
+		return (QUARK_TTY_PTS);
+
+	if (major == 4) {
+		if (minor <= 63)
+			return (QUARK_TTY_CONSOLE);
+		else if (minor <= 255)
+			return (QUARK_TTY_TTY);
+	}
+
+	return (QUARK_TTY_UNKNOWN);
+}
+
 /* buf_len includes the terminating NUL */
 static int
 args_to_spaces(char *buf, size_t buf_len)
@@ -310,6 +326,8 @@ event_copy_fields(struct quark_event *dst, struct quark_event *src)
 		CPY(proc_sid);
 		CPY(proc_tty_major);
 		CPY(proc_tty_minor);
+		CPY(proc_entry_leader_type);
+		CPY(proc_entry_leader);
 	}
 	if (src->flags & QUARK_F_EXIT) {
 		CPY(exit_code);
@@ -497,6 +515,261 @@ events_type_str(u64 events, char *buf, size_t len)
 	return (0);
 }
 
+static int
+entry_leader_compute(struct quark_queue *qq, struct quark_event *qev)
+{
+	struct quark_event	*parent;
+	char			*basename, *p_basename;
+	int			 tty;
+	int			 is_ses_leader;
+
+	if ((qq->flags & QQ_ENTRY_LEADER) == 0)
+		return (0);
+
+	/*
+	 * Init
+	 */
+	if (qev->pid == 1) {
+		qev->proc_entry_leader_type = QUARK_ELT_INIT;
+		qev->proc_entry_leader = 1;
+
+		return (0);
+
+	}
+
+	is_ses_leader = qev->pid == qev->proc_sid;
+
+	/*
+	 * All kthreads are QUARK_ELT_KTHREAD;
+	 */
+	if (qev->pid == 2 || qev->proc_ppid == 2) {
+		qev->proc_entry_leader_type = QUARK_ELT_KTHREAD;
+		qev->proc_entry_leader = is_ses_leader ? qev->pid : 2;
+
+		return (0);
+	}
+
+	tty = tty_type(qev->proc_tty_major, qev->proc_tty_minor);
+
+	basename = strrchr(qev->filename, '/');
+	if (basename == NULL)
+		basename = "";
+	else
+		basename++;
+
+	/*
+	 * CONSOLE only considers the login process, keep the same behaviour
+	 * from other elastic products.
+	 */
+	if (is_ses_leader) {
+		if (tty == QUARK_TTY_TTY) {
+			qev->proc_entry_leader_type = QUARK_ELT_TERM;
+			qev->proc_entry_leader = qev->pid;
+
+			return (0);
+		}
+
+		if (tty == QUARK_TTY_CONSOLE && !strcmp(basename, "login")) {
+			qev->proc_entry_leader_type = QUARK_ELT_TERM;
+			qev->proc_entry_leader = qev->pid;
+
+			return (0);
+		}
+	}
+
+	/*
+	 * Fetch the parent
+	 */
+	parent = event_cache_get(qq, qev->proc_ppid, 0);
+	if (parent == NULL || parent->proc_entry_leader_type == QUARK_ELT_UNKNOWN)
+		return (-1);
+
+	/*
+	 * Since we didn't hit anything, inherit from parent. Non leaders are
+	 * done.
+	 */
+	qev->proc_entry_leader_type = parent->proc_entry_leader_type;
+	qev->proc_entry_leader = parent->proc_entry_leader;
+	if (!is_ses_leader)
+		return (0);
+
+	/*
+	 * Filter these out, keep same behaviour of other elastic products.
+	 */
+	if (!strcmp(basename, "runc") ||
+	    !strcmp(basename, "containerd-shim") ||
+	    !strcmp(basename, "calico-node") ||
+	    !strcmp(basename, "check-status") ||
+	    !strcmp(basename, "pause") ||
+	    !strcmp(basename, "conmon"))
+		return (0);
+
+	p_basename = strrchr(parent->filename, '/');
+	if (p_basename == NULL)
+		p_basename = "";
+	else
+		p_basename++;
+
+	/*
+	 * SSM.
+	 */
+	if (tty == QUARK_TTY_PTS &&
+	    !strcmp(p_basename, "ssm-session-worker")) {
+		qev->proc_entry_leader_type = QUARK_ELT_SSM;
+		qev->proc_entry_leader = qev->pid;
+
+		return (0);
+	}
+
+	/*
+	 * SSHD. If we're a direct descendant of sshd, but we're not sshd
+	 * ourselves: we're an entry group leader for sshd.
+	 */
+	if (!strcmp(p_basename, "sshd") && strcmp(basename, "sshd")) {
+		qev->proc_entry_leader_type = QUARK_ELT_SSHD;
+		qev->proc_entry_leader = qev->pid;
+
+		return (0);
+	}
+
+	/*
+	 * Container. Similar dance to sshd but more names, cloud-defend ignores
+	 * basename here.
+	 */
+	if (!strcmp(p_basename, "containerd-shim") ||
+	    !strcmp(p_basename, "runc") ||
+	    !strcmp(p_basename, "conmon")) {
+		qev->proc_entry_leader_type = QUARK_ELT_CONTAINER;
+		qev->proc_entry_leader = qev->pid;
+
+		return (0);
+	}
+
+	if (qev->proc_entry_leader == QUARK_ELT_UNKNOWN)
+		warnx("%d (%s) is UNKNOWN (tty=%d)",
+		    qev->pid, qev->filename, tty);
+
+	return (0);
+}
+
+struct proc_node {
+	u32			pid;
+	TAILQ_ENTRY(proc_node)	entry;
+};
+
+TAILQ_HEAD(proc_node_list, proc_node);
+
+static int
+entry_leader_build_walklist(struct quark_queue *qq, struct proc_node_list *list)
+{
+	struct proc_node	*node, *new_node;
+	struct quark_event	*qev;
+
+	TAILQ_INIT(list);
+
+	/*
+	 * Look for the root nodes, this is init(pid = 1) and kthreadd(pid = 2),
+	 * but maybe there's something else in the future or in the past so
+	 * don't hardcode.
+	 */
+
+	RB_FOREACH(qev, event_by_pid, &qq->event_by_pid) {
+		if (qev->proc_ppid != 0)
+			continue;
+
+		new_node = calloc(1, sizeof(*new_node));
+		if (new_node == NULL)
+			goto fail;
+		new_node->pid = qev->pid;
+		TAILQ_INSERT_TAIL(list, new_node, entry);
+	}
+
+	/*
+	 * Now do the "recursion"
+	 */
+	TAILQ_FOREACH(node, list, entry) {
+		RB_FOREACH(qev, event_by_pid, &qq->event_by_pid) {
+			if (qev->proc_ppid != node->pid)
+				continue;
+
+			new_node = calloc(1, sizeof(*new_node));
+			if (new_node == NULL)
+				goto fail;
+			new_node->pid = qev->pid;
+			TAILQ_INSERT_TAIL(list, new_node, entry);
+		}
+	}
+
+	return (0);
+
+fail:
+	while ((node = TAILQ_FIRST(list)) != NULL) {
+		TAILQ_REMOVE(list, node, entry);
+		free(node);
+	}
+
+	return (-1);
+}
+
+static int
+entry_leaders_build(struct quark_queue *qq)
+{
+	struct quark_event	*qev;
+	struct proc_node	*node;
+	struct proc_node_list	 list;
+
+	if ((qq->flags & QQ_ENTRY_LEADER) == 0)
+		return (0);
+
+	if (entry_leader_build_walklist(qq, &list) == -1)
+		return (-1);
+
+	while ((node = TAILQ_FIRST(&list)) != NULL) {
+		qev = event_cache_get(qq, node->pid, 0);
+		if (qev == NULL)
+			goto fail;
+		if (entry_leader_compute(qq, qev) == -1)
+			warnx("unknown entry_leader for pid %d", qev->pid);
+		TAILQ_REMOVE(&list, node, entry);
+		free(node);
+	}
+
+	return (0);
+
+fail:
+	while ((node = TAILQ_FIRST(&list)) != NULL) {
+		TAILQ_REMOVE(&list, node, entry);
+		free(node);
+	}
+
+	return (-1);
+}
+
+static const char *
+entry_leader_type_str(u32 entry_leader_type)
+{
+	switch (entry_leader_type) {
+	case QUARK_ELT_UNKNOWN:
+		return "UNKNOWN";
+	case QUARK_ELT_INIT:
+		return "INIT";
+	case QUARK_ELT_KTHREAD:
+		return "KTHREAD";
+	case QUARK_ELT_SSHD:
+		return "SSHD";
+	case QUARK_ELT_SSM:
+		return "SSM";
+	case QUARK_ELT_CONTAINER:
+		return "CONTAINER";
+	case QUARK_ELT_TERM:
+		return "TERM";
+	case QUARK_ELT_CONSOLE:
+		return "CONSOLE";
+	default:
+		return "?";
+	}
+}
+
 /* User facing version of event_cache_lookup() */
 int
 quark_event_lookup(struct quark_queue *qq, struct quark_event *dst, int pid)
@@ -573,6 +846,9 @@ quark_event_dump(struct quark_event *qev, FILE *f)
 		P("  %.4s\ttime_boot=%llu tty_major=%d tty_minor=%d\n",
 		    flagname, qev->proc_time_boot,
 		    qev->proc_tty_major, qev->proc_tty_minor);
+		P("  %.4s\tentry_leader_type=%s entry_leader=%d\n", flagname,
+		    entry_leader_type_str(qev->proc_entry_leader_type),
+		    qev->proc_entry_leader);
 	}
 	if (qev->flags & QUARK_F_CWD) {
 		flagname = event_flag_str(QUARK_F_CWD);
@@ -795,6 +1071,11 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 
 	if (qev->flags == 0)
 		warnx("%s: no flags", __func__);
+
+	if (events & (QUARK_EV_FORK | QUARK_EV_EXEC)) {
+		if (entry_leader_compute(qq, qev) == -1)
+			warnx("unknown entry_leader for pid %d", qev->pid);
+	}
 
 	if (do_cache) {
 		event_copy_out(dst, qev, events);
@@ -1391,6 +1672,14 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (sproc_scrape(qq) == -1) {
 		warnx("can't scrape /proc");
 		goto fail;
+	}
+
+	/*
+	 * Compute all entry leaders
+	 */
+	if (entry_leaders_build(qq) == -1) {
+		warnx("can't compute entry leaders");
+		return (-1);
 	}
 
 	/*

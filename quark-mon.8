@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl bDkstv
+.Op Fl bDekstv
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
 .Sh DESCRIPTION
@@ -29,6 +29,15 @@ Attempt EBPF as the backend.
 .It Fl D
 Drop priviledges to nobody and chroot to /var/empty, useful to show how quark
 can run without priviledges.
+.It Fl e
+Include
+.Em proc_entry_leader
+and
+.Em proc_entry_type_type .
+in
+.Em quark_events .
+Entry leader is how the process entered the system, it is disabled by default as
+it is Elastic/ECS specific.
 .It Fl g
 Use minimal aggregation, fork, exec and exit will
 .Em not

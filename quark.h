@@ -226,6 +226,24 @@ RB_HEAD(event_by_pid, quark_event);
  */
 TAILQ_HEAD(quark_event_list, quark_event);
 
+enum {
+	QUARK_TTY_UNKNOWN,
+	QUARK_TTY_PTS,
+	QUARK_TTY_TTY,
+	QUARK_TTY_CONSOLE,
+};
+
+enum {
+	QUARK_ELT_UNKNOWN,
+	QUARK_ELT_INIT,
+	QUARK_ELT_KTHREAD,
+	QUARK_ELT_SSHD,
+	QUARK_ELT_SSM,
+	QUARK_ELT_CONTAINER,
+	QUARK_ELT_TERM,
+	QUARK_ELT_CONSOLE,
+};
+
 /*
  * Main external working set, user passes this back and forth, members only have
  * a meaning if its respective flag is set, say proc_cap_inheritable should only
@@ -274,6 +292,8 @@ struct quark_event {
 	u32	proc_sid;
 	u32	proc_tty_major;
 	u32	proc_tty_minor;
+	u32	proc_entry_leader_type;
+	u32	proc_entry_leader;
 	/* QUARK_F_EXIT */
 	s32	exit_code;
 	u64	exit_time_event;
@@ -310,6 +330,7 @@ struct quark_queue_attr {
 #define QQ_EBPF			(1 << 3)
 #define QQ_NO_SNAPSHOT		(1 << 4)
 #define QQ_MIN_AGG		(1 << 5)
+#define QQ_ENTRY_LEADER		(1 << 6)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;
