@@ -58,7 +58,7 @@ priv_drop(void)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-bDfkstv] [-l maxlength] [-m maxnodes]\n",
+	fprintf(stderr, "usage: %s [-bDefkstv] [-l maxlength] [-m maxnodes]\n",
 	    program_invocation_short_name);
 
 	exit(1);
@@ -81,7 +81,7 @@ main(int argc, char *argv[])
 	do_drop = 0;
 	nqevs = 32;
 
-	while ((ch = getopt(argc, argv, "bDgklm:tsv")) != -1) {
+	while ((ch = getopt(argc, argv, "bDegklm:tsv")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -90,6 +90,9 @@ main(int argc, char *argv[])
 			break;
 		case 'D':
 			do_drop = 1;
+			break;
+		case 'e':
+			qa.flags |= QQ_ENTRY_LEADER;
 			break;
 		case 'g':
 			qa.flags |= QQ_MIN_AGG;

@@ -18,23 +18,25 @@ import (
 )
 
 type Proc struct {
-	CapInheritable uint64
-	CapPermitted   uint64
-	CapEffective   uint64
-	CapBset        uint64
-	CapAmbient     uint64
-	TimeBoot       uint64
-	Ppid           uint32
-	Uid            uint32
-	Gid            uint32
-	Suid           uint32
-	Sgid           uint32
-	Euid           uint32
-	Egid           uint32
-	Pgid           uint32
-	Sid            uint32
-	TtyMajor       uint32
-	TtyMinor       uint32
+	CapInheritable  uint64
+	CapPermitted    uint64
+	CapEffective    uint64
+	CapBset         uint64
+	CapAmbient      uint64
+	TimeBoot        uint64
+	Ppid            uint32
+	Uid             uint32
+	Gid             uint32
+	Suid            uint32
+	Sgid            uint32
+	Euid            uint32
+	Egid            uint32
+	Pgid            uint32
+	Sid             uint32
+	EntryLeader     uint32
+	EntryLeaderType uint32
+	TtyMajor        uint32
+	TtyMinor        uint32
 }
 
 type Exit struct {
@@ -69,6 +71,7 @@ const (
 	QQ_EBPF          = int(C.QQ_EBPF)
 	QQ_NO_SNAPSHOT   = int(C.QQ_NO_SNAPSHOT)
 	QQ_MIN_AGG       = int(C.QQ_MIN_AGG)
+	QQ_ENTRY_LEADER  = int(C.QQ_ENTRY_LEADER)
 	QQ_ALL_BACKENDS  = int(C.QQ_ALL_BACKENDS)
 
 	// Event.events
@@ -77,6 +80,16 @@ const (
 	QUARK_EV_EXIT         = int(C.QUARK_EV_EXIT)
 	QUARK_EV_SETPROCTITLE = int(C.QUARK_EV_SETPROCTITLE)
 	QUARK_EV_SNAPSHOT     = int(C.QUARK_EV_SNAPSHOT)
+
+	// EntryLeaderType
+	QUARK_ELT_UNKNOWN   = int(C.QUARK_ELT_UNKNOWN)
+	QUARK_ELT_INIT      = int(C.QUARK_ELT_INIT)
+	QUARK_ELT_KTHREAD   = int(C.QUARK_ELT_KTHREAD)
+	QUARK_ELT_SSHD      = int(C.QUARK_ELT_SSHD)
+	QUARK_ELT_SSM       = int(C.QUARK_ELT_SSM)
+	QUARK_ELT_CONTAINER = int(C.QUARK_ELT_CONTAINER)
+	QUARK_ELT_TERM      = int(C.QUARK_ELT_TERM)
+	QUARK_ELT_CONSOLE   = int(C.QUARK_ELT_CONSOLE)
 )
 
 type QueueAttr struct {
@@ -208,23 +221,25 @@ func cEventToGo(cev *C.struct_quark_event) (Event, error) {
 	qev.Events = uint64(cev.events)
 	if cev.flags&C.QUARK_F_PROC != 0 {
 		qev.Proc = &Proc{
-			CapInheritable: uint64(cev.proc_cap_inheritable),
-			CapPermitted:   uint64(cev.proc_cap_permitted),
-			CapEffective:   uint64(cev.proc_cap_effective),
-			CapBset:        uint64(cev.proc_cap_bset),
-			CapAmbient:     uint64(cev.proc_cap_ambient),
-			TimeBoot:       uint64(cev.proc_time_boot),
-			Ppid:           uint32(cev.proc_ppid),
-			Uid:            uint32(cev.proc_uid),
-			Gid:            uint32(cev.proc_gid),
-			Suid:           uint32(cev.proc_suid),
-			Sgid:           uint32(cev.proc_sgid),
-			Euid:           uint32(cev.proc_euid),
-			Egid:           uint32(cev.proc_egid),
-			Pgid:           uint32(cev.proc_pgid),
-			Sid:            uint32(cev.proc_sid),
-			TtyMajor:       uint32(cev.proc_tty_major),
-			TtyMinor:       uint32(cev.proc_tty_minor),
+			CapInheritable:  uint64(cev.proc_cap_inheritable),
+			CapPermitted:    uint64(cev.proc_cap_permitted),
+			CapEffective:    uint64(cev.proc_cap_effective),
+			CapBset:         uint64(cev.proc_cap_bset),
+			CapAmbient:      uint64(cev.proc_cap_ambient),
+			TimeBoot:        uint64(cev.proc_time_boot),
+			Ppid:            uint32(cev.proc_ppid),
+			Uid:             uint32(cev.proc_uid),
+			Gid:             uint32(cev.proc_gid),
+			Suid:            uint32(cev.proc_suid),
+			Sgid:            uint32(cev.proc_sgid),
+			Euid:            uint32(cev.proc_euid),
+			Egid:            uint32(cev.proc_egid),
+			Pgid:            uint32(cev.proc_pgid),
+			Sid:             uint32(cev.proc_sid),
+			EntryLeader:     uint32(cev.proc_entry_leader),
+			EntryLeaderType: uint32(cev.proc_entry_leader_type),
+			TtyMajor:        uint32(cev.proc_tty_major),
+			TtyMinor:        uint32(cev.proc_tty_minor),
 		}
 	}
 	if cev.flags&C.QUARK_F_EXIT != 0 {
