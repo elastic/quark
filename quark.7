@@ -158,6 +158,13 @@ Other useful build targets include:
 .It Em clean
 Clean object files from
 .Nm .
+.It Em btfhub
+Regenerates
+.Pa btfhub.c .
+Usage:
+.Bd -literal
+make btfhub BTFHUB_ARCHIVE_PATH=/my/path/to/btfhub-archive
+.Ed
 .It Em cleanall
 Clean all object files, including the ones from
 .Em libbpf ,

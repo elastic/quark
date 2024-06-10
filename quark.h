@@ -37,11 +37,16 @@ int	quark_event_lookup(struct quark_queue *, struct quark_event *, int);
 int	quark_event_dump(struct quark_event *, FILE *);
 
 /* btf.c */
-struct quark_btf {
+struct quark_btf_target {
 	const char	*dotname;
 	ssize_t		 offset; /* in bytes, not bits */
 };
-struct quark_btf	*quark_btf_open(void);
+
+struct quark_btf {
+	char			*kname;
+	struct quark_btf_target	 targets[];
+};
+struct quark_btf	*quark_btf_open(const char *, const char *);
 void			 quark_btf_close(struct quark_btf *);
 ssize_t			 quark_btf_offset(struct quark_btf *, const char *);
 
