@@ -21,7 +21,25 @@
 #define TTY_MAJOR	"task_struct.signal signal_struct.tty tty_struct.driver tty_driver.major"
 #define TTY_MINOR_START	"task_struct.signal signal_struct.tty tty_struct.driver tty_driver.minor_start"
 #define TTY_MINOR_INDEX	"task_struct.signal signal_struct.tty tty_struct.index"
-#define TASK_SAMPLE {							\
+
+struct kprobe_arg ka_task_old_pgid = {
+	"pgid", "di", "u32", "task_struct.group_leader (task_struct.pids+8) (pid.numbers+0).upid.nr"
+};
+
+struct kprobe_arg ka_task_old_sid = {
+	"sid", "di", "u32", "task_struct.group_leader (task_struct.pids+16) (pid.numbers+0).upid.nr"
+};
+
+struct kprobe_arg ka_task_new_pgid = {
+	"pgid", "di", "u32", "task_struct.group_leader task_struct.signal (signal_struct.pids+16) (pid.numbers+0).upid.nr"
+};
+
+struct kprobe_arg ka_task_new_sid = {
+	"sid", "di", "u32", "task_struct.group_leader task_struct.signal (signal_struct.pids+24) (pid.numbers+0).upid.nr"
+};
+
+
+#define TASK_SAMPLE {																   \
 	{ "cap_inheritable",	"di", "u64",	"task_struct.cred cred.cap_inheritable"								}, \
 	{ "cap_permitted",	"di", "u64",	"task_struct.cred cred.cap_permitted",								}, \
 	{ "cap_effective",	"di", "u64",	"task_struct.cred cred.cap_effective"								}, \
@@ -56,8 +74,8 @@
 	{ "sgid",		"di", "u32",	"task_struct.cred cred.sgid"									}, \
 	{ "euid",		"di", "u32",	"task_struct.cred cred.euid"									}, \
 	{ "egid",		"di", "u32",	"task_struct.cred cred.egid"									}, \
-	{ "pgid",		"di", "u32",	"task_struct.group_leader task_struct.signal (signal_struct.pids+16) (pid.numbers+0).upid.nr"	}, \
-	{ "sid",		"di", "u32",	"task_struct.group_leader task_struct.signal (signal_struct.pids+24) (pid.numbers+0).upid.nr"	}, \
+	{ "pgid",		"di", "u32",	"KLUDGE - see kprobe_kludge_arg()"								}, \
+	{ "sid",		"di", "u32",	"KLUDGE - see kprobe_kludge_arg()"								}, \
 	{ "pid",		"di", "u32",	"task_struct.tgid"										}, \
 	{ "tid",		"di", "u32",	"task_struct.pid"										}, \
 	{ "exit_code",		"di", "s32",	"task_struct.exit_code"										}, \

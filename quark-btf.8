@@ -6,8 +6,15 @@
 .Nd query quark BTF offsets
 .Sh SYNOPSIS
 .Nm quark-btf
-.Op Fl b
+.Op Fl bv
 .Op Ar targets ...
+.Nm quark-btf
+.Op Fl bv
+.Op Fl f Ar btf_file
+.Nm quark-btf
+.Op Fl v
+.Op Fl f Ar btf_file
+.Op Fl g Ar btf_name
 .Sh DESCRIPTION
 The
 .Nm
@@ -15,15 +22,38 @@ program prints out the kernel structures offsets used by quark.
 .Pp
 If operands are given, the output is curbed for those specified
 .Ar targets .
+The exit status is the number of failed
+.Ar targets .
 .Pp
 The options are as follows:
 .Bl -tag -width Dtb
 .It Fl b
 Also print the offset in bits.
+.It Fl v
+Increase
+.Em quark_verbose ,
+can be issued multiple times.
+.It Fl f Ar btf_file
+Print all offsets quark would use from
+.Ar btf_file .
+.It Fl g Ar btf_name
+Generate the internal btf C structure used by quark.
+Must be used together with
+.Fl f Ar btf_file .
+.Pp
+This is only used to generate
+.Pa btfhub.c
+via
+.Pa genbtf.sh ,
+and since btfhub-archive never changes, chances are you'll never need this.
+.Ar btf_file .
 .El
 .Sh EXIT STATUS
 .Nm
-exits with 0 if all targets were found, or 1 otherwise.
+exits with number of targets failed if
+.Ar targets
+is specified.
+Otherwise 0 in case of success.
 .Sh EXAMPLES
 Running:
 .Dl $ quark-btf

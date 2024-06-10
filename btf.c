@@ -10,7 +10,7 @@
 
 s32	btf_root_offset(struct btf *, const char *);
 
-struct quark_btf targets[] = {
+struct quark_btf_target targets[] = {
 	{ "cred.cap_ambient",		-1 },
 	{ "cred.cap_bset",		-1 },
 	{ "cred.cap_effective",		-1 },
@@ -28,7 +28,7 @@ struct quark_btf targets[] = {
 	{ "fs_struct.pwd.dentry",	-1 },
 	{ "fs_struct.pwd.mnt",		-1 },
 	{ "fs_struct.root.dentry",	-1 },
-	{ "mm_struct.(anon).start_stack",-1 },
+	{ "mm_struct.(anon).start_stack",-1 }, /* or mm_struct.start_stack */
 	{ "mount.mnt",			-1 },
 	{ "mount.mnt_mountpoint",	-1 },
 	{ "pid.numbers",		-1 },
@@ -41,8 +41,9 @@ struct quark_btf targets[] = {
 	{ "task_struct.group_leader",	-1 },
 	{ "task_struct.mm",		-1 },
 	{ "task_struct.pid",		-1 },
-	{ "task_struct.start_boottime",	-1 },
-	{ "task_struct.signal",		-1 },
+	{ "task_struct.pids",		-1 },
+	{ "task_struct.start_boottime",	-1 }, /* or task_struct.real_start_time */
+	{ "task_struct.signal",		-1 }, /* or task_struct.pids via KLUDGE */
 	{ "task_struct.tgid",		-1 },
 	{ "tty_driver.major",		-1 },
 	{ "tty_driver.minor_start",	-1 },
@@ -51,8 +52,34 @@ struct quark_btf targets[] = {
 	{ "upid.nr",			-1 },
 	{ "vfsmount.mnt_root",		-1 },
 	{ NULL,				-1 },
-	/* Keep this table in sync with enum btf_target_id */
 };
+
+struct btf_alternative {
+	const char *new;
+	const char *old;
+} btf_alternatives[] = {
+	{ "task_struct.start_boottime",		"task_struct.real_start_time"	},
+	{ "mm_struct.(anon).start_stack",	"mm_struct.start_stack"		},
+	{ NULL,					NULL				},
+};
+
+static const char *
+btf_alternative_name(struct btf *btf, const char *new_name)
+{
+	struct btf_alternative	*p;
+
+	for (p = btf_alternatives; p->new != NULL; p++) {
+		if (strcmp(p->new, new_name))
+			continue;
+
+		if (quark_verbose)
+			warnx("%s: found alternative for %s as %s",
+			    __func__, p->new, p->old);
+		return (p->old);
+	}
+
+	return (NULL);
+}
 
 static const struct btf_type *
 btf_type_by_name_kind(struct btf *btf, s32 *off, const char *name, int kind)
@@ -103,8 +130,8 @@ btf_offsetof(struct btf *btf, struct btf_type const *t, const char *mname)
 	return (NULL);
 }
 
-s32
-btf_root_offset(struct btf *btf, const char *dotname)
+static s32
+btf_root_offset2(struct btf *btf, const char *dotname)
 {
 	const struct btf_type *parent;
 	const char *root_name, *child_name;
@@ -145,45 +172,88 @@ btf_root_offset(struct btf *btf, const char *dotname)
 	return (off / 8);
 }
 
+s32
+btf_root_offset(struct btf *btf, const char *dotname)
+{
+	s32	off;
+
+	off = btf_root_offset2(btf, dotname);
+	if (off != -1)
+		return (off);
+
+	/* Try a translation */
+	dotname = btf_alternative_name(btf, dotname);
+	if (dotname == NULL)
+		return (-1);
+
+	return (btf_root_offset2(btf, dotname));
+}
+
 struct quark_btf *
-quark_btf_open(void)
+quark_btf_open(const char *path, const char *kname)
 {
 	struct btf		*btf;
 	int			 failed;
-	struct quark_btf	*ta, *qbtf;
+	struct quark_btf	*qbtf;
+	struct quark_btf_target *ta;
 
 	failed = 0;
 	errno = 0;
-	btf = btf__load_vmlinux_btf();
+	if (path == NULL)
+		btf = btf__load_vmlinux_btf();
+	else
+		btf = btf__parse(path, NULL);
 	if (IS_ERR_OR_NULL(btf)) {
 		if (errno == 0)
 			errno = ENOTSUP;
 		return (NULL);
 	}
 
-	if ((qbtf = malloc(sizeof(targets))) == NULL)
+	if ((qbtf = malloc(sizeof(*qbtf) + sizeof(targets))) == NULL)
 		return (NULL);
-	memcpy(qbtf, targets, sizeof(targets));
+	if (kname == NULL)
+		kname = "sys";
+	qbtf->kname = strdup(kname);
+	memcpy(qbtf->targets, targets, sizeof(targets));
 
-	for (ta = qbtf; ta->dotname != NULL; ta++) {
+	for (ta = qbtf->targets; ta->dotname != NULL; ta++) {
 		ta->offset = btf_root_offset(btf, ta->dotname);
 		if (ta->offset == -1) {
-			warnx("%s: dotname=%s failed",
-			    __func__, ta->dotname);
+			/*
+			 * Be stingy with printing things that always fail
+			 */
+			if (quark_verbose ||
+			    (strcmp(ta->dotname, "signal_struct.pids") &&
+			    strcmp(ta->dotname, "task_struct.pids")))
+				warnx("%s: dotname=%s failed",
+				    __func__, ta->dotname);
+
 			failed++;
 		}
 	}
 
-	for (ta = qbtf; quark_verbose && ta->dotname != NULL; ta++)
+	btf__free(btf);
+
+	for (ta = qbtf->targets; quark_verbose && ta->dotname != NULL; ta++)
 		fprintf(stderr, "%s: dotname=%s off=%ld (bitoff=%ld)\n",
 		    __func__, ta->dotname, ta->offset, ta->offset * 8);
 
-	btf__free(btf);
+	/*
+	 * task_struct.signal is only present in new kernels, while
+	 * task_struct.pids is only present in old kernels. If only one of
+	 * either failed, it's all fine.
+	 */
+	if (failed == 1 &&
+	    (quark_btf_offset(qbtf, "signal_struct.pids") == -1 ||
+	    quark_btf_offset(qbtf, "task_struct.pids") == -1)) {
+		failed = 0;
+	}
 
 	if (failed) {
 		quark_btf_close(qbtf);
 		return (errno = ENOTSUP, NULL);
 	}
+
 
 	return (qbtf);
 }
@@ -191,15 +261,16 @@ quark_btf_open(void)
 void
 quark_btf_close(struct quark_btf *qbtf)
 {
+	free(qbtf->kname);
 	free(qbtf);
 }
 
 ssize_t
 quark_btf_offset(struct quark_btf *qbtf, const char *dotname)
 {
-	struct quark_btf *ta;
+	struct quark_btf_target *ta;
 
-	for (ta = qbtf; ta->dotname != NULL; ta++) {
+	for (ta = qbtf->targets; ta->dotname != NULL; ta++) {
 		if (!strcmp(ta->dotname, dotname)) {
 			if (ta->offset != -1)
 				return (ta->offset);

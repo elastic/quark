@@ -169,6 +169,14 @@ Other useful build targets include:
 > Clean object files from
 > **quark**.
 
+*btfhub*
+
+> Regenerates
+> *btfhub.c*.
+> Usage:
+
+> > make btfhub BTFHUB\_ARCHIVE\_PATH=/my/path/to/btfhub-archive
+
 *cleanall*
 
 > Clean all object files, including the ones from

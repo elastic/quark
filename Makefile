@@ -156,6 +156,14 @@ README.md: quark.7
 
 doc: manlint manhtml README.md
 
+btfhub:
+	$(Q)test $(BTFHUB_ARCHIVE_PATH) || \
+		(echo "usage: make btfhub.c BTFHUB_ARCHIVE_PATH=/btfhub-archive-path"; exit 1)
+	$(call msg,SHELL,./genbtf.sh $(BTFHUB_ARCHIVE_PATH))
+	$(Q)./genbtf.sh $(BTFHUB_ARCHIVE_PATH) > btfhub.new
+	$(call msg,MV,btfhub.c)
+	$(Q)mv btfhub.new btfhub.c
+
 eebpf-sync:
 	$(Q)test $(EEBPF_PATH) || \
 		(echo "usage: make eebpf-sync EEBPF_PATH=/elastic-ebpf-path"; exit 1)
@@ -186,6 +194,6 @@ manlint:
 	$(call msg,MANDOC)
 	$(Q)mandoc -Tlint *.[378] || true
 
-.PHONY: all doc eebpf-sync clean cleanall manhtml manlint
+.PHONY: all btfhub clean cleanall doc eebpf-sync manhtml manlint.c
 
 .SUFFIXES:

@@ -841,12 +841,50 @@ kprobe_exp(char *exp, ssize_t *off1, struct quark_btf *qbtf)
 	return (0);
 }
 
+/*
+ * Old kernels have some offsets in different structures, not just under a
+ * different name(see btf_alternatives{}). We handle those differences here
+ * by detecting it at runtime and issuing the correct kprobe_arg.
+ */
+static struct kprobe_arg *
+kprobe_kludge_arg(struct kprobe *k, struct kprobe_arg *karg,
+    struct quark_btf *qbtf)
+{
+	/*
+	 * For TASK_SAMPLE, pgid and sid depend on fetching pids, which in newer
+	 * kernels are deep within signal_struct, but older kernels have it
+	 * within task_struct. So if signal_struct.pids exists, it's the "new"
+	 * version.
+	 */
+	if ((k == &kp_wake_up_new_task || k == &kp_exit_thread) &&
+	    !strcmp(karg->name, "pgid")) {
+		if (quark_btf_offset(qbtf, "signal_struct.pids") == -1)
+			return (&ka_task_old_pgid);
+
+		return (&ka_task_new_pgid);
+	}
+
+	if ((k == &kp_wake_up_new_task || k == &kp_exit_thread) &&
+	    !strcmp(karg->name, "sid")) {
+		if (quark_btf_offset(qbtf, "signal_struct.pids") == -1)
+			return (&ka_task_old_sid);
+
+		return (&ka_task_new_sid);
+	}
+
+	/* No kludges found, carry on */
+	return (karg);
+}
+
 static char *
-kprobe_make_arg(struct kprobe_arg *karg, struct quark_btf *qbtf)
+kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
+    struct quark_btf *qbtf)
 {
 	int	 i;
 	ssize_t	 off;
 	char	*p, **pp, *last, *kstr, *tokens[128], *arg_dsl;
+
+	karg = kprobe_kludge_arg(k, karg, qbtf);
 
 	kstr = NULL;
 	if ((arg_dsl = strdup(karg->arg_dsl)) == NULL)
@@ -909,7 +947,7 @@ kprobe_build_string(struct kprobe *k, char *name, struct quark_btf *qbtf)
 	if (r == -1)
 		return (NULL);
 	for (karg = k->args; karg->name != NULL; karg++) {
-		a = kprobe_make_arg(karg, qbtf);
+		a = kprobe_make_arg(k, karg, qbtf);
 		if (a == NULL) {
 			free(p);
 			return (NULL);
@@ -988,7 +1026,7 @@ kprobe_install_all(u64 qid)
 	int			 i, r;
 	struct quark_btf	*qbtf;
 
-	if ((qbtf = quark_btf_open()) == NULL) {
+	if ((qbtf = quark_btf_open(NULL, NULL)) == NULL) {
 		warnx("%s: can't initialize btf", __func__);
 		return (-1);
 	}
@@ -1006,7 +1044,7 @@ kprobe_install_all(u64 qid)
 			break;
 		}
 	}
-	free(qbtf);
+	quark_btf_close(qbtf);
 
 	return (r);
 }
