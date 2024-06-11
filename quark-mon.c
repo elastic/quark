@@ -58,7 +58,7 @@ priv_drop(void)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-Dfptv] [-m max_nodes]\n",
+	fprintf(stderr, "usage: %s [-bDfkstv] [-l maxlength] [-m maxnodes]\n",
 	    program_invocation_short_name);
 
 	exit(1);
@@ -98,12 +98,16 @@ main(int argc, char *argv[])
 			qa.flags |= QQ_KPROBE;
 			break;
 		case 'l':
+			if (optarg == NULL)
+				usage();
 			qa.max_length = strtonum(optarg, 1, INTMAX_MAX,
 			    &errstr);
 			if (errstr != NULL)
 				errx(1, "invalid max length: %s", errstr);
 			break;
 		case 'm':
+			if (optarg == NULL)
+				usage();
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);
 			if (errstr != NULL)
 				errx(1, "invalid maxnodes: %s", errstr);
