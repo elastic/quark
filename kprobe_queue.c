@@ -169,7 +169,7 @@ struct exec_connector_sample {
 	/* 64bit */
 	u64				probe_ip;
 	u64				argc;
-	u64				stack[87];	/* sync with kprobe_defs */
+	u64				stack[85];	/* sync with kprobe_defs */
 	u64				cap_inheritable;
 	u64				cap_permitted;
 	u64				cap_effective;
@@ -185,6 +185,8 @@ struct exec_connector_sample {
 	u32				sgid;
 	u32				euid;
 	u32				egid;
+	u32				pgid;
+	u32				sid;
 	u32				tty_major;
 	u32				tty_minor_start;
 	u32				tty_minor_index;
@@ -483,6 +485,8 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		exec->sgid = exec_sample->sgid;
 		exec->euid = exec_sample->euid;
 		exec->egid = exec_sample->egid;
+		exec->pgid = exec_sample->pgid;
+		exec->sid = exec_sample->sid;
 		if (exec_sample->tty_addr) {
 			exec->tty_major = exec_sample->tty_major;
 			exec->tty_minor =  (exec_sample->tty_minor_start +

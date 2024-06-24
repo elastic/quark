@@ -173,6 +173,8 @@ struct raw_exec_connector {
 	u32		sgid;
 	u32		euid;
 	u32		egid;
+	u32		pgid;
+	u32		sid;
 	u32		tty_major;
 	u32		tty_minor;
 	char		comm[16];

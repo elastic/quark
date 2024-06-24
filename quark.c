@@ -732,6 +732,8 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 			args_len = raw_exec->ext.args_len;
 			cwd = raw_exec->ext.task.cwd.p;
 			comm = raw_exec->ext.comm;
+			qev->proc_pgid = raw_exec->ext.task.pgid;
+			qev->proc_sid = raw_exec->ext.task.sid;
 			qev->proc_tty_major = raw_exec->ext.task.tty_major;
 			qev->proc_tty_minor = raw_exec->ext.task.tty_minor;
 		}
@@ -756,6 +758,8 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		qev->proc_sgid = raw_exec_connector->sgid;
 		qev->proc_euid = raw_exec_connector->euid;
 		qev->proc_egid = raw_exec_connector->egid;
+		qev->proc_pgid = raw_exec_connector->pgid;
+		qev->proc_sid = raw_exec_connector->sid;
 		qev->proc_tty_major = raw_exec_connector->tty_major;
 		qev->proc_tty_minor = raw_exec_connector->tty_minor;
 	}

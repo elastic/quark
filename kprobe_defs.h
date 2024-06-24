@@ -192,8 +192,6 @@ struct kprobe kp_exec_connector = {
 	{ "stack_82",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +664"	},
 	{ "stack_83",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +672"	},
 	{ "stack_84",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +680"	},
-	{ "stack_85",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +688"	},
-	{ "stack_86",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +696"	},
 	{ "cap_inheritable",	"di",	"u64",	  "task_struct.cred cred.cap_inheritable"		},
 	{ "cap_permitted",	"di",	"u64",	  "task_struct.cred cred.cap_permitted",		},
 	{ "cap_effective",	"di",	"u64",	  "task_struct.cred cred.cap_effective"			},
@@ -208,6 +206,8 @@ struct kprobe kp_exec_connector = {
 	{ "sgid",		"di",	"u32",	  "task_struct.cred cred.sgid"				},
 	{ "euid",		"di",	"u32",	  "task_struct.cred cred.euid"				},
 	{ "egid",		"di",	"u32",	  "task_struct.cred cred.egid"				},
+	{ "pgid",		"di",	"u32",	  "task_struct.group_leader task_struct.signal (signal_struct.pids+16) (pid.numbers+0).upid.nr"	}, \
+	{ "sid",		"di",	"u32",	  "task_struct.group_leader task_struct.signal (signal_struct.pids+24) (pid.numbers+0).upid.nr"	}, \
 	{ "tty_major",		"di",	"u32",	  TTY_MAJOR						},
 	{ "tty_minor_start",	"di",	"u32",	  TTY_MINOR_START					},
 	{ "tty_minor_index",	"di",	"u32",	  TTY_MINOR_INDEX					},
