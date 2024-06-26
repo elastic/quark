@@ -35,34 +35,40 @@ libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 	return (0);
 }
 
+struct ebpf_ctx {
+	struct ebpf_pid_info	*pids;
+	struct ebpf_cred_info	*creds;
+	struct ebpf_tty_dev	*ctty;
+	char			*comm;
+	char			*cwd;
+};
+
 static void
-ebpf_events_to_task(struct ebpf_pid_info *pids, struct ebpf_cred_info *creds,
-    struct ebpf_tty_dev *tty, struct raw_task *task, u32 *pid)
+ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 {
-	*pid = pids->tid;
-	task->ppid = pids->ppid;
-	task->start_boottime = pids->start_time_ns; /* XXX check format */
 	task->cap_inheritable = 0; /* unavailable */
-	task->cap_permitted = creds->cap_permitted;
-	task->cap_effective = creds->cap_effective;
+	task->cap_permitted = ebpf_ctx->creds->cap_permitted;
+	task->cap_effective = ebpf_ctx->creds->cap_effective;
 	task->cap_bset = 0; /* unavailable */
 	task->cap_ambient = 0; /* unavailable */
-	task->uid = creds->ruid;
-	task->gid = creds->rgid;
-	task->suid = creds->suid;
-	task->sgid = creds->sgid;
-	task->euid = creds->euid;
-	task->egid = creds->egid;
-	task->pgid = pids->pgid;
-	task->sid = pids->sid;
-	if (tty != NULL) {
-		task->tty_major = tty->major;
-		task->tty_minor = tty->minor;
-	} else {
-		task->tty_major = 0;
-		task->tty_minor = 0;
-	}
-	task->exit_time_event = 0;
+	task->start_boottime = ebpf_ctx->pids->start_time_ns; /* XXX check format */
+	task->uid = ebpf_ctx->creds->ruid;
+	task->gid = ebpf_ctx->creds->rgid;
+	task->suid = ebpf_ctx->creds->suid;
+	task->sgid = ebpf_ctx->creds->sgid;
+	task->euid = ebpf_ctx->creds->euid;
+	task->egid = ebpf_ctx->creds->egid;
+	task->pgid = ebpf_ctx->pids->pgid;
+	task->sid = ebpf_ctx->pids->sid;
+	task->ppid = ebpf_ctx->pids->ppid;
+	/* skip exit_* */
+	task->tty_major = ebpf_ctx->ctty->major;
+	task->tty_minor = ebpf_ctx->ctty->minor;
+	if (ebpf_ctx->cwd != NULL)
+		qstr_strcpy(&task->cwd, ebpf_ctx->cwd);
+	else
+		qstr_strcpy(&task->cwd, "(invalid)");
+	strlcpy(task->comm, ebpf_ctx->comm, sizeof(task->comm));
 }
 
 static struct raw_event *
@@ -73,7 +79,9 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 	struct ebpf_process_exit_event	*exit;
 	struct ebpf_process_exec_event	*exec;
 	struct ebpf_varlen_field	*field;
+	struct ebpf_ctx			 ebpf_ctx;
 
+	bzero(&ebpf_ctx, sizeof(ebpf_ctx));
 	raw = NULL;
 
 	switch (ev->type) {
@@ -83,19 +91,25 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 			goto bad;
 		if ((raw = raw_event_alloc(RAW_WAKE_UP_NEW_TASK)) == NULL)
 			goto bad;
+		raw->pid = fork->child_pids.tid;
 		raw->time = ev->ts;
-		ebpf_events_to_task(&fork->child_pids, &fork->creds, &fork->ctty,
-		    &raw->task, &raw->pid);
+		ebpf_ctx.pids = &fork->child_pids;
+		ebpf_ctx.creds = &fork->creds;
+		ebpf_ctx.ctty = &fork->ctty;
+		ebpf_ctx.comm = fork->comm;
+		ebpf_ctx.cwd = NULL;
 		/* the macro doesn't take a pointer so we can't pass down :) */
 		FOR_EACH_VARLEN_FIELD(fork->vl_fields, field) {
 			switch (field->type) {
 			case EBPF_VL_FIELD_CWD:
-				qstr_strcpy(&raw->task.cwd, field->data);
+				ebpf_ctx.cwd = field->data;
 				break;
 			default:
 				break;
 			}
 		}
+		ebpf_ctx_to_task(&ebpf_ctx, &raw->task);
+
 		break;
 	case EBPF_EVENT_PROCESS_EXIT:
 		exit = (struct ebpf_process_exit_event *)ev;
@@ -103,36 +117,35 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 			goto bad;
 		if ((raw = raw_event_alloc(RAW_EXIT_THREAD)) == NULL)
 			goto bad;
+		raw->pid = exit->pids.tid;
 		raw->time = ev->ts;
-		ebpf_events_to_task(&exit->pids, &exit->creds, NULL,
-		    &raw->task, &raw->pid);
+		ebpf_ctx.pids = &exit->pids;
+		ebpf_ctx.creds = &exit->creds;
+		ebpf_ctx.ctty = &exit->ctty;
+		ebpf_ctx.comm = exit->comm;
+		ebpf_ctx.cwd = NULL;
 		raw->task.exit_code = exit->exit_code;
 		raw->task.exit_time_event = raw->time;
-		/* the macro doesn't take a pointer so we can't pass down :) */
-		FOR_EACH_VARLEN_FIELD(exit->vl_fields, field) {
-			switch (field->type) {
-			case EBPF_VL_FIELD_CWD:
-				qstr_strcpy(&raw->task.cwd, field->data);
-				break;
-			default:
-				break;
-			}
-		}
+		ebpf_ctx_to_task(&ebpf_ctx, &raw->task);
+
 		break;
 	case EBPF_EVENT_PROCESS_EXEC:
 		exec = (struct ebpf_process_exec_event *)ev;
 		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
 			goto bad;
+		raw->pid = exec->pids.tid;
 		raw->time = ev->ts;
 		raw->exec.flags |= RAW_EXEC_F_EXT;
-		ebpf_events_to_task(&exec->pids, &exec->creds, &exec->ctty,
-		    &raw->exec.ext.task, &raw->pid);
-		strlcpy(raw->exec.ext.comm, exec->comm,
-		    sizeof(raw->exec.ext.comm));
+		ebpf_ctx.pids = &exec->pids;
+		ebpf_ctx.creds = &exec->creds;
+		ebpf_ctx.ctty = &exec->ctty;
+		ebpf_ctx.comm = exec->comm;
+		ebpf_ctx.cwd = NULL;
+
 		FOR_EACH_VARLEN_FIELD(exec->vl_fields, field) {
 			switch (field->type) {
 			case EBPF_VL_FIELD_CWD:
-				qstr_strcpy(&raw->exec.ext.task.cwd, field->data);
+				ebpf_ctx.cwd = field->data;
 				break;
 			case EBPF_VL_FIELD_FILENAME:
 				qstr_strcpy(&raw->exec.filename, field->data);
@@ -151,6 +164,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				break;
 			}
 		}
+		ebpf_ctx_to_task(&ebpf_ctx, &raw->exec.ext.task);
+
 		break;
 	default:
 		warnx("%s unhandled type %lu", __func__, ev->type);
@@ -162,6 +177,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 bad:
 	if (raw != NULL)
 		raw_event_free(raw);
+
 	return (NULL);
 }
 

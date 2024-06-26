@@ -18,9 +18,6 @@
 #define XS(_a)		S(_a)
 #define PWD_K(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent))
 #define PWD_S(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent)) " dentry.d_name.name +0"
-#define TTY_MAJOR	"task_struct.signal signal_struct.tty tty_struct.driver tty_driver.major"
-#define TTY_MINOR_START	"task_struct.signal signal_struct.tty tty_struct.driver tty_driver.minor_start"
-#define TTY_MINOR_INDEX	"task_struct.signal signal_struct.tty tty_struct.index"
 
 struct kprobe_arg ka_task_old_pgid = {
 	"pgid", "di", "u32", "task_struct.group_leader (task_struct.pids+8) (pid.numbers+0).upid.nr"
@@ -39,57 +36,60 @@ struct kprobe_arg ka_task_new_sid = {
 };
 
 
-#define TASK_SAMPLE {																   \
-	{ "cap_inheritable",	"di", "u64",	"task_struct.cred cred.cap_inheritable"								}, \
-	{ "cap_permitted",	"di", "u64",	"task_struct.cred cred.cap_permitted",								}, \
-	{ "cap_effective",	"di", "u64",	"task_struct.cred cred.cap_effective"								}, \
-	{ "cap_bset",		"di", "u64",	"task_struct.cred cred.cap_bset"								}, \
-	{ "cap_ambient",	"di", "u64",	"task_struct.cred cred.cap_ambient"								}, \
-	{ "start_boottime",	"di", "u64",	"task_struct.start_boottime"									}, \
-	{ "tty_addr",		"di", "u64",	"task_struct.signal signal_struct.tty"								}, \
-	{ "root_k",		"di", "u64",	"task_struct.fs fs_struct.root.dentry"								}, \
-	{ "mnt_root_k",		"di", "u64",	"task_struct.fs fs_struct.pwd.mnt vfsmount.mnt_root"						}, \
-	{ "mnt_mountpoint_k",	"di", "u64",	"task_struct.fs fs_struct.pwd.mnt (mount.mnt_mountpoint-mount.mnt)"				}, \
-	{ "pwd_k0",		"di", "u64",	PWD_K(0, 0)											}, \
-	{ "pwd_k1",		"di", "u64",	PWD_K(0, 1)											}, \
-	{ "pwd_k2",		"di", "u64",	PWD_K(0, 2)											}, \
-	{ "pwd_k3",		"di", "u64",	PWD_K(0, 3)											}, \
-	{ "pwd_k4",		"di", "u64",	PWD_K(0, 4)											}, \
-	{ "pwd_k5",		"di", "u64",	PWD_K(0, 5)											}, \
-	{ "pwd_k6",		"di", "u64",	PWD_K(0, 6)											}, \
-	{ "root_s",		"di", "string",	"task_struct.fs fs_struct.root.dentry dentry.d_name.name +0"					}, \
-	{ "mnt_root_s",		"di", "string",	"task_struct.fs fs_struct.pwd.mnt vfsmount.mnt_root dentry.d_name.name +0"			}, \
-	{ "mnt_mountpoint_s",	"di", "string",	"task_struct.fs fs_struct.pwd.mnt (mount.mnt_mountpoint-mount.mnt) dentry.d_name.name +0"	}, \
-	{ "pwd_s0",		"di", "string",	PWD_S(0, 0)											}, \
-	{ "pwd_s1",		"di", "string",	PWD_S(0, 1)											}, \
-	{ "pwd_s2",		"di", "string",	PWD_S(0, 2)											}, \
-	{ "pwd_s3",		"di", "string",	PWD_S(0, 3)											}, \
-	{ "pwd_s4",		"di", "string",	PWD_S(0, 4)											}, \
-	{ "pwd_s5",		"di", "string",	PWD_S(0, 5)											}, \
-	{ "pwd_s6",		"di", "string",	PWD_S(0, 6)											}, \
-	{ "comm",		"di", "string",	"task_struct.comm"										}, \
-	{ "uid",		"di", "u32",	"task_struct.cred cred.uid"									}, \
-	{ "gid",		"di", "u32",	"task_struct.cred cred.gid"									}, \
-	{ "suid",		"di", "u32",	"task_struct.cred cred.suid"									}, \
-	{ "sgid",		"di", "u32",	"task_struct.cred cred.sgid"									}, \
-	{ "euid",		"di", "u32",	"task_struct.cred cred.euid"									}, \
-	{ "egid",		"di", "u32",	"task_struct.cred cred.egid"									}, \
-	{ "pgid",		"di", "u32",	"KLUDGE - see kprobe_kludge_arg()"								}, \
-	{ "sid",		"di", "u32",	"KLUDGE - see kprobe_kludge_arg()"								}, \
-	{ "pid",		"di", "u32",	"task_struct.tgid"										}, \
-	{ "tid",		"di", "u32",	"task_struct.pid"										}, \
-	{ "exit_code",		"di", "s32",	"task_struct.exit_code"										}, \
-	{ "tty_major",		"di", "u32",	TTY_MAJOR											}, \
-	{ "tty_minor_start",	"di", "u32",	TTY_MINOR_START											}, \
-	{ "tty_minor_index",	"di", "u32",	TTY_MINOR_INDEX											}, \
-	{ NULL,			NULL, NULL,	NULL												}}
+#define TASK_SAMPLE(_r)																	   \
+	{ "cap_inheritable",	S(_r), "u64",		"task_struct.cred cred.cap_inheritable"								}, \
+	{ "cap_permitted",	S(_r), "u64",		"task_struct.cred cred.cap_permitted",								}, \
+	{ "cap_effective",	S(_r), "u64",		"task_struct.cred cred.cap_effective"								}, \
+	{ "cap_bset",		S(_r), "u64",		"task_struct.cred cred.cap_bset"								}, \
+	{ "cap_ambient",	S(_r), "u64",		"task_struct.cred cred.cap_ambient"								}, \
+	{ "start_boottime",	S(_r), "u64",		"task_struct.start_boottime"									}, \
+	{ "tty_addr",		S(_r), "u64",		"task_struct.signal signal_struct.tty"								}, \
+	{ "root_k",		S(_r), "u64",		"task_struct.fs fs_struct.root.dentry"								}, \
+	{ "mnt_root_k",		S(_r), "u64",		"task_struct.fs fs_struct.pwd.mnt vfsmount.mnt_root"						}, \
+	{ "mnt_mountpoint_k",	S(_r), "u64",		"task_struct.fs fs_struct.pwd.mnt (mount.mnt_mountpoint-mount.mnt)"				}, \
+	{ "pwd_k0",		S(_r), "u64",		PWD_K(0, 0)											}, \
+	{ "pwd_k1",		S(_r), "u64",		PWD_K(0, 1)											}, \
+	{ "pwd_k2",		S(_r), "u64",		PWD_K(0, 2)											}, \
+	{ "pwd_k3",		S(_r), "u64",		PWD_K(0, 3)											}, \
+	{ "pwd_k4",		S(_r), "u64",		PWD_K(0, 4)											}, \
+	{ "pwd_k5",		S(_r), "u64",		PWD_K(0, 5)											}, \
+	{ "pwd_k6",		S(_r), "u64",		PWD_K(0, 6)											}, \
+	{ "root_s",		S(_r), "string",	"task_struct.fs fs_struct.root.dentry dentry.d_name.name +0"					}, \
+	{ "mnt_root_s",		S(_r), "string",	"task_struct.fs fs_struct.pwd.mnt vfsmount.mnt_root dentry.d_name.name +0"			}, \
+	{ "mnt_mountpoint_s",	S(_r), "string",	"task_struct.fs fs_struct.pwd.mnt (mount.mnt_mountpoint-mount.mnt) dentry.d_name.name +0"	}, \
+	{ "pwd_s0",		S(_r), "string",	PWD_S(0, 0)											}, \
+	{ "pwd_s1",		S(_r), "string",	PWD_S(0, 1)											}, \
+	{ "pwd_s2",		S(_r), "string",	PWD_S(0, 2)											}, \
+	{ "pwd_s3",		S(_r), "string",	PWD_S(0, 3)											}, \
+	{ "pwd_s4",		S(_r), "string",	PWD_S(0, 4)											}, \
+	{ "pwd_s5",		S(_r), "string",	PWD_S(0, 5)											}, \
+	{ "pwd_s6",		S(_r), "string",	PWD_S(0, 6)											}, \
+	{ "comm",		S(_r), "string",	"task_struct.comm"										}, \
+	{ "uid",		S(_r), "u32",		"task_struct.cred cred.uid"									}, \
+	{ "gid",		S(_r), "u32",		"task_struct.cred cred.gid"									}, \
+	{ "suid",		S(_r), "u32",		"task_struct.cred cred.suid"									}, \
+	{ "sgid",		S(_r), "u32",		"task_struct.cred cred.sgid"									}, \
+	{ "euid",		S(_r), "u32",		"task_struct.cred cred.euid"									}, \
+	{ "egid",		S(_r), "u32",		"task_struct.cred cred.egid"									}, \
+	{ "pgid",		S(_r), "u32",		"KLUDGE - see kprobe_kludge_arg()"								}, \
+	{ "sid",		S(_r), "u32",		"KLUDGE - see kprobe_kludge_arg()"								}, \
+	{ "pid",		S(_r), "u32",		"task_struct.tgid"										}, \
+	{ "tid",		S(_r), "u32",		"task_struct.pid"										}, \
+	{ "ppid",		S(_r), "u32",		"task_struct.group_leader task_struct.real_parent task_struct.tgid"				}, \
+	{ "exit_code",		S(_r), "s32",		"task_struct.exit_code"										}, \
+	{ "tty_major",		S(_r), "u32",		"task_struct.signal signal_struct.tty tty_struct.driver tty_driver.major"			}, \
+	{ "tty_minor_start",	S(_r), "u32",		"task_struct.signal signal_struct.tty tty_struct.driver tty_driver.minor_start"			}, \
+	{ "tty_minor_index",	S(_r), "u32",		"task_struct.signal signal_struct.tty tty_struct.index"						}
 
 struct kprobe kp_wake_up_new_task = {
 	"quark_wake_up_new_task",
 	"wake_up_new_task",
 	WAKE_UP_NEW_TASK_SAMPLE,
 	0,
-	TASK_SAMPLE
+	{
+		TASK_SAMPLE(di),
+		{ NULL, NULL, NULL, NULL },
+	}
 };
 
 struct kprobe kp_exit_thread = {
@@ -97,7 +97,10 @@ struct kprobe kp_exit_thread = {
 	"exit_thread",
 	EXIT_THREAD_SAMPLE,
 	0,
-	TASK_SAMPLE
+	{
+		TASK_SAMPLE(di),
+		{ NULL, NULL, NULL, NULL },
+	}
 };
 
 struct kprobe kp_exec_connector = {
@@ -106,6 +109,7 @@ struct kprobe kp_exec_connector = {
 	EXEC_CONNECTOR_SAMPLE,
 	0,
 {
+	TASK_SAMPLE(di),
 	{ "argc",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +0"	},
 	{ "stack_0",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +0"	},
 	{ "stack_1",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +8"	},
@@ -167,56 +171,9 @@ struct kprobe kp_exec_connector = {
 	{ "stack_57",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +464"	},
 	{ "stack_58",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +472"	},
 	{ "stack_59",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +480"	},
-	{ "stack_60",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +488"	},
-	{ "stack_61",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +496"	},
-	{ "stack_62",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +504"	},
-	{ "stack_63",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +512"	},
-	{ "stack_64",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +520"	},
-	{ "stack_65",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +528"	},
-	{ "stack_66",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +536"	},
-	{ "stack_67",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +544"	},
-	{ "stack_68",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +552"	},
-	{ "stack_69",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +560"	},
-	{ "stack_70",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +568"	},
-	{ "stack_71",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +576"	},
-	{ "stack_72",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +584"	},
-	{ "stack_73",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +592"	},
-	{ "stack_74",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +600"	},
-	{ "stack_75",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +608"	},
-	{ "stack_76",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +616"	},
-	{ "stack_77",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +624"	},
-	{ "stack_78",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +632"	},
-	{ "stack_79",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +640"	},
-	{ "stack_80",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +648"	},
-	{ "stack_81",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +656"	},
-	{ "stack_82",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +664"	},
-	{ "stack_83",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +672"	},
-	{ "stack_84",		"di",	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +680"	},
-	{ "cap_inheritable",	"di",	"u64",	  "task_struct.cred cred.cap_inheritable"		},
-	{ "cap_permitted",	"di",	"u64",	  "task_struct.cred cred.cap_permitted",		},
-	{ "cap_effective",	"di",	"u64",	  "task_struct.cred cred.cap_effective"			},
-	{ "cap_bset",		"di",	"u64",	  "task_struct.cred cred.cap_bset"			},
-	{ "cap_ambient",	"di",	"u64",	  "task_struct.cred cred.cap_ambient"			},
-	{ "start_boottime",	"di",	"u64",	  "task_struct.start_boottime"				},
-	{ "tty_addr",		"di",	"u64",	  "task_struct.signal signal_struct.tty"		},
-	{ "comm",		"di",	"string", "task_struct.comm"					},
-	{ "uid",		"di",	"u32",	  "task_struct.cred cred.uid"				},
-	{ "gid",		"di",	"u32",	  "task_struct.cred cred.gid"				},
-	{ "suid",		"di",	"u32",	  "task_struct.cred cred.suid"				},
-	{ "sgid",		"di",	"u32",	  "task_struct.cred cred.sgid"				},
-	{ "euid",		"di",	"u32",	  "task_struct.cred cred.euid"				},
-	{ "egid",		"di",	"u32",	  "task_struct.cred cred.egid"				},
-	{ "pgid",		"di",	"u32",	  "task_struct.group_leader task_struct.signal (signal_struct.pids+16) (pid.numbers+0).upid.nr"	}, \
-	{ "sid",		"di",	"u32",	  "task_struct.group_leader task_struct.signal (signal_struct.pids+24) (pid.numbers+0).upid.nr"	}, \
-	{ "tty_major",		"di",	"u32",	  TTY_MAJOR						},
-	{ "tty_minor_start",	"di",	"u32",	  TTY_MINOR_START					},
-	{ "tty_minor_index",	"di",	"u32",	  TTY_MINOR_INDEX					},
 	{ NULL,			NULL,	NULL,	  NULL							},
 }};
 
-#undef TTY_MINOR_INDEX
-#undef TTY_MINOR_START
-#undef TTY_MAJOR
 #undef PWD_S
 #undef PWD_K
 #undef XS

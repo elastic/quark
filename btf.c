@@ -42,6 +42,7 @@ struct quark_btf_target targets[] = {
 	{ "task_struct.mm",		-1 },
 	{ "task_struct.pid",		-1 },
 	{ "task_struct.pids",		-1 },
+	{ "task_struct.real_parent",	-1 },
 	{ "task_struct.start_boottime",	-1 }, /* or task_struct.real_start_time */
 	{ "task_struct.signal",		-1 }, /* or task_struct.pids via KLUDGE */
 	{ "task_struct.tgid",		-1 },
