@@ -118,6 +118,12 @@ struct perf_group_leader {
 	struct perf_mmap		 mmap;
 };
 
+/*
+ * Forbid padding on samples/wire structures
+ */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic error "-Wpadded"
+
 struct exec_sample {
 	struct perf_sample_data_loc	filename;
 	s32				pid;
@@ -157,6 +163,7 @@ struct task_sample {
 	u32	sid;
 	u32	pid;
 	u32	tid;
+	u32	ppid;
 	s32	exit_code;
 	u32	tty_major;
 	u32	tty_minor_start;
@@ -166,33 +173,17 @@ struct task_sample {
 };
 
 struct exec_connector_sample {
+	struct task_sample		task_sample;	/* must be 8 byte aligned */
 	/* 64bit */
-	u64				probe_ip;
 	u64				argc;
-	u64				stack[85];	/* sync with kprobe_defs */
-	u64				cap_inheritable;
-	u64				cap_permitted;
-	u64				cap_effective;
-	u64				cap_bset;
-	u64				cap_ambient;
-	u64				start_boottime;
-	u64				tty_addr;
-	/* 32bit */
-	struct perf_sample_data_loc	comm;
-	u32				uid;
-	u32				gid;
-	u32				suid;
-	u32				sgid;
-	u32				euid;
-	u32				egid;
-	u32				pgid;
-	u32				sid;
-	u32				tty_major;
-	u32				tty_minor_start;
-	u32				tty_minor_index;
-	/* 16bit */
-	/* 8bit */
+	u64				stack[60];	/* sync with kprobe_defs */
 };
+
+#pragma GCC diagnostic pop
+
+/*
+ * End samples/wire/ structures
+ */
 
 struct kprobe_state {
 	TAILQ_ENTRY(kprobe_state)	 entry;
@@ -355,6 +346,64 @@ qstr_copy_data_loc(struct qstr *qstr,
 	return (data_loc->size);
 }
 
+static void
+task_sample_to_raw_task(struct kprobe_queue *kqq, int kind,
+    struct perf_record_sample *sample, struct raw_task *task)
+{
+	struct task_sample	*w = sample_data_body(kqq, sample);
+	struct path_ctx		 pctx;
+	int			 i;
+
+	task->cap_inheritable = w->cap_inheritable;
+	task->cap_permitted = w->cap_permitted;
+	task->cap_effective = w->cap_effective;
+	task->cap_bset = w->cap_bset;
+	task->cap_ambient = w->cap_ambient;
+	task->start_boottime = w->start_boottime;
+	task->uid = w->uid;
+	task->gid = w->gid;
+	task->suid = w->suid;
+	task->sgid = w->sgid;
+	task->euid = w->euid;
+	task->egid = w->egid;
+	task->pgid = w->pgid;
+	task->sid = w->sid;
+	task->ppid = w->ppid;
+	if (w->tty_addr) {
+		task->tty_major = w->tty_major;
+		task->tty_minor = w->tty_minor_start + w->tty_minor_index;
+	}
+	/* cwd below */
+	strlcpy(task->comm, str_of_dataloc(sample, &w->comm),
+	    sizeof(task->comm));
+	if (kind == EXIT_THREAD_SAMPLE) {
+		task->exit_code = (w->exit_code >> 8) & 0xff;
+		task->exit_time_event = sample->sample_id.time;
+		qstr_strcpy(&task->cwd, "(exited)");
+		/* No cwd on exit */
+		return;
+	}
+
+	task->exit_code = -1;
+	task->exit_time_event = 0;
+
+	/* Consider moving all this inside build_path() */
+	pctx.root = str_of_dataloc(sample, &w->root_s);
+	pctx.root_k = w->root_k;
+	pctx.mnt_root = str_of_dataloc(sample, &w->mnt_root_s);
+	pctx.mnt_root_k = w->mnt_root_k;
+	pctx.mnt_mountpoint = str_of_dataloc(sample,
+	    &w->mnt_mountpoint_s);
+	pctx.mnt_mountpoint_k = w->mnt_mountpoint_k;
+	for (i = 0; i < (int)nitems(pctx.pwd); i++) {
+		pctx.pwd[i].pwd = str_of_dataloc(sample,
+		    &w->pwd_s[i]);
+		pctx.pwd[i].pwd_k = w->pwd_k[i];
+	}
+	if (build_path(&pctx, &task->cwd) == -1)
+		warn("can't build path");
+}
+
 static struct raw_event *
 perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 {
@@ -379,8 +428,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
 	case EXIT_THREAD_SAMPLE: {
 		struct task_sample	*w = sample_data_body(kqq, sample);
-		struct path_ctx		 pctx;
-		int			 i;
+		int			 raw_type;
 		/*
 		 * ev->sample.sample_id.pid is the parent, if the new task has
 		 * the same pid as it, then this is a thread event
@@ -388,66 +436,18 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		if ((qq->flags & QQ_THREAD_EVENTS) == 0
 		    && w->pid != w->tid)
 			return (NULL);
-		if (kind == WAKE_UP_NEW_TASK_SAMPLE) {
-			if ((raw = raw_event_alloc(RAW_WAKE_UP_NEW_TASK)) == NULL)
-				return (NULL);
-			/*
-			 * Cheat, make this look like a child event.
-			 */
+		raw_type = kind == WAKE_UP_NEW_TASK_SAMPLE ?
+		    RAW_WAKE_UP_NEW_TASK : RAW_EXIT_THREAD;
+		if ((raw = raw_event_alloc(raw_type)) == NULL)
+			return (NULL);
+		/*
+		 * Cheat, make it look like a child event
+		 */
+		if (raw_type == RAW_WAKE_UP_NEW_TASK) {
 			raw->pid = w->pid;
 			raw->tid = w->tid;
-			raw->task.ppid = sample->sample_id.pid;
-			pctx.root = str_of_dataloc(sample, &w->root_s);
-			pctx.root_k = w->root_k;
-			pctx.mnt_root = str_of_dataloc(sample, &w->mnt_root_s);
-			pctx.mnt_root_k = w->mnt_root_k;
-			pctx.mnt_mountpoint = str_of_dataloc(sample,
-			    &w->mnt_mountpoint_s);
-			pctx.mnt_mountpoint_k = w->mnt_mountpoint_k;
-			for (i = 0; i < (int)nitems(pctx.pwd); i++) {
-				pctx.pwd[i].pwd = str_of_dataloc(sample,
-				    &w->pwd_s[i]);
-				pctx.pwd[i].pwd_k = w->pwd_k[i];
-			}
-			if (build_path(&pctx, &raw->task.cwd) == -1)
-				warn("can't build path");
-			raw->task.exit_code = -1;
-			raw->task.exit_time_event = 0;
-			if (w->tty_addr) {
-				raw->task.tty_major = w->tty_major;
-				raw->task.tty_minor = w->tty_minor_start +
-				    w->tty_minor_index;
-			}
-		} else {
-			if ((raw = raw_event_alloc(RAW_EXIT_THREAD)) == NULL)
-				return (NULL);
-			/*
-			 * We derive ppid from the incoming sample header as
-			 * it's originally an event of the parent, since exit is
-			 * originally an event of the child, we don't have
-			 * access to ppid.
-			 */
-			raw->task.ppid = -1;
-			raw->task.exit_code = (w->exit_code >> 8) & 0xff;
-			raw->task.exit_time_event = sample->sample_id.time;
 		}
-		strlcpy(raw->task.comm, str_of_dataloc(sample, &w->comm),
-		    sizeof(raw->task.comm));
-		raw->task.cap_inheritable = w->cap_inheritable;
-		raw->task.cap_permitted = w->cap_permitted;
-		raw->task.cap_effective = w->cap_effective;
-		raw->task.cap_bset = w->cap_bset;
-		raw->task.cap_ambient = w->cap_ambient;
-		raw->task.start_boottime = w->start_boottime;
-		raw->task.uid = w->uid;
-		raw->task.gid = w->gid;
-		raw->task.suid = w->suid;
-		raw->task.sgid = w->sgid;
-		raw->task.euid = w->euid;
-		raw->task.egid = w->egid;
-		raw->task.pgid = w->pgid;
-		raw->task.sid = w->sid;
-
+		task_sample_to_raw_task(kqq, kind, sample, &raw->task);
 		break;
 	}
 	case EXEC_CONNECTOR_SAMPLE: {
@@ -475,27 +475,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 				warnx("can't copy args");
 			exec->args.p[exec->args_len - 1] = 0;
 		}
-		exec->cap_inheritable = exec_sample->cap_inheritable;
-		exec->cap_permitted = exec_sample->cap_permitted;
-		exec->cap_effective = exec_sample->cap_effective;
-		exec->cap_bset = exec_sample->cap_bset;
-		exec->cap_ambient = exec_sample->cap_ambient;
-		exec->start_boottime = exec_sample->start_boottime;
-		exec->uid = exec_sample->uid;
-		exec->gid = exec_sample->gid;
-		exec->suid = exec_sample->suid;
-		exec->sgid = exec_sample->sgid;
-		exec->euid = exec_sample->euid;
-		exec->egid = exec_sample->egid;
-		exec->pgid = exec_sample->pgid;
-		exec->sid = exec_sample->sid;
-		if (exec_sample->tty_addr) {
-			exec->tty_major = exec_sample->tty_major;
-			exec->tty_minor =  (exec_sample->tty_minor_start +
-			    exec_sample->tty_minor_index);
-		}
-		strlcpy(exec->comm, str_of_dataloc(sample, &exec_sample->comm),
-		    sizeof(exec->comm));
+		task_sample_to_raw_task(kqq, kind, sample, &exec->task);
 		break;
 	}
 	default:
@@ -862,7 +842,9 @@ kprobe_kludge_arg(struct kprobe *k, struct kprobe_arg *karg,
 	 * within task_struct. So if signal_struct.pids exists, it's the "new"
 	 * version.
 	 */
-	if ((k == &kp_wake_up_new_task || k == &kp_exit_thread) &&
+	if ((k == &kp_wake_up_new_task ||
+	    k == &kp_exit_thread ||
+	    k == &kp_exec_connector) &&
 	    !strcmp(karg->name, "pgid")) {
 		if (quark_btf_offset(qbtf, "signal_struct.pids") == -1)
 			return (&ka_task_old_pgid);
@@ -870,7 +852,9 @@ kprobe_kludge_arg(struct kprobe *k, struct kprobe_arg *karg,
 		return (&ka_task_new_pgid);
 	}
 
-	if ((k == &kp_wake_up_new_task || k == &kp_exit_thread) &&
+	if ((k == &kp_wake_up_new_task ||
+	    k == &kp_exit_thread ||
+	    k == &kp_exec_connector) &&
 	    !strcmp(karg->name, "sid")) {
 		if (quark_btf_offset(qbtf, "signal_struct.pids") == -1)
 			return (&ka_task_old_sid);

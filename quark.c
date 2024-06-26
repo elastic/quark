@@ -69,6 +69,7 @@ raw_event_alloc(int type)
 		break;
 	case RAW_EXEC_CONNECTOR:
 		qstr_init(&raw->exec_connector.args);
+		qstr_init(&raw->exec_connector.task.cwd);
 		break;
 	case RAW_COMM:		/* nada */
 		break;
@@ -395,6 +396,8 @@ event_cache_inherit(struct quark_queue *qq, struct quark_event *qev, int ppid)
 
 	if ((parent = event_cache_get(qq, ppid, 0)) == NULL)
 		return;
+
+	/* Ignore QUARK_F_PROC? as we always have it all on fork */
 
 	if (parent->flags & QUARK_F_COMM) {
 		qev->flags |= QUARK_F_COMM;
@@ -873,11 +876,11 @@ quark_event_dump(struct quark_event *qev, FILE *f)
 #undef P
 
 static int
-raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct quark_event *dst)
+raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *src, struct quark_event *dst)
 {
 	struct quark_event		*qev;
 	struct raw_event                *agg;
-	struct raw_task                 *raw_task, *raw_exit;
+	struct raw_task                 *raw_fork, *raw_exit, *raw_task;
 	struct raw_comm                 *raw_comm;
 	struct raw_exec                 *raw_exec;
 	struct raw_exec_connector       *raw_exec_connector;
@@ -888,8 +891,9 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 	int				 do_cache;
 	u64				 events;
 
-	raw_task = NULL;
+	raw_fork = NULL;
 	raw_exit = NULL;
+	raw_task = NULL;
 	raw_comm = NULL;
 	raw_exec = NULL;
 	raw_exec_connector = NULL;
@@ -901,47 +905,47 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 
 	if (do_cache) {
 		/* XXX pass if this is a fork down, so we can evict the old one XXX */
-		qev = event_cache_get(qq, raw->pid, 1);
+		qev = event_cache_get(qq, src->pid, 1);
 		if (qev == NULL)
 			return (-1);
 	} else {
 		qev = dst;
-		qev->pid = raw->pid;
+		qev->pid = src->pid;
 		qev->flags = 0;
 	}
 
 	events = 0;
 
-	switch (raw->type) {
+	switch (src->type) {
 	case RAW_WAKE_UP_NEW_TASK:
 		events |= QUARK_EV_FORK;
-		raw_task = &raw->task;
+		raw_fork = &src->task;
 		break;
 	case RAW_EXEC:
 		events |= QUARK_EV_EXEC;
-		raw_exec = &raw->exec;
+		raw_exec = &src->exec;
 		break;
 	case RAW_EXIT_THREAD:
 		events |= QUARK_EV_EXIT;
-		raw_exit = &raw->task;
+		raw_exit = &src->task;
 		break;
 	case RAW_COMM:
 		events |= QUARK_EV_SETPROCTITLE;
-		raw_comm = &raw->comm;
+		raw_comm = &src->comm;
 		break;
 	case RAW_EXEC_CONNECTOR:
 		events |= QUARK_EV_EXEC;
-		raw_exec_connector = &raw->exec_connector;
+		raw_exec_connector = &src->exec_connector;
 		break;
 	default:
 		return (errno = EINVAL, -1);
 		break;		/* NOTREACHED */
 	};
 
-	TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
+	TAILQ_FOREACH(agg, &src->agg_queue, agg_entry) {
 		switch (agg->type) {
 		case RAW_WAKE_UP_NEW_TASK:
-			raw_task = &agg->task;
+			raw_fork = &agg->task;
 			events |= QUARK_EV_FORK;
 			break;
 		case RAW_EXEC:
@@ -966,11 +970,40 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 	}
 
 	/* QUARK_F_PROC */
+	if (raw_fork != NULL) {
+		event_cache_inherit(qq, qev, raw_fork->ppid);
+		raw_task = raw_fork;
+		cwd = raw_task->cwd.p;
+	}
+	if (raw_exit != NULL) {
+		qev->flags |= QUARK_F_EXIT;
+
+		qev->exit_code = raw_exit->exit_code;
+		if (raw_exit->exit_time_event)
+			qev->exit_time_event = quark.boottime + raw_exit->exit_time_event;
+		raw_task = raw_exit;
+		/* cwd is invalid, don't collect */
+		/* NOTE: maybe there are more things we _don't_ want from exit */
+	}
+	if (raw_exec != NULL) {
+		qev->flags |= QUARK_F_FILENAME;
+
+		strlcpy(qev->filename, raw_exec->filename.p, sizeof(qev->filename));
+		if (raw_exec->flags & RAW_EXEC_F_EXT) {
+			args = raw_exec->ext.args.p;
+			args_len = raw_exec->ext.args_len;
+			raw_task = &raw_exec->ext.task;
+			cwd = raw_task->cwd.p;
+		}
+	}
+	if (raw_exec_connector != NULL) {
+		args = raw_exec_connector->args.p;
+		args_len = raw_exec_connector->args_len;
+		raw_task = &raw_exec_connector->task;
+		cwd = raw_task->cwd.p;
+	}
 	if (raw_task != NULL) {
 		qev->flags |= QUARK_F_PROC;
-
-		if (events & QUARK_EV_FORK)
-			event_cache_inherit(qq, qev, raw_task->ppid);
 
 		qev->proc_cap_inheritable = raw_task->cap_inheritable;
 		qev->proc_cap_permitted = raw_task->cap_permitted;
@@ -990,56 +1023,8 @@ raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *raw, struct q
 		qev->proc_tty_major = raw_task->tty_major;
 		qev->proc_tty_minor = raw_task->tty_minor;
 
-		cwd = raw_task->cwd.p;
+		/* Don't set cwd as it's not valid on exit */
 		comm = raw_task->comm;
-	}
-	if (raw_exit != NULL) {
-		qev->flags |= QUARK_F_EXIT;
-
-		qev->exit_code = raw_exit->exit_code;
-		if (raw_exit->exit_time_event)
-			qev->exit_time_event = quark.boottime + raw_exit->exit_time_event;
-		/* XXX consider updating task values since we have them here XXX */
-	}
-	if (raw_exec != NULL) {
-		qev->flags |= QUARK_F_FILENAME;
-
-		strlcpy(qev->filename, raw_exec->filename.p, sizeof(qev->filename));
-		if (raw_exec->flags & RAW_EXEC_F_EXT) {
-			args = raw_exec->ext.args.p;
-			args_len = raw_exec->ext.args_len;
-			cwd = raw_exec->ext.task.cwd.p;
-			comm = raw_exec->ext.comm;
-			qev->proc_pgid = raw_exec->ext.task.pgid;
-			qev->proc_sid = raw_exec->ext.task.sid;
-			qev->proc_tty_major = raw_exec->ext.task.tty_major;
-			qev->proc_tty_minor = raw_exec->ext.task.tty_minor;
-		}
-	}
-	if (raw_exec_connector != NULL) {
-		qev->flags |= QUARK_F_PROC;
-
-		comm = raw_exec_connector->comm;
-		args = raw_exec_connector->args.p;
-		args_len = raw_exec_connector->args_len;
-		qev->proc_cap_inheritable = raw_exec_connector->cap_inheritable;
-		qev->proc_cap_permitted = raw_exec_connector->cap_permitted;
-		qev->proc_cap_effective = raw_exec_connector->cap_effective;
-		qev->proc_cap_bset = raw_exec_connector->cap_bset;
-		qev->proc_cap_ambient = raw_exec_connector->cap_ambient;
-		qev->proc_time_boot = quark.boottime + raw_exec_connector->start_boottime;
-		/* XXX No ppid for now, see how raw_task gets it */
-		/* qev->proc_ppid = raw_exec_connector->ppid; */
-		qev->proc_uid = raw_exec_connector->uid;
-		qev->proc_gid = raw_exec_connector->gid;
-		qev->proc_suid = raw_exec_connector->suid;
-		qev->proc_sgid = raw_exec_connector->sgid;
-		qev->proc_euid = raw_exec_connector->euid;
-		qev->proc_egid = raw_exec_connector->egid;
-		qev->proc_pgid = raw_exec_connector->pgid;
-		qev->proc_sid = raw_exec_connector->sid;
-		qev->proc_tty_major = raw_exec_connector->tty_major;
-		qev->proc_tty_minor = raw_exec_connector->tty_minor;
 	}
 	if (raw_comm != NULL)
 		comm = raw_comm->comm; /* raw_comm always overrides */

@@ -134,9 +134,9 @@ struct raw_task {
 	u32		egid;
 	u32		pgid;
 	u32		sid;
-	u32		ppid;			/* Unavailable at exit */
-	s32		exit_code;		/* Unavailable at fork */
-	u64		exit_time_event;	/* Unavailable at fork */
+	u32		ppid;
+	s32		exit_code;		/* only available at exit */
+	u64		exit_time_event;	/* only available at exit */
 	u32		tty_major;
 	u32		tty_minor;
 	struct qstr	cwd;
@@ -150,34 +150,16 @@ struct raw_exec {
 
 	/* available if RAW_EXEC_F_EXT */
 	struct {
-		struct raw_task task;
 		struct qstr	args;
 		size_t		args_len;
-		char		comm[16]; /* XXX move me inside task */
+		struct raw_task task;
 	} ext;
 };
 
 struct raw_exec_connector {
 	struct qstr	args;
 	size_t		args_len;
-	u64		cap_inheritable;
-	u64		cap_permitted;
-	u64		cap_effective;
-	u64		cap_bset;
-	u64		cap_ambient;
-	u64		start_boottime;
-	/* XXX missing ppid see how raw_task derives it */
-	u32		uid;
-	u32		gid;
-	u32		suid;
-	u32		sgid;
-	u32		euid;
-	u32		egid;
-	u32		pgid;
-	u32		sid;
-	u32		tty_major;
-	u32		tty_minor;
-	char		comm[16];
+	struct raw_task	task;
 };
 
 struct raw_event {
