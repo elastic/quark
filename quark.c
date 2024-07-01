@@ -593,15 +593,16 @@ entry_leader_compute(struct quark_queue *qq, struct quark_event *qev)
 	if (!is_ses_leader)
 		return (0);
 
+#define STARTS_WITH(_x, _y) (!strncmp(_x, _y, strlen(_y)))
 	/*
 	 * Filter these out, keep same behaviour of other elastic products.
 	 */
-	if (!strcmp(basename, "runc") ||
-	    !strcmp(basename, "containerd-shim") ||
-	    !strcmp(basename, "calico-node") ||
-	    !strcmp(basename, "check-status") ||
-	    !strcmp(basename, "pause") ||
-	    !strcmp(basename, "conmon"))
+	if (STARTS_WITH(basename, "runc") ||
+	    STARTS_WITH(basename, "containerd-shim") ||
+	    STARTS_WITH(basename, "calico-node") ||
+	    STARTS_WITH(basename, "check-status") ||
+	    STARTS_WITH(basename, "pause") ||
+	    STARTS_WITH(basename, "conmon"))
 		return (0);
 
 	p_basename = strrchr(parent->filename, '/');
@@ -636,14 +637,15 @@ entry_leader_compute(struct quark_queue *qq, struct quark_event *qev)
 	 * Container. Similar dance to sshd but more names, cloud-defend ignores
 	 * basename here.
 	 */
-	if (!strcmp(p_basename, "containerd-shim") ||
-	    !strcmp(p_basename, "runc") ||
-	    !strcmp(p_basename, "conmon")) {
+	if (STARTS_WITH(p_basename, "containerd-shim") ||
+	    STARTS_WITH(p_basename, "runc") ||
+	    STARTS_WITH(p_basename, "conmon")) {
 		qev->proc_entry_leader_type = QUARK_ELT_CONTAINER;
 		qev->proc_entry_leader = qev->pid;
 
 		return (0);
 	}
+#undef STARTS_WITH
 
 	if (qev->proc_entry_leader == QUARK_ELT_UNKNOWN)
 		warnx("%d (%s) is UNKNOWN (tty=%d)",
