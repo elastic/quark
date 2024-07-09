@@ -673,7 +673,7 @@ entry_leader_build_walklist(struct quark_queue *qq, struct proc_node_list *list)
 	TAILQ_INIT(list);
 
 	/*
-	 * Look for the root nodes, this is init(pid = 1) and kthreadd(pid = 2),
+	 * Look for the root nodes, this is init(pid = 1) and kthread(pid = 2),
 	 * but maybe there's something else in the future or in the past so
 	 * don't hardcode.
 	 */
