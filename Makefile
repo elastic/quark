@@ -88,7 +88,7 @@ all:	$(ZLIB_STATIC)			\
 	README.md
 
 $(ZLIB_STATIC): $(ZLIB_FILES)
-	@cd zlib && ./configure --static $(QREDIR)
+	@cd zlib && CFLAGS="-O3 -fPIC" ./configure --static $(QREDIR)
 	@make -C zlib libz.a
 
 $(ELFTOOLCHAIN_STATIC): $(ELFTOOLCHAIN_FILES)
