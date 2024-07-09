@@ -104,6 +104,22 @@ process so that the event has more context, passing this flag will get you
 .It Dv QQ_NO_SNAPSHOT
 Don't send a snapshot of the existing processes by scraping
 .Pa /proc .
+.It Dv QQ_MIN_AGG
+Don't aggregate
+.Em fork ,
+.Em exec
+and
+.Em exit ,
+perform only minimal aggregation.
+.It Dv QQ_ENTRY_LEADER
+Include
+.Em proc_entry_leader
+and
+.Em proc_entry_type
+in
+.Em quark_events .
+Entry leader is how the process entered the system, it is disabled by default as
+it is Elastic/ECS specific.
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.

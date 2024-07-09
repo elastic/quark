@@ -33,7 +33,7 @@ can run without priviledges.
 Include
 .Em proc_entry_leader
 and
-.Em proc_entry_type_type .
+.Em proc_entry_type
 in
 .Em quark_events .
 Entry leader is how the process entered the system, it is disabled by default as
@@ -49,7 +49,7 @@ Maximum lenght of the quark queue, essentially how much quark is willing to
 buffer, refer to
 .Xr quark_queue_open 3
 for further details.
-.It Fl t
+.It Fl s
 Don't create a snapshot of current processes by scraping /proc.
 .It Fl t
 Don't supress thread events, this is only useful for debugging and will likely
