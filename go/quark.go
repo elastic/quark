@@ -168,7 +168,7 @@ func (qq *Queue) Close() {
 	qq.qqc = nil
 }
 
-func cEventOfIdx(cevs *C.struct_quark_event, idx int) *C.struct_quark_event {
+func eventOfIndex(cevs *C.struct_quark_event, idx int) *C.struct_quark_event {
 	return (*C.struct_quark_event)(unsafe.Add(unsafe.Pointer(cevs), idx*C.sizeof_struct_quark_event))
 }
 
@@ -180,11 +180,7 @@ func (qq *Queue) GetEvents() ([]Event, error) {
 
 	qqevs := make([]Event, n)
 	for i := range qqevs {
-		qev, err := cEventToGo(cEventOfIdx(qq.cevs, i))
-		if err != nil {
-			panic(err) // XXX remove me
-		}
-		qqevs[i] = qev
+		qqevs[i] = eventToGo(eventOfIndex(qq.cevs, i))
 	}
 
 	return qqevs, nil
@@ -197,10 +193,7 @@ func (qq *Queue) Lookup(pid int) *Event {
 		return nil
 	}
 
-	qev, err := cEventToGo(qq.tmpev)
-	if err != nil {
-		panic(err) // XXX remove me
-	}
+	qev := eventToGo(qq.tmpev)
 
 	return &qev
 }
@@ -214,7 +207,7 @@ func (qq *Queue) Block() error {
 	return err
 }
 
-func cEventToGo(cev *C.struct_quark_event) (Event, error) {
+func eventToGo(cev *C.struct_quark_event) Event {
 	var qev Event
 
 	qev.Pid = uint32(cev.pid)
@@ -264,5 +257,5 @@ func cEventToGo(cev *C.struct_quark_event) (Event, error) {
 		qev.Cwd = C.GoString(&cev.cwd[0])
 	}
 
-	return qev, nil
+	return qev
 }
