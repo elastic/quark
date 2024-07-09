@@ -875,6 +875,42 @@ quark_event_dump(struct quark_event *qev, FILE *f)
 }
 #undef P
 
+void
+quark_event_iter_init(struct quark_event_iter *qi, struct quark_queue *qq)
+{
+	struct quark_event	*root;
+
+	qi->qq = qq;
+	root = RB_MIN(event_by_pid, &qq->event_by_pid);
+	if (root != NULL)
+		qi->pid = root->pid;
+	else
+		qi->pid = 0;
+}
+
+int
+quark_event_iter_next(struct quark_event_iter *qi, struct quark_event *dst)
+{
+	struct quark_event	*src;
+
+	src = event_cache_get(qi->qq, qi->pid, 0);
+	if (src == NULL) {
+		qi->pid = 0;
+
+		return (0);
+	}
+
+	event_copy_out(dst, src, QUARK_EV_SNAPSHOT);
+
+	src = RB_NEXT(event_by_pid, &qq->event_by_pid, src);
+	if (src != NULL)
+		qi->pid = src->pid;
+	else
+		qi->pid = 0;
+
+	return (1);
+}
+
 static int
 raw_event_to_quark_event(struct quark_queue *qq, struct raw_event *src, struct quark_event *dst)
 {
