@@ -102,8 +102,7 @@ receives an event, it will include all the cached information it had about that
 process so that the event has more context, passing this flag will get you
 "naked" events.
 .It Dv QQ_NO_SNAPSHOT
-Don't send a snapshot of the existing processes by scraping
-.Pa /proc .
+Don't send the initial snapshot of existing processes.
 .It Dv QQ_MIN_AGG
 Don't aggregate
 .Em fork ,

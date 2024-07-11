@@ -1355,9 +1355,6 @@ sproc_scrape(struct quark_queue *qq)
 	int	 dfd, rootfd;
 	char	*argv[] = { "/proc", NULL };
 
-	if (qq->flags & QQ_NO_SNAPSHOT)
-		return (0);
-
 	if ((tree = fts_open(argv, FTS_NOCHDIR, NULL)) == NULL)
 		return (-1);
 	if ((rootfd = open(argv[0], O_PATH)) == -1) {
@@ -1712,11 +1709,15 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	 * multiple quark_get_events() calls as there isn't enough storage for
 	 * all of them. We need a way to know where we are in the snapshot.
 	 */
-	qev = RB_MIN(event_by_pid, &qq->event_by_pid);
-	if (qev != NULL)
-		qq->snap_pid = qev->pid;
-	else
+	if (qq->flags & QQ_NO_SNAPSHOT)
 		qq->snap_pid = -1;
+	else {
+		qev = RB_MIN(event_by_pid, &qq->event_by_pid);
+		if (qev != NULL)
+			qq->snap_pid = qev->pid;
+		else
+			qq->snap_pid = -1;
+	}
 
 	return (0);
 
