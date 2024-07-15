@@ -56,12 +56,12 @@ type Event struct {
 }
 
 type Queue struct {
-	qqc      *C.struct_quark_queue
-	cevs     *C.struct_quark_event
-	num_cevs int
-	epollfd  int
-	tmpev    *C.struct_quark_event // Used as storage for lookups
-	tmpit     *C.struct_quark_event_iter // Used as storage for lookups
+	cqq        *C.struct_quark_queue
+	cEvents    *C.struct_quark_event
+	numCevents int
+	epollFd    int
+	cTmpEvent  *C.struct_quark_event      // Used as storage for lookups
+	cTmpIter   *C.struct_quark_event_iter // Used as storage for snapshots
 }
 
 const (
@@ -130,7 +130,7 @@ func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
 	if p == nil {
 		return nil, wrapErrno(err)
 	}
-	qq.qqc = (*C.struct_quark_queue)(p)
+	qq.cqq = (*C.struct_quark_queue)(p)
 	p = nil
 
 	cattr := C.struct_quark_queue_attr{
@@ -139,136 +139,136 @@ func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
 		cache_grace_time: C.int(attr.CacheGraceTime),
 		hold_time:        C.int(attr.HoldTime),
 	}
-	r, err := C.quark_queue_open(qq.qqc, &cattr)
+	r, err := C.quark_queue_open(qq.cqq, &cattr)
 	if r == -1 {
-		C.free(unsafe.Pointer(qq.qqc))
+		C.free(unsafe.Pointer(qq.cqq))
 		return nil, wrapErrno(err)
 	}
 
 	p, err = C.calloc(C.size_t(slots), C.sizeof_struct_quark_event)
 	if p == nil {
-		C.quark_queue_close(qq.qqc)
-		C.free(unsafe.Pointer(qq.qqc))
+		C.quark_queue_close(qq.cqq)
+		C.free(unsafe.Pointer(qq.cqq))
 		return nil, wrapErrno(err)
 	}
-	qq.cevs = (*C.struct_quark_event)(p)
-	qq.num_cevs = slots
+	qq.cEvents = (*C.struct_quark_event)(p)
+	qq.numCevents = slots
 	p = nil
 
-	qq.epollfd = int(C.quark_queue_get_epollfd(qq.qqc))
-	qq.tmpev = (*C.struct_quark_event)(C.malloc(C.sizeof_struct_quark_event))
-	qq.tmpit = (*C.struct_quark_event_iter)(C.malloc(C.sizeof_struct_quark_event_iter))
+	qq.epollFd = int(C.quark_queue_get_epollfd(qq.cqq))
+	qq.cTmpEvent = (*C.struct_quark_event)(C.malloc(C.sizeof_struct_quark_event))
+	qq.cTmpIter = (*C.struct_quark_event_iter)(C.malloc(C.sizeof_struct_quark_event_iter))
 
 	return &qq, nil
 }
 
 func (qq *Queue) Close() {
-	C.quark_queue_close(qq.qqc)
-	C.free(unsafe.Pointer(qq.qqc))
-	C.free(unsafe.Pointer(qq.cevs))
-	C.free(unsafe.Pointer(qq.tmpev))
-	C.free(unsafe.Pointer(qq.tmpit))
-	qq.qqc = nil
+	C.quark_queue_close(qq.cqq)
+	C.free(unsafe.Pointer(qq.cqq))
+	C.free(unsafe.Pointer(qq.cEvents))
+	C.free(unsafe.Pointer(qq.cTmpEvent))
+	C.free(unsafe.Pointer(qq.cTmpIter))
+	qq.cqq = nil
 }
 
-func eventOfIndex(cevs *C.struct_quark_event, idx int) *C.struct_quark_event {
-	return (*C.struct_quark_event)(unsafe.Add(unsafe.Pointer(cevs), idx*C.sizeof_struct_quark_event))
+func eventOfIndex(cEvents *C.struct_quark_event, idx int) *C.struct_quark_event {
+	return (*C.struct_quark_event)(unsafe.Add(unsafe.Pointer(cEvents), idx*C.sizeof_struct_quark_event))
 }
 
 func (qq *Queue) GetEvents() ([]Event, error) {
-	n, err := C.quark_queue_get_events(qq.qqc, qq.cevs, C.int(qq.num_cevs))
+	n, err := C.quark_queue_get_events(qq.cqq, qq.cEvents, C.int(qq.numCevents))
 	if n == -1 {
 		return nil, wrapErrno(err)
 	}
 
-	qqevs := make([]Event, n)
-	for i := range qqevs {
-		qqevs[i] = eventToGo(eventOfIndex(qq.cevs, i))
+	events := make([]Event, n)
+	for i := range events {
+		events[i] = eventToGo(eventOfIndex(qq.cEvents, i))
 	}
 
-	return qqevs, nil
+	return events, nil
 }
 
 func (qq *Queue) Lookup(pid int) (Event, bool) {
-	r, _ := C.quark_event_lookup(qq.qqc, qq.tmpev, C.int(pid))
+	r, _ := C.quark_event_lookup(qq.cqq, qq.cTmpEvent, C.int(pid))
 
 	if r != 0 {
 		return Event{}, false
 	}
 
-	return eventToGo(qq.tmpev), true
+	return eventToGo(qq.cTmpEvent), true
 }
 
 func (qq *Queue) Block() error {
 	event := make([]syscall.EpollEvent, 1)
-	_, err := syscall.EpollWait(qq.epollfd, event, 100)
+	_, err := syscall.EpollWait(qq.epollFd, event, 100)
 	if err != nil && errors.Is(err, syscall.EINTR) {
 		err = nil
 	}
 	return err
 }
 
-func (qq *Queue) Snapshot() ([]Event) {
+func (qq *Queue) Snapshot() []Event {
 	var events []Event
 
-	C.quark_event_iter_init(qq.tmpit, qq.qqc)
+	C.quark_event_iter_init(qq.cTmpIter, qq.cqq)
 
-	for C.quark_event_iter_next(qq.tmpit, qq.tmpev) == 1 {
-		events = append(events, eventToGo(qq.tmpev))
+	for C.quark_event_iter_next(qq.cTmpIter, qq.cTmpEvent) == 1 {
+		events = append(events, eventToGo(qq.cTmpEvent))
 	}
 
 	return events
 }
 
-func eventToGo(cev *C.struct_quark_event) Event {
-	var qev Event
+func eventToGo(cEvent *C.struct_quark_event) Event {
+	var event Event
 
-	qev.Pid = uint32(cev.pid)
-	qev.Events = uint64(cev.events)
-	if cev.flags&C.QUARK_F_PROC != 0 {
-		qev.Proc = &Proc{
-			CapInheritable:  uint64(cev.proc_cap_inheritable),
-			CapPermitted:    uint64(cev.proc_cap_permitted),
-			CapEffective:    uint64(cev.proc_cap_effective),
-			CapBset:         uint64(cev.proc_cap_bset),
-			CapAmbient:      uint64(cev.proc_cap_ambient),
-			TimeBoot:        uint64(cev.proc_time_boot),
-			Ppid:            uint32(cev.proc_ppid),
-			Uid:             uint32(cev.proc_uid),
-			Gid:             uint32(cev.proc_gid),
-			Suid:            uint32(cev.proc_suid),
-			Sgid:            uint32(cev.proc_sgid),
-			Euid:            uint32(cev.proc_euid),
-			Egid:            uint32(cev.proc_egid),
-			Pgid:            uint32(cev.proc_pgid),
-			Sid:             uint32(cev.proc_sid),
-			EntryLeader:     uint32(cev.proc_entry_leader),
-			EntryLeaderType: uint32(cev.proc_entry_leader_type),
-			TtyMajor:        uint32(cev.proc_tty_major),
-			TtyMinor:        uint32(cev.proc_tty_minor),
+	event.Pid = uint32(cEvent.pid)
+	event.Events = uint64(cEvent.events)
+	if cEvent.flags&C.QUARK_F_PROC != 0 {
+		event.Proc = &Proc{
+			CapInheritable:  uint64(cEvent.proc_cap_inheritable),
+			CapPermitted:    uint64(cEvent.proc_cap_permitted),
+			CapEffective:    uint64(cEvent.proc_cap_effective),
+			CapBset:         uint64(cEvent.proc_cap_bset),
+			CapAmbient:      uint64(cEvent.proc_cap_ambient),
+			TimeBoot:        uint64(cEvent.proc_time_boot),
+			Ppid:            uint32(cEvent.proc_ppid),
+			Uid:             uint32(cEvent.proc_uid),
+			Gid:             uint32(cEvent.proc_gid),
+			Suid:            uint32(cEvent.proc_suid),
+			Sgid:            uint32(cEvent.proc_sgid),
+			Euid:            uint32(cEvent.proc_euid),
+			Egid:            uint32(cEvent.proc_egid),
+			Pgid:            uint32(cEvent.proc_pgid),
+			Sid:             uint32(cEvent.proc_sid),
+			EntryLeader:     uint32(cEvent.proc_entry_leader),
+			EntryLeaderType: uint32(cEvent.proc_entry_leader_type),
+			TtyMajor:        uint32(cEvent.proc_tty_major),
+			TtyMinor:        uint32(cEvent.proc_tty_minor),
 		}
 	}
-	if cev.flags&C.QUARK_F_EXIT != 0 {
+	if cEvent.flags&C.QUARK_F_EXIT != 0 {
 		var exit Exit
-		exit.ExitCode = int32(cev.exit_code)
-		exit.ExitTimeEvent = uint64(cev.exit_time_event)
-		qev.ExitEvent = &exit
+		exit.ExitCode = int32(cEvent.exit_code)
+		exit.ExitTimeEvent = uint64(cEvent.exit_time_event)
+		event.ExitEvent = &exit
 	}
-	if cev.flags&C.QUARK_F_COMM != 0 {
-		qev.Comm = C.GoString(&cev.comm[0])
+	if cEvent.flags&C.QUARK_F_COMM != 0 {
+		event.Comm = C.GoString(&cEvent.comm[0])
 	}
-	if cev.flags&C.QUARK_F_FILENAME != 0 {
-		qev.Filename = C.GoString(&cev.filename[0])
+	if cEvent.flags&C.QUARK_F_FILENAME != 0 {
+		event.Filename = C.GoString(&cEvent.filename[0])
 	}
-	if cev.flags&C.QUARK_F_CMDLINE != 0 {
-		b := C.GoBytes(unsafe.Pointer(&cev.cmdline[0]), C.int(cev.cmdline_len))
+	if cEvent.flags&C.QUARK_F_CMDLINE != 0 {
+		b := C.GoBytes(unsafe.Pointer(&cEvent.cmdline[0]), C.int(cEvent.cmdline_len))
 		nul := string(byte(0))
 		b = bytes.TrimRight(b, nul)
-		qev.Cmdline = strings.Split(string(b), nul)
+		event.Cmdline = strings.Split(string(b), nul)
 	}
-	if cev.flags&C.QUARK_F_CWD != 0 {
-		qev.Cwd = C.GoString(&cev.cwd[0])
+	if cEvent.flags&C.QUARK_F_CWD != 0 {
+		event.Cwd = C.GoString(&cEvent.cwd[0])
 	}
 
-	return qev
+	return event
 }
