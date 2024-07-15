@@ -61,6 +61,7 @@ type Queue struct {
 	num_cevs int
 	epollfd  int
 	tmpev    *C.struct_quark_event // Used as storage for lookups
+	tmpit     *C.struct_quark_event_iter // Used as storage for lookups
 }
 
 const (
@@ -156,6 +157,7 @@ func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
 
 	qq.epollfd = int(C.quark_queue_get_epollfd(qq.qqc))
 	qq.tmpev = (*C.struct_quark_event)(C.malloc(C.sizeof_struct_quark_event))
+	qq.tmpit = (*C.struct_quark_event_iter)(C.malloc(C.sizeof_struct_quark_event_iter))
 
 	return &qq, nil
 }
@@ -165,6 +167,7 @@ func (qq *Queue) Close() {
 	C.free(unsafe.Pointer(qq.qqc))
 	C.free(unsafe.Pointer(qq.cevs))
 	C.free(unsafe.Pointer(qq.tmpev))
+	C.free(unsafe.Pointer(qq.tmpit))
 	qq.qqc = nil
 }
 
@@ -186,16 +189,14 @@ func (qq *Queue) GetEvents() ([]Event, error) {
 	return qqevs, nil
 }
 
-func (qq *Queue) Lookup(pid int) *Event {
+func (qq *Queue) Lookup(pid int) (Event, bool) {
 	r, _ := C.quark_event_lookup(qq.qqc, qq.tmpev, C.int(pid))
 
 	if r != 0 {
-		return nil
+		return Event{}, false
 	}
 
-	qev := eventToGo(qq.tmpev)
-
-	return &qev
+	return eventToGo(qq.tmpev), true
 }
 
 func (qq *Queue) Block() error {
@@ -205,6 +206,18 @@ func (qq *Queue) Block() error {
 		err = nil
 	}
 	return err
+}
+
+func (qq *Queue) Snapshot() ([]Event) {
+	var events []Event
+
+	C.quark_event_iter_init(qq.tmpit, qq.qqc)
+
+	for C.quark_event_iter_next(qq.tmpit, qq.tmpev) == 1 {
+		events = append(events, eventToGo(qq.tmpev))
+	}
+
+	return events
 }
 
 func eventToGo(cev *C.struct_quark_event) Event {

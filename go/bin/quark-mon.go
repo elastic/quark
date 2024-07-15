@@ -10,8 +10,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	pid1 := qq.Lookup(1)
-	if pid1 != nil {
+	pid1, ok := qq.Lookup(1)
+	if ok {
 		fmt.Printf("Yey for pid1\n %#v", pid1)
 	}
 
