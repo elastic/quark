@@ -22,7 +22,7 @@ func main() {
 		}
 		for _, qev := range qevs {
 			fmt.Printf("%#v", qev)
-			if qev.Proc != nil {
+			if qev.Proc.Valid {
 				fmt.Printf(" %#v", qev.Proc)
 			}
 			fmt.Printf("\n")

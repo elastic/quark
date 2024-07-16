@@ -17,6 +17,7 @@ import (
 	"unsafe"
 )
 
+// Only meaningful if Valid
 type Proc struct {
 	CapInheritable  uint64
 	CapPermitted    uint64
@@ -37,22 +38,25 @@ type Proc struct {
 	EntryLeaderType uint32
 	TtyMajor        uint32
 	TtyMinor        uint32
+	Valid           bool
 }
 
+// Only meaningful is Valid
 type Exit struct {
 	ExitCode      int32
 	ExitTimeEvent uint64
+	Valid         bool
 }
 
 type Event struct {
-	Pid       uint32   // Always present
-	Events    uint64   // Bitmask of events for this Event
-	Proc      *Proc    // QUARK_F_PROC
-	ExitEvent *Exit    // QUARK_F_EXIT
-	Comm      string   // QUARK_F_COMM
-	Filename  string   // QUARK_F_FILENAME
-	Cmdline   []string // QUARK_F_CMDLINE
-	Cwd       string   // QUARK_F_CWD
+	Pid      uint32   // Always present
+	Events   uint64   // Bitmask of events for this Event
+	Proc     Proc     // Only meaningful if Proc.Valid (QUARK_F_PROC)
+	Exit     Exit     // Only meaningful if Exit.Valid (QUARK_F_EXIT)
+	Comm     string   // QUARK_F_COMM
+	Filename string   // QUARK_F_FILENAME
+	Cmdline  []string // QUARK_F_CMDLINE
+	Cwd      string   // QUARK_F_CWD
 }
 
 type Queue struct {
@@ -226,7 +230,7 @@ func eventToGo(cEvent *C.struct_quark_event) Event {
 	event.Pid = uint32(cEvent.pid)
 	event.Events = uint64(cEvent.events)
 	if cEvent.flags&C.QUARK_F_PROC != 0 {
-		event.Proc = &Proc{
+		event.Proc = Proc{
 			CapInheritable:  uint64(cEvent.proc_cap_inheritable),
 			CapPermitted:    uint64(cEvent.proc_cap_permitted),
 			CapEffective:    uint64(cEvent.proc_cap_effective),
@@ -246,13 +250,15 @@ func eventToGo(cEvent *C.struct_quark_event) Event {
 			EntryLeaderType: uint32(cEvent.proc_entry_leader_type),
 			TtyMajor:        uint32(cEvent.proc_tty_major),
 			TtyMinor:        uint32(cEvent.proc_tty_minor),
+			Valid:           true,
 		}
 	}
 	if cEvent.flags&C.QUARK_F_EXIT != 0 {
-		var exit Exit
-		exit.ExitCode = int32(cEvent.exit_code)
-		exit.ExitTimeEvent = uint64(cEvent.exit_time_event)
-		event.ExitEvent = &exit
+		event.Exit = Exit{
+			ExitCode:      int32(cEvent.exit_code),
+			ExitTimeEvent: uint64(cEvent.exit_time_event),
+			Valid:         true,
+		}
 	}
 	if cEvent.flags&C.QUARK_F_COMM != 0 {
 		event.Comm = C.GoString(&cEvent.comm[0])
