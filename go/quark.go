@@ -17,7 +17,7 @@ import (
 	"unsafe"
 )
 
-// Only meaningful if Valid
+// Proc carries data on the state of the process. Only vaid if `Valid` is set.
 type Proc struct {
 	CapInheritable  uint64
 	CapPermitted    uint64
@@ -41,13 +41,14 @@ type Proc struct {
 	Valid           bool
 }
 
-// Only meaningful is Valid
+// Exit carries data on the exit behavior of the process. Only valid if `Valid` is true
 type Exit struct {
 	ExitCode      int32
 	ExitTimeEvent uint64
 	Valid         bool
 }
 
+// Event represents a single process
 type Event struct {
 	Pid      uint32   // Always present
 	Events   uint64   // Bitmask of events for this Event
@@ -59,8 +60,9 @@ type Event struct {
 	Cwd      string   // QUARK_F_CWD
 }
 
+// Queue represents a queue of events
 type Queue struct {
-	cqq        *C.struct_quark_queue
+	quarkQueue *C.struct_quark_queue // pointer to the queue structure
 	cEvents    *C.struct_quark_event
 	numCevents int
 	epollFd    int
@@ -97,6 +99,7 @@ const (
 	QUARK_ELT_CONSOLE   = int(C.QUARK_ELT_CONSOLE)
 )
 
+// QueueAttr defines the attributes for the Quark queue
 type QueueAttr struct {
 	Flags          int
 	MaxLength      int
@@ -114,6 +117,7 @@ func wrapErrno(err error) error {
 	return err
 }
 
+// DefaultQueueAttr returns the default attributes for the queue
 func DefaultQueueAttr() QueueAttr {
 	var attr C.struct_quark_queue_attr
 
@@ -127,15 +131,16 @@ func DefaultQueueAttr() QueueAttr {
 	}
 }
 
+// OpenQueue opens a Quark Queue with the given attributes
 func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
-	var qq Queue
+	var queue Queue
 
-	p, err := C.calloc(C.size_t(1), C.sizeof_struct_quark_queue)
-	if p == nil {
+	queuePointer, err := C.calloc(C.size_t(1), C.sizeof_struct_quark_queue)
+	if queuePointer == nil {
 		return nil, wrapErrno(err)
 	}
-	qq.cqq = (*C.struct_quark_queue)(p)
-	p = nil
+	queue.quarkQueue = (*C.struct_quark_queue)(queuePointer)
+	queuePointer = nil
 
 	cattr := C.struct_quark_queue_attr{
 		flags:            C.int(attr.Flags),
@@ -143,87 +148,93 @@ func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
 		cache_grace_time: C.int(attr.CacheGraceTime),
 		hold_time:        C.int(attr.HoldTime),
 	}
-	r, err := C.quark_queue_open(qq.cqq, &cattr)
-	if r == -1 {
-		C.free(unsafe.Pointer(qq.cqq))
+	ok, err := C.quark_queue_open(queue.quarkQueue, &cattr)
+	if ok == -1 {
+		C.free(unsafe.Pointer(queue.quarkQueue))
 		return nil, wrapErrno(err)
 	}
 
-	p, err = C.calloc(C.size_t(slots), C.sizeof_struct_quark_event)
-	if p == nil {
-		C.quark_queue_close(qq.cqq)
-		C.free(unsafe.Pointer(qq.cqq))
+	queuePointer, err = C.calloc(C.size_t(slots), C.sizeof_struct_quark_event)
+	if queuePointer == nil {
+		C.quark_queue_close(queue.quarkQueue)
+		C.free(unsafe.Pointer(queue.quarkQueue))
 		return nil, wrapErrno(err)
 	}
-	qq.cEvents = (*C.struct_quark_event)(p)
-	qq.numCevents = slots
-	p = nil
+	queue.cEvents = (*C.struct_quark_event)(queuePointer)
+	queue.numCevents = slots
+	queuePointer = nil
 
-	qq.epollFd = int(C.quark_queue_get_epollfd(qq.cqq))
-	qq.cTmpEvent = (*C.struct_quark_event)(C.malloc(C.sizeof_struct_quark_event))
-	qq.cTmpIter = (*C.struct_quark_event_iter)(C.malloc(C.sizeof_struct_quark_event_iter))
+	queue.epollFd = int(C.quark_queue_get_epollfd(queue.quarkQueue))
+	queue.cTmpEvent = (*C.struct_quark_event)(C.malloc(C.sizeof_struct_quark_event))
+	queue.cTmpIter = (*C.struct_quark_event_iter)(C.malloc(C.sizeof_struct_quark_event_iter))
 
-	return &qq, nil
+	return &queue, nil
 }
 
-func (qq *Queue) Close() {
-	C.quark_queue_close(qq.cqq)
-	C.free(unsafe.Pointer(qq.cqq))
-	C.free(unsafe.Pointer(qq.cEvents))
-	C.free(unsafe.Pointer(qq.cTmpEvent))
-	C.free(unsafe.Pointer(qq.cTmpIter))
-	qq.cqq = nil
+// Close closes the queue
+func (queue *Queue) Close() {
+	C.quark_queue_close(queue.quarkQueue)
+	C.free(unsafe.Pointer(queue.quarkQueue))
+	C.free(unsafe.Pointer(queue.cEvents))
+	C.free(unsafe.Pointer(queue.cTmpEvent))
+	C.free(unsafe.Pointer(queue.cTmpIter))
+	queue.quarkQueue = nil
 }
 
 func eventOfIndex(cEvents *C.struct_quark_event, idx int) *C.struct_quark_event {
 	return (*C.struct_quark_event)(unsafe.Add(unsafe.Pointer(cEvents), idx*C.sizeof_struct_quark_event))
 }
 
-func (qq *Queue) GetEvents() ([]Event, error) {
-	n, err := C.quark_queue_get_events(qq.cqq, qq.cEvents, C.int(qq.numCevents))
+// GetEvents returns a number of events based on the `slots` attribute when the queue was initialized
+func (queue *Queue) GetEvents() ([]Event, error) {
+	n, err := C.quark_queue_get_events(queue.quarkQueue, queue.cEvents, C.int(queue.numCevents))
 	if n == -1 {
 		return nil, wrapErrno(err)
 	}
 
 	events := make([]Event, n)
 	for i := range events {
-		events[i] = eventToGo(eventOfIndex(qq.cEvents, i))
+		events[i] = eventToGo(eventOfIndex(queue.cEvents, i))
 	}
 
 	return events, nil
 }
 
-func (qq *Queue) Lookup(pid int) (Event, bool) {
-	r, _ := C.quark_event_lookup(qq.cqq, qq.cTmpEvent, C.int(pid))
+// Lookup returns an event for the given PID
+func (queue *Queue) Lookup(pid int) (Event, bool) {
+	r, _ := C.quark_event_lookup(queue.quarkQueue, queue.cTmpEvent, C.int(pid))
 
 	if r != 0 {
 		return Event{}, false
 	}
 
-	return eventToGo(qq.cTmpEvent), true
+	return eventToGo(queue.cTmpEvent), true
 }
 
-func (qq *Queue) Block() error {
+// Block blocks until an event reaches the bpf buffer queue
+func (queue *Queue) Block() error {
 	event := make([]syscall.EpollEvent, 1)
-	_, err := syscall.EpollWait(qq.epollFd, event, 100)
+	_, err := syscall.EpollWait(queue.epollFd, event, 100)
 	if err != nil && errors.Is(err, syscall.EINTR) {
 		err = nil
 	}
 	return err
 }
 
-func (qq *Queue) Snapshot() []Event {
+// Snapshot returns a list of current events in quark
+func (queue *Queue) Snapshot() []Event {
 	var events []Event
 
-	C.quark_event_iter_init(qq.cTmpIter, qq.cqq)
+	C.quark_event_iter_init(queue.cTmpIter, queue.quarkQueue)
 
-	for C.quark_event_iter_next(qq.cTmpIter, qq.cTmpEvent) == 1 {
-		events = append(events, eventToGo(qq.cTmpEvent))
+	for C.quark_event_iter_next(queue.cTmpIter, queue.cTmpEvent) == 1 {
+		events = append(events, eventToGo(queue.cTmpEvent))
 	}
 
 	return events
 }
 
+// eventToGo converts the C event structure to a go event
 func eventToGo(cEvent *C.struct_quark_event) Event {
 	var event Event
 

@@ -2,21 +2,24 @@ package main
 
 import (
 	"fmt"
-	"github.com/elastic/quark/go"
+
+	quark "github.com/elastic/quark/go"
 )
 
 func main() {
-	qq, err := quark.OpenQueue(quark.DefaultQueueAttr(), 64)
+	queue, err := quark.OpenQueue(quark.DefaultQueueAttr(), 64)
 	if err != nil {
 		panic(err)
 	}
-	pid1, ok := qq.Lookup(1)
+	defer queue.Close()
+
+	pid1, ok := queue.Lookup(1)
 	if ok {
 		fmt.Printf("Yey for pid1\n %#v", pid1)
 	}
 
 	for {
-		qevs, err := qq.GetEvents()
+		qevs, err := queue.GetEvents()
 		if err != nil {
 			panic(err)
 		}
@@ -28,11 +31,11 @@ func main() {
 			fmt.Printf("\n")
 		}
 		if len(qevs) == 0 {
-			err = qq.Block()
+			err = queue.Block()
 			if err != nil {
 				panic(err)
 			}
 		}
 	}
-	qq.Close()
+
 }
