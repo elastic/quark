@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+/* Copyright (c) 2024 Elastic NV */
+
 #include <ctype.h>		/* is_digit(3) */
 #include <err.h>
 #include <errno.h>

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright (c) 2024 Elastic NV */
+
 #ifndef _QUARK_H_
 #define _QUARK_H_
 

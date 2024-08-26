@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2024 Elastic NV
+
 Script=${0##*/}
 
 function usage
@@ -45,6 +48,9 @@ ubuntu/20.04/x86_64
 "
 
 cat <<EOF
+// SPDX-License-Identifier: Apache-2.0
+/* Copyright (c) 2024 Elastic NV */
+
 #include "quark.h"
 
 /*

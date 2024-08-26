@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2024 Elastic NV
+
 Script=$(basename $0)
 
 function usage
