@@ -41,14 +41,14 @@ type Proc struct {
 	Valid           bool
 }
 
-// Exit carries data on the exit behavior of the process. Only valid if `Valid` is true
+// Exit carries data on the exit behavior of the process. Only valid if `Valid` is set.
 type Exit struct {
 	ExitCode      int32
 	ExitTimeEvent uint64
 	Valid         bool
 }
 
-// Event represents a single process
+// Event represents a single process.
 type Event struct {
 	Pid      uint32   // Always present
 	Events   uint64   // Bitmask of events for this Event
@@ -60,7 +60,7 @@ type Event struct {
 	Cwd      string   // QUARK_F_CWD
 }
 
-// Queue represents a queue of events
+// Queue holds the state of a quark instance.
 type Queue struct {
 	quarkQueue *C.struct_quark_queue // pointer to the queue structure
 	cEvents    *C.struct_quark_event
@@ -99,7 +99,7 @@ const (
 	QUARK_ELT_CONSOLE   = int(C.QUARK_ELT_CONSOLE)
 )
 
-// QueueAttr defines the attributes for the Quark queue
+// QueueAttr defines the attributes for the Quark queue.
 type QueueAttr struct {
 	Flags          int
 	MaxLength      int
@@ -117,7 +117,7 @@ func wrapErrno(err error) error {
 	return err
 }
 
-// DefaultQueueAttr returns the default attributes for the queue
+// DefaultQueueAttr returns the default attributes for the queue.
 func DefaultQueueAttr() QueueAttr {
 	var attr C.struct_quark_queue_attr
 
@@ -131,7 +131,7 @@ func DefaultQueueAttr() QueueAttr {
 	}
 }
 
-// OpenQueue opens a Quark Queue with the given attributes
+// OpenQueue opens a Quark Queue with the given attributes.
 func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
 	var queue Queue
 
@@ -171,7 +171,7 @@ func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
 	return &queue, nil
 }
 
-// Close closes the queue
+// Close closes the queue.
 func (queue *Queue) Close() {
 	C.quark_queue_close(queue.quarkQueue)
 	C.free(unsafe.Pointer(queue.quarkQueue))
@@ -185,7 +185,7 @@ func eventOfIndex(cEvents *C.struct_quark_event, idx int) *C.struct_quark_event 
 	return (*C.struct_quark_event)(unsafe.Add(unsafe.Pointer(cEvents), idx*C.sizeof_struct_quark_event))
 }
 
-// GetEvents returns a number of events based on the `slots` attribute when the queue was initialized
+// GetEvents returns a number of events, up to a maximum of `slots` passed to OpenQueue.
 func (queue *Queue) GetEvents() ([]Event, error) {
 	n, err := C.quark_queue_get_events(queue.quarkQueue, queue.cEvents, C.int(queue.numCevents))
 	if n == -1 {
@@ -200,7 +200,7 @@ func (queue *Queue) GetEvents() ([]Event, error) {
 	return events, nil
 }
 
-// Lookup returns an event for the given PID
+// Lookup looks up for the events associated with PID in quark's internal cache..
 func (queue *Queue) Lookup(pid int) (Event, bool) {
 	r, _ := C.quark_event_lookup(queue.quarkQueue, queue.cTmpEvent, C.int(pid))
 
@@ -211,7 +211,8 @@ func (queue *Queue) Lookup(pid int) (Event, bool) {
 	return eventToGo(queue.cTmpEvent), true
 }
 
-// Block blocks until an event reaches the bpf buffer queue
+// Block blocks until there are events or an undefined timeout
+// expires. GetEvents should be called once Block returns.
 func (queue *Queue) Block() error {
 	event := make([]syscall.EpollEvent, 1)
 	_, err := syscall.EpollWait(queue.epollFd, event, 100)
@@ -221,7 +222,7 @@ func (queue *Queue) Block() error {
 	return err
 }
 
-// Snapshot returns a list of current events in quark
+// Snapshot returns a snapshot of all processes in the cache.
 func (queue *Queue) Snapshot() []Event {
 	var events []Event
 
@@ -234,7 +235,7 @@ func (queue *Queue) Snapshot() []Event {
 	return events
 }
 
-// eventToGo converts the C event structure to a go event
+// eventToGo converts the C event structure to a go event.
 func eventToGo(cEvent *C.struct_quark_event) Event {
 	var event Event
 
