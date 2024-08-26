@@ -334,6 +334,12 @@ quark\_queue\_open(3),
 quark-btf(8),
 quark-mon(8)
 
+# LICENSE
+
+**quark**
+is released under the Apache-2.0 license and contains code under BSD-2, BSD-3,
+ISC, and zlib Licenses.
+
 # HISTORY
 
 **quark**

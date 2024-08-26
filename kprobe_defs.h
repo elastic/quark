@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright (c) 2024 Elastic NV */
+
 #ifndef _KPROBE_DEFS_H
 #define _KPROBE_DEFS_H
 
