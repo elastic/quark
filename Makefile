@@ -11,7 +11,7 @@ endif
 
 CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
 
-CPPFLAGS?= -D_GNU_SOURCE -Ilibbpf/src
+CPPFLAGS?= -D_GNU_SOURCE -Iinclude/usr/include
 
 CDIAGFLAGS+= -Wall
 CDIAGFLAGS+= -Wextra
@@ -46,7 +46,7 @@ EEBPF_FILES:= $(shell find elastic-ebpf)
 EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/x86_64
 
 # LIBQUARK
-LIBQUARK_DEPS:= $(wildcard *.h) bpf_prog_skel.h $(EEBPF_FILES)
+LIBQUARK_DEPS:= $(wildcard *.h) bpf_prog_skel.h $(EEBPF_FILES) include
 LIBQUARK_SRCS:= $(filter-out bpf_prog.c quark-mon.c quark-btf.c,$(wildcard *.c))
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
@@ -128,18 +128,25 @@ $(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
 bpf_prog_skel.h: $(BPFPROG_OBJ)
 	$(call msg,BPFTOOL,bpf_prog_skel.h)
 	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_prog_skel.h
-	$(call msg,SED,bpf_prog_skel.h)
-	$(Q)sed -i 's/<bpf\/libbpf.h>/\"libbpf.h\"/' bpf_prog_skel.h
 
 $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 	$(call msg,CLANG,bpf_prog.tmp.o)
-	$(Q)$(CLANG) -g -O2 -target bpf -D__KERNEL__ -D__TARGET_ARCH_x86	\
-		-Ilibbpf/include/uapi						\
-		-Ilibbpf/src $(EEBPF_INCLUDES)					\
-		-c bpf_prog.c -o bpf_prog.tmp.o
+	$(Q)$(CLANG) 								\
+		-g -O2 								\
+		-target bpf 							\
+		-D__KERNEL__							\
+		-D__TARGET_ARCH_x86						\
+		$(CPPFLAGS)							\
+		$(EEBPF_INCLUDES)						\
+		-c bpf_prog.c 							\
+		-o bpf_prog.tmp.o
 	$(call msg,BPFTOOL,$@)
 	$(Q)$(BPFTOOL) gen object $@ bpf_prog.tmp.o
 	$(Q)rm bpf_prog.tmp.o
+
+include: $(LIBBPF_DEPS)
+	$(Q)make -C $(LIBBPF_SRC) install_headers DESTDIR=../../include $(QREDIR)
+	$(Q)make -C $(LIBBPF_SRC) install_uapi_headers DESTDIR=../../include $(QREDIR)
 
 %.svg: %.dot
 	$(call msg,DOT,$@)
@@ -184,6 +191,7 @@ cleanall: clean
 	$(call msg,CLEANALL)
 	$(Q)rm -rf manhtml/*.html
 	$(Q)rm -f $(SVGS)
+	$(Q)rm -rf include
 	$(Q)make -C $(LIBBPF_SRC) clean
 	$(Q)make -C $(ELFTOOLCHAIN_SRC)/libelf clean
 	$(Q)make -C $(ZLIB_SRC) clean || true

@@ -11,7 +11,7 @@
 
 #include "quark.h"
 
-#include "libbpf/src/btf.h"
+#include <bpf/btf.h>
 #include "libbpf/include/linux/err.h"		/* IS_ERR :( */
 
 s32	btf_root_offset(struct btf *, const char *);
