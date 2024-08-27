@@ -74,6 +74,12 @@ LIBBPF_STATIC:= $(LIBBPF_SRC)/libbpf.a
 LIBBPF_DEPS:=	$(wildcard libbpf/src/*.[ch]) 		\
 		$(wildcard libbpf/include/*.[ch])	\
 		$(ELFTOOLCHAIN_FILES)
+LIBBPF_EXTRA_CFLAGS:= -DQUARK
+LIBBPF_EXTRA_CFLAGS+= -fPIC
+LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/libelf
+LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/common
+LIBBPF_EXTRA_CFLAGS+= -I../../zlib
+
 
 # BPFPROG (kernel side)
 BPFPROG_OBJ:= bpf_prog.o
@@ -97,9 +103,9 @@ $(ELFTOOLCHAIN_STATIC): $(ELFTOOLCHAIN_FILES)
 	$(Q)make -C elftoolchain/libelf
 
 $(LIBBPF_STATIC): $(LIBBPF_DEPS)
-	$(Q)make -C $(LIBBPF_SRC)				\
-		BUILD_STATIC_ONLY=y				\
-		EXTRA_CFLAGS="-DQUARK -fPIC -I../../elftoolchain/libelf -I../../elftoolchain/common"
+	$(Q)make -C $(LIBBPF_SRC)		\
+			BUILD_STATIC_ONLY=y	\
+			EXTRA_CFLAGS="$(LIBBPF_EXTRA_CFLAGS)"
 
 $(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
 	$(call msg,AR,$@)
