@@ -1,3 +1,5 @@
+SHELL= /bin/bash
+
 ifeq ($(V),1)
 	Q =
 	msg =
