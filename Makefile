@@ -80,7 +80,6 @@ LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/libelf
 LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/common
 LIBBPF_EXTRA_CFLAGS+= -I../../zlib
 
-
 # BPFPROG (kernel side)
 BPFPROG_OBJ:= bpf_prog.o
 BPFPROG_DEPS:= bpf_prog.c $(LIBBPF_DEPS) $(EEBPF_FILES)
@@ -121,7 +120,6 @@ $(LIBQUARK_STATIC_BIG): $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATI
 	addlib zlib/libz.a\n\
 	save\n\
 	end\n" | ar -M
-
 
 $(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
 	$(call msg,CC,$@)
@@ -202,6 +200,5 @@ manlint:
 	$(call msg,MANDOC)
 	$(Q)mandoc -Tlint *.[378] || true
 
-.PHONY: all btfhub clean cleanall doc eebpf-sync manhtml manlint.c
-
+.PHONY: all btfhub clean cleanall doc eebpf-sync manhtml manlint
 .SUFFIXES:
