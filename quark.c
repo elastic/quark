@@ -1501,7 +1501,7 @@ quark_init(void)
 			return (-1);			\
 	} while(0)
 static int
-write_node_attr(FILE *f, struct raw_event *raw, char *key)
+write_raw_node_attr(FILE *f, struct raw_event *raw, char *key)
 {
 	const char		*color;
 	char			 label[4096];
@@ -1547,7 +1547,7 @@ write_node_attr(FILE *f, struct raw_event *raw, char *key)
 }
 
 int
-quark_dump_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
+quark_dump_raw_event_graph(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 {
 	struct raw_event	*raw, *left, *right;
 	FILE			*f;
@@ -1559,7 +1559,7 @@ quark_dump_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 	P(f, "node [style=filled, color=black];\n");
 	RB_FOREACH(raw, raw_event_by_time, &qq->raw_event_by_time) {
 		snprintf(key, sizeof(key), "%llu", raw->time);
-		if (write_node_attr(f, raw, key) < 0)
+		if (write_raw_node_attr(f, raw, key) < 0)
 			return (-1);
 	}
 	RB_FOREACH(raw, raw_event_by_time, &qq->raw_event_by_time) {
@@ -1584,7 +1584,7 @@ quark_dump_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 	RB_FOREACH(raw, raw_event_by_pidtime, &qq->raw_event_by_pidtime) {
 		snprintf(key, sizeof(key), "%d %llu",
 		    raw->pid, raw->time);
-		if (write_node_attr(f, raw, key) < 0)
+		if (write_raw_node_attr(f, raw, key) < 0)
 			return (-1);
 	}
 	RB_FOREACH(raw, raw_event_by_pidtime, &qq->raw_event_by_pidtime) {
@@ -1603,6 +1603,106 @@ quark_dump_graphviz(struct quark_queue *qq, FILE *by_time, FILE *by_pidtime)
 	}
 	P(f, "}\n");
 
+	fflush(f);
+
+	return (0);
+}
+
+int
+quark_dump_event_cache_graph(struct quark_queue *qq, FILE *f)
+{
+	struct quark_event	*qev;
+	const char		*name;
+	const char		*color_table[] = {
+		"aqua",
+		"aquamarine3",
+		"azure3",
+		"coral",
+		"darkgoldenrod1",
+		"darkolivegreen2",
+		"darkorchid1",
+		"firebrick3",
+		"forestgreen",
+		"lemonchiffon2",
+		"lightslateblue",
+		"lime",
+		"orange2",
+		"skyblue3",
+		"violet",
+		"yellow"
+	};
+
+	P(f, "digraph {\n");
+	P(f, "ranksep=2.0;\n");
+	P(f, "nodesep=0.65;\n");
+	P(f, "node [style=filled, shape=box, color=black];\n");
+	RB_FOREACH(qev, event_by_pid, &qq->event_by_pid) {
+		uint	color_index;
+
+		color_index = (uint)qev->proc_ppid % (uint)nitems(color_table);
+		if (color_index >= nitems(color_table)) /* paranoia */
+			color_index = 0;
+
+#ifdef notyet
+		struct args	*args;
+		int		 i;
+#endif
+		if (qev->flags & QUARK_F_FILENAME)
+			name = qev->filename;
+		else if (qev->flags & QUARK_F_COMM)
+			name = qev->comm;
+		else
+			name = "<unknown>";
+		P(f, "\"%d\" [label=\"%d\\n%s\\n", qev->pid, qev->pid, name);
+		if (qev->flags & QUARK_F_COMM)
+			P(f, "comm %s\\n", qev->comm);
+		if (qev->flags & QUARK_F_CWD)
+			P(f, "cwd %s\\n", qev->cwd);
+#ifdef notyet
+		P(f, "args [");
+		args = args_make(qev);
+		if (args == NULL)
+			P(f, "(%s)", strerror(errno));
+		else {
+			for (i = 0; i < args->argc; i++) {
+				if (i > 0)
+					P(f, " ");
+				P(f, "%s", args->argv[i]);
+			}
+			args_free(args);
+		}
+		P(f, " ]\\n");
+#endif
+		if (qev->flags & QUARK_F_PROC) {
+			P(f, "cap_inh 0x%llx\\n", qev->proc_cap_inheritable);
+			P(f, "cap_per 0x%llx\\n", qev->proc_cap_permitted);
+			P(f, "cap_eff 0x%llx\\n", qev->proc_cap_effective);
+			P(f, "cap_bset 0x%llx\\n", qev->proc_cap_bset);
+			P(f, "cap_amb 0x%llx\\n", qev->proc_cap_ambient);
+			P(f, "time_boot %llu\\n", qev->proc_time_boot);
+			P(f, "uid %d\\n", qev->proc_uid);
+			P(f, "gid %d\\n", qev->proc_gid);
+			P(f, "suid %d\\n", qev->proc_suid);
+			P(f, "sgid %d\\n", qev->proc_sgid);
+			P(f, "sid %d\\n", qev->proc_sid);
+			P(f, "tty_maj %d\\n", qev->proc_tty_major);
+			P(f, "tty_min %d\\n", qev->proc_tty_minor);
+			P(f, "el_type %s\\n",
+			    entry_leader_type_str(qev->proc_entry_leader_type));
+			P(f, "el_leader %d\\n", qev->proc_entry_leader);
+		}
+		if (qev->flags & QUARK_F_EXIT) {
+			P(f, "exit %d\\n", qev->exit_code);
+			P(f, "exit_time %llu\\n", qev->exit_time_event);
+		}
+		P(f, "flags 0x%llx\\n", qev->flags);
+		P(f, "events 0x%llx\\n", qev->events);
+		P(f, "\", fillcolor=%s];\n", color_table[color_index]);
+	}
+	RB_FOREACH(qev, event_by_pid, &qq->event_by_pid) {
+		P(f, "%d -> %d;\n", qev->proc_ppid, qev->pid);
+	}
+	P(f, "}\n");
 	fflush(f);
 
 	return (0);

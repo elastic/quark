@@ -61,7 +61,8 @@ priv_drop(void)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-bDefkstv] [-l maxlength] [-m maxnodes]\n",
+	fprintf(stderr, "usage: %s [-bDefkstv] "
+	    "[-C filename ] [-l maxlength] [-m maxnodes]\n",
 	    program_invocation_short_name);
 
 	exit(1);
@@ -71,28 +72,34 @@ int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes, n, i;
-	int				 do_drop, nqevs;
+	int				 do_priv_drop, nqevs;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
 	struct quark_event		*qev, *qevs;
 	struct sigaction		 sigact;
-	FILE				*graph_by_time, *graph_by_pidtime;
+	FILE				*graph_by_time, *graph_by_pidtime, *graph_cache;
 
 	quark_queue_default_attr(&qa);
 	qa.flags &= ~QQ_ALL_BACKENDS;
 	maxnodes = -1;
-	do_drop = 0;
+	do_priv_drop = 0;
 	nqevs = 32;
+	graph_by_time = graph_by_pidtime = graph_cache = NULL;
 
-	while ((ch = getopt(argc, argv, "bDegklm:tsv")) != -1) {
+	while ((ch = getopt(argc, argv, "bC:Degklm:tsvX")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
 		case 'b':
 			qa.flags |= QQ_EBPF;
 			break;
+		case 'C':
+			graph_cache = fopen(optarg, "w");
+			if (graph_cache == NULL)
+				err(1, "fopen %s", optarg);
+			break;
 		case 'D':
-			do_drop = 1;
+			do_priv_drop = 1;
 			break;
 		case 'e':
 			qa.flags |= QQ_ENTRY_LEADER;
@@ -117,6 +124,13 @@ main(int argc, char *argv[])
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);
 			if (errstr != NULL)
 				errx(1, "invalid maxnodes: %s", errstr);
+			/* open graphviz files before priv_drop */
+			graph_by_time = fopen("quark_by_time.dot", "w");
+			if (graph_by_time == NULL)
+				err(1, "fopen");
+			graph_by_pidtime = fopen("quark_by_pidtime.dot", "w");
+			if (graph_by_pidtime == NULL)
+				err(1, "fopen");
 			break;
 		case 's':
 			qa.flags |= QQ_NO_SNAPSHOT;
@@ -146,16 +160,9 @@ main(int argc, char *argv[])
 		errx(1, "quark_queue_open");
 	if ((qevs = calloc(nqevs, sizeof(*qevs))) == NULL)
 		err(1, "calloc");
-	/* open graphviz files before priv_drop */
-	graph_by_time = fopen("quark_by_time.dot", "w");
-	if (graph_by_time == NULL)
-		err(1, "fopen");
-	graph_by_pidtime = fopen("quark_by_pidtime.dot", "w");
-	if (graph_by_pidtime == NULL)
-		err(1, "fopen");
 
 	/* From now on we will be nobody */
-	if (do_drop)
+	if (do_priv_drop)
 		priv_drop();
 
 	/*
@@ -184,9 +191,20 @@ main(int argc, char *argv[])
 		}
 	}
 
-	quark_dump_graphviz(qq, graph_by_time, graph_by_pidtime);
-	fclose(graph_by_time);
-	fclose(graph_by_pidtime);
+	if (graph_by_pidtime != NULL && graph_by_pidtime != NULL) {
+		if (quark_dump_raw_event_graph(qq, graph_by_time,
+		    graph_by_pidtime) == -1)
+			warn("quark_dump_raw_event_graph");
+		fclose(graph_by_time);
+		fclose(graph_by_pidtime);
+		graph_by_time = graph_by_pidtime = NULL;
+	}
+	if (graph_cache != NULL) {
+		if (quark_dump_event_cache_graph(qq, graph_cache) == -1)
+			warn("quark_dump_event_cache_graph");
+		fclose(graph_cache);
+		graph_cache = NULL;
+	}
 
 	free(qevs);
 	quark_queue_dump_stats(qq);
