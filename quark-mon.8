@@ -7,6 +7,7 @@
 .Sh SYNOPSIS
 .Nm quark-mon
 .Op Fl bDekstv
+.Op Fl C Ar filename
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
 .Sh DESCRIPTION
@@ -26,6 +27,18 @@ The options are as follows:
 .Bl -tag -width Dtb
 .It Fl b
 Attempt EBPF as the backend.
+.It Fl C Ar filename
+Dumps the contents of the internal cache into
+.Ar filename
+after exit.
+Format is a
+.Em dot
+file that can be compiled to a
+.Em svg
+with:
+.Bd -literal -offset indent
+dot -Tsvg filename -o filename.svg
+.Ed
 .It Fl D
 Drop priviledges to nobody and chroot to /var/empty, useful to show how quark
 can run without priviledges.
@@ -68,6 +81,7 @@ The first is events sorted by time, and the second by pid plus time.
 Exits after
 .Ar maxnodes
 has been reached.
+This is used purely for internal debugging.
 .El
 .Sh BACKEND SELECTION
 If no backend option is specified,
