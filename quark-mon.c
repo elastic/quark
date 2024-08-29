@@ -191,7 +191,7 @@ main(int argc, char *argv[])
 		}
 	}
 
-	if (graph_by_pidtime != NULL && graph_by_pidtime != NULL) {
+	if (graph_by_pidtime != NULL && graph_by_time != NULL) {
 		if (quark_dump_raw_event_graph(qq, graph_by_time,
 		    graph_by_pidtime) == -1)
 			warn("quark_dump_raw_event_graph");
