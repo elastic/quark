@@ -1,12 +1,31 @@
 SHELL= /bin/bash
+PWD= $(shell pwd)
+
+# Normalize ARCH
+ifeq ($(shell uname -m), x86_64)
+	ARCH?= amd64
+else ifeq ($(shell uname -m), aarch64)
+	ARCH?= arm64
+endif
+ifeq ($(ARCH), amd64)
+	ARCH_ALT?= x86_64
+	ARCH_BPF_TARGET?= x86
+else ifeq ($(ARCH), arm64)
+	ARCH_ALT?= aarch64
+	ARCH_BPF_TARGET?= arm64
+else
+$(error unsupported architecture $(ARCH))
+endif
 
 ifeq ($(V),1)
 	Q =
 	msg =
+	QDOCKER =
 else
 	Q = @
 	msg = @printf '  %-8s %s%s\n' "$(1)" "$(2)" "$(if $(3), $(3))";
 	QREDIR = > /dev/null
+	QDOCKER = -q
 endif
 
 CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
@@ -37,13 +56,13 @@ CDIAGFLAGS+= -Wuninitialized
 CDIAGFLAGS+= -Wunused
 CDIAGFLAGS+= -Wno-unused-parameter
 
-CC?= cc
 CLANG?= clang
 BPFTOOL?= bpftool
+DOCKER?= docker
 
 # All EEBPF files we track for dependency
 EEBPF_FILES:= $(shell find elastic-ebpf)
-EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/x86_64
+EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)
 
 # LIBQUARK
 LIBQUARK_DEPS:= $(wildcard *.h) bpf_prog_skel.h $(EEBPF_FILES) include
@@ -71,7 +90,7 @@ ELFTOOLCHAIN_STATIC:= $(ELFTOOLCHAIN_SRC)/libelf/libelf_pic.a
 # Embedded LIBBPF
 LIBBPF_SRC:= libbpf/src
 LIBBPF_STATIC:= $(LIBBPF_SRC)/libbpf.a
-LIBBPF_DEPS:=	$(wildcard libbpf/src/*.[ch]) 		\
+LIBBPF_DEPS:=	$(wildcard libbpf/src/*.[ch])		\
 		$(wildcard libbpf/include/*.[ch])	\
 		$(ELFTOOLCHAIN_FILES)
 LIBBPF_EXTRA_CFLAGS:= -DQUARK
@@ -82,7 +101,7 @@ LIBBPF_EXTRA_CFLAGS+= -I../../zlib
 
 # BPFPROG (kernel side)
 BPFPROG_OBJ:= bpf_prog.o
-BPFPROG_DEPS:= bpf_prog.c $(LIBBPF_DEPS) $(EEBPF_FILES)
+BPFPROG_DEPS:= bpf_prog.c $(LIBBPF_DEPS) $(EEBPF_FILES) include
 
 all:	$(ZLIB_STATIC)			\
 	$(ELFTOOLCHAIN_STATIC)		\
@@ -104,11 +123,12 @@ $(ELFTOOLCHAIN_STATIC): $(ELFTOOLCHAIN_FILES)
 $(LIBBPF_STATIC): $(LIBBPF_DEPS)
 	$(Q)make -C $(LIBBPF_SRC)		\
 			BUILD_STATIC_ONLY=y	\
+			NO_PKG_CONFIG=y		\
 			EXTRA_CFLAGS="$(LIBBPF_EXTRA_CFLAGS)"
 
 $(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
 	$(call msg,AR,$@)
-	$(Q)ar rcs $@ $^
+	$(Q)$(AR) rcs $@ $^
 
 $(LIBQUARK_STATIC_BIG): $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC) $(ZLIB_STATIC)
 	$(call msg,AR,$@)
@@ -131,22 +151,57 @@ bpf_prog_skel.h: $(BPFPROG_OBJ)
 
 $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 	$(call msg,CLANG,bpf_prog.tmp.o)
-	$(Q)$(CLANG) 								\
-		-g -O2 								\
-		-target bpf 							\
+	$(Q)$(CLANG)								\
+		-g -O2								\
+		-target bpf							\
 		-D__KERNEL__							\
-		-D__TARGET_ARCH_x86						\
+		-D__TARGET_ARCH_$(ARCH_BPF_TARGET)				\
 		$(CPPFLAGS)							\
 		$(EEBPF_INCLUDES)						\
-		-c bpf_prog.c 							\
+		-c bpf_prog.c							\
 		-o bpf_prog.tmp.o
 	$(call msg,BPFTOOL,$@)
 	$(Q)$(BPFTOOL) gen object $@ bpf_prog.tmp.o
 	$(Q)rm bpf_prog.tmp.o
 
+DOCKER_RUN_ARGS=$(QDOCKER)				\
+		-v $(PWD):$(PWD)			\
+		-w $(PWD)				\
+		-u $(shell id -u):$(shell id -g)	\
+		quark-builder
+
+docker: docker-image cleanall
+	$(call msg,DOCKER-RUN,Dockerfile)
+	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) /bin/bash -c make -C $(PWD)
+
+docker-cross-arm64: docker-image cleanall
+	$(call msg,DOCKER-RUN,Dockerfile)
+	$(Q)$(DOCKER) run				\
+		-e ARCH=arm64				\
+		-e CC=aarch64-linux-gnu-gcc		\
+		-e LD=aarch64-linux-gnu-ld		\
+		-e AR=aarch64-linux-gnu-ar		\
+		$(DOCKER_RUN_ARGS)			\
+		/bin/bash -c make -C $(PWD)
+
+docker-image: cleanall
+	$(call msg,DOCKER-IMAGE,Dockerfile)
+	$(Q)$(DOCKER) build				\
+		$(QDOCKER)				\
+		-f Dockerfile				\
+		-t quark-builder			\
+		.
+
+docker-shell:
+	$(DOCKER) run -it $(DOCKER_RUN_ARGS) /bin/bash
+
 include: $(LIBBPF_DEPS)
-	$(Q)make -C $(LIBBPF_SRC) install_headers DESTDIR=../../include $(QREDIR)
-	$(Q)make -C $(LIBBPF_SRC) install_uapi_headers DESTDIR=../../include $(QREDIR)
+	$(Q)make -C $(LIBBPF_SRC)			\
+		NO_PKG_CONFIG=y				\
+		install_headers DESTDIR=../../include $(QREDIR)
+	$(Q)make -C $(LIBBPF_SRC)			\
+		NO_PKG_CONFIG=y				\
+		install_uapi_headers DESTDIR=../../include $(QREDIR)
 
 %.svg: %.dot
 	$(call msg,DOT,$@)
@@ -208,5 +263,17 @@ manlint:
 	$(call msg,MANDOC)
 	$(Q)mandoc -Tlint *.[378] || true
 
-.PHONY: all btfhub clean cleanall doc eebpf-sync manhtml manlint
+.PHONY:				\
+	all			\
+	btfhub			\
+	clean			\
+	cleanall		\
+	doc			\
+	eebpf-sync		\
+	manhtml			\
+	manlint			\
+	docker			\
+	docker-cross-arm64	\
+	docker-image		\
+	docker-shell
 .SUFFIXES:

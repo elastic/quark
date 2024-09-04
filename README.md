@@ -169,6 +169,19 @@ Other useful build targets include:
 > Clean object files from
 > **quark**.
 
+*docker*
+
+> Builds
+> **quark**
+> inside a docker container, so you don't have to worry about
+> having build dependencies.
+
+*docker-cross-arm64*
+
+> Builds
+> **quark**
+> for arm64 inside a docker container, only links and won't work at this time.
+
 *btfhub*
 
 > Regenerates

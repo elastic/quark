@@ -158,6 +158,15 @@ Other useful build targets include:
 .It Em clean
 Clean object files from
 .Nm .
+.It Em docker
+Builds
+.Nm quark
+inside a docker container, so you don't have to worry about
+having build dependencies.
+.It Em docker-cross-arm64
+Builds
+.Nm quark
+for arm64 inside a docker container, only links and won't work at this time.
 .It Em btfhub
 Regenerates
 .Pa btfhub.c .
