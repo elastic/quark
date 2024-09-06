@@ -110,8 +110,7 @@ all:	$(ZLIB_STATIC)			\
 	$(LIBQUARK_STATIC)		\
 	$(LIBQUARK_STATIC_BIG)		\
 	quark-mon			\
-	quark-btf			\
-	README.md
+	quark-btf
 
 $(ZLIB_STATIC): $(ZLIB_FILES)
 	@cd zlib && CFLAGS="-O3 -fPIC" ./configure --static $(QREDIR)
