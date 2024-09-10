@@ -15,7 +15,7 @@ The
 .Nm
 program listens to all incoming
 .Xr quark 7
-events and prints them to stdout, the format used is the one by
+events and prints them to stdout, the output format used is the one in
 .Xr quark_event_dump 3 .
 .Pp
 The main utility is for testing and debugging quark, it's also a good
@@ -63,7 +63,7 @@ buffer, refer to
 .Xr quark_queue_open 3
 for further details.
 .It Fl s
-Don't create a snapshot of current processes by scraping /proc.
+Don't send the initial snapshot of existing processes.
 .It Fl t
 Don't supress thread events, this is only useful for debugging and will likely
 be zapped in the future.
@@ -133,7 +133,7 @@ Refer to
 for the output format description.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
-.Xr quark_event_lookup 3 ,
+.Xr quark_process_lookup 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_get_epollfd 3 ,

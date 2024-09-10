@@ -45,10 +45,14 @@ is given before purging it so that the user might still query it for some time.
 .Pp
 A
 .Vt quark_event
-has three main members:
+is defined as:
+.Bd -literal
+struct quark_event {
+	u64			 events;
+	struct quark_process	*process;
+};
+.Ed
 .Bl -tag -width "events"
-.It Em pid
-The pid of the originating event.
 .It Em events
 A bitmask representing the events that originated this
 .Vt quark_event :
@@ -63,19 +67,59 @@ Process exited.
 Process changed its name (COMM).
 .El
 .Pp
-It's important to notice that
-.Vt events
-is what triggered the event, not what is known about the event, that's expressed
-in
-.Em flags
-below.
+It's important to note that
+.Em events
+is what triggered the event, not what is known about the process.
 .Pp
 It might also be more than one value as events get
 aggregated.
 For example, a short lived process will have the following mask:
 .Dv QUARK_EV_FORK | QUARK_EV_EXEC | QUARK_EV_EXIT .
-.It Em flags
-A bit mask representing the fields which are known about this pid, these can be
+.It Em process
+A pointer to the process which originated the event.
+.Vt struct quark_process
+is defined as:
+.Bd -literal
+struct quark_process {
+	u32	pid;
+	u64	flags;
+	/* QUARK_F_PROC */
+	u64	proc_cap_inheritable;
+	u64	proc_cap_permitted;
+	u64	proc_cap_effective;
+	u64	proc_cap_bset;
+	u64	proc_cap_ambient;
+	u64	proc_time_boot;
+	u32	proc_ppid;
+	u32	proc_uid;
+	u32	proc_gid;
+	u32	proc_suid;
+	u32	proc_sgid;
+	u32	proc_euid;
+	u32	proc_egid;
+	u32	proc_pgid;
+	u32	proc_sid;
+	u32	proc_tty_major;
+	u32	proc_tty_minor;
+	u32	proc_entry_leader_type;
+	u32	proc_entry_leader;
+	/* QUARK_F_EXIT */
+	s32	exit_code;
+	u64	exit_time_event;
+	/* QUARK_F_COMM */
+	char	comm[16];
+	/* QUARK_F_FILENAME */
+	char	filename[1024];
+	/* QUARK_F_CMDLINE */
+	size_t	cmdline_len;
+	char	cmdline[1024];
+	/* QUARK_F_CWD */
+	char	cwd[1024];
+};
+.Ed
+.Pp
+.Em flags
+represent the fields which are known about the process, these can be
 cached and originate from previous events.
 Each bit in the set represents one or more members of the structure, if the bit
 is unset, the respective members are invalid/unknown.
@@ -103,6 +147,16 @@ are valid.
 is valid.
 .El
 .El
+.Sh MEMORY PROTOCOL
+.Em process
+points to internal data, it
+.Em MUST NOT
+be modified and/or stored.
+In the case of multithreading, the pointer should not be accessed concurrently
+with another thread which executes
+.Nm .
+.Pp
+In other words, read the stuff you want, copy it out, and forget about it.
 .Sh RETURN VALUES
 The number of filled events via
 .Fa qev
@@ -115,7 +169,7 @@ In the case of an internal error, -1 is returned and
 is set.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
-.Xr quark_event_lookup 3 ,
+.Xr quark_process_lookup 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_default_attr 3 ,

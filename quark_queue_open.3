@@ -134,7 +134,7 @@ When a process exits, it is removed from the cache, but only after
 .Em cache_grace_time ,
 this gives the user a small window where it can still query a terminated process
 via
-.Xr quark_event_lookup 3 .
+.Xr quark_process_lookup 3 .
 .It Em hold_time
 How long to buffer (hold) an event before delivering it to the user via
 .Xr quark_queue_get_events 3 .
@@ -157,7 +157,7 @@ In the case of an error, the internal state is cleared up and a
 should NOT be issued.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
-.Xr quark_event_lookup 3 ,
+.Xr quark_process_lookup 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_default_attr 3 ,

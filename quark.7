@@ -26,8 +26,8 @@ In its most basic form, a short lived process consisting of
 .Xr exit 3
 will be aggregated into one
 .Vt quark_event .
-An internal event cache is also kept that can be looked up via
-.Xr quark_event_lookup 3 .
+An internal process cache is also kept that can be looked up via
+.Xr quark_process_lookup 3 .
 .Sh FEATURES
 .Bl -ohang
 .It Em ORDERING
@@ -90,9 +90,9 @@ context.
 maintains an internal process table with what has been learned about the process
 so far, this context is then included in each event given to the user.
 The process table can also be queried, see below.
-.It Em PROCESS TABLE
-An internal cache of process events is kept that can be looked up via
-.Xr quark_event_lookup 3 .
+.It Em PROCESS CACHE
+An internal cache of processes is kept that can be looked up via
+.Xr quark_process_lookup 3 .
 This cache keeps soon-to-be-purged elements for a little while so that you can
 still lookup a process that just exited.
 The table is initialized by scraping
@@ -202,11 +202,18 @@ Usage:
 make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf
 .Ed
 .El
+.Pp
+All the targets above can generate debug output by specifying
+.Em V=1 ,
+as in:
+.Bd -literal
+$ make V=1
+.Ed
 .Sh LINKING
 .Bd -literal
-cc -o myprogram myprogram.c libquark_big.a
+$ cc -o myprogram myprogram.c libquark_big.a
 OR
-cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a
+$ cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a
 .Ed
 .Sh INCLUDED BINARIES
 .Xr quark-mon 8
@@ -226,8 +233,13 @@ Library calls fail with -1 unless otherwise stated, and
 .Va errno
 is set.
 .It
-No pointers to internal state are returned, data is allocated by the caller and
-the library copies out.
+Quark returns pointers to internal state, which must not be modified and/or
+stored.
+In the case of multithreading, these pointers should not be accessed if another
+thread is driving
+.Nm quark
+through
+.Xr quark_queue_get_events 3 .
 .It
 No threads are created, the library is driven solely through
 .Xr quark_queue_get_events 3 .
@@ -303,7 +315,7 @@ is the easiest way to get started with
 describes initialization options that can be useful.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
-.Xr quark_event_lookup 3 ,
+.Xr quark_process_lookup 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_get_epollfd 3 ,

@@ -27,8 +27,8 @@ exec(3)
 exit(3)
 will be aggregated into one
 *quark\_event*.
-An internal event cache is also kept that can be looked up via
-quark\_event\_lookup(3).
+An internal process cache is also kept that can be looked up via
+quark\_process\_lookup(3).
 
 # FEATURES
 
@@ -95,9 +95,9 @@ maintains an internal process table with what has been learned about the process
 so far, this context is then included in each event given to the user.
 The process table can also be queried, see below.
 
-*PROCESS TABLE*  
-An internal cache of process events is kept that can be looked up via
-quark\_event\_lookup(3).
+*PROCESS CACHE*  
+An internal cache of processes is kept that can be looked up via
+quark\_process\_lookup(3).
 This cache keeps soon-to-be-purged elements for a little while so that you can
 still lookup a process that just exited.
 The table is initialized by scraping
@@ -230,11 +230,17 @@ Other useful build targets include:
 
 > > make eebpf-sync EEBPF\_PATH=/my/path/to/elastic/ebpf
 
+All the targets above can generate debug output by specifying
+*V=1*,
+as in:
+
+	$ make V=1
+
 # LINKING
 
-	cc -o myprogram myprogram.c libquark_big.a
+	$ cc -o myprogram myprogram.c libquark_big.a
 	OR
-	cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a
+	$ cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a
 
 # INCLUDED BINARIES
 
@@ -255,8 +261,13 @@ is a program for dumping BTF information used by
 	*errno*
 	is set.
 
-*	No pointers to internal state are returned, data is allocated by the caller and
-	the library copies out.
+*	Quark returns pointers to internal state, which must not be modified and/or
+	stored.
+	In the case of multithreading, these pointers should not be accessed if another
+	thread is driving
+	**quark**
+	through
+	quark\_queue\_get\_events(3).
 
 *	No threads are created, the library is driven solely through
 	quark\_queue\_get\_events(3).
@@ -337,7 +348,7 @@ describes initialization options that can be useful.
 # SEE ALSO
 
 quark\_event\_dump(3),
-quark\_event\_lookup(3),
+quark\_process\_lookup(3),
 quark\_queue\_block(3),
 quark\_queue\_close(3),
 quark\_queue\_get\_epollfd(3),
