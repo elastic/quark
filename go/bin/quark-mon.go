@@ -28,8 +28,8 @@ func main() {
 		}
 		for _, qev := range qevs {
 			fmt.Printf("%#v", qev)
-			if qev.Proc.Valid {
-				fmt.Printf(" %#v", qev.Proc)
+			if qev.Process.Proc.Valid {
+				fmt.Printf(" %#v", qev.Process)
 			}
 			fmt.Printf("\n")
 		}

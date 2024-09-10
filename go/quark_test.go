@@ -31,7 +31,7 @@ func TestQuarkGetEvents(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, qev := range qevs {
-		require.NotEmpty(t, qev.Comm)
-		require.NotEmpty(t, qev.Cwd)
+		require.NotEmpty(t, qev.Process.Comm)
+		require.NotEmpty(t, qev.Process.Cwd)
 	}
 }
