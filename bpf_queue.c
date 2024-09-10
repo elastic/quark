@@ -301,6 +301,9 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	u32			 zero = 0;
 	int			 i;
 
+	/* valgrind doesn't track that this will be updated below */
+	bzero(pcpu_ees, sizeof(pcpu_ees));
+
 	if (bpf_map__lookup_elem(bqq->prog->maps.ringbuf_stats, &zero,
 	    sizeof(zero), pcpu_ees, sizeof(pcpu_ees), 0) != 0)
 		return (-1);
