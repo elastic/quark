@@ -46,13 +46,13 @@ type Proc struct {
 
 // Exit carries data on the exit behavior of the process. Only valid if `Valid` is set.
 type Exit struct {
-	ExitCode      int32
-	ExitTimeEvent uint64
-	Valid         bool
+	ExitCode        int32
+	ExitTimeProcess uint64
+	Valid           bool
 }
 
-// Event represents a single process.
-type Event struct {
+// Process represents a single process.
+type Process struct {
 	Pid      uint32   // Always present
 	Events   uint64   // Bitmask of events for this Event
 	Proc     Proc     // Only meaningful if Proc.Valid (QUARK_F_PROC)
@@ -63,14 +63,19 @@ type Event struct {
 	Cwd      string   // QUARK_F_CWD
 }
 
+// Events is a bitmask of QUARK_EV_* and expresses what triggered this
+// event, Process is the context of the Event.
+type Event struct {
+	Events  uint64
+	Process Process
+}
+
 // Queue holds the state of a quark instance.
 type Queue struct {
 	quarkQueue *C.struct_quark_queue // pointer to the queue structure
 	cEvents    *C.struct_quark_event
 	numCevents int
 	epollFd    int
-	cTmpEvent  *C.struct_quark_event      // Used as storage for lookups
-	cTmpIter   *C.struct_quark_event_iter // Used as storage for snapshots
 }
 
 const (
@@ -138,12 +143,12 @@ func DefaultQueueAttr() QueueAttr {
 func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
 	var queue Queue
 
-	queuePointer, err := C.calloc(C.size_t(1), C.sizeof_struct_quark_queue)
-	if queuePointer == nil {
+	p, err := C.calloc(C.size_t(1), C.sizeof_struct_quark_queue)
+	if p == nil {
 		return nil, wrapErrno(err)
 	}
-	queue.quarkQueue = (*C.struct_quark_queue)(queuePointer)
-	queuePointer = nil
+	queue.quarkQueue = (*C.struct_quark_queue)(p)
+	p = nil
 
 	cattr := C.struct_quark_queue_attr{
 		flags:            C.int(attr.Flags),
@@ -157,19 +162,17 @@ func OpenQueue(attr QueueAttr, slots int) (*Queue, error) {
 		return nil, wrapErrno(err)
 	}
 
-	queuePointer, err = C.calloc(C.size_t(slots), C.sizeof_struct_quark_event)
-	if queuePointer == nil {
+	p, err = C.calloc(C.size_t(slots), C.sizeof_struct_quark_event)
+	if p == nil {
 		C.quark_queue_close(queue.quarkQueue)
 		C.free(unsafe.Pointer(queue.quarkQueue))
 		return nil, wrapErrno(err)
 	}
-	queue.cEvents = (*C.struct_quark_event)(queuePointer)
+	queue.cEvents = (*C.struct_quark_event)(p)
 	queue.numCevents = slots
-	queuePointer = nil
+	p = nil
 
 	queue.epollFd = int(C.quark_queue_get_epollfd(queue.quarkQueue))
-	queue.cTmpEvent = (*C.struct_quark_event)(C.malloc(C.sizeof_struct_quark_event))
-	queue.cTmpIter = (*C.struct_quark_event_iter)(C.malloc(C.sizeof_struct_quark_event_iter))
 
 	return &queue, nil
 }
@@ -179,9 +182,8 @@ func (queue *Queue) Close() {
 	C.quark_queue_close(queue.quarkQueue)
 	C.free(unsafe.Pointer(queue.quarkQueue))
 	C.free(unsafe.Pointer(queue.cEvents))
-	C.free(unsafe.Pointer(queue.cTmpEvent))
-	C.free(unsafe.Pointer(queue.cTmpIter))
 	queue.quarkQueue = nil
+	queue.cEvents = nil
 }
 
 func eventOfIndex(cEvents *C.struct_quark_event, idx int) *C.struct_quark_event {
@@ -203,15 +205,15 @@ func (queue *Queue) GetEvents() ([]Event, error) {
 	return events, nil
 }
 
-// Lookup looks up for the events associated with PID in quark's internal cache..
-func (queue *Queue) Lookup(pid int) (Event, bool) {
-	r, _ := C.quark_event_lookup(queue.quarkQueue, queue.cTmpEvent, C.int(pid))
+// Lookup looks up for the Process associated with PID in quark's internal cache.
+func (queue *Queue) Lookup(pid int) (Process, bool) {
+	process, _ := C.quark_process_lookup(queue.quarkQueue, C.int(pid))
 
-	if r != 0 {
-		return Event{}, false
+	if process == nil {
+		return Process{}, false
 	}
 
-	return eventToGo(queue.cTmpEvent), true
+	return processToGo(process), true
 }
 
 // Block blocks until there are events or an undefined timeout
@@ -226,70 +228,81 @@ func (queue *Queue) Block() error {
 }
 
 // Snapshot returns a snapshot of all processes in the cache.
-func (queue *Queue) Snapshot() []Event {
-	var events []Event
+func (queue *Queue) Snapshot() []Process {
+	var processes []Process
+	var iter C.struct_quark_process_iter
 
-	C.quark_event_iter_init(queue.cTmpIter, queue.quarkQueue)
+	C.quark_process_iter_init(&iter, queue.quarkQueue)
 
-	for C.quark_event_iter_next(queue.cTmpIter, queue.cTmpEvent) == 1 {
-		events = append(events, eventToGo(queue.cTmpEvent))
+	for qp := C.quark_process_iter_next(&iter); qp != nil; {
+		processes = append(processes, processToGo(qp))
 	}
 
-	return events
+	return processes
 }
 
-// eventToGo converts the C event structure to a go event.
-func eventToGo(cEvent *C.struct_quark_event) Event {
-	var event Event
+// processToGo converts the C process structure to a go process.
+func processToGo(cProcess *C.struct_quark_process) Process {
+	var process Process
 
-	event.Pid = uint32(cEvent.pid)
-	event.Events = uint64(cEvent.events)
-	if cEvent.flags&C.QUARK_F_PROC != 0 {
-		event.Proc = Proc{
-			CapInheritable:  uint64(cEvent.proc_cap_inheritable),
-			CapPermitted:    uint64(cEvent.proc_cap_permitted),
-			CapEffective:    uint64(cEvent.proc_cap_effective),
-			CapBset:         uint64(cEvent.proc_cap_bset),
-			CapAmbient:      uint64(cEvent.proc_cap_ambient),
-			TimeBoot:        uint64(cEvent.proc_time_boot),
-			Ppid:            uint32(cEvent.proc_ppid),
-			Uid:             uint32(cEvent.proc_uid),
-			Gid:             uint32(cEvent.proc_gid),
-			Suid:            uint32(cEvent.proc_suid),
-			Sgid:            uint32(cEvent.proc_sgid),
-			Euid:            uint32(cEvent.proc_euid),
-			Egid:            uint32(cEvent.proc_egid),
-			Pgid:            uint32(cEvent.proc_pgid),
-			Sid:             uint32(cEvent.proc_sid),
-			EntryLeader:     uint32(cEvent.proc_entry_leader),
-			EntryLeaderType: uint32(cEvent.proc_entry_leader_type),
-			TtyMajor:        uint32(cEvent.proc_tty_major),
-			TtyMinor:        uint32(cEvent.proc_tty_minor),
+	if cProcess == nil {
+		return Process{}
+	}
+
+	process.Pid = uint32(cProcess.pid)
+	if cProcess.flags&C.QUARK_F_PROC != 0 {
+		process.Proc = Proc{
+			CapInheritable:  uint64(cProcess.proc_cap_inheritable),
+			CapPermitted:    uint64(cProcess.proc_cap_permitted),
+			CapEffective:    uint64(cProcess.proc_cap_effective),
+			CapBset:         uint64(cProcess.proc_cap_bset),
+			CapAmbient:      uint64(cProcess.proc_cap_ambient),
+			TimeBoot:        uint64(cProcess.proc_time_boot),
+			Ppid:            uint32(cProcess.proc_ppid),
+			Uid:             uint32(cProcess.proc_uid),
+			Gid:             uint32(cProcess.proc_gid),
+			Suid:            uint32(cProcess.proc_suid),
+			Sgid:            uint32(cProcess.proc_sgid),
+			Euid:            uint32(cProcess.proc_euid),
+			Egid:            uint32(cProcess.proc_egid),
+			Pgid:            uint32(cProcess.proc_pgid),
+			Sid:             uint32(cProcess.proc_sid),
+			EntryLeader:     uint32(cProcess.proc_entry_leader),
+			EntryLeaderType: uint32(cProcess.proc_entry_leader_type),
+			TtyMajor:        uint32(cProcess.proc_tty_major),
+			TtyMinor:        uint32(cProcess.proc_tty_minor),
 			Valid:           true,
 		}
 	}
-	if cEvent.flags&C.QUARK_F_EXIT != 0 {
-		event.Exit = Exit{
-			ExitCode:      int32(cEvent.exit_code),
-			ExitTimeEvent: uint64(cEvent.exit_time_event),
-			Valid:         true,
+	if cProcess.flags&C.QUARK_F_EXIT != 0 {
+		process.Exit = Exit{
+			ExitCode:        int32(cProcess.exit_code),
+			ExitTimeProcess: uint64(cProcess.exit_time_event),
+			Valid:           true,
 		}
 	}
-	if cEvent.flags&C.QUARK_F_COMM != 0 {
-		event.Comm = C.GoString(&cEvent.comm[0])
+	if cProcess.flags&C.QUARK_F_COMM != 0 {
+		process.Comm = C.GoString(&cProcess.comm[0])
 	}
-	if cEvent.flags&C.QUARK_F_FILENAME != 0 {
-		event.Filename = C.GoString(&cEvent.filename[0])
+	if cProcess.flags&C.QUARK_F_FILENAME != 0 {
+		process.Filename = C.GoString(&cProcess.filename[0])
 	}
-	if cEvent.flags&C.QUARK_F_CMDLINE != 0 {
-		b := C.GoBytes(unsafe.Pointer(&cEvent.cmdline[0]), C.int(cEvent.cmdline_len))
+	if cProcess.flags&C.QUARK_F_CMDLINE != 0 {
+		b := C.GoBytes(unsafe.Pointer(&cProcess.cmdline[0]), C.int(cProcess.cmdline_len))
 		nul := string(byte(0))
 		b = bytes.TrimRight(b, nul)
-		event.Cmdline = strings.Split(string(b), nul)
+		process.Cmdline = strings.Split(string(b), nul)
 	}
-	if cEvent.flags&C.QUARK_F_CWD != 0 {
-		event.Cwd = C.GoString(&cEvent.cwd[0])
+	if cProcess.flags&C.QUARK_F_CWD != 0 {
+		process.Cwd = C.GoString(&cProcess.cwd[0])
 	}
 
-	return event
+	return process
+}
+
+func eventToGo(cEvent *C.struct_quark_event) Event {
+	return Event{
+		Events:  uint64(cEvent.events),
+		Process: processToGo(cEvent.process),
+	}
 }
