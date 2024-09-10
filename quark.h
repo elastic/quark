@@ -21,27 +21,35 @@ extern int	quark_verbose;
 /* quark.c */
 struct raw_event;
 struct quark_event;
-struct quark_event_iter;
+struct quark_process;
+struct quark_process_iter;
 struct quark_queue;
 struct quark_queue_attr;
 struct quark_queue_stats;
-struct raw_event *raw_event_alloc(int);
-void	raw_event_free(struct raw_event *);
-void	raw_event_insert(struct quark_queue *, struct raw_event *);
-void	quark_queue_default_attr(struct quark_queue_attr *);
-int	quark_queue_open(struct quark_queue *, struct quark_queue_attr *);
-void	quark_queue_close(struct quark_queue *);
-int	quark_queue_populate(struct quark_queue *);
-int	quark_queue_block(struct quark_queue *);
-int	quark_queue_get_events(struct quark_queue *, struct quark_event *, int);
-int	quark_queue_get_epollfd(struct quark_queue *);
-void	quark_queue_get_stats(struct quark_queue *, struct quark_queue_stats *);
-int	quark_dump_event_cache_graph(struct quark_queue *, FILE *);
-int	quark_dump_raw_event_graph(struct quark_queue *, FILE *, FILE *);
-int	quark_event_lookup(struct quark_queue *, struct quark_event *, int);
-int	quark_event_dump(struct quark_event *, FILE *);
-void	quark_event_iter_init(struct quark_event_iter *, struct quark_queue *);
-int	quark_event_iter_next(struct quark_event_iter *, struct quark_event *);
+struct raw_event	*raw_event_alloc(int);
+void			 raw_event_free(struct raw_event *);
+void			 raw_event_insert(struct quark_queue *,
+			     struct raw_event *);
+void			 quark_queue_default_attr(struct quark_queue_attr *);
+int			 quark_queue_open(struct quark_queue *,
+			     struct quark_queue_attr *);
+void			 quark_queue_close(struct quark_queue *);
+int			 quark_queue_populate(struct quark_queue *);
+int			 quark_queue_block(struct quark_queue *);
+int			 quark_queue_get_events(struct quark_queue *,
+			     struct quark_event *, int);
+int			 quark_queue_get_epollfd(struct quark_queue *);
+void			 quark_queue_get_stats(struct quark_queue *,
+			     struct quark_queue_stats *);
+int			 quark_dump_process_cache_graph(struct quark_queue *,
+			     FILE *);
+int			 quark_dump_raw_event_graph(struct quark_queue *,
+			     FILE *, FILE *);
+struct quark_process	*quark_process_lookup(struct quark_queue *, int);
+int			 quark_event_dump(struct quark_event *, FILE *);
+void			 quark_process_iter_init(struct quark_process_iter *,
+			     struct quark_queue *);
+struct quark_process	*quark_process_iter_next(struct quark_process_iter *);
 
 /* btf.c */
 struct quark_btf_target {
@@ -91,7 +99,7 @@ int	 strtou64(u64 *, const char *, int);
 char 	*find_line(FILE *, const char *);
 char	*find_line_p(const char *, const char *);
 char	*load_file_nostat(int, size_t *);
-struct args *args_make(struct quark_event *);
+struct args *args_make(struct quark_process *);
 void	 args_free(struct args *);
 
 /*
@@ -200,20 +208,29 @@ RB_HEAD(raw_event_by_time, raw_event);
  * used the 'by_time' tree, we would have to traverse the full tree in case of a
  * miss.
  */
-/* XXX this should be by tid, but we're not there yet XXX */
 RB_HEAD(raw_event_by_pidtime, raw_event);
 
-/*
- * Event cache, used to enrich single events
- */
-RB_HEAD(event_by_pid, quark_event);
+struct quark_event {
+#define QUARK_EV_FORK		(1 << 0)
+#define QUARK_EV_EXEC		(1 << 1)
+#define QUARK_EV_EXIT		(1 << 2)
+#define QUARK_EV_SETPROCTITLE	(1 << 3)
+#define QUARK_EV_SNAPSHOT	(1 << 4)
+	u64			 events;
+	struct quark_process	*process;
+};
 
 /*
- * Event cache gc list, after they are marked for deletion, they still get a
+ * Process cache, used to enrich single events
+ */
+RB_HEAD(process_by_pid, quark_process);
+
+/*
+ * Process cache gc list, after they are marked for deletion, they still get a
  * grace time of qq->cache_grace_time before removal, this is to allow lookups
  * from users on processes that just vanished.
  */
-TAILQ_HEAD(quark_event_list, quark_event);
+TAILQ_HEAD(quark_process_list, quark_process);
 
 enum {
 	QUARK_TTY_UNKNOWN,
@@ -222,6 +239,9 @@ enum {
 	QUARK_TTY_CONSOLE,
 };
 
+/*
+ * The values for proc_entry_leader_type
+ */
 enum {
 	QUARK_ELT_UNKNOWN,
 	QUARK_ELT_INIT,
@@ -239,19 +259,12 @@ enum {
  * be meaningful if flags & QUARK_F_PROC.
  */
 
-struct quark_event {
-#define quark_event_zero_start	 entry_by_pid
-	RB_ENTRY(quark_event)	 entry_by_pid;
-	TAILQ_ENTRY(quark_event) entry_gc;
-	u64			 gc_time;
-#define QUARK_EV_FORK		(1 << 0)
-#define QUARK_EV_EXEC		(1 << 1)
-#define QUARK_EV_EXIT		(1 << 2)
-#define QUARK_EV_SETPROCTITLE	(1 << 3)
-#define QUARK_EV_SNAPSHOT	(1 << 4)
-	u64	events;
-#define quark_event_zero_end	 pid
-
+struct quark_process {
+#define quark_process_zero_start entry_by_pid
+	RB_ENTRY(quark_process)		entry_by_pid;
+	TAILQ_ENTRY(quark_process)	entry_gc;
+	u64			 	gc_time;
+#define quark_process_zero_end pid
 	/* Always present */
 	u32	pid;
 
@@ -297,9 +310,9 @@ struct quark_event {
 	char	cwd[1024];
 };
 
-struct quark_event_iter {
+struct quark_process_iter {
 	struct quark_queue	*qq;
-	int			 pid;
+	struct quark_process	*qp;
 };
 
 struct quark_queue_stats {
@@ -340,8 +353,8 @@ struct quark_queue_attr {
 struct quark_queue {
 	struct raw_event_by_time	 raw_event_by_time;
 	struct raw_event_by_pidtime	 raw_event_by_pidtime;
-	struct event_by_pid		 event_by_pid;
-	struct quark_event_list		 event_gc;
+	struct process_by_pid		 process_by_pid;
+	struct quark_process_list	 event_gc;
 	struct quark_queue_stats	 stats;
 	const u8			(*agg_matrix)[RAW_NUM_TYPES];
 	int				 flags;

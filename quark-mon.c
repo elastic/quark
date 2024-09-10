@@ -200,7 +200,7 @@ main(int argc, char *argv[])
 		graph_by_time = graph_by_pidtime = NULL;
 	}
 	if (graph_cache != NULL) {
-		if (quark_dump_event_cache_graph(qq, graph_cache) == -1)
+		if (quark_dump_process_cache_graph(qq, graph_cache) == -1)
 			warn("quark_dump_event_cache_graph");
 		fclose(graph_cache);
 		graph_cache = NULL;
