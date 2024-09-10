@@ -36,7 +36,7 @@ The number
 .Sy 818621
 after the
 .Sy ->
-is the pid of the originating event.
+is the pid of the originating process.
 The string
 .Sy (FORK+EXEC+EXIT)
 describes what is aggregated in
@@ -63,7 +63,7 @@ and produces the fields
 Zero on success, -1 in error from
 .Xr fwrite 3 .
 .Sh SEE ALSO
-.Xr quark_event_lookup 3 ,
+.Xr quark_process_lookup 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_default_attr 3 ,
