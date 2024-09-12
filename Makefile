@@ -169,11 +169,11 @@ DOCKER_RUN_ARGS=$(QDOCKER)				\
 		-u $(shell id -u):$(shell id -g)	\
 		quark-builder
 
-docker: docker-image cleanall
+docker: docker-image clean-all
 	$(call msg,DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) /bin/bash -c make -C $(PWD)
 
-docker-cross-arm64: docker-image cleanall
+docker-cross-arm64: docker-image clean-all
 	$(call msg,DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run				\
 		-e ARCH=arm64				\
@@ -183,7 +183,7 @@ docker-cross-arm64: docker-image cleanall
 		$(DOCKER_RUN_ARGS)			\
 		/bin/bash -c make -C $(PWD)
 
-docker-image: cleanall
+docker-image: clean-all
 	$(call msg,DOCKER-IMAGE,Dockerfile)
 	$(Q)$(DOCKER) build				\
 		$(QDOCKER)				\
@@ -221,7 +221,7 @@ README.md: quark.7
 	$(Q)mandoc -T markdown -I os=$(shell uname -s) $< > $@
 	$(Q)sed -i '$$ d' $@ # Chomp last line
 
-doc: manlint manhtml README.md
+doc: man-lint man-html README.md
 
 btfhub:
 	$(Q)test $(BTFHUB_ARCHIVE_PATH) || \
@@ -241,24 +241,24 @@ clean:
 	$(call msg,CLEAN)
 	$(Q)rm -f *.o *.a quark-mon quark-btf bpf_prog_skel.h
 
-cleanall: clean
-	$(call msg,CLEANALL)
-	$(Q)rm -rf manhtml/*.html
+clean-all: clean
+	$(call msg,CLEAN-ALL)
+	$(Q)rm -rf man-html/*.html
 	$(Q)rm -f $(SVGS)
 	$(Q)rm -rf include
 	$(Q)make -C $(LIBBPF_SRC) clean
 	$(Q)make -C $(ELFTOOLCHAIN_SRC)/libelf clean
 	$(Q)make -C $(ZLIB_SRC) clean || true
 
-manhtml:
+man-html:
 	$(call msg,MKDIR)
-	$(Q)mkdir -p manhtml
+	$(Q)mkdir -p man-html
 	$(call msg,MANDOC)
 	$(Q)for x in *.[378]; do \
-		mandoc -Thtml -Ostyle=mandoc.css,man=%N.%S.html $$x > manhtml/$$x.html; \
+		mandoc -Thtml -Ostyle=mandoc.css,man=%N.%S.html $$x > man-html/$$x.html; \
 	done
 
-manlint:
+man-lint:
 	$(call msg,MANDOC)
 	$(Q)mandoc -Tlint *.[378] || true
 
@@ -266,11 +266,11 @@ manlint:
 	all			\
 	btfhub			\
 	clean			\
-	cleanall		\
+	clean-all		\
 	doc			\
 	eebpf-sync		\
-	manhtml			\
-	manlint			\
+	man-html		\
+	man-lint		\
 	docker			\
 	docker-cross-arm64	\
 	docker-image		\
