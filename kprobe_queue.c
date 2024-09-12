@@ -205,7 +205,6 @@ struct kprobe_arg {
 };
 
 struct kprobe {
-	char			 name[256];
 	const char		*target;
 	int			 sample_kind;
 	int			 is_kret;
@@ -846,7 +845,7 @@ kprobe_kludge_arg(struct kprobe *k, struct kprobe_arg *karg,
 	 * version.
 	 */
 	if ((k == &kp_wake_up_new_task ||
-	    k == &kp_exit_thread ||
+	    k == &kp_exit ||
 	    k == &kp_exec_connector) &&
 	    !strcmp(karg->name, "pgid")) {
 		if (quark_btf_offset(qbtf, "signal_struct.pids") == -1)
@@ -856,7 +855,7 @@ kprobe_kludge_arg(struct kprobe *k, struct kprobe_arg *karg,
 	}
 
 	if ((k == &kp_wake_up_new_task ||
-	    k == &kp_exit_thread ||
+	    k == &kp_exit ||
 	    k == &kp_exec_connector) &&
 	    !strcmp(karg->name, "sid")) {
 		if (quark_btf_offset(qbtf, "signal_struct.pids") == -1)
@@ -925,7 +924,7 @@ kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
 static void
 kprobe_tracefs_name(struct kprobe *k, u64 qid, char *buf, size_t len)
 {
-	snprintf(buf, len, "%s_%llu_%llu", k->name, (u64)getpid(), qid);
+	snprintf(buf, len, "quark_%s_%llu_%llu", k->target, (u64)getpid(), qid);
 }
 
 static char *
@@ -1028,7 +1027,7 @@ kprobe_install_all(u64 qid)
 	for (i = 0; all_kprobes[i] != NULL; i++) {
 		if (kprobe_install(all_kprobes[i], qid, qbtf) == -1) {
 			warnx("%s: kprobe %s failed", __func__,
-			    all_kprobes[i]->name);
+			    all_kprobes[i]->target);
 			/* Uninstall the ones that succeeded */
 			while (--i >= 0)
 				kprobe_uninstall(all_kprobes[i], qid);
