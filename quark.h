@@ -333,12 +333,11 @@ struct quark_queue_ops {
 
 struct quark_queue_attr {
 #define QQ_THREAD_EVENTS	(1 << 0)
-#define QQ_NO_CACHE		(1 << 1)
-#define QQ_KPROBE		(1 << 2)
-#define QQ_EBPF			(1 << 3)
-#define QQ_NO_SNAPSHOT		(1 << 4)
-#define QQ_MIN_AGG		(1 << 5)
-#define QQ_ENTRY_LEADER		(1 << 6)
+#define QQ_KPROBE		(1 << 1)
+#define QQ_EBPF			(1 << 2)
+#define QQ_NO_SNAPSHOT		(1 << 3)
+#define QQ_MIN_AGG		(1 << 4)
+#define QQ_ENTRY_LEADER		(1 << 5)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;
