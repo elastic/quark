@@ -154,7 +154,7 @@ as
 is quite big.
 .Pp
 Other useful build targets include:
-.Bl -tag -width "manlint"
+.Bl -tag -width "man-lint"
 .It Em clean
 Clean object files from
 .Nm .
@@ -174,18 +174,18 @@ Usage:
 .Bd -literal
 make btfhub BTFHUB_ARCHIVE_PATH=/my/path/to/btfhub-archive
 .Ed
-.It Em cleanall
+.It Em clean-all
 Clean all object files, including the ones from
 .Em libbpf ,
 .Em libz
 and
 .Em libelf .
 .It Em doc
-Shorthand for manlint+manhtml+README.md, see below.
-.It Em manlint
+Shorthand for man-lint+man-html+README.md, see below.
+.It Em man-lint
 Calls the linter for all manpages.
-.It Em manhtml
-Generates HTML files for the manpges in manhtml/.
+.It Em man-html
+Generates HTML files for the manpges in man-html/.
 .It Em svg
 Builds an SVG out of the DOT files produced by
 .Xr quark-mon 8 .
