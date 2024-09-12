@@ -26,30 +26,23 @@ struct quark_process_iter;
 struct quark_queue;
 struct quark_queue_attr;
 struct quark_queue_stats;
-struct raw_event	*raw_event_alloc(int);
-void			 raw_event_free(struct raw_event *);
-void			 raw_event_insert(struct quark_queue *,
-			     struct raw_event *);
-void			 quark_queue_default_attr(struct quark_queue_attr *);
-int			 quark_queue_open(struct quark_queue *,
-			     struct quark_queue_attr *);
-void			 quark_queue_close(struct quark_queue *);
-int			 quark_queue_populate(struct quark_queue *);
-int			 quark_queue_block(struct quark_queue *);
-int			 quark_queue_get_events(struct quark_queue *,
-			     struct quark_event *, int);
-int			 quark_queue_get_epollfd(struct quark_queue *);
-void			 quark_queue_get_stats(struct quark_queue *,
-			     struct quark_queue_stats *);
-int			 quark_dump_process_cache_graph(struct quark_queue *,
-			     FILE *);
-int			 quark_dump_raw_event_graph(struct quark_queue *,
-			     FILE *, FILE *);
-struct quark_process	*quark_process_lookup(struct quark_queue *, int);
-int			 quark_event_dump(struct quark_event *, FILE *);
-void			 quark_process_iter_init(struct quark_process_iter *,
-			     struct quark_queue *);
-struct quark_process	*quark_process_iter_next(struct quark_process_iter *);
+struct raw_event *raw_event_alloc(int);
+void	 raw_event_free(struct raw_event *);
+void	 raw_event_insert(struct quark_queue *, struct raw_event *);
+void	 quark_queue_default_attr(struct quark_queue_attr *);
+int	 quark_queue_open(struct quark_queue *, struct quark_queue_attr *);
+void	 quark_queue_close(struct quark_queue *);
+int	 quark_queue_populate(struct quark_queue *);
+int	 quark_queue_block(struct quark_queue *);
+int	 quark_queue_get_events(struct quark_queue *, struct quark_event *, int);
+int	 quark_queue_get_epollfd(struct quark_queue *);
+void	 quark_queue_get_stats(struct quark_queue *, struct quark_queue_stats *);
+int	 quark_dump_process_cache_graph(struct quark_queue *, FILE *);
+int	 quark_dump_raw_event_graph(struct quark_queue *, FILE *, FILE *);
+int	 quark_event_dump(struct quark_event *, FILE *);
+void	 quark_process_iter_init(struct quark_process_iter *, struct quark_queue *);
+const struct quark_process *quark_process_iter_next(struct quark_process_iter *);
+const struct quark_process *quark_process_lookup(struct quark_queue *, int);
 
 /* btf.c */
 struct quark_btf_target {
@@ -99,7 +92,7 @@ int	 strtou64(u64 *, const char *, int);
 char 	*find_line(FILE *, const char *);
 char	*find_line_p(const char *, const char *);
 char	*load_file_nostat(int, size_t *);
-struct args *args_make(struct quark_process *);
+struct args *args_make(const struct quark_process *);
 void	 args_free(struct args *);
 
 /*
@@ -216,8 +209,8 @@ struct quark_event {
 #define QUARK_EV_EXIT		(1 << 2)
 #define QUARK_EV_SETPROCTITLE	(1 << 3)
 #define QUARK_EV_SNAPSHOT	(1 << 4)
-	u64			 events;
-	struct quark_process	*process;
+	u64				 events;
+	const struct quark_process	*process;
 };
 
 /*

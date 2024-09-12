@@ -48,8 +48,8 @@ A
 is defined as:
 .Bd -literal
 struct quark_event {
-	u64			 events;
-	struct quark_process	*process;
+	u64				 events;
+	const struct quark_process	*process;
 };
 .Ed
 .Bl -tag -width "events"

@@ -254,7 +254,7 @@ load_file_nostat(int fd, size_t *total)
 
 /* buf_len includes the terminating NUL */
 struct args *
-args_make(struct quark_process *qev)
+args_make(const struct quark_process *qev)
 {
 	struct args	*args;
 	const char	*p, *end;

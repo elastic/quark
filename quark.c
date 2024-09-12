@@ -261,24 +261,6 @@ tty_type(int major, int minor)
 	return (QUARK_TTY_UNKNOWN);
 }
 
-/* buf_len includes the terminating NUL */
-static int
-args_to_spaces(char *buf, size_t buf_len)
-{
-	char	*p, *last;
-
-	if (buf_len == 0)
-		return (-1);
-
-	/* last points to the last NUL */
-	last = &buf[buf_len - 1];
-	if (*last != 0)
-		return (-1);
-	for (p = buf + strlen(buf); p != last; p += strlen(p))
-		*p = ' ';
-
-	return (0);
-}
 #if 0
 static void
 event_copy_fields(struct quark_process *dst, struct quark_process *src)
@@ -784,9 +766,9 @@ entry_leader_type_str(u32 entry_leader_type)
 int
 quark_event_dump(struct quark_event *qev, FILE *f)
 {
-	const char		*flagname;
-	char			 events[1024];
-	struct quark_process	*qp;
+	const char			*flagname;
+	char				 events[1024];
+	const struct quark_process	*qp;
 
 	qp = qev->process;
 	if (qp == NULL)
@@ -800,30 +782,25 @@ quark_event_dump(struct quark_event *qev, FILE *f)
 		P("  %.4s\tcomm=%s\n", flagname, qp->comm);
 	}
 	if (qp->flags & QUARK_F_CMDLINE) {
+		int		 i;
+		struct args	*args;
+
 		flagname = event_flag_str(QUARK_F_CMDLINE);
 
-		if (0) {
-			args_to_spaces(qp->cmdline, qp->cmdline_len);
-			P("  %.4s\tcmdline=%s\n", flagname, qp->cmdline);
-		} else {
-			int		 i;
-			struct args	*args;
-
-			P("  %.4s\tcmdline=", flagname);
-			P("[ ");
-			args = args_make(qp);
-			if (args == NULL)
-				P("(%s)", strerror(errno));
-			else {
-				for (i = 0; i < args->argc; i++) {
-					if (i > 0)
-						P(", ");
-					P("%s", args->argv[i]);
-				}
-				args_free(args);
+		P("  %.4s\tcmdline=", flagname);
+		P("[ ");
+		args = args_make(qp);
+		if (args == NULL)
+			P("(%s)", strerror(errno));
+		else {
+			for (i = 0; i < args->argc; i++) {
+				if (i > 0)
+					P(", ");
+				P("%s", args->argv[i]);
 			}
-			P(" ]\n");
+			args_free(args);
 		}
+		P(" ]\n");
 	}
 	if (qp->flags & QUARK_F_PROC) {
 		flagname = event_flag_str(QUARK_F_PROC);
@@ -867,7 +844,7 @@ quark_event_dump(struct quark_event *qev, FILE *f)
 #undef P
 
 /* User facing version of process_cache_lookup() */
-struct quark_process *
+const struct quark_process *
 quark_process_lookup(struct quark_queue *qq, int pid)
 {
 	return (process_cache_get(qq, pid, 0));
@@ -880,10 +857,10 @@ quark_process_iter_init(struct quark_process_iter *qi, struct quark_queue *qq)
 	qi->qp = RB_MIN(process_by_pid, &qq->process_by_pid);
 }
 
-struct quark_process *
+const struct quark_process *
 quark_process_iter_next(struct quark_process_iter *qi)
 {
-	struct quark_process	*qp;
+	const struct quark_process	*qp;
 
 	qp = qi->qp;
 	if (qi->qp != NULL)
@@ -1953,7 +1930,7 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 				break;
 			if (raw_event_process(qq, raw, qevs) == -1) {
 				raw_event_free(raw);
-				warnx("raw_event_to_quark_process");
+				warnx("raw_event_process");
 				continue;
 			}
 			raw_event_free(raw);
