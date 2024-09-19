@@ -23,6 +23,7 @@
 <h1 class="Sh">TABLE OF CONTENTS</h1>
 <ul class="Bl-compact">
   <li><a href="#DESCRIPTION">DESCRIPTION</a></li>
+  <li><a href="#QUICKSTART">QUICKSTART</a></li>
   <li><a href="#FEATURES">FEATURES</a></li>
   <li><a href="#BUILDING">BUILDING</a></li>
   <li><a href="#LINKING">LINKING</a></li>
@@ -30,6 +31,7 @@
   <li><a href="#CONVENTIONS">CONVENTIONS</a></li>
   <li><a href="#BASIC_USAGE">BASIC USAGE</a></li>
   <li><a href="#EXAMPLES">EXAMPLES</a></li>
+  <li><a href="#API">API</a></li>
   <li><a href="#FURTHER_READING">FURTHER READING</a></li>
   <li><a href="#SEE_ALSO">SEE ALSO</a></li>
   <li><a href="#LICENSE">LICENSE</a></li>
@@ -52,6 +54,24 @@
     <var class="Vt">quark_event</var>. An internal process cache is also kept
     that can be looked up via
     <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="QUICKSTART"><a class="permalink" href="#QUICKSTART">QUICKSTART</a></h1>
+<p class="Pp">Clone the repository, compile and run quark's test utility
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>:</p>
+<div class="Bd Pp Li">
+<pre>$ git clone --recursive https://github.com/elastic/quark
+$ cd make
+$ make
+$ sudo ./quark-mon
+
+On another shell, create any process like:
+$ ls -1 /tmp | wc -l</pre>
+</div>
+<p class="Pp">See <a class="Sx" href="#BUILDING">BUILDING</a> for a list of
+    dependencies if you're having trouble building. Also see
+    <a class="Sx" href="#INCLUDED_BINARIES">INCLUDED BINARIES</a> and
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="FEATURES"><a class="permalink" href="#FEATURES">FEATURES</a></h1>
@@ -135,11 +155,22 @@
 </section>
 <section class="Sh">
 <h1 class="Sh" id="BUILDING"><a class="permalink" href="#BUILDING">BUILDING</a></h1>
-<p class="Pp">Make sure to clone the repository recursively:
-    <a class="permalink" href="#git"><i class="Em" id="git">git clone
+<p class="Pp"><code class="Nm">quark</code> can be built natively or via a
+    container, native is preferred and depends on:</p>
+<ul class="Bl-bullet">
+  <li>bpftool</li>
+  <li>clang</li>
+  <li>gnumake</li>
+  <li>gcc</li>
+  <li>mandoc (for docs).</li>
+  <li>m4</li>
+</ul>
+<p class="Pp" id="git">Make sure to clone the repository recursively:
+    <a class="permalink" href="#git"><i class="Em">git clone
     --recursive</i></a>.</p>
 <p class="Pp" id="make"><a class="permalink" href="#make"><i class="Em">make</i></a>
-    generates a <span class="Pa">libquark_big.a</span> and a
+    builds the repository, including <span class="Pa">quark-mon</span>,
+    <span class="Pa">libquark_big.a</span> and a
     <span class="Pa">libquark.a</span>.</p>
 <p class="Pp"><span class="Pa">libquark_big.a</span> includes all needed
     dependencies in one big archive. This includes a
@@ -286,6 +317,30 @@ main(void)
 	return (1);
 }</pre>
 </div>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="API"><a class="permalink" href="#API">API</a></h1>
+<dl class="Bl-tag">
+  <dt><a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a></dt>
+  <dd>open a queue to receive events, initial library call.</dd>
+  <dt><a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a></dt>
+  <dd>get default attributes of
+      <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</dd>
+  <dt><a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a></dt>
+  <dd>get events, main library call.</dd>
+  <dt><a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a></dt>
+  <dd>lookup a process in quark's internal cache</dd>
+  <dt><a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a></dt>
+  <dd>dump event, mainly a debugging utility.</dd>
+  <dt><a class="Xr" href="quark_queue_get_epollfd.3.html">quark_queue_get_epollfd(3)</a></dt>
+  <dd>get a descriptor suitable for blocking.</dd>
+  <dt><a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a></dt>
+  <dd>block for an unspecified amount of time.</dd>
+  <dt><a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a></dt>
+  <dd>basic queue statistics.</dd>
+  <dt><a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a></dt>
+  <dd>close a queue.</dd>
+</dl>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="FURTHER_READING"><a class="permalink" href="#FURTHER_READING">FURTHER

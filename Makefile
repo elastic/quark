@@ -222,11 +222,6 @@ quark-btf: quark-btf.c $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
 
-README.md: quark.7
-	$(call msg,MANDOC,$@)
-	$(Q)mandoc -T markdown -I os=$(shell uname -s) $< > $@
-	$(Q)sed -i '$$ d' $@ # Chomp last line
-
 docs/index.html: docs/quark.7.html
 	$(call msg,CP,index.html)
 	$(Q)cp $< $@
@@ -240,7 +235,7 @@ docs/%.html: %
 	$(Q)sed -i 's/exec\.3\.html/https:\/\/linux.die.net\/man\/3\/exec/g' $@
 	$(Q)sed -i 's/exit\.3\.html/https:\/\/linux.die.net\/man\/3\/exit/g' $@
 
-docs: $(DOCS_HTML) README.md docs/index.html
+docs: $(DOCS_HTML) docs/index.html
 
 btfhub:
 	$(Q)test $(BTFHUB_ARCHIVE_PATH) || \
