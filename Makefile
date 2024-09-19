@@ -236,6 +236,9 @@ docs/%.html: %
 	$(Q)mandoc -Tlint $< || exit 1
 	$(Q)mandoc -Thtml -I os=$(shell uname -s) 		\
 		-Otoc,style=mandoc.css,man=%N.%S.html $< > $@
+	$(Q)sed -i 's/fork\.2\.html/https:\/\/linux.die.net\/man\/2\/fork/g' $@
+	$(Q)sed -i 's/exec\.3\.html/https:\/\/linux.die.net\/man\/3\/exec/g' $@
+	$(Q)sed -i 's/exit\.3\.html/https:\/\/linux.die.net\/man\/3\/exit/g' $@
 
 docs: $(DOCS_HTML) README.md docs/index.html
 

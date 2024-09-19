@@ -40,15 +40,15 @@
 <p class="Pp"><code class="Nm">quark</code> is a library that provides a way to
     retrieve and listen to process events in linux systems. Its main purpose is
     to abstract different backends and to provide a common API for listening to
-    system-wide events like <a class="Xr" href="fork.2.html">fork(2)</a>,
-    <a class="Xr" href="exec.3.html">exec(3)</a>,
-    <a class="Xr" href="exit.3.html">exit(3)</a> and others.</p>
+    system-wide events like <a class="Xr" href="https://linux.die.net/man/2/fork">fork(2)</a>,
+    <a class="Xr" href="https://linux.die.net/man/3/exec">exec(3)</a>,
+    <a class="Xr" href="https://linux.die.net/man/3/exit">exit(3)</a> and others.</p>
 <p class="Pp"><code class="Nm">quark</code> not only provides an API for
     listening to events, but also handles ordering, buffering and aggregation of
     said events. In its most basic form, a short lived process consisting of
-    <a class="Xr" href="fork.2.html">fork(2)</a> +
-    <a class="Xr" href="exec.3.html">exec(3)</a> +
-    <a class="Xr" href="exit.3.html">exit(3)</a> will be aggregated into one
+    <a class="Xr" href="https://linux.die.net/man/2/fork">fork(2)</a> +
+    <a class="Xr" href="https://linux.die.net/man/3/exec">exec(3)</a> +
+    <a class="Xr" href="https://linux.die.net/man/3/exit">exit(3)</a> will be aggregated into one
     <var class="Vt">quark_event</var>. An internal process cache is also kept
     that can be looked up via
     <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>.</p>
@@ -69,12 +69,12 @@
   <dt id="AGGREGATION"><a class="permalink" href="#AGGREGATION"><i class="Em">AGGREGATION</i></a></dt>
   <dd><code class="Nm">quark</code> buffers and aggregates related events that
       happened close enough. The common case is generating a single event for
-      the triple: <a class="Xr" href="fork.2.html">fork(2)</a>,
-      <a class="Xr" href="exec.3.html">exec(3)</a>,
-      <a class="Xr" href="exit.3.html">exit(3)</a>. There are rules on what can
+      the triple: <a class="Xr" href="https://linux.die.net/man/2/fork">fork(2)</a>,
+      <a class="Xr" href="https://linux.die.net/man/3/exec">exec(3)</a>,
+      <a class="Xr" href="https://linux.die.net/man/3/exit">exit(3)</a>. There are rules on what can
       be aggregated, and only events of the same pid are aggregated. For
       example: <code class="Nm">quark</code> won't aggregate two
-      <a class="Xr" href="exec.3.html">exec(3)</a> events, otherwise we would
+      <a class="Xr" href="https://linux.die.net/man/3/exec">exec(3)</a> events, otherwise we would
       lose the effects of the first one. These rules will be exposed and
       configurable in the future.</dd>
   <dt id="BUFFERING"><a class="permalink" href="#BUFFERING"><i class="Em">BUFFERING</i></a></dt>
