@@ -11,8 +11,8 @@
 /* Global defaults. */
 
 html {		max-width: 65em;
-		--bg: #F0F0F0;
-		--fg: #000000; }
+		--bg: #101c3f;
+		--fg: #ffffff; }
 body {		background: var(--bg);
 		color: var(--fg);
 		font-family: Helvetica,Arial,sans-serif; }
@@ -367,3 +367,8 @@ html {		--bg: #1E1F21;
 :visited {	color: #F6BAFF; }
 }
 */
+
+html {
+:link {		color: #24bbb1; }
+:visited {	color: #e55098; }
+}
