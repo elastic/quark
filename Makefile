@@ -103,6 +103,12 @@ LIBBPF_EXTRA_CFLAGS+= -I../../zlib
 BPFPROG_OBJ:= bpf_prog.o
 BPFPROG_DEPS:= bpf_prog.c $(LIBBPF_DEPS) $(EEBPF_FILES) include
 
+# DOCS_HTML, matches docs/%.html
+DOCS:= $(wildcard *.[378])
+DOCS_HTML:= $(patsubst %.3,docs/%.3.html,$(wildcard *.3))
+DOCS_HTML+= $(patsubst %.7,docs/%.7.html,$(wildcard *.7))
+DOCS_HTML+= $(patsubst %.8,docs/%.8.html,$(wildcard *.8))
+
 all:	$(ZLIB_STATIC)			\
 	$(ELFTOOLCHAIN_STATIC)		\
 	$(LIBBPF_STATIC)		\
@@ -221,7 +227,17 @@ README.md: quark.7
 	$(Q)mandoc -T markdown -I os=$(shell uname -s) $< > $@
 	$(Q)sed -i '$$ d' $@ # Chomp last line
 
-doc: man-lint man-html README.md
+docs/index.html: docs/quark.7.html
+	$(call msg,CP,index.html)
+	$(Q)cp $< $@
+
+docs/%.html: %
+	$(call msg,MANDOC,$<)
+	$(Q)mandoc -Tlint $< || exit 1
+	$(Q)mandoc -Thtml -I os=$(shell uname -s) 		\
+		-Otoc,style=mandoc.css,man=%N.%S.html $< > $@
+
+docs: $(DOCS_HTML) README.md docs/index.html
 
 btfhub:
 	$(Q)test $(BTFHUB_ARCHIVE_PATH) || \
@@ -243,34 +259,25 @@ clean:
 
 clean-all: clean
 	$(call msg,CLEAN-ALL)
-	$(Q)rm -rf man-html/*.html
+	$(Q)rm -rf docs/*.html
 	$(Q)rm -f $(SVGS)
 	$(Q)rm -rf include
 	$(Q)make -C $(LIBBPF_SRC) clean
 	$(Q)make -C $(ELFTOOLCHAIN_SRC)/libelf clean
 	$(Q)make -C $(ZLIB_SRC) clean || true
 
-man-html:
-	$(call msg,MKDIR)
-	$(Q)mkdir -p man-html
-	$(call msg,MANDOC)
-	$(Q)for x in *.[378]; do \
-		mandoc -Thtml -Ostyle=mandoc.css,man=%N.%S.html $$x > man-html/$$x.html; \
-	done
-
-man-lint:
-	$(call msg,MANDOC)
-	$(Q)mandoc -Tlint *.[378] || true
+clean-docs:
+	$(call msg,CLEAN,docs)
+	$(Q)rm -f docs/*.html
 
 .PHONY:				\
 	all			\
 	btfhub			\
 	clean			\
 	clean-all		\
-	doc			\
+	clean-docs		\
+	docs			\
 	eebpf-sync		\
-	man-html		\
-	man-lint		\
 	docker			\
 	docker-cross-arm64	\
 	docker-image		\

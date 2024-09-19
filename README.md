@@ -190,7 +190,7 @@ Other useful build targets include:
 
 > > make btfhub BTFHUB\_ARCHIVE\_PATH=/my/path/to/btfhub-archive
 
-*cleanall*
+*clean-all*
 
 > Clean all object files, including the ones from
 > *libbpf*,
@@ -198,17 +198,10 @@ Other useful build targets include:
 > and
 > *libelf*.
 
-*doc*
+*docs*
 
-> Shorthand for manlint+manhtml+README.md, see below.
-
-*manlint*
-
-> Calls the linter for all manpages.
-
-*manhtml*
-
-> Generates HTML files for the manpges in manhtml/.
+> Lints and generates all the documentation from manpages in
+> *docs/*.
 
 *svg*
 
