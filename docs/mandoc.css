@@ -358,6 +358,11 @@ h2.Sh, h3.Ss {	margin-left: 0em; }
 		text-indent: -2em; }
 }
 
+html {
+:link {		color: #24bbb1; }
+:visited {	color: #24bbb1; }
+}
+
 /* Overrides for a dark color scheme for accessibility. */
 /*
 @media (prefers-color-scheme: dark) {
@@ -368,7 +373,3 @@ html {		--bg: #1E1F21;
 }
 */
 
-html {
-:link {		color: #24bbb1; }
-:visited {	color: #e55098; }
-}
