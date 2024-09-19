@@ -28,6 +28,26 @@ will be aggregated into one
 .Vt quark_event .
 An internal process cache is also kept that can be looked up via
 .Xr quark_process_lookup 3 .
+.Sh QUICKSTART
+Clone the repository, compile and run quark's test utility
+.Xr quark-mon 8 :
+.Bd -literal
+$ git clone --recursive https://github.com/elastic/quark
+$ cd make
+$ make
+$ sudo ./quark-mon
+.Pp
+On another shell, create any process like:
+$ ls -1 /tmp | wc -l
+.Ed
+.Pp
+See
+.Sx BUILDING
+for a list of dependencies if you're having trouble building.
+Also see
+.Sx INCLUDED BINARIES
+and
+.Xr quark-mon 8 .
 .Sh FEATURES
 .Bl -ohang
 .It Em ORDERING
@@ -120,11 +140,29 @@ The backend in use is transparent to the user and unless specified,
 will try to use the EBPF, falling back to KPROBE if it failed.
 .El
 .Sh BUILDING
+.Nm
+can be built natively or via a container, native is preferred and depends on:
+.Bl -bullet
+.It
+bpftool
+.It
+clang
+.It
+gnumake
+.It
+gcc
+.It
+mandoc (for docs).
+.It
+m4
+.El
+.Pp
 Make sure to clone the repository recursively:
 .Em "git clone --recursive" .
 .Pp
 .Em make
-generates a
+builds the repository, including
+.Pa quark-mon ,
 .Pa libquark_big.a
 and a
 .Pa libquark.a .
@@ -300,6 +338,28 @@ main(void)
 	return (1);
 }
 .Ed
+.Sh API
+.Bl -tag -width "quark_queue_default_attr(3)"
+.It Xr quark_queue_open 3
+open a queue to receive events, initial library call.
+.It Xr quark_queue_default_attr 3
+get default attributes of
+.Xr quark_queue_open 3 .
+.It Xr quark_queue_get_events 3
+get events, main library call.
+.It Xr quark_process_lookup 3
+lookup a process in quark's internal cache
+.It Xr quark_event_dump 3
+dump event, mainly a debugging utility.
+.It Xr quark_queue_get_epollfd 3
+get a descriptor suitable for blocking.
+.It Xr quark_queue_block 3
+block for an unspecified amount of time.
+.It Xr quark_queue_get_stats 3
+basic queue statistics.
+.It Xr quark_queue_close 3
+close a queue.
+.El
 .Sh FURTHER READING
 .Xr quark_queue_get_events 3
 is the meat of the library and contains further useful documentation.
