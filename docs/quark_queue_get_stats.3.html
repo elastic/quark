@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="mandoc.css" type="text/css" media="all"/>
+  <title>QUARK_QUEUE_GET_STATS(3)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">QUARK_QUEUE_GET_STATS(3)</td>
+    <td class="head-vol">Library Functions Manual</td>
+    <td class="head-rtitle">QUARK_QUEUE_GET_STATS(3)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">quark_queue_get_stats</code> &#x2014;
+    <span class="Nd">fetch queue statistics</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<p class="Pp"><code class="In">#include
+  &lt;<a class="In">quark.h</a>&gt;</code></p>
+<p class="Pp"><var class="Ft">void</var>
+  <br/>
+  <code class="Fn">quark_queue_get_stats</code>(<var class="Fa" style="white-space: nowrap;">struct
+    quark_queue *qq</var>, <var class="Fa" style="white-space: nowrap;">struct
+    quark_queue_stats *qs</var>);</p>
+</section>
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+<code class="Nm">quark_queue_get_stats</code> copies out all internal statistics
+  from <var class="Fa">qq</var> into <var class="Fa">qs</var>.
+  <var class="Vt">quark_queue_stats</var> is defined as:
+<div class="Bd Pp Bd-indent Li">
+<pre>struct quark_queue_stats {
+	u64	insertions;
+	u64	removals;
+	u64	aggregations;
+	u64	non_aggregations;
+	u64	lost;
+};</pre>
+</div>
+<dl class="Bl-tag">
+  <dt id="insertions"><a class="permalink" href="#insertions"><i class="Em">insertions</i></a></dt>
+  <dd>A counter of all events that were inserted into the queue
+      sorting/buffering structures, this is roughly 1:1 with the actual events
+      we read from the backend.</dd>
+  <dt id="removals"><a class="permalink" href="#removals"><i class="Em">removals</i></a></dt>
+  <dd>A counter of removals of the above, you can count alive items by counting
+      the difference.</dd>
+  <dt id="aggregations"><a class="permalink" href="#aggregations"><i class="Em">aggregations</i></a></dt>
+  <dd>A counter of how many events were aggregated, this is an absolute counter,
+      meaning a FORK+EXEC+EXIT counts as 1 aggregation, which consumes 3
+    events.</dd>
+  <dt id="non_aggregations"><a class="permalink" href="#non_aggregations"><i class="Em">non_aggregations</i></a></dt>
+  <dd>The opposite of <i class="Em">aggregations</i>. It is increased by one
+      when we didn't aggregate.</dd>
+  <dt id="lost"><a class="permalink" href="#lost"><i class="Em">lost</i></a></dt>
+  <dd>A a counter of missed backend events. This can happen if the user didn't
+      call
+      <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>
+      fast enough or if
+      <a class="permalink" href="#quark"><i class="Em" id="quark">quark</i></a>
+      simply can't handle the load, the former is way more likely. It is a state
+      counter representing total loss, the user should compare to an old reading
+      to know if it increased.</dd>
+</dl>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>,
+    <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>,
+    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>,
+    <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
+    <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>,
+    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>,
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
+    <a class="Xr" href="quark.7.html">quark(7)</a>,
+    <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a></p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">September 19, 2024</td>
+    <td class="foot-os">Linux</td>
+  </tr>
+</table>
+</body>
+</html>

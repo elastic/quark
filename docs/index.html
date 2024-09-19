@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="mandoc.css" type="text/css" media="all"/>
+  <title>QUARK(7)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">QUARK(7)</td>
+    <td class="head-vol">Miscellaneous Information Manual</td>
+    <td class="head-rtitle">QUARK(7)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">quark</code> &#x2014; <span class="Nd">unified
+    system process telemetry library</span></p>
+</section>
+<h1 class="Sh">TABLE OF CONTENTS</h1>
+<ul class="Bl-compact">
+  <li><a href="#DESCRIPTION">DESCRIPTION</a></li>
+  <li><a href="#FEATURES">FEATURES</a></li>
+  <li><a href="#BUILDING">BUILDING</a></li>
+  <li><a href="#LINKING">LINKING</a></li>
+  <li><a href="#INCLUDED_BINARIES">INCLUDED BINARIES</a></li>
+  <li><a href="#CONVENTIONS">CONVENTIONS</a></li>
+  <li><a href="#BASIC_USAGE">BASIC USAGE</a></li>
+  <li><a href="#EXAMPLES">EXAMPLES</a></li>
+  <li><a href="#FURTHER_READING">FURTHER READING</a></li>
+  <li><a href="#SEE_ALSO">SEE ALSO</a></li>
+  <li><a href="#LICENSE">LICENSE</a></li>
+  <li><a href="#HISTORY">HISTORY</a></li>
+</ul>
+<section class="Sh">
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+<p class="Pp"><code class="Nm">quark</code> is a library that provides a way to
+    retrieve and listen to process events in linux systems. Its main purpose is
+    to abstract different backends and to provide a common API for listening to
+    system-wide events like <a class="Xr" href="fork.2.html">fork(2)</a>,
+    <a class="Xr" href="exec.3.html">exec(3)</a>,
+    <a class="Xr" href="exit.3.html">exit(3)</a> and others.</p>
+<p class="Pp"><code class="Nm">quark</code> not only provides an API for
+    listening to events, but also handles ordering, buffering and aggregation of
+    said events. In its most basic form, a short lived process consisting of
+    <a class="Xr" href="fork.2.html">fork(2)</a> +
+    <a class="Xr" href="exec.3.html">exec(3)</a> +
+    <a class="Xr" href="exit.3.html">exit(3)</a> will be aggregated into one
+    <var class="Vt">quark_event</var>. An internal process cache is also kept
+    that can be looked up via
+    <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="FEATURES"><a class="permalink" href="#FEATURES">FEATURES</a></h1>
+<dl class="Bl-ohang">
+  <dt id="ORDERING"><a class="permalink" href="#ORDERING"><i class="Em">ORDERING</i></a></dt>
+  <dd><code class="Nm">quark</code> tries to guarantee event ordering as much as
+      possible. Ordering must be done in userland for some backends, notably
+      anything that uses perf-rings. <code class="Nm">quark</code> uses two
+      <a class="permalink" href="#Rank"><i class="Em" id="Rank">Rank Balanced
+      Trees</i></a> for ordering and aggregation.
+    <p class="Pp">The first tree is basically a priority queue, ordered by the
+        time of the event. The second tree is ordered by time of the event + pid
+        and it's used for event aggregation.</p>
+  </dd>
+  <dt id="AGGREGATION"><a class="permalink" href="#AGGREGATION"><i class="Em">AGGREGATION</i></a></dt>
+  <dd><code class="Nm">quark</code> buffers and aggregates related events that
+      happened close enough. The common case is generating a single event for
+      the triple: <a class="Xr" href="fork.2.html">fork(2)</a>,
+      <a class="Xr" href="exec.3.html">exec(3)</a>,
+      <a class="Xr" href="exit.3.html">exit(3)</a>. There are rules on what can
+      be aggregated, and only events of the same pid are aggregated. For
+      example: <code class="Nm">quark</code> won't aggregate two
+      <a class="Xr" href="exec.3.html">exec(3)</a> events, otherwise we would
+      lose the effects of the first one. These rules will be exposed and
+      configurable in the future.</dd>
+  <dt id="BUFFERING"><a class="permalink" href="#BUFFERING"><i class="Em">BUFFERING</i></a></dt>
+  <dd>For aggregation and ordering to work, <code class="Nm">quark</code> needs
+      to be able to buffer events, this means holding them before presenting
+      them to the user. <code class="Nm">quark</code> employs an ageing timeout
+      that is a stepped function of the number of currently buffered events, the
+      more events you have, the shorter the timeout will be, so memory can be
+      bound. A <var class="Vt">quark_event</var> is only given to the user when
+      it has a certain age. From quark.c:
+    <div class="Bd Pp Bd-indent Li">
+    <pre>/*
+ * Target age is the duration in ns of how long should we hold the event in the
+ * tree before processing it. It's a function of the number of items in the tree
+ * and its maximum capacity:
+ * from [0; 10%]    -&gt; 1000ms
+ * from [90%; 100%] -&gt; 0ms
+ * from (10%; 90%)  -&gt; linear from 1000ms -&gt; 100ms
+ */</pre>
+    </div>
+  </dd>
+  <dt id="ENRICHMENT"><a class="permalink" href="#ENRICHMENT"><i class="Em">ENRICHMENT</i></a></dt>
+  <dd>The library tries to give as much context for an event as possible.
+      Depending on the backend, the events we read from the kernel can be
+      limited in context. <code class="Nm">quark</code> maintains an internal
+      process table with what has been learned about the process so far, this
+      context is then included in each event given to the user. The process
+      table can also be queried, see below.</dd>
+  <dt id="PROCESS"><a class="permalink" href="#PROCESS"><i class="Em">PROCESS
+    CACHE</i></a></dt>
+  <dd>An internal cache of processes is kept that can be looked up via
+      <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>.
+      This cache keeps soon-to-be-purged elements for a little while so that you
+      can still lookup a process that just exited. The table is initialized by
+      scraping <span class="Pa">/proc</span>.</dd>
+  <dt id="TRANSPARENCY"><a class="permalink" href="#TRANSPARENCY"><i class="Em">TRANSPARENCY</i></a></dt>
+  <dd><code class="Nm">quark</code> tries to be as transparent as possible about
+      what it knows, there are counters for lost events, and each piece of
+      information of a <var class="Vt">quark_event</var> is guarded by a flag,
+      meaning the user might get incomplete events in the case of lost events,
+      it's the user responsability to decide what to do with it.
+    <p class="Pp">Depending on load, the user might see an event as the
+        aggregation of multiple events, or as independent events. The content
+        remains the same.</p>
+  </dd>
+  <dt id="LANGUAGE"><a class="permalink" href="#LANGUAGE"><i class="Em">LANGUAGE
+    BINDINGS</i></a></dt>
+  <dd><code class="Nm">quark</code> is written in C, but Go bindings are also
+      provided. Ideally we will be able to provide bindings for other languages
+      in the future.</dd>
+  <dt id="MULTIPLE"><a class="permalink" href="#MULTIPLE"><i class="Em">MULTIPLE
+    BACKENDS</i></a></dt>
+  <dd>Currently, EBPF and a kprobe-based backend are provided, but we would like
+      to add AUDIT support as well. The backend in use is transparent to the
+      user and unless specified, <code class="Nm">quark</code> will try to use
+      the EBPF, falling back to KPROBE if it failed.</dd>
+</dl>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="BUILDING"><a class="permalink" href="#BUILDING">BUILDING</a></h1>
+<p class="Pp">Make sure to clone the repository recursively:
+    <a class="permalink" href="#git"><i class="Em" id="git">git clone
+    --recursive</i></a>.</p>
+<p class="Pp" id="make"><a class="permalink" href="#make"><i class="Em">make</i></a>
+    generates a <span class="Pa">libquark_big.a</span> and a
+    <span class="Pa">libquark.a</span>.</p>
+<p class="Pp"><span class="Pa">libquark_big.a</span> includes all needed
+    dependencies in one big archive. This includes a
+    <span class="Pa">libbpf.a</span>, <span class="Pa">libelf_pic.a</span> (from
+    the elftoolchain project, BSD license), and a <span class="Pa">libz.a</span>
+    (see zlib/LICENSE). See <a class="Sx" href="#LINKING">LINKING</a> to learn
+    how to link either.</p>
+<p class="Pp">While <code class="Nm">quark</code> doesn't build
+    <i class="Em">elastic/ebpf</i>, it does use the EBPF programs from that
+    repository, only the files needed are included in
+    <code class="Nm">quark</code>, as <i class="Em">elastic/ebpf</i> is quite
+    big.</p>
+<p class="Pp">Other useful build targets include:</p>
+<dl class="Bl-tag">
+  <dt id="clean"><a class="permalink" href="#clean"><i class="Em">clean</i></a></dt>
+  <dd>Clean object files from <code class="Nm">quark</code>.</dd>
+  <dt id="docker"><a class="permalink" href="#docker"><i class="Em">docker</i></a></dt>
+  <dd>Builds <code class="Nm">quark</code> inside a docker container, so you
+      don't have to worry about having build dependencies.</dd>
+  <dt id="docker-cross-arm64"><a class="permalink" href="#docker-cross-arm64"><i class="Em">docker-cross-arm64</i></a></dt>
+  <dd>Builds <code class="Nm">quark</code> for arm64 inside a docker container,
+      only links and won't work at this time.</dd>
+  <dt id="btfhub"><a class="permalink" href="#btfhub"><i class="Em">btfhub</i></a></dt>
+  <dd>Regenerates <span class="Pa">btfhub.c</span>. Usage:
+    <div class="Bd Pp Li">
+    <pre>make btfhub BTFHUB_ARCHIVE_PATH=/my/path/to/btfhub-archive</pre>
+    </div>
+  </dd>
+  <dt id="clean-all"><a class="permalink" href="#clean-all"><i class="Em">clean-all</i></a></dt>
+  <dd>Clean all object files, including the ones from
+      <a class="permalink" href="#libbpf"><i class="Em" id="libbpf">libbpf</i></a>,
+      <a class="permalink" href="#libz"><i class="Em" id="libz">libz</i></a> and
+      <a class="permalink" href="#libelf"><i class="Em" id="libelf">libelf</i></a>.</dd>
+  <dt id="docs"><a class="permalink" href="#docs"><i class="Em">docs</i></a></dt>
+  <dd>Lints and generates all the documentation from manpages in
+      <span class="Pa">docs/</span>.</dd>
+  <dt id="svg"><a class="permalink" href="#svg"><i class="Em">svg</i></a></dt>
+  <dd>Builds an SVG out of the DOT files produced by
+      <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>.</dd>
+  <dt id="README.md"><a class="permalink" href="#README.md"><i class="Em">README.md</i></a></dt>
+  <dd>Generates <span class="Pa">README.md</span> out of
+      <span class="Pa">quark.7</span>.</dd>
+  <dt id="eebpf-sync"><a class="permalink" href="#eebpf-sync"><i class="Em">eebpf-sync</i></a></dt>
+  <dd>Copies the files from EEBPF_PATH used by <code class="Nm">quark</code>.
+      Usage:
+    <div class="Bd Pp Li">
+    <pre>make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf</pre>
+    </div>
+  </dd>
+</dl>
+<p class="Pp" id="V=1">All the targets above can generate debug output by
+    specifying <a class="permalink" href="#V=1"><i class="Em">V=1</i></a>, as
+    in:</p>
+<div class="Bd Pp Li">
+<pre>$ make V=1</pre>
+</div>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="LINKING"><a class="permalink" href="#LINKING">LINKING</a></h1>
+<div class="Bd Li">
+<pre>$ cc -o myprogram myprogram.c libquark_big.a
+OR
+$ cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a</pre>
+</div>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="INCLUDED_BINARIES"><a class="permalink" href="#INCLUDED_BINARIES">INCLUDED
+  BINARIES</a></h1>
+<p class="Pp"><a class="Xr" href="quark-mon.8.html">quark-mon(8)</a> is a
+    program that dumps <var class="Vt">quark_events</var> to stdout and can be
+    used for demo and debugging. It has a neat feature: can be run without
+    priviledges, while useless in this small program, it aims to demonstrate how
+    a user could implement the same.</p>
+<p class="Pp"><a class="Xr" href="quark-btf.8.html">quark-btf(8)</a> is a
+    program for dumping BTF information used by
+  <code class="Nm">quark</code>.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="CONVENTIONS"><a class="permalink" href="#CONVENTIONS">CONVENTIONS</a></h1>
+<ul class="Bl-bullet">
+  <li>Library calls fail with -1 unless otherwise stated, and
+      <var class="Va">errno</var> is set.</li>
+  <li>Quark returns pointers to internal state, which must not be modified
+      and/or stored. In the case of multithreading, these pointers should not be
+      accessed if another thread is driving <code class="Nm">quark</code>
+      through
+      <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>.</li>
+  <li>No threads are created, the library is driven solely through
+      <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>.</li>
+  <li>Access to a <var class="Vt">quark_queue</var> must be synchronized by the
+      user in the case of multithreading.</li>
+</ul>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="BASIC_USAGE"><a class="permalink" href="#BASIC_USAGE">BASIC
+  USAGE</a></h1>
+<p class="Pp">The ball starts with
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</p>
+<p class="Pp"><a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>
+    initializes a <var class="Vt">quark_queue</var> which holds the majority of
+    runtime state used by library, this includes perf-rings, file descriptors,
+    EBPF programs buffering data-structures and the like. It must be paired with
+    a <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a> on
+    exit.</p>
+<p class="Pp"><a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>
+    is the main driver of the library, it does the buffering, per-ring scanning,
+    aggregation and event cache garbage collecting. In case there are no events
+    it returns zero and the user is expected to call
+    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a> or
+    equivalent.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="EXAMPLES"><a class="permalink" href="#EXAMPLES">EXAMPLES</a></h1>
+<div class="Bd Bd-indent Li">
+<pre>#include &lt;err.h&gt;
+#include &lt;quark.h&gt;
+#include &lt;stdio.h&gt;
+
+int
+main(void)
+{
+	struct quark_queue	qq;
+	struct quark_event	qevs[32], *qev;
+	int			n, i;
+
+	if (quark_queue_open(&amp;qq, NULL) == -1)
+		err(1, &quot;quark_queue_open&quot;);
+
+	for (; ;) {
+		n = quark_queue_get_events(&amp;qq, qevs, 32);
+		if (n == -1) {
+			warn(&quot;quark_queue_get_events&quot;);
+			break;
+		}
+		/* Scan each event */
+		for (i = 0, qev = qevs; i &lt; n; i++, qev++)
+			quark_event_dump(qev, stdout);
+		if (n == 0)
+			quark_queue_block(&amp;qq);
+	}
+
+	quark_queue_close(&amp;qq);
+
+	return (1);
+}</pre>
+</div>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="FURTHER_READING"><a class="permalink" href="#FURTHER_READING">FURTHER
+  READING</a></h1>
+<p class="Pp"><a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>
+    is the meat of the library and contains further useful documentation.</p>
+<p class="Pp"><a class="Xr" href="quark-mon.8.html">quark-mon(8)</a> is the
+    easiest way to get started with <code class="Nm">quark</code>.</p>
+<p class="Pp"><a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>
+    describes initialization options that can be useful.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>,
+    <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>,
+    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>,
+    <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
+    <a class="Xr" href="quark_queue_get_epollfd.3.html">quark_queue_get_epollfd(3)</a>,
+    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>,
+    <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
+    <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="LICENSE"><a class="permalink" href="#LICENSE">LICENSE</a></h1>
+<p class="Pp"><code class="Nm">quark</code> is released under the Apache-2.0
+    license and contains code under BSD-2, BSD-3, ISC, and zlib Licenses.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="HISTORY"><a class="permalink" href="#HISTORY">HISTORY</a></h1>
+<p class="Pp"><code class="Nm">quark</code> started in April 2024.</p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">September 19, 2024</td>
+    <td class="foot-os">Linux</td>
+  </tr>
+</table>
+</body>
+</html>

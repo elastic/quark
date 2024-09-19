@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="mandoc.css" type="text/css" media="all"/>
+  <title>QUARK_QUEUE_GET_EVENTS(3)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">QUARK_QUEUE_GET_EVENTS(3)</td>
+    <td class="head-vol">Library Functions Manual</td>
+    <td class="head-rtitle">QUARK_QUEUE_GET_EVENTS(3)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">quark_queue_get_events</code> &#x2014;
+    <span class="Nd">main quark driver</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<p class="Pp"><code class="In">#include
+  &lt;<a class="In">quark.h</a>&gt;</code></p>
+<p class="Pp"><var class="Ft">int</var>
+  <br/>
+  <code class="Fn">quark_queue_get_events</code>(<var class="Fa" style="white-space: nowrap;">struct
+    quark_queue *qq</var>, <var class="Fa" style="white-space: nowrap;">struct
+    quark_event *qev</var>, <var class="Fa" style="white-space: nowrap;">int
+    nqev</var>);</p>
+</section>
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+<code class="Nm">quark_queue_get_events</code> fills the array of events pointed
+  to by <var class="Fa">qev</var> to a maximum of <var class="Fa">neqv</var>
+  entries.
+<p class="Pp">This function is the main driver of quark. Quark doesn't create
+    threads or introduces hidden control flows, all its state is mutated through
+    this function call. For a better explanation of quark's design, refer to
+    <a class="Xr" href="quark.7.html">quark(7)</a>. A summary of what this
+    function does:</p>
+<ul class="Bl-bullet">
+  <li>Populates its priority queue with raw events by calling into the backend
+      populate function.</li>
+  <li>Attempts to collect raw events that are deemed old enough from its
+      priority queue, if successfull tries to aggregate such events.</li>
+  <li>Converts the collected raw events into proper
+      <var class="Vt">quark_events</var>. This involves consulting its internal
+      cache and enriching said events. These <var class="Vt">quark_events</var>
+      are then passed to the user via <var class="Fa">qev</var>.</li>
+  <li>Garbage collects cached events that are marked for deletion and are old
+      enough. When a process exits, its event cache is marked for deletion, but
+      a grace time is given before purging it so that the user might still query
+      it for some time.</li>
+</ul>
+<p class="Pp">A <var class="Vt">quark_event</var> is defined as:</p>
+<div class="Bd Pp Li">
+<pre>struct quark_event {
+	u64				 events;
+	const struct quark_process	*process;
+};</pre>
+</div>
+<dl class="Bl-tag">
+  <dt id="events"><a class="permalink" href="#events"><i class="Em">events</i></a></dt>
+  <dd>A bitmask representing the events that originated this
+      <var class="Vt">quark_event</var>:
+    <dl class="Bl-tag Bl-compact">
+      <dt id="QUARK_EV_FORK"><a class="permalink" href="#QUARK_EV_FORK"><code class="Dv">QUARK_EV_FORK</code></a></dt>
+      <dd>New process, result of a fork.</dd>
+      <dt id="QUARK_EV_EXEC"><a class="permalink" href="#QUARK_EV_EXEC"><code class="Dv">QUARK_EV_EXEC</code></a></dt>
+      <dd>Process changed image, result of an exec.</dd>
+      <dt id="QUARK_EV_EXIT"><a class="permalink" href="#QUARK_EV_EXIT"><code class="Dv">QUARK_EV_EXIT</code></a></dt>
+      <dd>Process exited.</dd>
+      <dt id="QUARK_EV_SETPROCTITLE"><a class="permalink" href="#QUARK_EV_SETPROCTITLE"><code class="Dv">QUARK_EV_SETPROCTITLE</code></a></dt>
+      <dd>Process changed its name (COMM).</dd>
+    </dl>
+    <p class="Pp">It's important to note that <i class="Em">events</i> is what
+        triggered the event, not what is known about the process.</p>
+    <p class="Pp" id="QUARK_EV_EXEC~2">It might also be more than one value as
+        events get aggregated. For example, a short lived process will have the
+        following mask: <code class="Dv">QUARK_EV_FORK</code> |
+        <a class="permalink" href="#QUARK_EV_EXEC~2"><code class="Dv">QUARK_EV_EXEC</code></a>
+        |
+        <a class="permalink" href="#QUARK_EV_EXIT~2"><code class="Dv" id="QUARK_EV_EXIT~2">QUARK_EV_EXIT</code></a>.</p>
+  </dd>
+  <dt id="process"><a class="permalink" href="#process"><i class="Em">process</i></a></dt>
+  <dd>A pointer to the process which originated the event.
+      <var class="Vt">struct quark_process</var> is defined as:
+    <div class="Bd Pp Li">
+    <pre>struct quark_process {
+	u32	pid;
+	u64	flags;
+	/* QUARK_F_PROC */
+	u64	proc_cap_inheritable;
+	u64	proc_cap_permitted;
+	u64	proc_cap_effective;
+	u64	proc_cap_bset;
+	u64	proc_cap_ambient;
+	u64	proc_time_boot;
+	u32	proc_ppid;
+	u32	proc_uid;
+	u32	proc_gid;
+	u32	proc_suid;
+	u32	proc_sgid;
+	u32	proc_euid;
+	u32	proc_egid;
+	u32	proc_pgid;
+	u32	proc_sid;
+	u32	proc_tty_major;
+	u32	proc_tty_minor;
+	u32	proc_entry_leader_type;
+	u32	proc_entry_leader;
+	/* QUARK_F_EXIT */
+	s32	exit_code;
+	u64	exit_time_event;
+	/* QUARK_F_COMM */
+	char	comm[16];
+	/* QUARK_F_FILENAME */
+	char	filename[1024];
+	/* QUARK_F_CMDLINE */
+	size_t	cmdline_len;
+	char	cmdline[1024];
+	/* QUARK_F_CWD */
+	char	cwd[1024];
+};</pre>
+    </div>
+    <p class="Pp" id="flags"><a class="permalink" href="#flags"><i class="Em">flags</i></a>
+        represent the fields which are known about the process, these can be
+        cached and originate from previous events. Each bit in the set
+        represents one or more members of the structure, if the bit is unset,
+        the respective members are invalid/unknown.</p>
+    <p class="Pp"></p>
+    <dl class="Bl-tag Bl-compact">
+      <dt id="QUARK_F_PROC"><a class="permalink" href="#QUARK_F_PROC"><code class="Dv">QUARK_F_PROC</code></a></dt>
+      <dd><a class="permalink" href="#proc_"><i class="Em" id="proc_">proc_</i></a>
+          members are valid.</dd>
+      <dt id="QUARK_F_EXIT"><a class="permalink" href="#QUARK_F_EXIT"><code class="Dv">QUARK_F_EXIT</code></a></dt>
+      <dd><a class="permalink" href="#exit_code"><i class="Em" id="exit_code">exit_code</i></a>
+          is valid.</dd>
+      <dt id="QUARK_F_COMM"><a class="permalink" href="#QUARK_F_COMM"><code class="Dv">QUARK_F_COMM</code></a></dt>
+      <dd><a class="permalink" href="#comm"><i class="Em" id="comm">comm</i></a>
+          is valid.</dd>
+      <dt id="QUARK_F_FILENAME"><a class="permalink" href="#QUARK_F_FILENAME"><code class="Dv">QUARK_F_FILENAME</code></a></dt>
+      <dd><a class="permalink" href="#filename"><i class="Em" id="filename">filename</i></a>
+          is valid.</dd>
+      <dt id="QUARK_F_CMDLINE"><a class="permalink" href="#QUARK_F_CMDLINE"><code class="Dv">QUARK_F_CMDLINE</code></a></dt>
+      <dd><a class="permalink" href="#cmdline"><i class="Em" id="cmdline">cmdline</i></a>
+          and
+          <a class="permalink" href="#cmdline_len"><i class="Em" id="cmdline_len">cmdline_len</i></a>
+          are valid.</dd>
+      <dt id="QUARK_F_CWD"><a class="permalink" href="#QUARK_F_CWD"><code class="Dv">QUARK_F_CWD</code></a></dt>
+      <dd><a class="permalink" href="#cwd"><i class="Em" id="cwd">cwd</i></a> is
+          valid.</dd>
+    </dl>
+  </dd>
+</dl>
+<section class="Sh">
+<h1 class="Sh" id="MEMORY_PROTOCOL"><a class="permalink" href="#MEMORY_PROTOCOL">MEMORY
+  PROTOCOL</a></h1>
+<p class="Pp"><i class="Em">process</i> points to internal data, it
+    <a class="permalink" href="#MUST"><i class="Em" id="MUST">MUST NOT</i></a>
+    be modified and/or stored. In the case of multithreading, the pointer should
+    not be accessed concurrently with another thread which executes
+    <code class="Nm">quark_queue_get_events</code>.</p>
+<p class="Pp">In other words, read the stuff you want, copy it out, and forget
+    about it.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
+  VALUES</a></h1>
+<p class="Pp">The number of filled events via <var class="Fa">qev</var> to a
+    maximum of <var class="Fa">nqev</var>. If zero is returned, the user should
+    consider calling
+    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>. In
+    the case of an internal error, -1 is returned and
+    <var class="Va">errno</var> is set.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>,
+    <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>,
+    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>,
+    <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
+    <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>,
+    <a class="Xr" href="quark_queue_get_epollfd.3.html">quark_queue_get_epollfd(3)</a>,
+    <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
+    <a class="Xr" href="quark.7.html">quark(7)</a>,
+    <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a></p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">September 19, 2024</td>
+    <td class="foot-os">Linux</td>
+  </tr>
+</table>
+</body>
+</html>

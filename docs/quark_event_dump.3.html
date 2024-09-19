@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="mandoc.css" type="text/css" media="all"/>
+  <title>QUARK_EVENT_DUMP(3)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">QUARK_EVENT_DUMP(3)</td>
+    <td class="head-vol">Library Functions Manual</td>
+    <td class="head-rtitle">QUARK_EVENT_DUMP(3)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">quark_event_dump</code> &#x2014;
+    <span class="Nd">dump a <var class="Vt">quark_event</var> to a
+    <var class="Vt">FILE</var></span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<p class="Pp"><code class="In">#include
+  &lt;<a class="In">quark.h</a>&gt;</code></p>
+<p class="Pp"><var class="Ft">int</var>
+  <br/>
+  <code class="Fn">quark_event_dump</code>(<var class="Fa" style="white-space: nowrap;">struct
+    quark_event *qev</var>, <var class="Fa" style="white-space: nowrap;">FILE
+    *file</var>);</p>
+</section>
+<h1 class="Sh">TABLE OF CONTENTS</h1>
+<ul class="Bl-compact">
+  <li><a href="#DESCRIPTION">DESCRIPTION</a></li>
+  <li><a href="#OUTPUT_EXAMPLE">OUTPUT EXAMPLE</a></li>
+  <li><a href="#FORMAT">FORMAT</a></li>
+  <li><a href="#RETURN_VALUES">RETURN VALUES</a></li>
+  <li><a href="#SEE_ALSO">SEE ALSO</a></li>
+</ul>
+<section class="Sh">
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+<p class="Pp"><code class="Nm">quark_event_dump</code> dumps a human readable
+    format of the event pointed to by <var class="Fa">qev</var> to the file
+    specified in <var class="Fa">file</var>.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="OUTPUT_EXAMPLE"><a class="permalink" href="#OUTPUT_EXAMPLE">OUTPUT
+  EXAMPLE</a></h1>
+<div class="Bd Li">
+<pre>-&gt;818621 (FORK+EXEC+EXIT)
+  COMM  comm=git
+  CMDL  cmdline=[ /usr/bin/git, --no-pager, ls-tree, --name-only, -z, HEAD, --, quark_event_dump.3 ]
+  PROC  ppid=5082
+  PROC  uid=1000 gid=1000 suid=1000 sgid=1000 euid=1000 egid=1000
+  PROC  cap_inheritable=0x0 cap_permitted=0x0 cap_effective=0x0
+  PROC  cap_bset=0x1ffffffffff cap_ambient=0x0
+  PROC  time_boot=1712219191035753014
+  CWD   cwd=/home/haesbaert
+  FILE  filename=/usr/bin/git
+  EXIT  exit_code=0 exit_time=72031260061483</pre>
+</div>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="FORMAT"><a class="permalink" href="#FORMAT">FORMAT</a></h1>
+<p class="Pp">The number <b class="Sy">818621</b> after the
+    <a class="permalink" href="#_"><b class="Sy" id="_">-&gt;</b></a> is the pid
+    of the originating process. The string
+    <a class="permalink" href="#(FORK+EXEC+EXIT)"><b class="Sy" id="(FORK+EXEC+EXIT)">(FORK+EXEC+EXIT)</b></a>
+    describes what is aggregated in
+    <a class="permalink" href="#this"><b class="Sy" id="this">this</b></a>
+    specific event. The following fields contain all the data we know about pid
+    <b class="Sy">818621</b>, which originates both from this event, and
+    whatever has been learned before and is cached.</p>
+<p class="Pp" id="PROC">The first column of the subsequent lines is a
+    description of the <var class="Vt">flag</var> from where the fields in the
+    second column originates from. For example
+    <a class="permalink" href="#PROC"><b class="Sy">PROC</b></a> is
+    <code class="Dv">QUARK_F_PROC</code> and produces the fields
+    <a class="permalink" href="#ppid"><b class="Sy" id="ppid">ppid</b></a>,
+    <a class="permalink" href="#uid"><b class="Sy" id="uid">uid</b></a>,
+    <a class="permalink" href="#gid"><b class="Sy" id="gid">gid</b></a>,
+    <a class="permalink" href="#suid"><b class="Sy" id="suid">suid
+  ...</b></a></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
+  VALUES</a></h1>
+<p class="Pp">Zero on success, -1 in error from
+    <a class="Xr" href="fwrite.3.html">fwrite(3)</a>.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>,
+    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>,
+    <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
+    <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>,
+    <a class="Xr" href="quark_queue_get_epollfd.3.html">quark_queue_get_epollfd(3)</a>,
+    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>,
+    <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
+    <a class="Xr" href="quark.7.html">quark(7)</a>,
+    <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a></p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">September 19, 2024</td>
+    <td class="foot-os">Linux</td>
+  </tr>
+</table>
+</body>
+</html>

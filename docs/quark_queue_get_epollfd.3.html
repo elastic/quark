@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="mandoc.css" type="text/css" media="all"/>
+  <title>QUARK_QUEUE_GET_EPOLLFD(3)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">QUARK_QUEUE_GET_EPOLLFD(3)</td>
+    <td class="head-vol">Library Functions Manual</td>
+    <td class="head-rtitle">QUARK_QUEUE_GET_EPOLLFD(3)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">quark_queue_get_epollfd</code> &#x2014;
+    <span class="Nd">fetch a file descriptor suitable for blocking with
+    <a class="Xr" href="epoll_wait.2.html">epoll_wait(2)</a></span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<p class="Pp"><code class="In">#include
+  &lt;<a class="In">quark.h</a>&gt;</code></p>
+<p class="Pp"><var class="Ft">int</var>
+  <br/>
+  <code class="Fn">quark_queue_get_epollfd</code>(<var class="Fa" style="white-space: nowrap;">struct
+    quark_queue *qq</var>);</p>
+</section>
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+<code class="Nm">quark_queue_get_epollfd</code> retrieves a epoll file
+  descriptor with all the backend related descriptors already registered to it.
+  This is to be used for integrating quark into an existing main-loop, as in,
+  not calling
+  <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a> at all.
+<p class="Pp" id="VERY">It is
+    <a class="permalink" href="#VERY"><i class="Em">VERY IMPORTANT</i></a> to
+    establish a reasonable timeout when you call
+    <a class="Xr" href="epoll_wait.2.html">epoll_wait(2)</a> on it. Some
+    backends will only make the file descriptor readable once a certain
+    watermark of bytes have been read, so without the timeout you might get very
+    late events. 100ms is a safe value, the user should then call
+    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>
+    to fetch the expired events.</p>
+<section class="Sh">
+<h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
+  VALUES</a></h1>
+<p class="Pp">Returns the epoll file descriptor or -1 if deemed invalid, as
+    trying to get the descriptor of a closed queue. <var class="Va">errno</var>
+    is set.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="EXAMPLES"><a class="permalink" href="#EXAMPLES">EXAMPLES</a></h1>
+<div class="Bd Bd-indent Li">
+<pre>#include &lt;sys/epoll.h&gt;
+
+#include &lt;quark.h&gt;
+
+static int
+my_own_blocking(struct quark_queue *qq)
+{
+	int epollfd;
+
+	epollfd = quark_queue_get_epollfd(qq);
+	if (epollfd == -1)
+		return (-1);
+	if (epoll_wait(qq-&gt;epollfd, &amp;ev, 1, 100) == -1)
+		return (-1);
+
+	return (0);
+}</pre>
+</div>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>,
+    <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>,
+    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>,
+    <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
+    <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>,
+    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>,
+    <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
+    <a class="Xr" href="quark.7.html">quark(7)</a>,
+    <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a></p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">September 19, 2024</td>
+    <td class="foot-os">Linux</td>
+  </tr>
+</table>
+</body>
+</html>

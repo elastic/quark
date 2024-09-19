@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="mandoc.css" type="text/css" media="all"/>
+  <title>QUARK-MON(8)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">QUARK-MON(8)</td>
+    <td class="head-vol">System Manager's Manual</td>
+    <td class="head-rtitle">QUARK-MON(8)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">quark-mon</code> &#x2014;
+    <span class="Nd">monitor and print quark events</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<table class="Nm">
+  <tr>
+    <td><code class="Nm">quark-mon</code></td>
+    <td>[<code class="Fl">-bDekstv</code>] [<code class="Fl">-C</code>
+      <var class="Ar">filename</var>] [<code class="Fl">-l</code>
+      <var class="Ar">maxlength</var>] [<code class="Fl">-m</code>
+      <var class="Ar">maxnodes</var>]</td>
+  </tr>
+</table>
+</section>
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+The <code class="Nm">quark-mon</code> program listens to all incoming
+  <a class="Xr" href="quark.7.html">quark(7)</a> events and prints them to
+  stdout, the output format used is the one in
+  <a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>.
+<p class="Pp">The main utility is for testing and debugging quark, it's also a
+    good introduction to the code base. <code class="Nm">quark-mon</code> runs
+    until a SIGINT is received.</p>
+<p class="Pp">The options are as follows:</p>
+<dl class="Bl-tag">
+  <dt id="b"><a class="permalink" href="#b"><code class="Fl">-b</code></a></dt>
+  <dd>Attempt EBPF as the backend.</dd>
+  <dt id="C"><a class="permalink" href="#C"><code class="Fl">-C</code></a>
+    <var class="Ar">filename</var></dt>
+  <dd>Dumps the contents of the internal cache into
+      <var class="Ar">filename</var> after exit. Format is a
+      <a class="permalink" href="#dot"><i class="Em" id="dot">dot</i></a> file
+      that can be compiled to a
+      <a class="permalink" href="#svg"><i class="Em" id="svg">svg</i></a> with:
+    <div class="Bd Pp Bd-indent Li">
+    <pre>dot -Tsvg filename -o filename.svg</pre>
+    </div>
+  </dd>
+  <dt id="D"><a class="permalink" href="#D"><code class="Fl">-D</code></a></dt>
+  <dd>Drop priviledges to nobody and chroot to /var/empty, useful to show how
+      quark can run without priviledges.</dd>
+  <dt id="e"><a class="permalink" href="#e"><code class="Fl">-e</code></a></dt>
+  <dd>Include
+      <a class="permalink" href="#proc_entry_leader"><i class="Em" id="proc_entry_leader">proc_entry_leader</i></a>
+      and
+      <a class="permalink" href="#proc_entry_type"><i class="Em" id="proc_entry_type">proc_entry_type</i></a>
+      in
+      <a class="permalink" href="#quark_events"><i class="Em" id="quark_events">quark_events</i></a>.
+      Entry leader is how the process entered the system, it is disabled by
+      default as it is Elastic/ECS specific.</dd>
+  <dt id="g"><a class="permalink" href="#g"><code class="Fl">-g</code></a></dt>
+  <dd>Use minimal aggregation, fork, exec and exit will
+      <a class="permalink" href="#not"><i class="Em" id="not">not</i></a> be
+      aggregated.</dd>
+  <dt id="k"><a class="permalink" href="#k"><code class="Fl">-k</code></a></dt>
+  <dd>Attempt kprobe as the backend.</dd>
+  <dt id="l"><a class="permalink" href="#l"><code class="Fl">-l</code></a>
+    <var class="Ar">maxlength</var></dt>
+  <dd>Maximum lenght of the quark queue, essentially how much quark is willing
+      to buffer, refer to
+      <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a> for
+      further details.</dd>
+  <dt id="s"><a class="permalink" href="#s"><code class="Fl">-s</code></a></dt>
+  <dd>Don't send the initial snapshot of existing processes.</dd>
+  <dt id="t"><a class="permalink" href="#t"><code class="Fl">-t</code></a></dt>
+  <dd>Don't supress thread events, this is only useful for debugging and will
+      likely be zapped in the future.</dd>
+  <dt id="v"><a class="permalink" href="#v"><code class="Fl">-v</code></a></dt>
+  <dd>Increase verbosity, can be specified multiple times for more
+    verbosity.</dd>
+  <dt id="m"><a class="permalink" href="#m"><code class="Fl">-m</code></a>
+    <var class="Ar">maxnodes</var></dt>
+  <dd>Don't really process events, just collect <var class="Ar">maxnodes</var>
+      in the sorting tree and output <span class="Pa">quark_by_time.dot</span>
+      and <span class="Pa">quark_by_pidtime.dot</span>. The first is events
+      sorted by time, and the second by pid plus time. Exits after
+      <var class="Ar">maxnodes</var> has been reached. This is used purely for
+      internal debugging.</dd>
+</dl>
+<section class="Sh">
+<h1 class="Sh" id="BACKEND_SELECTION"><a class="permalink" href="#BACKEND_SELECTION">BACKEND
+  SELECTION</a></h1>
+<p class="Pp">If no backend option is specified,
+    <code class="Nm">quark-mon</code> will attempt EBPF, and then kprobe if EBPF
+    failed. If only one of <code class="Fl">-b</code> or
+    <code class="Fl">-k</code> is passed, then <code class="Nm">quark-mon</code>
+    will be restricted to that option only.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="EXIT_STATUS"><a class="permalink" href="#EXIT_STATUS">EXIT
+  STATUS</a></h1>
+<p class="Pp"><code class="Nm">quark-mon</code> exits with 0 in if a SIGINT was
+    sent, or 1 in case of error.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="EXAMPLES"><a class="permalink" href="#EXAMPLES">EXAMPLES</a></h1>
+<p class="Pp">Running:</p>
+<div class="Bd Bd-indent"><code class="Li">$ quark-mon</code></div>
+<p class="Pp">outputs:</p>
+<div class="Bd Pp Li">
+<pre>-&gt;1607007 (FORK+EXEC+EXIT)
+  COMM  comm=locale
+  CMDL  cmdline=[ locale, charmap ]
+  PROC  ppid=1607003
+  PROC  uid=1000 gid=1000 suid=1000 sgid=1000 euid=1000 egid=1000
+  PROC  cap_inheritable=0x0 cap_permitted=0x0 cap_effective=0x0
+  PROC  cap_bset=0x1ffffffffff cap_ambient=0x0
+  PROC  time_boot=1713340073284870415
+  CWD   cwd=/d/e/quark
+  FILE  filename=/usr/bin/locale
+  EXIT  exit_code=0 exit_time=434523672438062
+-&gt;1607008 (FORK+EXEC+EXIT)
+  COMM  comm=groff
+  CMDL  cmdline=[ groff, -mtty-char, -Tutf8, -mandoc, -rLL=109n, -rLT=109n, -P-c ]
+  PROC  ppid=1607003
+  PROC  uid=1000 gid=1000 suid=1000 sgid=1000 euid=1000 egid=1000
+  PROC  cap_inheritable=0x0 cap_permitted=0x0 cap_effective=0x0
+  PROC  cap_bset=0x1ffffffffff cap_ambient=0x0
+  PROC  time_boot=1713340073288110375
+  CWD   cwd=/d/e/quark
+  FILE  filename=/usr/bin/groff
+  EXIT  exit_code=0 exit_time=434523688177774
+  ...</pre>
+</div>
+<p class="Pp">Refer to
+    <a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a> for the
+    output format description.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>,
+    <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>,
+    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>,
+    <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
+    <a class="Xr" href="quark_queue_get_epollfd.3.html">quark_queue_get_epollfd(3)</a>,
+    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>,
+    <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
+    <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a></p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">September 19, 2024</td>
+    <td class="foot-os">Linux</td>
+  </tr>
+</table>
+</body>
+</html>
