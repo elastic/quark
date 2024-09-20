@@ -25,7 +25,6 @@ struct quark_btf_target targets[] = {
 	{ "cred.sgid",			-1 },
 	{ "cred.suid",			-1 },
 	{ "cred.uid",			-1 },
-	{ "cred.user",			-1 },
 	{ "dentry.d_name.name",		-1 },
 	{ "dentry.d_parent",		-1 },
 	{ "fs_struct.pwd.dentry",	-1 },

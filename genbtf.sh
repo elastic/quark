@@ -20,8 +20,9 @@ if [ $# -ne 1 ]; then
    usage
 fi
 
-# amd64 only for now
-Srcs="
+Btfhub_path="$1"
+
+Srcs_amd64="
 amzn/2/x86_64
 amzn/2018/x86_64
 centos/7/x86_64
@@ -35,6 +36,8 @@ fedora/26/x86_64
 fedora/27/x86_64
 fedora/28/x86_64
 fedora/29/x86_64
+fedora/30/x86_64
+fedora/31/x86_64
 ol/7/x86_64
 ol/8/x86_64
 rhel/7/x86_64
@@ -46,6 +49,36 @@ ubuntu/16.04/x86_64
 ubuntu/18.04/x86_64
 ubuntu/20.04/x86_64
 "
+
+Srcs_arm64="
+amzn/2/arm64
+centos/7/arm64
+centos/8/arm64
+debian/bullseye/arm64
+debian/9/arm64
+debian/10/arm64
+fedora/28/arm64
+fedora/29/arm64
+fedora/30/arm64
+fedora/31/arm64
+ol/7/arm64
+ol/8/arm64
+rhel/7/arm64
+rhel/8/arm64
+ubuntu/16.04/arm64
+ubuntu/18.04/arm64
+ubuntu/20.04/arm64
+"
+
+# Table of all successfull kernels, so we can create all_btfs[]
+typeset -a Good_amd64
+typeset -a Good_arm64
+typeset -i Total=0
+
+Commit=$(cd $Btfhub_path && git rev-parse HEAD)
+if [ -z $Commit ]; then
+	exit 1
+fi
 
 cat <<EOF
 // SPDX-License-Identifier: Apache-2.0
@@ -64,43 +97,68 @@ cat <<EOF
 
 EOF
 
-Commit=$(cd $1 && git rev-parse HEAD)
-if [ -z $Commit ]; then
-	exit 1
-fi
-
 printf "const char *btfhub_archive_commit=\"%s\";\n\n" "$Commit"
 
-# Table of all successfull kernels, so we can create all_btfs[]
-typeset -a Good
-typeset -i Total=0
+function do_arch
+{
 
-for s in $Srcs; do
-	distro=${s%/*}
-	s="$1/$s"
-	for k in $(find $s -name '*.tar.xz'); do
-		btf=$(basename ${k%%.tar.xz})
-		name="$distro-${btf%%.btf}"
-		name=$(echo $name | tr \\055\\056\\057 _)
-		tar xf $k || die "oh noes"
-		if ./quark-btf -g $name -f $btf 2>/dev/null; then
-			echo "$name OK" 1>&2
-			Good+=("$name")
-		else
-			echo "$name FAIL" 1>&2
-		fi
-		rm -f $btf
-		Total=$((Total+1))
+	if [ $1 = amd64 ]; then
+		Arch=amd64
+		Srcs="$Srcs_amd64"
+	elif [ $1 = arm64 ]; then
+		Arch=aarch64
+		Srcs="$Srcs_arm64"
+	else
+		die "bad arch"
+	fi
+
+	printf "#ifdef __%s__\n\n" $Arch
+
+	for s in $Srcs; do
+		distro=${s%/*}
+		s="$Btfhub_path/$s"
+		for k in $(find $s -name '*.tar.xz'); do
+			btf=$(basename ${k%%.tar.xz})
+			name="$distro-${btf%%.btf}"
+			name=$(echo $name | tr \\055\\056\\057 _)
+			tar xf $k || die "oh noes"
+			if ./quark-btf -g $name -f $btf 2>/dev/null; then
+				echo "$name OK" 1>&2
+				if [ $1 = amd64 ]; then
+					Good_amd64+=("$name")
+				elif [ $1 = arm64 ]; then
+					Good_arm64+=("$name")
+				fi
+			else
+				echo "$name FAIL" 1>&2
+			fi
+			rm -f $btf
+			Total=$((Total+1))
+		done
 	done
-done
+
+	printf "#endif /* __%s__ */\n\n" $Arch
+
+}
+
+do_arch amd64
+do_arch arm64
 
 cat <<EOF
 struct quark_btf *all_btfs[] = {
 EOF
 
-for name in "${Good[@]}"; do
-	printf "\t&%s,\n" "$name"
-done
+	printf "\n#ifdef __amd64__\n"
+	for name in "${Good_amd64[@]}"; do
+		printf "\t&%s,\n" "$name"
+	done
+	printf "#endif /* __amd64__ */\n\n"
+
+	printf "#ifdef __aarch64__\n"
+	for name in "${Good_arm64[@]}"; do
+		printf "\t&%s,\n" "$name"
+	done
+	printf "#endif /* __aarch64__ */\n\n"
 
 cat <<EOF
 	NULL
@@ -108,4 +166,6 @@ cat <<EOF
 
 EOF
 
-printf "%d/%d succeeded\n" ${#Good[@]} $Total 1>&2
+typeset -i Good_count
+Good_count=$((${#Good_amd64[@]} + ${#Good_arm64[@]}))
+printf "%d/%d succeeded\n" $Good_count $Total 1>&2
