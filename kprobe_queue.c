@@ -1050,7 +1050,7 @@ kprobe_install_all(u64 qid)
 	int			 i, r;
 	struct quark_btf	*qbtf;
 
-	if ((qbtf = quark_btf_open(NULL, NULL)) == NULL) {
+	if ((qbtf = quark_btf_open()) == NULL) {
 		warnx("%s: can't initialize btf", __func__);
 		return (-1);
 	}
