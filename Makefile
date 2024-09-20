@@ -257,7 +257,6 @@ clean:
 
 clean-all: clean
 	$(call msg,CLEAN-ALL)
-	$(Q)rm -rf docs/*.html
 	$(Q)rm -f $(SVGS)
 	$(Q)rm -rf include
 	$(Q)make -C $(LIBBPF_SRC) clean
