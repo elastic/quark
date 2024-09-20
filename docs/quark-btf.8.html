@@ -25,24 +25,24 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-btf</code></td>
-    <td>[<code class="Fl">-bv</code>] [<var class="Ar">targets ...</var>]</td>
-  </tr>
-</table>
-<br/>
-<table class="Nm">
-  <tr>
-    <td><code class="Nm">quark-btf</code></td>
     <td>[<code class="Fl">-bv</code>] [<code class="Fl">-f</code>
-      <var class="Ar">btf_file</var>]</td>
+      <var class="Ar">btf_file</var>] [<var class="Ar">targets ...</var>]</td>
   </tr>
 </table>
 <br/>
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-btf</code></td>
-    <td>[<code class="Fl">-v</code>] [<code class="Fl">-f</code>
-      <var class="Ar">btf_file</var>] [<code class="Fl">-g</code>
-      <var class="Ar">btf_name</var>]</td>
+    <td>[<code class="Fl">-bv</code>] <code class="Fl">-l</code>
+      <var class="Ar">version</var></td>
+  </tr>
+</table>
+<br/>
+<table class="Nm">
+  <tr>
+    <td><code class="Nm">quark-btf</code></td>
+    <td>[<code class="Fl">-v</code>] <code class="Fl">-g</code>
+      <var class="Ar">btf_file name version</var></td>
   </tr>
 </table>
 </section>
@@ -56,30 +56,42 @@ The <code class="Nm">quark-btf</code> program prints out the kernel structures
 <dl class="Bl-tag">
   <dt id="b"><a class="permalink" href="#b"><code class="Fl">-b</code></a></dt>
   <dd>Also print the offset in bits.</dd>
-  <dt id="v"><a class="permalink" href="#v"><code class="Fl">-v</code></a></dt>
-  <dd>Increase
-      <a class="permalink" href="#quark_verbose"><i class="Em" id="quark_verbose">quark_verbose</i></a>,
-      can be issued multiple times.</dd>
   <dt id="f"><a class="permalink" href="#f"><code class="Fl">-f</code></a>
     <var class="Ar">btf_file</var></dt>
   <dd>Print all offsets quark would use from
     <var class="Ar">btf_file</var>.</dd>
   <dt id="g"><a class="permalink" href="#g"><code class="Fl">-g</code></a>
-    <var class="Ar">btf_name</var></dt>
-  <dd>Generate the internal btf C structure used by quark. Must be used together
-      with <code class="Fl">-f</code> <var class="Ar">btf_file</var>.
-    <p class="Pp">This is only used to generate <span class="Pa">btfhub.c</span>
-        via <span class="Pa">genbtf.sh</span>, and since btfhub-archive never
-        changes, chances are you'll never need this.
-        <var class="Ar">btf_file</var>.</p>
-  </dd>
+    <var class="Ar">btf_file name version</var></dt>
+  <dd>Generate the internal btf C structure used by quark.
+    <dl class="Bl-tag">
+      <dt><var class="Ar">btf_file</var></dt>
+      <dd>is a the path to the btf.</dd>
+      <dt><var class="Ar">name</var></dt>
+      <dd>is a human identifier, like ubuntu-22.</dd>
+      <dt id="uname"><var class="Ar">version</var></dt>
+      <dd>is the kernel version as returned by
+          <a class="permalink" href="#uname"><i class="Em">uname
+        -r</i></a>.</dd>
+    </dl>
+    This option only used to generate <span class="Pa">btfhub.c</span> via
+      <span class="Pa">genbtf.sh</span>, chances are you'll never need
+    this.</dd>
+  <dt id="l"><a class="permalink" href="#l"><code class="Fl">-l</code></a>
+    <var class="Ar">version</var></dt>
+  <dd>Lookup the kernel
+      <a class="permalink" href="#version"><i class="Em" id="version">version</i></a>
+      in the compiled btfhub table from quark and print which kernel quark would
+      use. Matching can be partial.</dd>
+  <dt id="v"><a class="permalink" href="#v"><code class="Fl">-v</code></a></dt>
+  <dd>Increase
+      <a class="permalink" href="#quark_verbose"><i class="Em" id="quark_verbose">quark_verbose</i></a>,
+      can be issued multiple times.</dd>
 </dl>
 <section class="Sh">
 <h1 class="Sh" id="EXIT_STATUS"><a class="permalink" href="#EXIT_STATUS">EXIT
   STATUS</a></h1>
-<p class="Pp"><code class="Nm">quark-btf</code> exits with number of targets
-    failed if <var class="Ar">targets</var> is specified. Otherwise 0 in case of
-    success.</p>
+<p class="Pp"><code class="Nm">quark-btf</code> exits with 1 if it can't resolve
+    all BTF symbols, 0 otherwise.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="EXAMPLES"><a class="permalink" href="#EXAMPLES">EXAMPLES</a></h1>
@@ -134,7 +146,7 @@ vfsmount.mnt_root            0</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">September 19, 2024</td>
+    <td class="foot-date">October 4, 2024</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

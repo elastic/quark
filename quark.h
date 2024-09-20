@@ -54,7 +54,9 @@ struct quark_btf {
 	char			*kname;
 	struct quark_btf_target	 targets[];
 };
-struct quark_btf	*quark_btf_open(const char *, const char *);
+struct quark_btf	*quark_btf_open(void);
+struct quark_btf	*quark_btf_open2(const char *, const char *);
+struct quark_btf	*quark_btf_open_hub(const char *);
 void			 quark_btf_close(struct quark_btf *);
 ssize_t			 quark_btf_offset(struct quark_btf *, const char *);
 

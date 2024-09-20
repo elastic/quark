@@ -7,14 +7,15 @@
 .Sh SYNOPSIS
 .Nm quark-btf
 .Op Fl bv
+.Op Fl f Ar btf_file
 .Op Ar targets ...
 .Nm quark-btf
 .Op Fl bv
-.Op Fl f Ar btf_file
+.Fl l
+.Ar version
 .Nm quark-btf
 .Op Fl v
-.Op Fl f Ar btf_file
-.Op Fl g Ar btf_name
+.Fl g Ar btf_file name version
 .Sh DESCRIPTION
 The
 .Nm
@@ -29,31 +30,38 @@ The options are as follows:
 .Bl -tag -width Dtb
 .It Fl b
 Also print the offset in bits.
+.It Fl f Ar btf_file
+Print all offsets quark would use from
+.Ar btf_file .
+.It Fl g Ar btf_file name version
+Generate the internal btf C structure used by quark.
+.Bl -tag -width btf_file
+.It Ar btf_file
+is a the path to the btf.
+.It Ar name
+is a human identifier, like ubuntu-22.
+.It Ar version
+is the kernel version as returned by
+.Em uname -r .
+.El
+This option only used to generate
+.Pa btfhub.c
+via
+.Pa genbtf.sh ,
+chances are you'll never need this.
+.It Fl l Ar version
+Lookup the kernel
+.Em version
+in the compiled btfhub table from quark and print which kernel quark would use.
+Matching can be partial.
 .It Fl v
 Increase
 .Em quark_verbose ,
 can be issued multiple times.
-.It Fl f Ar btf_file
-Print all offsets quark would use from
-.Ar btf_file .
-.It Fl g Ar btf_name
-Generate the internal btf C structure used by quark.
-Must be used together with
-.Fl f Ar btf_file .
-.Pp
-This is only used to generate
-.Pa btfhub.c
-via
-.Pa genbtf.sh ,
-and since btfhub-archive never changes, chances are you'll never need this.
-.Ar btf_file .
 .El
 .Sh EXIT STATUS
 .Nm
-exits with number of targets failed if
-.Ar targets
-is specified.
-Otherwise 0 in case of success.
+exits with 1 if it can't resolve all BTF symbols, 0 otherwise.
 .Sh EXAMPLES
 Running:
 .Dl $ quark-btf

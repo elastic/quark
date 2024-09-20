@@ -101,28 +101,28 @@ printf "const char *btfhub_archive_commit=\"%s\";\n\n" "$Commit"
 
 function do_arch
 {
-
 	if [ $1 = amd64 ]; then
-		Arch=amd64
-		Srcs="$Srcs_amd64"
+		arch=amd64
+		srcs="$Srcs_amd64"
 	elif [ $1 = arm64 ]; then
-		Arch=aarch64
-		Srcs="$Srcs_arm64"
+		arch=aarch64
+		srcs="$Srcs_arm64"
 	else
 		die "bad arch"
 	fi
 
-	printf "#ifdef __%s__\n\n" $Arch
+	printf "#ifdef __%s__\n\n" $arch
 
-	for s in $Srcs; do
+	for s in $srcs; do
 		distro=${s%/*}
 		s="$Btfhub_path/$s"
 		for k in $(find $s -name '*.tar.xz'); do
 			btf=$(basename ${k%%.tar.xz})
-			name="$distro-${btf%%.btf}"
-			name=$(echo $name | tr \\055\\056\\057 _)
+			version="${btf%%.btf}"
 			tar xf $k || die "oh noes"
-			if ./quark-btf -g $name -f $btf 2>/dev/null; then
+			name=${distro}_${version}
+			name=$(echo $name | tr \\055\\056\\057 _)
+			if ./quark-btf -g "$btf" "$distro" "$version" 2>/dev/null; then
 				echo "$name OK" 1>&2
 				if [ $1 = amd64 ]; then
 					Good_amd64+=("$name")
@@ -137,7 +137,7 @@ function do_arch
 		done
 	done
 
-	printf "#endif /* __%s__ */\n\n" $Arch
+	printf "#endif /* __%s__ */\n\n" $arch
 
 }
 

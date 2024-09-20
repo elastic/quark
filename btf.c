@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <sys/utsname.h>
+
 #include "quark.h"
 
 #include <bpf/btf.h>
@@ -13,7 +15,7 @@
 
 s32	btf_root_offset(struct btf *, const char *);
 
-struct quark_btf_target targets[] = {
+struct quark_btf_target base_targets[] = {
 	{ "cred.cap_ambient",		-1 },
 	{ "cred.cap_bset",		-1 },
 	{ "cred.cap_effective",		-1 },
@@ -192,8 +194,96 @@ btf_root_offset(struct btf *btf, const char *dotname)
 	return (btf_root_offset2(btf, dotname));
 }
 
+static struct quark_btf *
+quark_btf_new(const char *new_name)
+{
+	struct quark_btf	*qbtf;
+
+	if ((qbtf = malloc(sizeof(*qbtf) + sizeof(base_targets))) == NULL)
+		return (NULL);
+	qbtf->kname = strdup(new_name);
+	if (qbtf->kname == NULL) {
+		free(qbtf);
+		return (NULL);
+	}
+	memcpy(qbtf->targets, base_targets, sizeof(base_targets));
+
+	return (qbtf);
+}
+
+static struct quark_btf *
+quark_btf_dup(struct quark_btf *src)
+{
+	struct quark_btf	*qbtf;
+
+	if (src == NULL)
+		return (NULL);
+
+	qbtf = quark_btf_new(src->kname);
+	if (qbtf == NULL)
+		return (NULL);
+	memcpy(qbtf->targets, src->targets, sizeof(base_targets));
+
+	return (qbtf);
+}
+
 struct quark_btf *
-quark_btf_open(const char *path, const char *kname)
+quark_btf_open_hub(const char *version)
+{
+	extern struct quark_btf	 *all_btfs[];
+	struct quark_btf	**pp, *best, *cand;
+	int			  best_score;
+
+	/* paranoia */
+	if (version == NULL || strlen(version) == 0)
+		return (NULL);
+
+	best = NULL;
+	best_score = 0;
+	for (pp = all_btfs; (cand = *pp) != NULL; pp++) {
+		const char	*pv, *pc;
+		int		 score;
+
+		score = 0;
+
+		/* paranoia */
+		if (cand->kname == NULL || strlen(cand->kname) == 0)
+			return (NULL);
+
+		/*
+		 * Match head, the beginning of version
+		 */
+		for (pc = cand->kname, pv = version, score = 0;
+		     *pc != 0 && *pv != 0 && *pc == *pv;
+		     score++, pc++, pv++)
+			;     /* NADA */
+
+		/*
+		 * If we didn't score yet, don't bother matching tail
+		 */
+		if (score == 0)
+			continue;
+
+		/*
+		 * Match tail, the end of version
+		 */
+		for (pc = cand->kname + strlen(cand->kname) - 1,
+			 pv = version + strlen(version) - 1;
+		     pc != cand->kname && pv != version && *pc == *pv;
+		     score++, pc--, pv--)
+			;	/* NADA */
+
+		if (score > best_score) {
+			best = cand;
+			best_score = score;
+		}
+	}
+
+	return (quark_btf_dup(best));
+}
+
+struct quark_btf *
+quark_btf_open2(const char *path, const char *kname)
 {
 	struct btf		*btf;
 	int			 failed;
@@ -212,12 +302,10 @@ quark_btf_open(const char *path, const char *kname)
 		return (NULL);
 	}
 
-	if ((qbtf = malloc(sizeof(*qbtf) + sizeof(targets))) == NULL)
-		return (NULL);
 	if (kname == NULL)
 		kname = "sys";
-	qbtf->kname = strdup(kname);
-	memcpy(qbtf->targets, targets, sizeof(targets));
+	if ((qbtf = quark_btf_new(kname)) == NULL)
+		return (NULL);
 
 	for (ta = qbtf->targets; ta->dotname != NULL; ta++) {
 		ta->offset = btf_root_offset(btf, ta->dotname);
@@ -257,6 +345,21 @@ quark_btf_open(const char *path, const char *kname)
 		return (errno = ENOTSUP, NULL);
 	}
 
+	return (qbtf);
+}
+
+struct quark_btf *
+quark_btf_open(void)
+{
+	struct quark_btf	*qbtf;
+	struct utsname		 uts;
+
+	/* Try the system BTF */
+	qbtf = quark_btf_open2(NULL, NULL);
+
+	/* Try BTF hub */
+	if (qbtf == NULL && uname(&uts) == 0)
+		qbtf = quark_btf_open_hub(uts.release);
 
 	return (qbtf);
 }
