@@ -230,10 +230,10 @@ func (queue *Queue) Block() error {
 func (queue *Queue) Snapshot() []Process {
 	var processes []Process
 	var iter C.struct_quark_process_iter
+	var qp *C.struct_quark_process
 
 	C.quark_process_iter_init(&iter, queue.quarkQueue)
-
-	for qp := C.quark_process_iter_next(&iter); qp != nil; {
+	for qp = C.quark_process_iter_next(&iter); qp != nil; qp = C.quark_process_iter_next(&iter) {
 		processes = append(processes, processToGo(qp))
 	}
 
