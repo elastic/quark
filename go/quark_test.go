@@ -6,6 +6,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestQuarkSnapshot(t *testing.T) {
+	queue, err := OpenQueue(DefaultQueueAttr(), 64)
+	require.NoError(t, err)
+
+	defer queue.Close()
+
+	require.NotEmpty(t, queue.Snapshot())
+}
+
 func TestQuarkLookup(t *testing.T) {
 	queue, err := OpenQueue(DefaultQueueAttr(), 64)
 	require.NoError(t, err)
