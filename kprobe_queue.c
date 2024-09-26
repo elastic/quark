@@ -125,8 +125,10 @@ struct perf_group_leader {
 /*
  * Forbid padding on samples/wire structures
  */
+#ifndef NO_PUSH_PRAGMA
 #pragma GCC diagnostic push
 #pragma GCC diagnostic error "-Wpadded"
+#endif	/* NO_PUSH_PRAGMA */
 
 struct exec_sample {
 	struct perf_sample_data_loc	filename;
@@ -183,7 +185,9 @@ struct exec_connector_sample {
 	u64				stack[60];	/* sync with kprobe_defs */
 };
 
+#ifndef NO_PUSH_PRAGMA
 #pragma GCC diagnostic pop
+#endif	/* NO_PUSH_PRAGMA */
 
 /*
  * End samples/wire/ structures

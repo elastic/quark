@@ -29,6 +29,9 @@ else
 endif
 
 CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
+ifdef CENTOS7
+CFLAGS+= -std=gnu99 -DNO_PUSH_PRAGMA
+endif
 
 CPPFLAGS?= -D_GNU_SOURCE -Iinclude/usr/include
 
@@ -40,7 +43,9 @@ CDIAGFLAGS+= -Wcomment
 CDIAGFLAGS+= -Wformat
 CDIAGFLAGS+= -Wformat-security
 CDIAGFLAGS+= -Wimplicit
+ifndef CENTOS7
 CDIAGFLAGS+= -Wimplicit-fallthrough
+endif
 CDIAGFLAGS+= -Winline
 CDIAGFLAGS+= -Wmissing-declarations
 CDIAGFLAGS+= -Wmissing-prototypes
@@ -55,6 +60,9 @@ CDIAGFLAGS+= -Wtrigraphs
 CDIAGFLAGS+= -Wuninitialized
 CDIAGFLAGS+= -Wunused
 CDIAGFLAGS+= -Wno-unused-parameter
+ifdef CENTOS7
+CDIAGFLAGS+= -Wno-inline
+endif
 
 CLANG?= clang
 BPFTOOL?= bpftool
@@ -98,6 +106,9 @@ LIBBPF_EXTRA_CFLAGS+= -fPIC
 LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/libelf
 LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/common
 LIBBPF_EXTRA_CFLAGS+= -I../../zlib
+ifdef CENTOS7
+LIBBPF_EXTRA_CFLAGS+= -Wno-address
+endif
 
 # BPFPROG (kernel side)
 BPFPROG_OBJ:= bpf_prog.o
@@ -177,9 +188,9 @@ DOCKER_RUN_ARGS=$(QDOCKER)				\
 
 docker: docker-image clean-all
 	$(call msg,DOCKER-RUN,Dockerfile)
-	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) /bin/bash -c make -C $(PWD)
+	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) /bin/bash -c "make -C $(PWD)"
 
-docker-cross-arm64: docker-image clean-all
+docker-cross-arm64: clean-all docker-image
 	$(call msg,DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run				\
 		-e ARCH=arm64				\
@@ -187,7 +198,7 @@ docker-cross-arm64: docker-image clean-all
 		-e LD=aarch64-linux-gnu-ld		\
 		-e AR=aarch64-linux-gnu-ar		\
 		$(DOCKER_RUN_ARGS)			\
-		/bin/bash -c make -C $(PWD)
+		/bin/bash -c "make -C $(PWD)"
 
 docker-image: clean-all
 	$(call msg,DOCKER-IMAGE,Dockerfile)
@@ -199,6 +210,37 @@ docker-image: clean-all
 
 docker-shell:
 	$(DOCKER) run -it $(DOCKER_RUN_ARGS) /bin/bash
+
+
+CENTOS7_RUN_ARGS=$(QDOCKER)				\
+		-v $(PWD):$(PWD)			\
+		-w $(PWD)				\
+		-u $(shell id -u):$(shell id -g)	\
+		-e CENTOS7=y				\
+		centos7-quark-builder
+
+centos7: clean-all docker-image centos7-image
+	# We first make only bpf_prog.o and bpf_prog_skel.h in the
+	# modern Ubuntu image, we can't make those on centos7
+	$(DOCKER) run					\
+		$(DOCKER_RUN_ARGS)			\
+		/bin/bash -c "make -C $(PWD) bpf_prog.o bpf_prog_skel.h"
+	# Now we build the rest of the suite as it won't try to rebuild
+	# bpf_prog.o and bpf_prog_skel.h
+	$(DOCKER) run					\
+		$(CENTOS7_RUN_ARGS)			\
+		/bin/bash -c "make -j1 -C $(PWD)"
+
+centos7-image: clean-all
+	$(call msg,DOCKER-IMAGE,Dockerfile.centos7)
+	$(DOCKER) build					\
+		$(QDOCKER)				\
+		-f Dockerfile.centos7			\
+		-t centos7-quark-builder		\
+		.
+
+centos7-shell:
+	$(DOCKER) run -it $(CENTOS7_RUN_ARGS) /bin/bash
 
 include: $(LIBBPF_DEPS)
 	$(Q)make -C $(LIBBPF_SRC)			\
@@ -270,13 +312,26 @@ clean-docs:
 .PHONY:				\
 	all			\
 	btfhub			\
+	centos7			\
+	centos7-image		\
+	centos7-shell		\
 	clean			\
 	clean-all		\
 	clean-docs		\
 	docs			\
-	eebpf-sync		\
+	docker			\
+	docker-cross-arm64	\
+	docker-image		\
+	docker-shell		\
+	eebpf-sync
+
+.NOTPARALLEL:			\
+	centos7			\
+	centos7-image		\
+	centos7-shell		\
 	docker			\
 	docker-cross-arm64	\
 	docker-image		\
 	docker-shell
+
 .SUFFIXES:
