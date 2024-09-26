@@ -29,7 +29,9 @@ CDIAGFLAGS+=	-Wformat-zero-length
 CDIAGFLAGS+=	-Wpointer-sign
 CDIAGFLAGS+=	-Wpointer-to-int-cast
 CDIAGFLAGS+=	-Wsign-compare
+ifndef CENTOS7
 CDIAGFLAGS+=	-Wunused-const-variable
+endif
 CDIAGFLAGS+=	-Wunused-parameter
 CDIAGFLAGS+=	-Wold-style-definition
 CDIAGFLAGS+=	-Wpointer-arith
