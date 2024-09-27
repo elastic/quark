@@ -31,11 +31,11 @@
 #define PWD_S(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent)) " dentry.d_name.name +0"
 
 struct kprobe_arg ka_task_old_pgid = {
-	"pgid", XS(ARG_0), "u32", "task_struct.group_leader (task_struct.pids+8) (pid.numbers+0).upid.nr"
+	"pgid", XS(ARG_0), "u32", "task_struct.group_leader (task_struct.pids+40) (pid.numbers+0).upid.nr"
 };
 
 struct kprobe_arg ka_task_old_sid = {
-	"sid", XS(ARG_0), "u32", "task_struct.group_leader (task_struct.pids+16) (pid.numbers+0).upid.nr"
+	"sid", XS(ARG_0), "u32", "task_struct.group_leader (task_struct.pids+64) (pid.numbers+0).upid.nr"
 };
 
 struct kprobe_arg ka_task_new_pgid = {
