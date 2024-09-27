@@ -635,10 +635,37 @@ perf_mmap_consume(struct perf_mmap *mmap)
 }
 
 static int
-perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu,
+perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu,
     int group_fd, unsigned long flags)
 {
-	return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
+	return syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
+}
+
+static int
+perf_event_open_degradable(struct perf_event_attr *attr, pid_t pid, int cpu,
+    int group_fd, unsigned long flags)
+{
+	int	r;
+
+again:
+	r = perf_event_open(attr, pid, cpu, group_fd, flags);
+	if (r == 0)
+		return (r);
+	else if (r == -1 && errno != EINVAL)
+		return (-1);
+
+	/* start degrading until it works */
+	if (attr->comm_exec) {
+		attr->comm_exec = 0;
+		goto again;
+	}
+	if (attr->use_clockid) {
+		attr->use_clockid = 0;
+		attr->clockid = 0;
+		goto again;
+	}
+
+	return (r);
 }
 
 static int
@@ -1071,9 +1098,6 @@ perf_attr_init(struct perf_event_attr *attr, int id)
 	    PERF_SAMPLE_CPU		|
 	    PERF_SAMPLE_RAW;
 
-	/* attr->read_format = PERF_FORMAT_LOST; */
-	/* attr->mmap2 */
-	/* XXX Should we set clock in the child as well? XXX */
 	attr->use_clockid = 1;
 	attr->clockid = CLOCK_MONOTONIC;
 	attr->disabled = 1;
@@ -1105,8 +1129,9 @@ perf_open_group_leader(struct kprobe_queue *kqq, int cpu)
 	pgl->attr.watermark = 1;
 	pgl->attr.wakeup_watermark = (PERF_MMAP_PAGES * getpagesize()) / 10;;
 
-	pgl->fd = perf_event_open(&pgl->attr, -1, cpu, -1, 0);
+	pgl->fd = perf_event_open_degradable(&pgl->attr, -1, cpu, -1, 0);
 	if (pgl->fd == -1) {
+		warn("perf_event_open_degradable");
 		free(pgl);
 		return (NULL);
 	}
@@ -1145,8 +1170,9 @@ perf_open_kprobe(struct kprobe_queue *kqq, struct kprobe *k,
 		return (NULL);
 	}
 	perf_attr_init(&ks->attr, id);
-	ks->fd = perf_event_open(&ks->attr, -1, cpu, group_fd, 0);
+	ks->fd = perf_event_open_degradable(&ks->attr, -1, cpu, group_fd, 0);
 	if (ks->fd == -1) {
+		warn("perf_event_open_degradable");
 		free(ks);
 		return (NULL);
 	}
