@@ -102,6 +102,7 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_EXEC_CONNECTOR:
 		qstr_free(&raw->exec_connector.args);
+		qstr_free(&raw->exec_connector.task.cwd);
 		break;
 	case RAW_COMM:		/* nada */
 		break;
