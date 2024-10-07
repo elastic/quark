@@ -255,7 +255,7 @@ quark_btf_open_hub(const char *version)
 		 */
 		for (pc = cand->kname, pv = version, score = 0;
 		     *pc != 0 && *pv != 0 && *pc == *pv;
-		     score++, pc++, pv++)
+		     pc++, pv++, score++)
 			;     /* NADA */
 
 		/*
@@ -270,7 +270,7 @@ quark_btf_open_hub(const char *version)
 		for (pc = cand->kname + strlen(cand->kname) - 1,
 			 pv = version + strlen(version) - 1;
 		     pc != cand->kname && pv != version && *pc == *pv;
-		     score++, pc--, pv--)
+		     pc--, pv--, score++)
 			;	/* NADA */
 
 		if (score > best_score) {
