@@ -75,8 +75,8 @@ typeset -a Good_amd64
 typeset -a Good_arm64
 typeset -i Total=0
 
-Commit=$(cd $Btfhub_path && git rev-parse HEAD)
-if [ -z $Commit ]; then
+Commit=$(cd "$Btfhub_path" && git rev-parse HEAD)
+if [ -z "$Commit" ]; then
 	exit 1
 fi
 
@@ -101,10 +101,10 @@ printf "const char *btfhub_archive_commit=\"%s\";\n\n" "$Commit"
 
 function do_arch
 {
-	if [ $1 = amd64 ]; then
+	if [ "$1" = amd64 ]; then
 		arch=amd64
 		srcs="$Srcs_amd64"
-	elif [ $1 = arm64 ]; then
+	elif [ "$1" = arm64 ]; then
 		arch=aarch64
 		srcs="$Srcs_arm64"
 	else
@@ -116,25 +116,28 @@ function do_arch
 	for s in $srcs; do
 		distro=${s%/*}
 		s="$Btfhub_path/$s"
-		for k in $(find $s -name '*.tar.xz'); do
-			btf=$(basename ${k%%.tar.xz})
+		while IFS= read -r -d '' k
+		do
+			btf=$(basename "${k%%.tar.xz}")
 			version="${btf%%.btf}"
-			tar xf $k || die "oh noes"
+			tar xf "$k" || die "oh noes"
 			name=${distro}_${version}
-			name=$(echo $name | tr \\055\\056\\057 _)
+			name=$(echo "$name" | tr \\055\\056\\057 _)
 			if ./quark-btf -g "$btf" "$distro" "$version" 2>/dev/null; then
 				echo "$name OK" 1>&2
-				if [ $1 = amd64 ]; then
+				if [ "$1" = amd64 ]; then
 					Good_amd64+=("$name")
-				elif [ $1 = arm64 ]; then
+				elif [ "$1" = arm64 ]; then
 					Good_arm64+=("$name")
 				fi
 			else
 				echo "$name FAIL" 1>&2
 			fi
-			rm -f $btf
+			rm -f "$btf"
 			Total=$((Total+1))
-		done
+		done < <(find "$s" -name '*.tar.xz' -print0)
+		# for k in $(find "$s" -name '*.tar.xz'); do
+		# done
 	done
 
 	printf "#endif /* __%s__ */\n\n" $arch
