@@ -77,7 +77,7 @@ raw_event_alloc(int type)
 	case RAW_COMM:		/* nada */
 		break;
 	default:
-		warnx("%s: unhandled raw_type %d", __func__, raw->type);
+		qwarnx("unhandled raw_type %d", raw->type);
 		free(raw);
 		return (NULL);
 	}
@@ -107,7 +107,7 @@ raw_event_free(struct raw_event *raw)
 	case RAW_COMM:		/* nada */
 		break;
 	default:
-		warnx("%s: unhandled raw_type %d", __func__, raw->type);
+		qwarnx("unhandled raw_type %d", raw->type);
 		break;
 	}
 
@@ -215,7 +215,7 @@ raw_event_insert(struct quark_queue *qq, struct raw_event *raw)
 		 * We just bump time by one until we can insert it.
 		 */
 		raw->time++;
-		warnx("raw_event_by_time collision");
+		qwarnx("raw_event_by_time collision");
 	} while (--attempts > 0);
 
 	if (unlikely(col != NULL))
@@ -365,7 +365,7 @@ process_cache_get(struct quark_queue *qq, int pid, int alloc)
 		return (NULL);
 	qp->pid = pid;
 	if (RB_INSERT(process_by_pid, &qq->process_by_pid, qp) != NULL) {
-		warnx("collision, this is a bug");
+		qwarnx("collision, this is a bug");
 		free(qp);
 		return (NULL);
 	}
@@ -635,7 +635,7 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 #undef STARTS_WITH
 
 	if (qp->proc_entry_leader == QUARK_ELT_UNKNOWN)
-		warnx("%d (%s) is UNKNOWN (tty=%d)",
+		qwarnx("%d (%s) is UNKNOWN (tty=%d)",
 		    qp->pid, qp->filename, tty);
 
 	return (0);
@@ -718,7 +718,7 @@ entry_leaders_build(struct quark_queue *qq)
 		if (qp == NULL)
 			goto fail;
 		if (entry_leader_compute(qq, qp) == -1)
-			warnx("unknown entry_leader for pid %d", qp->pid);
+			qwarnx("unknown entry_leader for pid %d", qp->pid);
 		TAILQ_REMOVE(&list, node, entry);
 		free(node);
 	}
@@ -1045,11 +1045,11 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src, struct
 	}
 
 	if (qp->flags == 0)
-		warnx("%s: no flags", __func__);
+		qwarnx("no flags");
 
 	if (events & (QUARK_EV_FORK | QUARK_EV_EXEC)) {
 		if (entry_leader_compute(qq, qp) == -1)
-			warnx("unknown entry_leader for pid %d", qp->pid);
+			qwarnx("unknown entry_leader for pid %d", qp->pid);
 	}
 
 	/*
@@ -1125,7 +1125,7 @@ sproc_stat(struct quark_process *qp, int dfd)
 	ret = -1;
 
 	if ((fd = openat(dfd, "stat", O_RDONLY)) == -1) {
-		warn("%s: open stat", __func__);
+		qwarn("open stat");
 		return (-1);
 	}
 	buf = load_file_nostat(fd, NULL);
@@ -1200,7 +1200,7 @@ sproc_status(struct quark_process *qp, int dfd)
 	char			*line, *k, *v;
 
 	if ((fd = openat(dfd, "status", O_RDONLY)) == -1) {
-		warn("%s: open status", __func__);
+		qwarn("open status");
 		return (-1);
 	}
 	f = fdopen(fd, "r");
@@ -1213,7 +1213,7 @@ sproc_status(struct quark_process *qp, int dfd)
 	while ((n = getline(&line, &line_len, f)) != -1) {
 		/* k:\tv\n = 5 */
 		if (n < 5 || line[n - 1] != '\n') {
-			warnx("%s: bad line", __func__);
+			qwarnx("bad line");
 			ret = -1;
 			break;
 		}
@@ -1221,14 +1221,14 @@ sproc_status(struct quark_process *qp, int dfd)
 		k = line;
 		v = strstr(line, ":\t");
 		if (v == NULL) {
-			warnx("%s: no `:\\t` found", __func__);
+			qwarnx("no `:\\t` found");
 			ret = -1;
 			break;
 		}
 		*v = 0;
 		v += 2;
 		if (sproc_status_line(qp, k, v) == -1) {
-			warnx("%s: can't handle %s", __func__, k);
+			qwarnx("can't handle %s", k);
 			ret = -1;
 			break;
 		}
@@ -1248,7 +1248,7 @@ sproc_cmdline(struct quark_process *qp, int dfd)
 	size_t	 buf_len, copy_len;
 
 	if ((fd = openat(dfd, "cmdline", O_RDONLY)) == -1) {
-		warn("%s: open cmdline", __func__);
+		qwarn("open cmdline");
 		return (-1);
 	}
 	buf = load_file_nostat(fd, &buf_len);
@@ -1315,13 +1315,13 @@ sproc_scrape(struct quark_queue *qq)
 
 	while ((f = fts_read(tree)) != NULL) {
 		if (f->fts_info == FTS_ERR || f->fts_info == FTS_NS)
-			warnx("%s: %s", f->fts_name, strerror(f->fts_errno));
+			qwarnx("%s: %s", f->fts_name, strerror(f->fts_errno));
 		if (f->fts_info != FTS_D)
 			continue;
 		fts_set(tree, f, FTS_SKIP);
 
 		if ((p = fts_children(tree, 0)) == NULL) {
-			warn("fts_children");
+			qwarn("fts_children");
 			continue;
 		}
 		for (; p != NULL; p = p->fts_link) {
@@ -1329,7 +1329,7 @@ sproc_scrape(struct quark_queue *qq)
 			const char	*errstr;
 
 			if (p->fts_info == FTS_ERR || p->fts_info == FTS_NS) {
-				warnx("%s: %s",
+				qwarnx("%s: %s",
 				    p->fts_name, strerror(p->fts_errno));
 				continue;
 			}
@@ -1337,16 +1337,16 @@ sproc_scrape(struct quark_queue *qq)
 				continue;
 
 			if ((dfd = openat(rootfd, p->fts_name, O_PATH)) == -1) {
-				warn("openat %s", p->fts_name);
+				qwarn("openat %s", p->fts_name);
 				continue;
 			}
 			pid = strtonum(p->fts_name, 1, UINT32_MAX, &errstr);
 			if (errstr != NULL) {
-				warnx("bad pid %s: %s", p->fts_name, errstr);
+				qwarnx("bad pid %s: %s", p->fts_name, errstr);
 				goto next;
 			}
 			if (sproc_pid(qq, pid, dfd) == -1)
-				warnx("can't scrape %s\n", p->fts_name);
+				qwarnx("can't scrape %s", p->fts_name);
 next:
 			close(dfd);
 		}
@@ -1372,7 +1372,7 @@ fetch_boottime(void)
 	btime = strtonum(line + strlen(needle), 1, LLONG_MAX, &errstr);
 	free(line);
 	if (errstr != NULL)
-		warnx("can't parse btime: %s", errstr);
+		qwarnx("can't parse btime: %s", errstr);
 
 	return (btime * NS_PER_S);
 }
@@ -1430,11 +1430,11 @@ quark_init(void)
 		return (0);
 
 	if ((hz = sysconf(_SC_CLK_TCK)) == (unsigned int)-1) {
-		warn("%s: sysconf(_SC_CLK_TCK)", __func__);
+		qwarn("sysconf(_SC_CLK_TCK)");
 		return (-1);
 	}
 	if ((boottime = fetch_boottime()) == 0) {
-		warn("can't fetch btime");
+		qwarn("can't fetch btime");
 		return (-1);
 	}
 	quark.hz = hz;
@@ -1468,23 +1468,23 @@ write_raw_node_attr(FILE *f, struct raw_event *raw, char *key)
 		color = "lightslateblue";
 		if (snprintf(label, sizeof(label), "EXEC %s",
 		    raw->exec.filename.p) >= (int)sizeof(label))
-			warnx("%s: exec filename truncated", __func__);
+			qwarnx("exec filename truncated");
 		break;
 	case RAW_WAKE_UP_NEW_TASK: {
 		color = "orange";
 		if (snprintf(label, sizeof(label), "NEW_TASK %d",
 		    raw->pid) >= (int)sizeof(label))
-			warnx("%s: snprintf", __func__);
+			qwarnx("snprintf label");
 		break;
 	}
 	case RAW_EXEC_CONNECTOR:
 		color = "lightskyblue";
 		if (snprintf(label, sizeof(label), "EXEC_CONNECTOR")
 		    >= (int)sizeof(label))
-			warnx("%s: exec_connector truncated", __func__);
+			qwarnx("exec_connector truncated");
 		break;
 	default:
-		warnx("%s: %d unhandled\n", __func__, raw->type);
+		qwarnx("%d unhandled", raw->type);
 		color = "black";
 		break;
 	}
@@ -1731,7 +1731,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qq->agg_matrix = agg_matrix;
 
 	if (bpf_queue_open(qq) && kprobe_queue_open(qq)) {
-		warnx("all backends failed");
+		qwarnx("all backends failed");
 		goto fail;
 	}
 
@@ -1741,7 +1741,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	 * lose new processes.
 	 */
 	if (sproc_scrape(qq) == -1) {
-		warnx("can't scrape /proc");
+		qwarnx("can't scrape /proc");
 		goto fail;
 	}
 
@@ -1749,7 +1749,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	 * Compute all entry leaders
 	 */
 	if (entry_leaders_build(qq) == -1) {
-		warnx("can't compute entry leaders");
+		qwarnx("can't compute entry leaders");
 		return (-1);
 	}
 
@@ -1792,7 +1792,7 @@ quark_queue_close(struct quark_queue *qq)
 		raw_event_free(raw);
 	}
 	if (!RB_EMPTY(&qq->raw_event_by_pidtime))
-		warnx("raw_event trees not empty");
+		qwarnx("raw_event trees not empty");
 	/* Clean up all cached quark_processs */
 	while ((qp = RB_ROOT(&qq->process_by_pid)) != NULL)
 		process_cache_delete(qq, qp);
@@ -1813,7 +1813,7 @@ can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 
 	if (p->type >= RAW_NUM_TYPES || c->type >= RAW_NUM_TYPES ||
 	    p->type <= RAW_INVALID || c->type <= RAW_INVALID) {
-		warnx("type out of bounds p=%d c=%d", p->type, c->type);
+		qwarnx("type out of bounds p=%d c=%d", p->type, c->type);
 		return (0);
 	}
 
@@ -1831,7 +1831,7 @@ can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 		}
 		return (1);
 	default:
-		warnx("unhandle agg kind %d", kind);
+		qwarnx("unhandle agg kind %d", kind);
 		return (0);
 	}
 }
@@ -1910,7 +1910,7 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 
 			qp = process_cache_get(qq, qq->snap_pid, 0);
 			if (qp == NULL) {
-				warnx("event vanished during snapshot, "
+				qwarnx("event vanished during snapshot, "
 				    "this is a bug");
 				qq->snap_pid = -1;
 				/* errno set by cache_lookup */
@@ -1931,7 +1931,7 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 				break;
 			if (raw_event_process(qq, raw, qevs) == -1) {
 				raw_event_free(raw);
-				warnx("raw_event_process");
+				qwarnx("raw_event_process");
 				continue;
 			}
 			raw_event_free(raw);

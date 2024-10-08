@@ -285,7 +285,7 @@ static inline int
 sample_kind_of_id(struct kprobe_queue *kqq, int id)
 {
 	if (unlikely(id <= 0 || id >= MAX_SAMPLE_IDS)) {
-		warnx("%s: invalid id %d", __func__, id);
+		qwarnx("invalid id %d", id);
 		return (errno = ERANGE, -1);
 	}
 
@@ -408,7 +408,7 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, int kind,
 		pctx.pwd[i].pwd_k = w->pwd_k[i];
 	}
 	if (build_path(&pctx, &task->cwd) == -1)
-		warn("can't build path");
+		qwarn("can't build path");
 }
 
 static struct raw_event *
@@ -429,7 +429,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			return (NULL);
 		n = qstr_copy_data_loc(&raw->exec.filename, sample, &exec->filename);
 		if (n == -1)
-			warnx("can't copy exec filename");
+			qwarnx("can't copy exec filename");
 		break;
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
@@ -479,14 +479,14 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			exec->args.p[0] = 0;
 		else {
 			if (qstr_memcpy(&exec->args, start, exec->args_len) == -1)
-				warnx("can't copy args");
+				qwarnx("can't copy args");
 			exec->args.p[exec->args_len - 1] = 0;
 		}
 		task_sample_to_raw_task(kqq, kind, sample, &exec->task);
 		break;
 	}
 	default:
-		warnx("%s: unknown or invalid sample id=%d", __func__, id);
+		qwarnx("unknown or invalid sample id=%d", id);
 		return (NULL);
 	}
 
@@ -541,7 +541,7 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		qq->stats.lost += ev->lost.lost;
 		break;
 	default:
-		warnx("%s unhandled type %d\n", __func__, ev->header.type);
+		qwarnx("unhandled type %d\n", ev->header.type);
 		return (NULL);
 		break;
 	}
@@ -692,7 +692,7 @@ open_tracing(int flags, const char *fmt, ...)
 		if ((dfd = open(paths[i], O_PATH)) == -1) {
 			if (!saved_errno && errno != ENOENT)
 				saved_errno = errno;
-			warn("open: %s", paths[i]);
+			qwarn("open: %s", paths[i]);
 			continue;
 		}
 		fd = openat(dfd, tail, flags);
@@ -700,7 +700,7 @@ open_tracing(int flags, const char *fmt, ...)
 		if (fd == -1) {
 			if (!saved_errno && errno != ENOENT)
 				saved_errno = errno;
-			warn("open: %s", tail);
+			qwarn("open: %s", tail);
 			continue;
 		}
 
@@ -732,7 +732,7 @@ fetch_tracing_id(const char *tail)
 	idbuf[n - 1] = 0;
 	id = strtonum(idbuf, 1, MAX_SAMPLE_IDS - 1, &errstr);
 	if (errstr != NULL) {
-		warnx("strtonum: %s", errstr);
+		qwarnx("strtonum: %s", errstr);
 		return (errno = ERANGE, -1);
 	}
 
@@ -811,18 +811,18 @@ kprobe_exp(char *exp, ssize_t *off1, struct quark_btf *qbtf)
 		*p++ = 0;
 		pb = p;
 		if ((p = strchr(p, ')')) == NULL) {
-			warnx("%s: %s unbalanced parenthesis\n", __func__, exp);
+			qwarnx("%s unbalanced parenthesis\n", exp);
 			free(o);
 			return (-1);
 		}
 		*p = 0;
 		if (kprobe_exp(pa, &ia, qbtf) == -1) {
-			warnx("%s: %s is unresolved\n", __func__, pa);
+			qwarnx("%s is unresolved\n", pa);
 			free(o);
 			return (-1);
 		}
 		if (kprobe_exp(pb, &ib, qbtf) == -1) {
-			warnx("%s: %s is unresolved\n", __func__, pb);
+			qwarnx("%s is unresolved\n", pb);
 			free(o);
 			return (-1);
 		}
@@ -836,7 +836,7 @@ kprobe_exp(char *exp, ssize_t *off1, struct quark_btf *qbtf)
 		/* If there is a dot after `)`, recurse */
 		if (*exp++ == '.') {
 			if (kprobe_exp(exp, &ia, qbtf) == -1) {
-				warnx("%s: %s is unresolved\n", __func__, exp);
+				qwarnx("%s is unresolved\n", exp);
 				return (-1);
 			}
 			off += ia;
@@ -850,7 +850,7 @@ kprobe_exp(char *exp, ssize_t *off1, struct quark_btf *qbtf)
 		if (errstr == NULL)
 			break;
 		if ((off = quark_btf_offset(qbtf, exp)) == -1) {
-			warnx("%s: %s is unresolved\n", __func__, exp);
+			qwarnx("%s is unresolved\n", exp);
 			return (-1);
 		}
 		break;
@@ -919,7 +919,7 @@ kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
 	     p = strtok_r(NULL, " ", &last)) {
 		/* Last is sentinel */
 		if (i == ((int)nitems(tokens) - 1)) {
-			warnx("%s: too many tokens", __func__);
+			qwarnx("too many tokens");
 			free(arg_dsl);
 			return (NULL);
 		}
@@ -1028,7 +1028,7 @@ kprobe_install(struct kprobe *k, u64 qid, struct quark_btf *qbtf)
 	kprobe_tracefs_name(k, qid, fsname, sizeof(fsname));
 
 	if (kprobe_uninstall(k, qid) == -1 && errno != ENOENT)
-		warn("kprobe_uninstall");
+		qwarn("kprobe_uninstall");
 	if ((kstr = kprobe_build_string(k, fsname, qbtf)) == NULL)
 		return (-1);
 	if ((fd = open_tracing(O_WRONLY, "kprobe_events")) == -1) {
@@ -1051,15 +1051,14 @@ kprobe_install_all(u64 qid)
 	struct quark_btf	*qbtf;
 
 	if ((qbtf = quark_btf_open()) == NULL) {
-		warnx("%s: can't initialize btf", __func__);
+		qwarnx("can't initialize btf");
 		return (-1);
 	}
 
 	r = 0;
 	for (i = 0; all_kprobes[i] != NULL; i++) {
 		if (kprobe_install(all_kprobes[i], qid, qbtf) == -1) {
-			warnx("%s: kprobe %s failed", __func__,
-			    all_kprobes[i]->target);
+			qwarnx("kprobe %s failed", all_kprobes[i]->target);
 			/* Uninstall the ones that succeeded */
 			while (--i >= 0)
 				kprobe_uninstall(all_kprobes[i], qid);
@@ -1131,7 +1130,7 @@ perf_open_group_leader(struct kprobe_queue *kqq, int cpu)
 
 	pgl->fd = perf_event_open_degradable(&pgl->attr, -1, cpu, -1, 0);
 	if (pgl->fd == -1) {
-		warn("perf_event_open_degradable");
+		qwarn("perf_event_open_degradable");
 		free(pgl);
 		return (NULL);
 	}
@@ -1172,7 +1171,7 @@ perf_open_kprobe(struct kprobe_queue *kqq, struct kprobe *k,
 	perf_attr_init(&ks->attr, id);
 	ks->fd = perf_event_open_degradable(&ks->attr, -1, cpu, group_fd, 0);
 	if (ks->fd == -1) {
-		warn("perf_event_open_degradable");
+		qwarn("perf_event_open_degradable");
 		free(ks);
 		return (NULL);
 	}
@@ -1243,19 +1242,19 @@ kprobe_queue_open(struct quark_queue *qq)
 		/* XXX PERF_IOC_FLAG_GROUP see bugs */
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_RESET,
 		    PERF_IOC_FLAG_GROUP) == -1) {
-			warn("ioctl PERF_EVENT_IOC_RESET");
+			qwarn("ioctl PERF_EVENT_IOC_RESET");
 			goto fail;
 		}
 		if (ioctl(pgl->fd, PERF_EVENT_IOC_ENABLE,
 		    PERF_IOC_FLAG_GROUP) == -1) {
-			warn("ioctl PERF_EVENT_IOC_ENABLE");
+			qwarn("ioctl PERF_EVENT_IOC_ENABLE");
 			goto fail;
 		}
 	}
 
 	qq->epollfd = epoll_create1(EPOLL_CLOEXEC);
 	if (qq->epollfd == -1) {
-		warn("epoll_create1");
+		qwarn("epoll_create1");
 		goto fail;
 	}
 	TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry) {
@@ -1263,7 +1262,7 @@ kprobe_queue_open(struct quark_queue *qq)
 		ev.events = EPOLLIN;
 		ev.data.fd = pgl->fd;
 		if (epoll_ctl(qq->epollfd, EPOLL_CTL_ADD, pgl->fd, &ev) == -1) {
-			warn("epoll_ctl");
+			qwarn("epoll_ctl");
 			goto fail;
 		}
 	}
@@ -1338,13 +1337,13 @@ kprobe_queue_close(struct quark_queue *qq)
 			if (pgl->fd != -1) {
 				if (ioctl(pgl->fd, PERF_EVENT_IOC_DISABLE,
 				    PERF_IOC_FLAG_GROUP) == -1)
-					warnx("ioctl PERF_EVENT_IOC_DISABLE:");
+					qwarnx("ioctl PERF_EVENT_IOC_DISABLE:");
 				close(pgl->fd);
 			}
 			if (pgl->mmap.metadata != NULL) {
 				if (munmap(pgl->mmap.metadata,
 				    pgl->mmap.mapped_size) != 0)
-					warn("munmap");
+					qwarn("munmap");
 			}
 			TAILQ_REMOVE(&kqq->perf_group_leaders, pgl, entry);
 			free(pgl);

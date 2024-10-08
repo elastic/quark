@@ -77,9 +77,7 @@ btf_alternative_name(struct btf *btf, const char *new_name)
 		if (strcmp(p->new, new_name))
 			continue;
 
-		if (quark_verbose)
-			warnx("%s: found alternative for %s as %s",
-			    __func__, p->new, p->old);
+		qwarnx("found alternative for %s as %s", p->new, p->old);
 		return (p->old);
 	}
 
@@ -122,8 +120,7 @@ btf_offsetof(struct btf *btf, struct btf_type const *t, const char *mname)
 	for (i = 0; i < vlen; i++, m++) {
 		mname1 = btf__name_by_offset(btf, m->name_off);
 		if (IS_ERR_OR_NULL(mname1)) {
-			warnx("%s: btf__name_by_offset(%d)",
-			    __func__, m->name_off);
+			qwarnx("btf__name_by_offset(%d)", m->name_off);
 			continue;
 		}
 		if (strcmp(mname, mname1))
@@ -313,11 +310,11 @@ quark_btf_open2(const char *path, const char *kname)
 			/*
 			 * Be stingy with printing things that always fail
 			 */
-			if (quark_verbose ||
+			if (quark_verbose >= QUARK_VL_DEBUG ||
 			    (strcmp(ta->dotname, "signal_struct.pids") &&
-			    strcmp(ta->dotname, "task_struct.pids")))
-				warnx("%s: dotname=%s failed",
-				    __func__, ta->dotname);
+			    strcmp(ta->dotname, "task_struct.pids"))) {
+				qwarnx("dotname=%s failed", ta->dotname);
+			}
 
 			failed++;
 		}
@@ -325,9 +322,9 @@ quark_btf_open2(const char *path, const char *kname)
 
 	btf__free(btf);
 
-	for (ta = qbtf->targets; quark_verbose && ta->dotname != NULL; ta++)
-		fprintf(stderr, "%s: dotname=%s off=%ld (bitoff=%ld)\n",
-		    __func__, ta->dotname, ta->offset, ta->offset * 8);
+	for (ta = qbtf->targets; ta->dotname != NULL; ta++)
+		qdebugx("dotname=%s off=%ld (bitoff=%ld)",
+		    ta->dotname, ta->offset, ta->offset * 8);
 
 	/*
 	 * task_struct.signal is only present in new kernels, while
