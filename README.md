@@ -1,4 +1,4 @@
-# quark - a unified process telemetry data
+# quark - a unified process telemetry data library
 
 quark is [fully documented](https://elastic.github.io/quark/index.html) via mandoc in the
 links below:
