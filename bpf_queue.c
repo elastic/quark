@@ -171,7 +171,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		break;
 	default:
-		warnx("%s unhandled type %lu", __func__, ev->type);
+		qwarnx("unhandled type %lu", ev->type);
 		goto bad;
 	}
 
@@ -218,7 +218,7 @@ bpf_queue_open(struct quark_queue *qq)
 
 	bqq->prog = bpf_prog__open();
 	if (bqq->prog == NULL) {
-		warn("bpf_prog__open");
+		qwarn("bpf_prog__open");
 		goto fail;
 	}
 
@@ -237,19 +237,19 @@ bpf_queue_open(struct quark_queue *qq)
 	error = bpf_map__set_max_entries(bqq->prog->maps.event_buffer_map,
 	    get_nprocs_conf());
 	if (error != 0) {
-		warn("bpf_map__set_max_entries");
+		qwarn("bpf_map__set_max_entries");
 		goto fail;
 	}
 
 	error = bpf_prog__load(bqq->prog);
 	if (error) {
-		warn("bpf_prog__load");
+		qwarn("bpf_prog__load");
 		goto fail;
 	}
 
 	error = bpf_prog__attach(bqq->prog);
 	if (error) {
-		warn("bpf_prog__attach");
+		qwarn("bpf_prog__attach");
 		goto fail;
 	}
 
@@ -260,7 +260,7 @@ bpf_queue_open(struct quark_queue *qq)
 	bqq->ringbuf = ring_buffer__new(bpf_map__fd(bqq->prog->maps.ringbuf),
 	    bpf_ringbuf_cb, qq, &ringbuf_opts);
 	if (bqq->ringbuf == NULL) {
-		warn("ring_buffer__new");
+		qwarn("ring_buffer__new");
 		goto fail;
 	}
 
