@@ -97,6 +97,22 @@ char	*load_file_nostat(int, size_t *);
 struct args *args_make(const struct quark_process *);
 void	 args_free(struct args *);
 
+enum quark_verbosity_levels {
+	QUARK_VL_SILENT,
+	QUARK_VL_WARN,
+	QUARK_VL_DEBUG,
+};
+
+#define	 qlog(pri, do_errno, fmt, ...)					\
+	qlog_func(pri, do_errno, __func__, __LINE__, fmt, ##__VA_ARGS__)
+#define	 qlogx(pri, do_errno, fmt, ...)					\
+	qlog_func(pri, do_errno, __func__, __LINE__, fmt, ##__VA_ARGS__)
+#define	 qwarn(fmt, ...) qlog(QUARK_VL_WARN, 1, fmt, ##__VA_ARGS__)
+#define	 qwarnx(fmt, ...) qlog(QUARK_VL_WARN, 0, fmt, ##__VA_ARGS__)
+#define	 qdebug(fmt, ...) qlog(QUARK_VL_DEBUG, 1, fmt, ##__VA_ARGS__)
+#define	 qdebugx(fmt, ...) qlog(QUARK_VL_DEBUG, 0, fmt, ##__VA_ARGS__)
+void	 qlog_func(int, int, const char *, int, const char *, ...) __attribute__((format(printf, 5,6)));
+
 /*
  * Time helpers
  */
