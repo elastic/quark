@@ -29,11 +29,34 @@ struct quark_queue_ops queue_ops_bpf = {
 	.close	      = bpf_queue_close,
 };
 
+/*
+ * Map libbpf logs into quark_verbose.
+ * fmt has a newline, we have to prepend program_invocatin_short_name, so we
+ * can't use vwarn, as it prepends itself and adds a newline.
+ */
 static int
-libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
+libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list ap)
 {
-	if (quark_verbose >= 2)
-		return vfprintf(stderr, format, args);
+	int	 pri;
+	char	*nfmt;
+
+	if (level == LIBBPF_WARN || level == LIBBPF_INFO)
+		pri = QUARK_VL_WARN;
+	else if (level == LIBBPF_DEBUG)
+		pri = QUARK_VL_DEBUG;
+	else
+		pri = QUARK_VL_WARN; /* fallback in case they add something new */
+
+	if (pri > quark_verbose)
+		return (0);
+
+	/* best effort in out of mem situations */
+	if (asprintf(&nfmt, "%s: %s", program_invocation_short_name, fmt) == -1)
+		vfprintf(stderr, fmt, ap);
+	else {
+		vfprintf(stderr, nfmt, ap);
+		free(nfmt);
+	}
 
 	return (0);
 }

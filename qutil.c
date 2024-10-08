@@ -334,7 +334,7 @@ qlog_func(int pri, int do_errno, const char *func, int lineno,
 		    program_invocation_short_name, func, lineno);
 		vfprintf(stderr, fmt, ap);
 		if (do_errno)
-			fprintf(stderr, "%s:", strerror(saved_errno));
+			fprintf(stderr, ": %s", strerror(saved_errno));
 		fprintf(stderr, "\n");
 	} else {
 		if (do_errno) {
