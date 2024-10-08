@@ -157,7 +157,7 @@ main(int argc, char *argv[])
 	if ((qq = calloc(1, sizeof(*qq))) == NULL)
 		err(1, "calloc");
 	if (quark_queue_open(qq, &qa) != 0)
-		errx(1, "quark_queue_open");
+		err(1, "quark_queue_open");
 	if ((qevs = calloc(nqevs, sizeof(*qevs))) == NULL)
 		err(1, "calloc");
 
