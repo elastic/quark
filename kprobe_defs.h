@@ -103,7 +103,7 @@ struct kprobe kp_wake_up_new_task = {
 };
 
 struct kprobe kp_exit = {
-	"perf_event_exit_task",
+	"taskstats_exit",
 	EXIT_THREAD_SAMPLE,
 	0,
 	{
