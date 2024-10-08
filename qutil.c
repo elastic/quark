@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -309,4 +310,40 @@ void
 args_free(struct args *args) {
 	free(args->buf);
 	free(args);
+}
+
+void
+qlog_func(int pri, int do_errno, const char *func, int lineno,
+    const char *fmt, ...)
+{
+	va_list		 ap;
+	char		*nfmt;
+	int		 saved_errno;
+
+	if (pri > quark_verbose)
+		return;
+
+	if (do_errno)
+		saved_errno = errno;
+
+	va_start(ap, fmt);
+
+	/* best effort in out of mem situations */
+	if (asprintf(&nfmt, "%s:%d: %s", func, lineno, fmt) == -1) {
+		fprintf(stderr, "%s: %s:%d: ",
+		    program_invocation_short_name, func, lineno);
+		vfprintf(stderr, fmt, ap);
+		if (do_errno)
+			fprintf(stderr, "%s:", strerror(saved_errno));
+		fprintf(stderr, "\n");
+	} else {
+		if (do_errno) {
+			errno = saved_errno;
+			vwarn(nfmt, ap);
+		} else
+			vwarnx(nfmt, ap);
+		free(nfmt);
+	}
+
+	va_end(ap);
 }
