@@ -1,5 +1,24 @@
----
-# $yaml-language-server: $schema=https://raw.githubusercontent.com/buildkite/pipeline-schema/main/schema.json
 steps:
-  - label: "Build"
-    command: "make"
+  - label: "build amd64 in docker"
+    key: build_docker
+    command: "make docker"
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+
+  - label: "build amd64 in a centos7 container"
+    key: make_centos7
+    command: "make centos7"
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+
+  - label: "build arm64 cross-compiled in docker"
+    key: make_docker_cross_arm64
+    command: "make docker-cross-arm64"
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
