@@ -86,6 +86,8 @@ main(int argc, char *argv[])
 	nqevs = 32;
 	graph_by_time = graph_by_pidtime = graph_cache = NULL;
 
+	printf("LALAA MULU\n");
+
 	while ((ch = getopt(argc, argv, "bC:Degklm:tsv")) != -1) {
 		const char *errstr;
 

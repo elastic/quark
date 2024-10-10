@@ -1,5 +1,31 @@
----
-# $yaml-language-server: $schema=https://raw.githubusercontent.com/buildkite/pipeline-schema/main/schema.json
 steps:
-  - label: "Build"
-    command: "make"
+  - label: "make docker"
+    key: build_docker
+    command: "make docker"
+    artifact_paths:
+      - "libquark_big.a"
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+
+  - label: "make centos7"
+    key: make_centos7
+    command: "make centos7"
+    artifact_paths:
+      - "libquark_big.a"
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+
+  - label: "make docker-cross-arm64"
+    key: make_docker_cross_arm64
+    command: "make docker-cross-arm64"
+    artifact_paths:
+      - "libquark_big.a"
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+
