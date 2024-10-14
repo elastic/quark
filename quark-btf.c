@@ -17,6 +17,16 @@ static int		gflag;
 static int		lflag;
 
 static void
+disply_version(void)
+{
+	printf("%s-%s\n", program_invocation_short_name, QUARK_VERSION);
+	printf("License: Apache-2.0\n");
+	printf("Copyright (c) 2024 Elastic NV\n");
+
+	exit(0);
+}
+
+static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s [-bv] [targets...]\n",
@@ -27,6 +37,7 @@ usage(void)
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-v] [-g btf_file name version]\n",
 	    program_invocation_short_name);
+	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
 
 	exit(1);
 }
@@ -218,7 +229,7 @@ main(int argc, char *argv[])
 	int			 ch;
 	const char		*path = NULL;
 
-	while ((ch = getopt(argc, argv, "bf:glv")) != -1) {
+	while ((ch = getopt(argc, argv, "bf:glvV")) != -1) {
 		switch (ch) {
 		case 'b':
 			bflag = 1;
@@ -237,6 +248,9 @@ main(int argc, char *argv[])
 			break;
 		case 'v':
 			quark_verbose++;
+			break;
+		case 'V':
+			disply_version();
 			break;
 		default:
 			usage();

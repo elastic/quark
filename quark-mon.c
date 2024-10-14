@@ -59,11 +59,22 @@ priv_drop(void)
 }
 
 static void
+display_version(void)
+{
+	printf("%s-%s\n", program_invocation_short_name, QUARK_VERSION);
+	printf("License: Apache-2.0\n");
+	printf("Copyright (c) 2024 Elastic NV\n");
+
+	exit(0);
+}
+
+static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s [-bDefkstv] "
 	    "[-C filename ] [-l maxlength] [-m maxnodes]\n",
 	    program_invocation_short_name);
+	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
 
 	exit(1);
 }
@@ -86,7 +97,7 @@ main(int argc, char *argv[])
 	nqevs = 32;
 	graph_by_time = graph_by_pidtime = graph_cache = NULL;
 
-	while ((ch = getopt(argc, argv, "bC:Degklm:tsv")) != -1) {
+	while ((ch = getopt(argc, argv, "bC:Degklm:tsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -140,6 +151,9 @@ main(int argc, char *argv[])
 			break;
 		case 'v':
 			quark_verbose++;
+			break;
+		case 'V':
+			display_version();
 			break;
 		default:
 			usage();
