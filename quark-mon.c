@@ -37,6 +37,9 @@ sigint_handler(int sig)
 static void
 priv_drop(void)
 {
+#ifdef NO_PRIVDROP
+	err(1, "built with NO_PRIVDROP");
+#else
 	struct passwd	*pw;
 
 	/* getpwnam_r is too painful for a demo */
@@ -56,6 +59,7 @@ priv_drop(void)
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
 		err(1, "error dropping privileges");
+#endif
 }
 
 static void

@@ -74,7 +74,14 @@ EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/$(ARCH
 
 # LIBQUARK
 LIBQUARK_DEPS:= $(wildcard *.h) bpf_prog_skel.h $(EEBPF_FILES) include
-LIBQUARK_SRCS:= $(filter-out bpf_prog.c quark-mon.c quark-btf.c,$(wildcard *.c))
+LIBQUARK_SRCS:=			\
+	bpf_queue.c		\
+	btf.c			\
+	btfhub.c		\
+	compat.c		\
+	kprobe_queue.c		\
+	quark.c			\
+	qutil.c
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 LIBQUARK_STATIC_BIG:= libquark_big.a
@@ -256,6 +263,19 @@ include: $(LIBBPF_DEPS)
 
 svg: $(SVGS)
 
+initramfs:
+	mkdir initramfs
+
+initramfs.gz: init quark-mon-static quark-btf-static initramfs
+	cp init initramfs/
+	cp quark-mon-static initramfs/quark-mon
+	cp quark-btf-static initramfs/quark-btf
+	cd initramfs && find . -print0 | cpio -0 -ov --format=newc | gzip -9 > ../$@
+
+init: init.c
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
+
 quark-mon: quark-mon.c $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
@@ -263,6 +283,14 @@ quark-mon: quark-mon.c $(LIBQUARK_STATIC_BIG)
 quark-btf: quark-btf.c $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
+
+quark-mon-static: quark-mon.c $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DNO_PRIVDROP $(CDIAGFLAGS) -static -o $@ $^
+
+quark-btf-static: quark-btf.c $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
 
 docs/index.html: docs/quark.7.html
 	$(call msg,CP,index.html)
@@ -295,7 +323,16 @@ eebpf-sync:
 
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -f *.o *.a quark-mon quark-btf bpf_prog_skel.h
+	$(Q)rm -f			\
+		*.o			\
+		*.a			\
+		quark-mon		\
+		quark-mon-static	\
+		quark-btf		\
+		quark-btf-static	\
+		btf_prog_skel.h		\
+		init
+	$(Q)rm -rf initramfs
 
 clean-all: clean
 	$(call msg,CLEAN-ALL)
@@ -332,6 +369,7 @@ clean-docs:
 	docker			\
 	docker-cross-arm64	\
 	docker-image		\
-	docker-shell
+	docker-shell		\
+	initramfs.gz
 
 .SUFFIXES:
