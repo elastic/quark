@@ -234,7 +234,15 @@ Copies the files from EEBPF_PATH used by
 .Nm .
 Usage:
 .Bd -literal
-make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf
+$ make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf
+.Ed
+.It Em initramfs.gz
+Build a initramfs file containing all quark binaries so that it can be run as
+the init process on boot, useful for testing any kernel under qemu, notice how
+you can pass parameters normally to quark-mon:
+.Bd -literal
+$ make initramfs.gz
+$ qemu-system-x86_64 -initrd initramfs.gz -kernel linux-image-x86_64-5.10.92-2 -nographic --append "console=ttyS0 quark-mon -kvvv"
 .Ed
 .El
 .Pp

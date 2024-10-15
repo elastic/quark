@@ -217,7 +217,16 @@ $ ls -1 /tmp | wc -l</pre>
   <dd>Copies the files from EEBPF_PATH used by <code class="Nm">quark</code>.
       Usage:
     <div class="Bd Pp Li">
-    <pre>make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf</pre>
+    <pre>$ make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf</pre>
+    </div>
+  </dd>
+  <dt id="initramfs.gz"><a class="permalink" href="#initramfs.gz"><i class="Em">initramfs.gz</i></a></dt>
+  <dd>Build a initramfs file containing all quark binaries so that it can be run
+      as the init process on boot, useful for testing any kernel under qemu,
+      notice how you can pass parameters normally to quark-mon:
+    <div class="Bd Pp Li">
+    <pre>$ make initramfs.gz
+$ qemu-system-x86_64 -initrd initramfs.gz -kernel linux-image-x86_64-5.10.92-2 -nographic --append &quot;console=ttyS0 quark-mon -kvvv&quot;</pre>
     </div>
   </dd>
 </dl>
@@ -378,7 +387,7 @@ main(void)
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">October 14, 2024</td>
+    <td class="foot-date">October 15, 2024</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
