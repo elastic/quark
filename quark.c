@@ -1945,4 +1945,4 @@ quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
 
 	return (got);
 }
-mulumulu
+/* zefix */
