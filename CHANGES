@@ -1,0 +1,9 @@
+Quark Breaking Changes
+~~~~~~~~~~~~~~~~~~~~~~
+  This file documents breaking and/or other changes that might require
+  user interaction. Examples include: a user facing structure change; a
+  new library call; a change in behaviour.
+
+Changes from 0.1 to 0.2
+~~~~~~~~~~~~~~~~~~~~~~~
+  o quark_queue_stats{} got a "backend" member.

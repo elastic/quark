@@ -292,6 +292,7 @@ bpf_queue_open(struct quark_queue *qq)
 		goto fail;
 
 	qq->queue_ops = &queue_ops_bpf;
+	qq->stats.backend = QQ_EBPF;
 
 	return (0);
 fail:

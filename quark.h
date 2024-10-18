@@ -335,6 +335,7 @@ struct quark_queue_stats {
 	u64	aggregations;
 	u64	non_aggregations;
 	u64	lost;
+	int	backend;	/* active backend, QQ_EBPF or QQ_KPROBE */
 	/* TODO u64	peak_nodes; */
 };
 
