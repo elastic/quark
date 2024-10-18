@@ -23,6 +23,7 @@ struct quark_queue_stats {
 	u64	aggregations;
 	u64	non_aggregations;
 	u64	lost;
+	int	backend;
 };
 .Ed
 .Bl -tag -width "non_aggregations"
@@ -50,6 +51,11 @@ fast enough or if
 simply can't handle the load, the former is way more likely.
 It is a state counter representing total loss, the user should compare to an old
 reading to know if it increased.
+.It Em backend
+Active queue backend, either
+.Dv QQ_EBPF
+or
+.Dv QQ_KPROBE .
 .El
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
