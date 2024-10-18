@@ -1268,6 +1268,7 @@ kprobe_queue_open(struct quark_queue *qq)
 	}
 
 	qq->queue_ops = &queue_ops_kprobe;
+	qq->stats.backend = QQ_KPROBE;
 
 	return (0);
 

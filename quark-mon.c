@@ -17,15 +17,27 @@
 static int gotsigint;
 
 static void
-quark_queue_dump_stats(struct quark_queue *qq)
+dump_stats(struct quark_queue *qq)
 {
-	struct quark_queue_stats s;
+	struct quark_queue_stats	s;
 
 	quark_queue_get_stats(qq, &s);
 	printf("%8llu insertions %8llu removals %8llu aggregations "
 	    "%8llu non-aggregations %8llu lost\n",
 	    s.insertions, s.removals, s.aggregations,
 	    s.non_aggregations, s.lost);
+}
+
+static const char *
+fetch_backend(struct quark_queue *qq)
+{
+	struct quark_queue_stats	s;
+
+	quark_queue_get_stats(qq, &s);
+
+	return (s.backend == QQ_EBPF ? "ebpf" :
+	    s.backend == QQ_KPROBE ? "kprobe" :
+	    "invalid");
 }
 
 static void
@@ -179,6 +191,9 @@ main(int argc, char *argv[])
 	if ((qevs = calloc(nqevs, sizeof(*qevs))) == NULL)
 		err(1, "calloc");
 
+	if (quark_verbose)
+		printf("using %s for backend\n", fetch_backend(qq));
+
 	/* From now on we will be nobody */
 	if (do_priv_drop)
 		priv_drop();
@@ -204,7 +219,8 @@ main(int argc, char *argv[])
 			quark_event_dump(qev, stdout);
 		/* No events, just block */
 		if (n == 0) {
-			quark_queue_block(qq);
+			if (quark_queue_block(qq) == -1 && errno != EINTR)
+				err(1, "quark_queue_block");
 			continue;
 		}
 	}
@@ -225,7 +241,7 @@ main(int argc, char *argv[])
 	}
 
 	free(qevs);
-	quark_queue_dump_stats(qq);
+	dump_stats(qq);
 	quark_queue_close(qq);
 	free(qq);
 
