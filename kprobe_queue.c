@@ -649,7 +649,7 @@ perf_event_open_degradable(struct perf_event_attr *attr, pid_t pid, int cpu,
 
 again:
 	r = perf_event_open(attr, pid, cpu, group_fd, flags);
-	if (r == 0)
+	if (r >= 0)
 		return (r);
 	else if (r == -1 && errno != EINVAL)
 		return (-1);
