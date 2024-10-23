@@ -7,6 +7,8 @@ quark-mon
 quark-mon-static
 quark-btf
 quark-btf-static
+quark-test
+quark-test-static
 init
 libquark.a
 libquark_big.a

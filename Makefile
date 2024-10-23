@@ -134,7 +134,8 @@ all:	$(ZLIB_STATIC)			\
 	$(LIBQUARK_STATIC)		\
 	$(LIBQUARK_STATIC_BIG)		\
 	quark-mon			\
-	quark-btf
+	quark-btf			\
+	quark-test
 
 $(ZLIB_STATIC): $(ZLIB_FILES)
 	@cd zlib && CFLAGS="-O3 -fPIC" ./configure --static $(QREDIR)
@@ -266,10 +267,11 @@ svg: $(SVGS)
 initramfs:
 	mkdir initramfs
 
-initramfs.gz: init quark-mon-static quark-btf-static initramfs
+initramfs.gz: init quark-mon-static quark-btf-static quark-test-static initramfs
 	cp init initramfs/
 	cp quark-mon-static initramfs/quark-mon
 	cp quark-btf-static initramfs/quark-btf
+	cp quark-test-static initramfs/quark-test
 	cd initramfs && find . -print0 | cpio -0 -ov --format=newc | gzip -9 > ../$@
 
 init: init.c
@@ -284,11 +286,19 @@ quark-btf: quark-btf.c $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
 
+quark-test: quark-test.c $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
+
 quark-mon-static: quark-mon.c $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DNO_PRIVDROP $(CDIAGFLAGS) -static -o $@ $^
 
 quark-btf-static: quark-btf.c $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
+
+quark-test-static: quark-test.c $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
 
@@ -330,6 +340,8 @@ clean:
 		quark-mon-static	\
 		quark-btf		\
 		quark-btf-static	\
+		quark-test		\
+		quark-test-static	\
 		btf_prog_skel.h		\
 		init
 	$(Q)rm -rf initramfs

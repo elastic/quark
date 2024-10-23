@@ -4,30 +4,90 @@
 #include <err.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <string.h>
+
+#include <linux/reboot.h>
 
 #include <sys/mount.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+
+static void
+powerdown(void)
+{
+	for (;;) {
+		/*
+		 * Powering off is a very tricky thing, make sure we never
+		 * return or busy loop. Mostly out of scare of AWS bills.
+		 */
+		reboot(RB_POWER_OFF);
+		sleep(1);
+	}
+}
 
 int
 main(int argc, char *argv[])
 {
-	if (argc < 2)
-		err(1, "no binary to execute");
+	pid_t		 pid;
+	int		 status;
+
+	/*
+	 * Cut the kernel some slack until it is in a good shape, I see TSC
+	 * recalibration messages after init is forked.
+	 */
+	sleep(3);
+
+	if (argc < 2) {
+		warnx("no binary to execute");
+		powerdown();
+	}
 
 	argc--;
 	argv++;
 
-	if (mkdir("/proc", 0666) != 0)
-		err(1, "mkdir /proc");
-	if (mkdir("/sys", 0666) != 0)
-		err(1, "mkdir /sys");
+	pid = fork();
+	if (pid == -1) {
+		warn("fork");
+		powerdown();
+	}
 
-	if (mount("proc", "/proc", "proc", 0, NULL) == -1)
-		err(1, "mount /proc");
-	if (mount(NULL, "/sys", "sysfs", 0, NULL) == -1)
-		err(1, "mount /sys");
-	if (mount(NULL, "/sys/kernel/tracing", "tracefs", 0, NULL) == -1)
-		err(1, "mount /sys/kernel/tracing");
+	/* child */
+	if (pid == 0) {
 
-	return (execv(argv[0], argv));
+		if (mkdir("/proc", 0666) != 0)
+			err(1, "mkdir /proc");
+		if (mkdir("/sys", 0666) != 0)
+			err(1, "mkdir /sys");
+
+		if (mount("proc", "/proc", "proc", 0, NULL) == -1)
+			err(1, "mount /proc");
+		if (mount(NULL, "/sys", "sysfs", 0, NULL) == -1)
+			err(1, "mount /sys");
+		if (mount(NULL, "/sys/kernel/tracing", "tracefs", 0, NULL) == -1)
+			err(1, "mount /sys/kernel/tracing");
+
+		return (execv(argv[0], argv));
+	}
+
+	/* parent */
+	if (waitpid(pid, &status, 0) == -1) {
+		warn("waitpid");
+		powerdown();
+	}
+
+	if (WIFEXITED(status))
+		printf("%s exited with %d\n", argv[0], WEXITSTATUS(status));
+	else if (WIFSIGNALED(status))
+		printf("%s exited with signal %d (SIG%s)\n", argv[0],
+		    WTERMSIG(status), sigabbrev_np(WTERMSIG(status)));
+	else if (WCOREDUMP(status))
+		printf("%s core dumped\n", argv[0]);
+	else
+		printf("%s didn't exit cleanly\n", argv[0]);
+
+	powerdown();
+
+	return (0);		/* NOTREACHED */
 }
