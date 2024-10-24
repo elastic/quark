@@ -11,11 +11,24 @@
 #include <strings.h>
 #include <unistd.h>
 
+#include <sys/select.h>
 #include <sys/wait.h>
 
 #include "quark.h"
 
-#define msleep(_x) usleep((uint64_t)_x * 1000ULL)
+static int	bflag;	/* run bpf tests */
+static int	kflag;	/* run kprobe tests */
+
+static char *
+binpath(void)
+{
+	static char	name[PATH_MAX];
+
+	if (readlink("/proc/self/exe", name, sizeof(name)) == -1)
+		err(1, "readlink");
+
+	return name;
+}
 
 static void
 spin(void)
@@ -49,9 +62,6 @@ struct test {
 	int	(*func)(const struct test *, struct quark_queue_attr *);
 };
 
-struct quark_queue_attr bpf_attr;
-struct quark_queue_attr kprobe_attr;
-
 static void
 display_version(void)
 {
@@ -65,10 +75,14 @@ display_version(void)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-v]",
+	fprintf(stderr, "usage: %s [-bkv] [tests ...]\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "usage: %s -N [nop args..]\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
+	fprintf(stderr, "usage: %s -l\n",
+	    program_invocation_short_name);
+	fprintf(stderr, "usage: %s -N [nop args ...]\n",
+	    program_invocation_short_name);
+	fprintf(stderr, "usage: %s -V\n",
+	    program_invocation_short_name);
 
 	exit(1);
 }
@@ -79,7 +93,7 @@ fork_exec_nop(void)
 	pid_t		child;
 	int		status;
 	char *const	argv[] = {
-		"/proc/self/exe",
+		binpath(),
 		"-N",
 		"this",
 		"is",
@@ -91,7 +105,7 @@ fork_exec_nop(void)
 		err(1, "fork");
 	else if (child == 0) {
 		/* child */
-		return (execv("/proc/self/exe", argv));
+		return (execv(binpath(), argv));
 	}
 
 	/* parent */
@@ -149,10 +163,12 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_process	*qp;
 	pid_t				 child;
 	struct args			*args;
+	size_t				 expected_len;
+	int				 i;
 	char				 cwd[PATH_MAX];
 
 	if (quark_queue_open(&qq, qa) != 0)
-		err(1, "%s: quark_queue_open", t->name);
+		err(1, "quark_queue_open");
 
 	child = fork_exec_nop();
 	if (drain_for_pid(&qq, child, &qev) != 0)
@@ -193,8 +209,8 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	/* check entry leader */
 	/*
 	 * XXX TODO This depends how we're running the test, if we're over ssh
-	 * it will show ssh, if not it will show init and whatnot, for assert
-	 * that it is not unknown at least.
+	 * it will show ssh, if not it will show init and whatnot, for now
+	 * assert that it is not unknown at least.
 	 */
 	assert(qp->proc_entry_leader != 0);
 	assert(qp->proc_entry_leader_type != QUARK_ELT_UNKNOWN);
@@ -204,19 +220,27 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp->proc_tty_minor != 0);
 #endif
 	/* check strings */
-	assert(!strcmp(qp->comm, "exe"));
-	assert(!strcmp(qp->filename, "/proc/self/exe"));
+	assert(!strcmp(qp->comm, program_invocation_short_name));
+	assert(!strcmp(qp->filename, binpath()));
 	/* check args */
 	args = args_make(qp);
 	assert(args != NULL);
 	assert(args->argc == 5);
-	assert(!strcmp(args->argv[0], "/proc/self/exe"));
+	assert(!strcmp(args->argv[0], binpath()));
 	assert(!strcmp(args->argv[1], "-N"));
 	assert(!strcmp(args->argv[2], "this"));
 	assert(!strcmp(args->argv[3], "is"));
 	assert(!strcmp(args->argv[4], "nop!"));
+	/*
+	 * Expected len is the length of the arguments summed up, plus one byte
+	 * for each argument(the NUL after each argument, including the last
+	 * one), so we just start at 'argc' bytes.
+	 */
+	for (expected_len = args->argc, i = 0; i < args->argc; i++)
+		expected_len += strlen(args->argv[i]);
 	args_free(args);
-	assert(qp->cmdline_len == 31);
+	assert(qp->cmdline_len == expected_len);
+
 	if (getcwd(cwd, sizeof(cwd)) == NULL)
 		err(1, "getcwd");
 	assert(!strcmp(cwd, qp->cwd));
@@ -226,14 +250,39 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+#define T(_x) { S(_x),	_x }
 #define S(_x) #_x
 const struct test all_tests[] = {
-	{ S(t_probe),		t_probe},
-	{ S(t_fork_exec_exit),	t_fork_exec_exit},
-	{ NULL,			NULL}
+	T(t_probe),
+	T(t_fork_exec_exit),
+	{ NULL,	NULL }
 };
 #undef S
+#undef T
 
+static void
+display_tests(void)
+{
+	const struct test	*t;
+
+	for (t = all_tests; t->name != NULL; t++)
+		printf("%s\n", t->name);
+
+	exit(0);
+}
+
+static const struct test *
+lookup_test(const char *name)
+{
+	const struct test	*t;
+
+	for (t = all_tests; t->name != NULL; t++) {
+		if (!strcmp(t->name, name))
+			return (t);
+	}
+
+	return (NULL);
+}
 
 /*
  * A test runs as a subprocess to avoid contamination.
@@ -244,7 +293,15 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 	pid_t		 child;
 	int		 status;
 	const char	*be;
+	int		 child_stderr[2];
+	FILE		*child_stream;
+	char		*child_buf;
+	size_t		 child_buflen;
+	ssize_t		 n;
 
+	/*
+	 * Figure out if this is ebpf or kprobe
+	 */
 	if (((qa->flags & QQ_ALL_BACKENDS) == QQ_ALL_BACKENDS))
 		errx(1, "backend must be explicit");
 	if (qa->flags & QQ_EBPF)
@@ -257,29 +314,108 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 	printf("%s @ %s: ", t->name, be);
 	fflush(stdout);
 
+	/*
+	 * Create a pipe to save the child stderr, so we don't get crappy
+	 * interleaved output with the parent.
+	 */
+	if (pipe(child_stderr) == -1)
+		err(1, "pipe");
+
+	/*
+	 * Fork child and point its stderr to the pipe
+	 */
 	if ((child = fork()) == -1)
 		err(1, "fork");
-	else if (child == 0)
+	else if (child == 0) {
+		dup2(child_stderr[1], STDERR_FILENO);
+		close(child_stderr[1]);
+		close(child_stderr[0]);
 		exit(t->func(t, qa));
-
-	for (;;) {
-		pid_t	r;
-
-		r = waitpid(child, &status, WNOHANG);
-		if (r == -1)
-			err(1, "waitpid");
-		else if (r == 0) {
-			spin();
-			msleep(25);
-			continue;
-		} else
-			break;
 	}
+	close(child_stderr[1]);
+
+	/*
+	 * Open a write stream to save child's stderr output
+	 */
+	child_buf = NULL;
+	child_buflen = 0;
+	child_stream = open_memstream(&child_buf, &child_buflen);
+	if (child_stream == NULL)
+		err(1, "open_memstream");
+
+	/*
+	 * Drain the pipe until EOF, meaning the child exited
+	 */
+	for (;;) {
+		fd_set		rfds;
+		struct timeval	tv;
+		int		r;
+		char		buf[4096];
+
+		spin();
+		tv.tv_sec = 0;
+		tv.tv_usec = 25;
+
+		FD_ZERO(&rfds);
+		FD_SET(child_stderr[0], &rfds);
+
+		r = select(child_stderr[0] + 1, &rfds, NULL, NULL, &tv);
+		if (r == -1 && (errno == EINTR))
+			continue;
+		else if (r == -1)
+			err(1, "select");
+		else if (r == 0)
+			continue;
+		if (!FD_ISSET(child_stderr[0], &rfds))
+			errx(1, "rfds should be set");
+
+	read_again:
+		n = read(child_stderr[0], buf, sizeof(buf));
+		if (n == -1 && errno == EINTR)
+			goto read_again;
+		else if (n == -1)
+			err(1, "read");
+		else if (n == 0) {
+			close(child_stderr[0]);
+			break;
+		}
+		/* n is positive, move to the stream */
+		if (fwrite(buf, 1, n, child_stream) != (size_t)n)
+			err(1, "fwrite");
+		if (ferror(child_stream))
+			err(1, "fwrite");
+		if (feof(child_stream))
+			errx(1, "fwrite got EOF");
+	}
+
+	/*
+	 * We only get here when we get an EOF from the child pipe, so it
+	 * must have exited.
+	 */
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
 
 	if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
 		printf("ok\n");
 	else
 		printf("failed\n");
+	fflush(stdout);
+
+	/*
+	 * Children exited, close the stream and print it out.
+	 */
+	fclose(child_stream);
+write_again:
+	n = write(STDERR_FILENO, child_buf, child_buflen);
+	if (n == -1 && errno == EINTR)
+		goto write_again;
+	else if (n == -1)
+		err(1, "write");
+	else if (n != (ssize_t)child_buflen)
+		errx(1, "write shortcount");
+	free(child_buf);
+	child_buf = NULL;
+	child_buflen = 0;
 
 	if (WIFEXITED(status))
 		return (WEXITSTATUS(status));
@@ -287,27 +423,13 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 	return (-1);
 }
 
-int
-main(int argc, char *argv[])
+static int
+run_tests(int argc, char *argv[])
 {
 	const struct test	*t;
-	int			 failed, ch;
-
-	while ((ch = getopt(argc, argv, "NvV")) != -1) {
-		switch (ch) {
-		case 'N':
-			exit(0);
-			break;	/* NOTREACHED */
-		case 'v':
-			quark_verbose++;
-			break;
-		case 'V':
-			display_version();
-			break;
-		default:
-			usage();
-		}
-	}
+	int			 failed, i;
+	struct quark_queue_attr	 bpf_attr;
+	struct quark_queue_attr	 kprobe_attr;
 
 	quark_queue_default_attr(&bpf_attr);
 	bpf_attr.flags &= ~QQ_ALL_BACKENDS;
@@ -320,12 +442,65 @@ main(int argc, char *argv[])
 	kprobe_attr.hold_time = 100;
 
 	failed = 0;
-	for (t = all_tests; t->name != NULL; t++) {
-		if (run_test(t, &bpf_attr) != 0)
-			failed++;
-		if (run_test(t, &kprobe_attr) != 0)
-			failed++;
+	if (argc == 0) {
+		for (t = all_tests; t->name != NULL; t++) {
+			if (bflag && run_test(t, &bpf_attr) != 0)
+				failed++;
+			if (kflag && run_test(t, &kprobe_attr) != 0)
+				failed++;
+		}
+	} else {
+		for (i = 0; i < argc; i++) {
+			t = lookup_test(argv[i]);
+			if (t == NULL)
+				errx(1, "test %s not found", argv[i]);
+			if (bflag && run_test(t, &bpf_attr) != 0)
+				failed++;
+			if (kflag && run_test(t, &kprobe_attr) != 0)
+				failed++;
+		}
 	}
+
+	return (failed);
+}
+
+int
+main(int argc, char *argv[])
+{
+	int	ch, failed;
+
+	while ((ch = getopt(argc, argv, "bklNvV")) != -1) {
+		switch (ch) {
+		case 'b':
+			bflag = 1;
+			break;
+		case 'k':
+			kflag = 1;
+			break;
+		case 'l':
+			display_tests();
+			break;	/* NOTREACHED */
+		case 'N':
+			exit(0);
+			break;	/* NOTREACHED */
+		case 'v':
+			quark_verbose++;
+			break;
+		case 'V':
+			display_version();
+			break;	/* NOTREACHED */
+		default:
+			usage();
+		}
+	}
+
+	if (!bflag && !kflag)
+		bflag = kflag = 1;
+
+	argc -= optind;
+	argv += optind;
+
+	failed = run_tests(argc, argv);
 
 	printf("failed tests %d\n", failed);
 
