@@ -1,6 +1,6 @@
 steps:
   - label: "build amd64 in docker"
-    key: build_docker
+    key: make_docker
     command: "make docker"
     agents:
       image: family/core-ubuntu-2204
@@ -10,6 +10,8 @@ steps:
   - label: "build amd64 in a centos7 container"
     key: make_centos7
     command: "make centos7"
+    artifact_paths:
+      - "quark-test"
     agents:
       image: family/core-ubuntu-2204
       provider: gcp
@@ -18,6 +20,16 @@ steps:
   - label: "build arm64 cross-compiled in docker"
     key: make_docker_cross_arm64
     command: "make docker-cross-arm64"
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+
+  - label: "quark-test"
+    key: test
+    command: "./.buildkite/runtest.sh"
+    depends_on:
+      - make_centos7
     agents:
       image: family/core-ubuntu-2204
       provider: gcp
