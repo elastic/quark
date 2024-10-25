@@ -79,7 +79,7 @@ usage(void)
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -l\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "usage: %s -N [nop args ...]\n",
+	fprintf(stderr, "usage: %s -N\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n",
 	    program_invocation_short_name);

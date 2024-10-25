@@ -1,0 +1,82 @@
+.Dd $Mdocdate$
+.Dt QUARK-TEST 8
+.Os
+.Sh NAME
+.Nm quark-test
+.Nd quark's test utility
+.Sh SYNOPSIS
+.Nm quark-test
+.Op Fl bkv
+.Op Ar tests ...
+.Nm quark-test Fl l
+.Nm quark-test Fl N
+.Nm quark-test Fl V
+.Sh DESCRIPTION
+The
+.Nm
+program runs tests for
+.Xr quark 7 .
+It is designed as one big fat binary so that you can easily run it with quark's
+custom
+.Pa initramfs.gz .
+Without any arguments,
+.Nm
+will run all tests in both KPROBE and EBPF as backend.
+.Pp
+Each test runs a separate sub-process in order to avoid address space
+contaminaton between two tests.
+The number of failed tests is the return value of
+.Nm .
+.Pp
+The options are as follows:
+.Bl -tag -width Dtb
+.It Fl b
+Run only EBPF tests.
+.It Fl k
+Run only KPROBE tests.
+.It Fl l
+Prints all available tests on stdout.
+.It Fl N
+This is a nop flag, literally,
+.Nm
+will just exit with 0. Some tests must fork and exec things in order to collect
+events, this keeps the binary self contained by forking and execing itself as we
+don't have access to system utilities in
+.Pa initramfs.gz .
+.It Fl v
+Increase
+.Em quark_verbose ,
+can be issued multiple times.
+.It Fl V
+Print version and exit.
+.El
+.Sh EXIT STATUS
+.Nm
+exits with the number of failed tests, or non-zero if
+.Nm
+itself fails.
+.Sh EXAMPLES
+.Bd -literal
+$ quark-test -k
+
+t_probe @ kprobe: ok
+t_fork_exec_exit @ kprobe: ok
+failed tests 0
+
+$ quark-test t_fork_exec_exit
+
+t_fork_exec_exit @ ebpf: ok
+t_fork_exec_exit @ kprobe: ok
+failed tests 0
+.Ed
+.Sh SEE ALSO
+.Xr quark_event_dump 3 ,
+.Xr quark_process_lookup 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_epollfd 3 ,
+.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_stats 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
