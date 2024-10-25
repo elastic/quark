@@ -258,6 +258,10 @@ $ cc -o myprogram myprogram.c libquark_big.a
 OR
 $ cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a
 .Ed
+.Sh TESTING
+.Xr quark-test 8
+is the main test utility ran by the CI(soon).
+All tests are self-contained in this binary.
 .Sh INCLUDED BINARIES
 .Xr quark-mon 8
 is a program that dumps
@@ -269,6 +273,9 @@ small program, it aims to demonstrate how a user could implement the same.
 .Xr quark-btf 8
 is a program for dumping BTF information used by
 .Nm .
+.Pp
+.Xr quark-test 8
+is a program for running tests during development.
 .Sh CONVENTIONS
 .Bl -bullet
 .It
@@ -388,7 +395,8 @@ describes initialization options that can be useful.
 .Xr quark_queue_get_stats 3 ,
 .Xr quark_queue_open 3 ,
 .Xr quark-btf 8 ,
-.Xr quark-mon 8
+.Xr quark-mon 8 ,
+.Xr quark-test 8
 .Sh LICENSE
 .Nm
 is released under the Apache-2.0 license and contains code under BSD-2, BSD-3,
