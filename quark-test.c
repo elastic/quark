@@ -21,6 +21,53 @@ static int	kflag;	/* run kprobe tests */
 
 #define msleep(_x)	usleep((uint64_t)_x * 1000ULL)
 
+enum {
+	SANE,
+	RED,
+	GREEN
+};
+
+static int
+fancy_tty(void)
+{
+	char	*term = getenv("TERM");
+
+	if (term == NULL || !strcmp(term, "dumb"))
+		return (0);
+
+	return (isatty(STDOUT_FILENO) == 1);
+}
+
+static int
+color(int color)
+{
+	static int	 old;
+	int		 ret;
+
+	if (!fancy_tty())
+		return (SANE);
+
+	ret = old;
+
+	switch (color) {
+	case SANE:
+		printf("\033[0m");
+		break;
+	case RED:
+		printf("\033[31m");
+		break;
+	case GREEN:
+		printf("\033[32m");
+		break;
+	default:
+		errx(1, "bad color %d", color);
+	}
+
+	old = color;
+
+	return (ret);
+}
+
 static char *
 binpath(void)
 {
@@ -53,6 +100,10 @@ static void
 spin(void)
 {
 	static int ch;
+
+	if (!fancy_tty())
+		return;
+
 	/* -\|/ */
 	switch (ch) {
 	case 0:			/* FALLTHROUGH */
@@ -458,7 +509,7 @@ static int
 run_test(const struct test *t, struct quark_queue_attr *qa)
 {
 	pid_t		 child;
-	int		 status;
+	int		 status, x, linepos;
 	const char	*be;
 	int		 child_stderr[2];
 	FILE		*child_stream;
@@ -476,7 +527,9 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 	else
 		errx(1, "bad backend");
 
-	printf("%s @ %s: ", t->name, be);
+	linepos = printf("%s @ %s", t->name, be);
+	while (++linepos < 30)
+		putchar('.');
 	fflush(stdout);
 
 	/*
@@ -560,10 +613,15 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 	if (waitpid(child, &status, 0) == -1)
 		err(1, "waitpid");
 
-	if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+	if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+		x = color(GREEN);
 		printf("ok\n");
-	else
+		color(x);
+	} else {
+		x = color(RED);
 		printf("failed\n");
+		color(x);
+	}
 	fflush(stdout);
 
 	/*
@@ -632,7 +690,7 @@ run_tests(int argc, char *argv[])
 int
 main(int argc, char *argv[])
 {
-	int	ch, failed;
+	int	ch, x, failed;
 
 	while ((ch = getopt(argc, argv, "bklNvV")) != -1) {
 		switch (ch) {
@@ -667,7 +725,9 @@ main(int argc, char *argv[])
 
 	failed = run_tests(argc, argv);
 
-	printf("failed tests %d\n", failed);
+	x = failed == 0 ? color(GREEN) : color(RED);
+	printf("%d failures\n", failed);
+	color(x);
 
 	return (failed);
 }
