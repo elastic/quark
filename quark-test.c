@@ -19,6 +19,8 @@
 static int	bflag;	/* run bpf tests */
 static int	kflag;	/* run kprobe tests */
 
+#define msleep(_x)	usleep((uint64_t)_x * 1000ULL)
+
 static char *
 binpath(void)
 {
@@ -28,6 +30,23 @@ binpath(void)
 		err(1, "readlink");
 
 	return name;
+}
+
+static int
+backend_of_attr(struct quark_queue_attr *qa)
+{
+	int	be;
+
+	if (((qa->flags & QQ_ALL_BACKENDS) == QQ_ALL_BACKENDS))
+		errx(1, "backend must be explicit");
+	else if (qa->flags & QQ_EBPF)
+		be = QQ_EBPF;
+	else if (qa->flags & QQ_KPROBE)
+		be = QQ_KPROBE;
+	else
+		errx(1, "bad flags");
+
+	return (be);
 }
 
 static void
@@ -250,11 +269,159 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_cache_grace(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_event		 qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+
+	/*
+	 * Default grace time would slow down this test too much
+	 */
+	qa->cache_grace_time = 100;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * Check that we ourselves exist before getting events, meaning we came
+	 * from /proc scraping
+	 */
+	qp = quark_process_lookup(&qq, getpid());
+	assert(qp != NULL);
+	assert((pid_t)qp->pid == getpid());
+
+	/*
+	 * Fork a child, drain until we see it.
+	 */
+	child = fork_exec_nop();
+	if (drain_for_pid(&qq, child, &qev) != 0)
+		err(1, "drain_for_pid");
+	/* Must be in cache now */
+	qp = quark_process_lookup(&qq, child);
+	assert(qp != NULL);
+	assert((pid_t)qp->pid == child);
+	/*
+	 * Wait the configured cache_grace_time, run a dummy get_event to
+	 * trigger the removal, ensure child is gone.
+	 */
+	msleep(qa->cache_grace_time);
+	if (quark_queue_get_events(&qq, &qev, 1) == -1)
+		err(1, "quark_queue_get_events");
+
+	assert(quark_process_lookup(&qq, child) == NULL);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_min_agg(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_event		 qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+
+	qa->flags |= QQ_MIN_AGG;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * Fork a child, since there is no aggregation, we should see 3 events
+	 * for the same pid: FORK + EXEC + EXIT.
+	 */
+	child = fork_exec_nop();
+
+	/* Fork */
+	if (drain_for_pid(&qq, child, &qev) != 0)
+		err(1, "drain_for_pid fork");
+	assert(qev.events & QUARK_EV_FORK);
+	assert(!(qev.events & (QUARK_EV_EXEC|QUARK_EV_EXIT)));
+	qp = qev.process;
+	assert(qp != NULL);
+	assert((pid_t)qp->pid == child);
+	assert(qp->flags & QUARK_F_PROC);
+	/* Exec */
+	if (drain_for_pid(&qq, child, &qev) != 0)
+		err(1, "drain_for_pid exec");
+	assert(qev.events & QUARK_EV_EXEC);
+	assert(!(qev.events & (QUARK_EV_FORK|QUARK_EV_EXIT)));
+	assert((pid_t)qp->pid == child);
+	/* Exit */
+	if (drain_for_pid(&qq, child, &qev) != 0)
+		err(1, "drain_for_pid exit");
+	assert(qev.events & QUARK_EV_EXIT);
+	assert(!(qev.events & (QUARK_EV_FORK|QUARK_EV_EXEC)));
+	qp = qev.process;
+	assert(qp != NULL);
+	assert((pid_t)qp->pid == child);
+	assert(qp->flags & QUARK_F_EXIT);
+	assert(qp->exit_code == 0);
+	assert(qp->exit_time_event > 0);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_stats(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_event		 qev;
+	pid_t				 child;
+	struct quark_queue_stats	 old_stats, stats;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	quark_queue_get_stats(&qq, &old_stats);
+	assert(old_stats.backend == backend_of_attr(qa));
+	assert(old_stats.insertions == 0);
+	assert(old_stats.removals == 0);
+	assert(old_stats.aggregations == 0);
+	assert(old_stats.non_aggregations == 0);
+	assert(old_stats.lost == 0);
+	/*
+	 * Fork a child, drain until we see it.
+	 */
+	child = fork_exec_nop();
+	if (drain_for_pid(&qq, child, &qev) != 0)
+		err(1, "drain_for_pid");
+	/*
+	 * Stats must have bumped now
+	 */
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.backend == old_stats.backend);
+	assert(stats.insertions > old_stats.insertions);
+	assert(stats.removals > old_stats.removals);
+	assert(stats.aggregations > old_stats.aggregations);
+	/* Can't state anything about non_aggregations */
+	/* If we're losing here, all hope is lost */
+	assert(old_stats.lost == 0);
+	/* XXX We should trigger lost events and ensure here XXX */
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Try to order by increasing order of complexity
+ */
 #define T(_x) { S(_x),	_x }
 #define S(_x) #_x
 const struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
+	T(t_cache_grace),
+	T(t_min_agg),
+	T(t_stats),
 	{ NULL,	NULL }
 };
 #undef S
@@ -302,14 +469,12 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 	/*
 	 * Figure out if this is ebpf or kprobe
 	 */
-	if (((qa->flags & QQ_ALL_BACKENDS) == QQ_ALL_BACKENDS))
-		errx(1, "backend must be explicit");
-	if (qa->flags & QQ_EBPF)
+	if (backend_of_attr(qa) == QQ_EBPF)
 		be = "ebpf";
-	else if (qa->flags & QQ_KPROBE)
+	else if (backend_of_attr(qa) == QQ_KPROBE)
 		be = "kprobe";
 	else
-		errx(1, "bad flags");
+		errx(1, "bad backend");
 
 	printf("%s @ %s: ", t->name, be);
 	fflush(stdout);
