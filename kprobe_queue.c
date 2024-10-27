@@ -541,7 +541,7 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		qq->stats.lost += ev->lost.lost;
 		break;
 	default:
-		qwarnx("unhandled type %d\n", ev->header.type);
+		qwarnx("unhandled type %d", ev->header.type);
 		return (NULL);
 		break;
 	}
@@ -787,59 +787,136 @@ parse_data_offset(void)
 	return (data_offset);
 }
 
+#define TOKSZ	256
+
 static int
-kprobe_exp(char *exp, ssize_t *off1, struct quark_btf *qbtf)
+kprobe_exp_split(const char *exp1, char left[TOKSZ], char *op, char right[TOKSZ])
 {
-	ssize_t		 off;
+	int	 paren_depth;
+	char	 exp[1024];
+	char	*p, *start_left, *start_right;
+
+	if (strlcpy(exp, exp1, sizeof(exp)) >= sizeof(exp)) {
+		qwarnx("expression too long");
+		return (-1);
+	}
+	paren_depth = 0;
+	start_left = start_right = NULL;
+	*op = 0;
+
+	for (p = exp; *p != 0; p++) {
+		switch (*p) {
+		case '(':
+			if (++paren_depth == 1)
+				start_left = p + 1;
+			break;
+		case '+':	/* FALLTHROUGH */
+		case '-':	/* FALLTHROUGH */
+		case '*':	/* FALLTHROUGH */
+			if (paren_depth > 1)
+				break;
+			if (*op != 0) {
+				qwarnx("multiple operators");
+				return (-1);
+			}
+			*op = *p;
+			*p = 0;
+			start_right = p + 1;
+			break;
+		case ')':
+			if (--paren_depth == 0)
+				*p = 0;
+			if (paren_depth < 0) {
+				qwarnx("unbalanced parenthesis");
+				return (-1);
+			}
+			break;
+		default:
+			break;
+		}
+	}
+	if (*op == 0) {
+		qwarnx("no operator");
+		return (-1);
+	}
+	if (start_left == NULL || start_right == NULL) {
+		qwarnx("syntax error");
+		return (-1);
+	}
+	if (strlcpy(left, start_left, TOKSZ) >= TOKSZ) {
+		qwarnx("left token overflow");
+		return (-1);
+	}
+	if (strlen(left) == 0) {
+		qwarnx("empty left token");
+		return (-1);
+	}
+	if (strlcpy(right, start_right, TOKSZ) >= TOKSZ) {
+		qwarnx("right token overflow");
+		return (-1);
+	}
+	if (strlen(right) == 0) {
+		qwarnx("empty right token");
+		return (-1);
+	}
+
+	return (0);
+}
+
+static int
+kprobe_exp(const char *exp1, ssize_t *off1, struct quark_btf *qbtf)
+{
+	ssize_t	off, off_left, off_right;
+	char	exp[1024], op, *end;
+	char	left[TOKSZ], right[TOKSZ];
+
+	bzero(left, sizeof(left));
+	bzero(right, sizeof(right));
+
+	if (strlcpy(exp, exp1, sizeof(exp)) >= sizeof(exp)) {
+		qwarnx("expression too long");
+		return (-1);
+	}
 
 	switch (*exp) {
 	case '(': {
-		char	*p, *o, *pa, *pb, c;
-		ssize_t	 ia, ib;
-
-		if ((p = strdup(exp)) == NULL)
-			return (-1);
-		o = p;
-		*p++ = 0;
-		pa = p;
-		if (((p = strchr(pa, '+')) == NULL) &&
-		    ((p = strchr(pa, '-')) == NULL)) {
-			free(o);
+		if ((end = strrchr(exp, ')')) == NULL) {
+			qwarnx("unclosed parenthesis: %s", exp);
 			return (-1);
 		}
-		c = *p;
-		*p++ = 0;
-		pb = p;
-		if ((p = strchr(p, ')')) == NULL) {
-			qwarnx("%s unbalanced parenthesis\n", exp);
-			free(o);
+		if (kprobe_exp_split(exp, left, &op, right) == -1) {
+			qwarnx("can't split expression: %s", exp);
 			return (-1);
 		}
-		*p = 0;
-		if (kprobe_exp(pa, &ia, qbtf) == -1) {
-			qwarnx("%s is unresolved\n", pa);
-			free(o);
+		if (kprobe_exp(left, &off_left, qbtf) == -1) {
+			qwarnx("left expression is unresolved: %s", exp);
 			return (-1);
 		}
-		if (kprobe_exp(pb, &ib, qbtf) == -1) {
-			qwarnx("%s is unresolved\n", pb);
-			free(o);
+		if (kprobe_exp(right, &off_right, qbtf) == -1) {
+			qwarnx("right expression is unresolved: %s", exp);
 			return (-1);
 		}
-		off = c == '+' ? ia + ib : ia - ib;
-
-		/* Jump over `)` */
-		p++;
-		/* Walk the original expression, there more after `)` */
-		exp += p - o;
-		free(o);
+		switch (op) {
+		case '+':
+			off = off_left + off_right;
+			break;
+		case '-':
+			off = off_left - off_right;
+			break;
+		case '*':
+			off = off_left * off_right;
+			break;
+		default:
+			qwarnx("invalid operator `%c`: %s", op, exp);
+			return (-1);
+		}
 		/* If there is a dot after `)`, recurse */
-		if (*exp++ == '.') {
-			if (kprobe_exp(exp, &ia, qbtf) == -1) {
-				qwarnx("%s is unresolved\n", exp);
+		if (*(end + 1) == '.') {
+			if (kprobe_exp(end + 2, &off_left, qbtf) == -1) {
+				qwarnx("expression unresolved: %s", exp);
 				return (-1);
 			}
-			off += ia;
+			off += off_left;
 		}
 		break;
 	}
@@ -850,7 +927,7 @@ kprobe_exp(char *exp, ssize_t *off1, struct quark_btf *qbtf)
 		if (errstr == NULL)
 			break;
 		if ((off = quark_btf_offset(qbtf, exp)) == -1) {
-			qwarnx("%s is unresolved\n", exp);
+			qwarnx("expression unresolved: %s", exp);
 			return (-1);
 		}
 		break;

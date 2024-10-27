@@ -36,6 +36,8 @@ struct quark_btf_target base_targets[] = {
 	{ "mount.mnt",			-1 },
 	{ "mount.mnt_mountpoint",	-1 },
 	{ "pid.numbers",		-1 },
+	{ "pid_type.PIDTYPE_PGID",	-1 },
+	{ "pid_type.PIDTYPE_SID",	-1 },
 	{ "signal_struct.pids",		-1 },
 	{ "signal_struct.tty",		-1 },
 	{ "task_struct.comm",		-1 },
@@ -191,6 +193,40 @@ btf_root_offset(struct btf *btf, const char *dotname)
 	return (btf_root_offset2(btf, dotname));
 }
 
+static int
+btf_enum_value(struct btf *btf, const char *dotname, ssize_t *uv)
+{
+	int			 i;
+	const struct btf_type	*parent;
+	const struct btf_enum	*v;
+	char			 enum_type[256], enum_member[256];
+	char			*dot;
+
+	if (strlcpy(enum_type, dotname, sizeof(enum_type)) >=
+	    sizeof(enum_type))
+		return (-1);
+	if ((dot = strchr(enum_type, '.')) == NULL)
+		return (-1);
+	*dot = 0;
+	if (strlcpy(enum_member, dot + 1, sizeof(enum_member)) >=
+	    sizeof(enum_member))
+		return (-1);
+
+	parent = btf_type_by_name_kind(btf, NULL, enum_type, BTF_KIND_ENUM);
+	if (parent == NULL)
+		return (-1);
+	v = btf_enum(parent);
+	for (i = 0; i < btf_vlen(parent); i++, v++) {
+		if (strcmp(btf__name_by_offset(btf, v->name_off), enum_member))
+			continue;
+
+		*uv = v->val;
+		return (0);
+	}
+
+	return (-1);
+}
+
 static struct quark_btf *
 quark_btf_new(const char *new_name)
 {
@@ -306,7 +342,9 @@ quark_btf_open2(const char *path, const char *kname)
 
 	for (ta = qbtf->targets; ta->dotname != NULL; ta++) {
 		ta->offset = btf_root_offset(btf, ta->dotname);
-		if (ta->offset == -1) {
+		/* Maybe this is an enum */
+		if (ta->offset == -1 &&
+		    btf_enum_value(btf, ta->dotname, &ta->offset) == -1) {
 			/*
 			 * Be stingy with printing things that always fail
 			 */
@@ -315,7 +353,6 @@ quark_btf_open2(const char *path, const char *kname)
 			    strcmp(ta->dotname, "task_struct.pids"))) {
 				qwarnx("dotname=%s failed", ta->dotname);
 			}
-
 			failed++;
 		}
 	}
