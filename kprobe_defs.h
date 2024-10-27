@@ -30,20 +30,31 @@
 #define PWD_K(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent))
 #define PWD_S(_t, _o)	"task_struct.fs fs_struct.pwd.dentry " XS(RPT(_t, _o, dentry.d_parent)) " dentry.d_name.name +0"
 
+/*
+ * 16 is sizeof(struct hlist_node), which is in the beginning of struct
+ * pid_link. sizeof(struct pid_link) is 24, 16 for hlist_node + pid pointer.
+ * PIDTYPE_PGID is `1`, this puts us on 16 + (24 * 1) = 40 bytes.
+ */
 struct kprobe_arg ka_task_old_pgid = {
-	"pgid", XS(ARG_0), "u32", "task_struct.group_leader (task_struct.pids+40) (pid.numbers+0).upid.nr"
+	"pgid", XS(ARG_0), "u32", "task_struct.group_leader ((task_struct.pids+16)+(24*pid_type.PIDTYPE_PGID)) (pid.numbers+0).upid.nr"
 };
 
+/* 16 + 2*24 = 64 */
 struct kprobe_arg ka_task_old_sid = {
-	"sid", XS(ARG_0), "u32", "task_struct.group_leader (task_struct.pids+64) (pid.numbers+0).upid.nr"
+	"sid", XS(ARG_0), "u32", "task_struct.group_leader ((task_struct.pids+16)+(24*pid_type.PIDTYPE_SID)) (pid.numbers+0).upid.nr"
 };
 
+/*
+ * New structure is just an array of pointers, not a pid_link array like above.
+ * RHEL8 uses the new scheme in task_struct.signal, but has the old value for
+ * PIDTYPE_PGID=1, newer kernels have a PIDTYPE_TGID=1 and PIDTYPE_PGID=2.
+ */
 struct kprobe_arg ka_task_new_pgid = {
-	"pgid", XS(ARG_0), "u32", "task_struct.group_leader task_struct.signal (signal_struct.pids+16) (pid.numbers+0).upid.nr"
+	"pgid", XS(ARG_0), "u32", "task_struct.group_leader task_struct.signal (signal_struct.pids+(8*pid_type.PIDTYPE_PGID)) (pid.numbers+0).upid.nr"
 };
 
 struct kprobe_arg ka_task_new_sid = {
-	"sid", XS(ARG_0), "u32", "task_struct.group_leader task_struct.signal (signal_struct.pids+24) (pid.numbers+0).upid.nr"
+	"sid", XS(ARG_0), "u32", "task_struct.group_leader task_struct.signal (signal_struct.pids+(8*pid_type.PIDTYPE_SID)) (pid.numbers+0).upid.nr"
 };
 
 
