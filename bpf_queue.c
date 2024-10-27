@@ -229,10 +229,10 @@ bpf_queue_open(struct quark_queue *qq)
 	struct bpf_program	*bp;
 	int			 error;
 
+	libbpf_set_print(libbpf_print_fn);
+
 	if ((qq->flags & QQ_EBPF) == 0)
 		return (errno = ENOTSUP, -1);
-
-	libbpf_set_print(libbpf_print_fn);
 
 	if ((bqq = calloc(1, sizeof(*bqq))) == NULL)
 		return (-1);
