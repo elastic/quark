@@ -65,8 +65,16 @@ main(int argc, char *argv[])
 			err(1, "mount /proc");
 		if (mount(NULL, "/sys", "sysfs", 0, NULL) == -1)
 			err(1, "mount /sys");
-		if (mount(NULL, "/sys/kernel/tracing", "tracefs", 0, NULL) == -1)
-			err(1, "mount /sys/kernel/tracing");
+		if (mount(NULL, "/sys/kernel/tracing", "tracefs",
+		    0, NULL) == -1) {
+			warn("mount /sys/kernel/tracing");
+			warnx("trying debugfs...");
+			if (mount(NULL, "/sys/kernel/debug", "debugfs",
+			    0, NULL) == -1) {
+				warn("mount /sys/kernel/debug");
+				errx(1, "couldn't mount tracefs or debugfs");
+			}
+		}
 
 		return (execv(argv[0], argv));
 	}
