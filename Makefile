@@ -206,7 +206,7 @@ docker-cross-arm64: clean-all docker-image
 		-e LD=aarch64-linux-gnu-ld		\
 		-e AR=aarch64-linux-gnu-ar		\
 		$(DOCKER_RUN_ARGS)			\
-		/bin/bash -c "make -C $(PWD)"
+		/bin/bash -c "make -C $(PWD) all initramfs.gz"
 
 docker-image: clean-all
 	$(call msg,DOCKER-IMAGE,Dockerfile)
