@@ -233,10 +233,20 @@ struct path_ctx {
  * Kprobe sample formats
  */
 enum sample_kinds {
-	EXEC_SAMPLE = 1,
+	INVALID_SAMPLE,
+	EXEC_SAMPLE,
 	WAKE_UP_NEW_TASK_SAMPLE,
 	EXIT_THREAD_SAMPLE,
 	EXEC_CONNECTOR_SAMPLE
+};
+
+/*
+ * Attributes of sample, maps id to kind and data_offset
+ */
+struct sample_attr {
+	int	id;
+	int	kind;
+	size_t	data_offset;
 };
 
 /*
@@ -251,16 +261,16 @@ enum sample_kinds {
 TAILQ_HEAD(perf_group_leaders, perf_group_leader);
 TAILQ_HEAD(kprobe_states, kprobe_state);
 
-#define MAX_SAMPLE_IDS		4096		/* id_to_sample_kind map */
+/* We only use 4, bump when needed */
+#define MAX_SAMPLE_ATTR	8
 
 struct kprobe_queue {
 	struct perf_group_leaders	 perf_group_leaders;
 	int				 num_perf_group_leaders;
 	struct kprobe_states		 kprobe_states;
-	ssize_t				 data_offset; /* body data off within a probe */
 	int				 qid;
 	/* matches each sample event to a kind like EXEC_SAMPLE, FOO_SAMPLE */
-	u8				 id_to_sample_kind[MAX_SAMPLE_IDS];
+	struct sample_attr		 id_to_sample_attr[MAX_SAMPLE_ATTR];
 };
 
 static int	kprobe_queue_populate(struct quark_queue *);
@@ -274,6 +284,8 @@ struct quark_queue_ops queue_ops_kprobe = {
 	.close	      = kprobe_queue_close,
 };
 
+static ssize_t	parse_data_offset(const char *);
+
 static char *
 str_of_dataloc(struct perf_record_sample *sample,
     struct perf_sample_data_loc *data_loc)
@@ -281,21 +293,46 @@ str_of_dataloc(struct perf_record_sample *sample,
 	return (sample->data + data_loc->offset);
 }
 
-static inline int
-sample_kind_of_id(struct kprobe_queue *kqq, int id)
+static struct sample_attr *
+sample_attr_of_id(struct kprobe_queue *kqq, int id)
 {
-	if (unlikely(id <= 0 || id >= MAX_SAMPLE_IDS)) {
-		qwarnx("invalid id %d", id);
-		return (errno = ERANGE, -1);
+	int	i;
+
+	for (i = 0; i < MAX_SAMPLE_ATTR; i++) {
+		if (kqq->id_to_sample_attr[i].id == id)
+			return (&kqq->id_to_sample_attr[i]);
 	}
 
-	return (kqq->id_to_sample_kind[id]);
+	return (NULL);
 }
 
-static inline void *
-sample_data_body(struct kprobe_queue *kqq, struct perf_record_sample *sample)
+static struct sample_attr *
+sample_attr_prepare(struct kprobe_queue *kqq, int id, const char *format,
+    ssize_t *data_offset)
 {
-	return (sample->data + kqq->data_offset);
+	int			 i;
+	struct sample_attr	*sattr;
+
+	if (sample_attr_of_id(kqq, id) != NULL) {
+		qwarnx("id already allocated");
+		return (NULL);
+	}
+	*data_offset = parse_data_offset(format);
+	if (*data_offset == -1) {
+		qwarnx("can't parse data offset");
+		return (NULL);
+	}
+	sattr = NULL;
+	for (i = 0; i < MAX_SAMPLE_ATTR; i++) {
+		if (kqq->id_to_sample_attr[i].kind == INVALID_SAMPLE) {
+			sattr = &kqq->id_to_sample_attr[i];
+			break;
+		}
+	}
+	if (sattr == NULL)
+		qwarnx("no more free sample attr slots");
+
+	return (sattr);
 }
 
 static inline int
@@ -303,6 +340,12 @@ sample_data_id(struct perf_record_sample *sample)
 {
 	struct perf_sample_data_hdr *h = (struct perf_sample_data_hdr *)sample->data;
 	return (h->common_type);
+}
+
+static inline void *
+sample_data_body(struct perf_record_sample *sample, struct sample_attr *sattr)
+{
+	return (sample->data + sattr->data_offset);
 }
 
 static int
@@ -354,10 +397,10 @@ qstr_copy_data_loc(struct qstr *qstr,
 }
 
 static void
-task_sample_to_raw_task(struct kprobe_queue *kqq, int kind,
+task_sample_to_raw_task(struct kprobe_queue *kqq, struct sample_attr *sattr,
     struct perf_record_sample *sample, struct raw_task *task)
 {
-	struct task_sample	*w = sample_data_body(kqq, sample);
+	struct task_sample	*w = sample_data_body(sample, sattr);
 	struct path_ctx		 pctx;
 	int			 i;
 
@@ -383,7 +426,7 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, int kind,
 	/* cwd below */
 	strlcpy(task->comm, str_of_dataloc(sample, &w->comm),
 	    sizeof(task->comm));
-	if (kind == EXIT_THREAD_SAMPLE) {
+	if (sattr->kind == EXIT_THREAD_SAMPLE) {
 		task->exit_code = (w->exit_code >> 8) & 0xff;
 		task->exit_time_event = sample->sample_id.time;
 		qstr_strcpy(&task->cwd, "(exited)");
@@ -415,16 +458,21 @@ static struct raw_event *
 perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 {
 	struct kprobe_queue	*kqq = qq->queue_be;
+	struct sample_attr	*sattr;
 	int			 id, kind;
 	ssize_t			 n;
 	struct raw_event	*raw = NULL;
 
 	id = sample_data_id(sample);
-	kind = sample_kind_of_id(kqq, id);
+	sattr = sample_attr_of_id(kqq, id);
+	if (sattr != NULL)
+		kind = sattr->kind;
+	else
+		kind = INVALID_SAMPLE;
 
 	switch (kind) {
 	case EXEC_SAMPLE: {
-		struct exec_sample *exec = sample_data_body(kqq, sample);
+		struct exec_sample *exec = sample_data_body(sample, sattr);
 		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
 			return (NULL);
 		n = qstr_copy_data_loc(&raw->exec.filename, sample, &exec->filename);
@@ -434,8 +482,9 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
 	case EXIT_THREAD_SAMPLE: {
-		struct task_sample	*w = sample_data_body(kqq, sample);
+		struct task_sample	*w = sample_data_body(sample, sattr);
 		int			 raw_type;
+
 		/*
 		 * ev->sample.sample_id.pid is the parent, if the new task has
 		 * the same pid as it, then this is a thread event
@@ -454,14 +503,16 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			raw->pid = w->pid;
 			raw->tid = w->tid;
 		}
-		task_sample_to_raw_task(kqq, kind, sample, &raw->task);
+		task_sample_to_raw_task(kqq, sattr, sample, &raw->task);
 		break;
 	}
 	case EXEC_CONNECTOR_SAMPLE: {
 		char				*start, *p, *end;
 		int				 i;
-		struct exec_connector_sample	*exec_sample = sample_data_body(kqq, sample);
+		struct exec_connector_sample	*exec_sample;
 		struct raw_exec_connector	*exec;
+
+		exec_sample = sample_data_body(sample, sattr);
 
 		if ((raw = raw_event_alloc(RAW_EXEC_CONNECTOR)) == NULL)
 			return (NULL);
@@ -482,7 +533,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 				qwarnx("can't copy args");
 			exec->args.p[exec->args_len - 1] = 0;
 		}
-		task_sample_to_raw_task(kqq, kind, sample, &exec->task);
+		task_sample_to_raw_task(kqq, sattr, sample, &exec->task);
 		break;
 	}
 	default:
@@ -730,7 +781,7 @@ fetch_tracing_id(const char *tail)
 	if (n <= 0)
 		return (-1);
 	idbuf[n - 1] = 0;
-	id = strtonum(idbuf, 1, MAX_SAMPLE_IDS - 1, &errstr);
+	id = strtonum(idbuf, 1, INT_MAX, &errstr);
 	if (errstr != NULL) {
 		qwarnx("strtonum: %s", errstr);
 		return (errno = ERANGE, -1);
@@ -740,7 +791,7 @@ fetch_tracing_id(const char *tail)
 }
 
 static ssize_t
-parse_data_offset(void)
+parse_data_offset(const char *path)
 {
 	int		 fd;
 	FILE		*f;
@@ -750,7 +801,7 @@ parse_data_offset(void)
 	size_t		 line_len;
 	int		 past_common;
 
-	fd = open_tracing(O_RDONLY, "events/sched/sched_process_exec/format");
+	fd = open_tracing(O_RDONLY, path);
 	if (fd == -1)
 		return (-1);
 	f = fdopen(fd, "r");
@@ -1184,16 +1235,25 @@ perf_open_group_leader(struct kprobe_queue *kqq, int cpu)
 {
 	struct perf_group_leader	*pgl;
 	int				 id;
+	struct sample_attr		*sattr;
+	ssize_t				 data_offset;
+
+	/* By putting EXEC on group leader we save one fd per cpu */
+	if ((id = fetch_tracing_id("events/sched/sched_process_exec/id")) == -1)
+		return (NULL);
+
+	sattr = NULL;
+	data_offset = -1;
+	if (cpu == 0) {
+		sattr = sample_attr_prepare(kqq, id,
+		    "events/sched/sched_process_exec/format", &data_offset);
+		if (sattr == NULL)
+			return (NULL);
+	}
 
 	pgl = calloc(1, sizeof(*pgl));
 	if (pgl == NULL)
 		return (NULL);
-	/* By putting EXEC on group leader we save one fd per cpu */
-	if ((id = fetch_tracing_id("events/sched/sched_process_exec/id"))
-	    == -1) {
-		free(pgl);
-		return (NULL);
-	}
 	perf_attr_init(&pgl->attr, id);
 	/*
 	 * We will still get task events as long as set comm, see
@@ -1217,7 +1277,12 @@ perf_open_group_leader(struct kprobe_queue *kqq, int cpu)
 		return (NULL);
 	}
 	pgl->cpu = cpu;
-	kqq->id_to_sample_kind[id] = EXEC_SAMPLE;
+	/* Take the slot now that there are no error paths */
+	if (sattr != NULL) {
+		sattr->id = id;
+		sattr->kind = EXEC_SAMPLE;
+		sattr->data_offset = (size_t)data_offset;
+	}
 
 	return (pgl);
 }
@@ -1230,21 +1295,31 @@ perf_open_kprobe(struct kprobe_queue *kqq, struct kprobe *k,
 	char			 buf[MAXPATHLEN];
 	char			 fsname[MAXPATHLEN];
 	struct kprobe_state	*ks;
+	ssize_t			 data_offset;
+	struct sample_attr	*sattr;
 
 	kprobe_tracefs_name(k, qid, fsname, sizeof(fsname));
+
+	if (snprintf(buf, sizeof(buf), "events/kprobes/%s/id",
+	    fsname) >= (int)sizeof(buf))
+		return (errno = ENAMETOOLONG, NULL);
+	if ((id = fetch_tracing_id(buf)) == -1)
+		return (NULL);
+
+	sattr = NULL;
+	data_offset = -1;
+	if (cpu == 0) {
+		if (snprintf(buf, sizeof(buf), "events/kprobes/%s/format",
+		    fsname) >= (int)sizeof(buf))
+			return (errno = ENAMETOOLONG, NULL);
+		sattr = sample_attr_prepare(kqq, id, buf, &data_offset);
+		if (sattr == NULL)
+			return (NULL);
+	}
 
 	ks = calloc(1, sizeof(*ks));
 	if (ks == NULL)
 		return (NULL);
-	if (snprintf(buf, sizeof(buf), "events/kprobes/%s/id",
-	    fsname) >= (int)sizeof(buf)) {
-		free(ks);
-		return (errno = ENAMETOOLONG, NULL);
-	}
-	if ((id = fetch_tracing_id(buf)) == -1) {
-		free(ks);
-		return (NULL);
-	}
 	perf_attr_init(&ks->attr, id);
 	ks->fd = perf_event_open_degradable(&ks->attr, -1, cpu, group_fd, 0);
 	if (ks->fd == -1) {
@@ -1261,7 +1336,12 @@ perf_open_kprobe(struct kprobe_queue *kqq, struct kprobe *k,
 	ks->k = k;
 	ks->cpu = cpu;
 	ks->group_fd = group_fd;
-	kqq->id_to_sample_kind[id] = ks->k->sample_kind;
+	/* Take the slot now that there are no error paths */
+	if (sattr != NULL) {
+		sattr->id = id;
+		sattr->kind = ks->k->sample_kind;
+		sattr->data_offset = (size_t)data_offset;
+	}
 
 	return (ks);
 }
@@ -1274,17 +1354,13 @@ kprobe_queue_open(struct quark_queue *qq)
 	struct kprobe			*k;
 	struct kprobe_state		*ks;
 	struct epoll_event		 ev;
-	ssize_t				 data_offset;
 	int				 i;
 	u64				 qid;
 	static u64			 qids;
 
 	if ((qq->flags & QQ_KPROBE) == 0)
 		return (errno = ENOTSUP, -1);
-
 	qid = __atomic_fetch_add(&qids, 1, __ATOMIC_RELAXED);
-	if ((data_offset = parse_data_offset()) == -1)
-		goto fail;
 	if (kprobe_install_all(qid) == -1)
 		goto fail;
 	if ((kqq = calloc(1, sizeof(*kqq))) == NULL)
@@ -1294,7 +1370,6 @@ kprobe_queue_open(struct quark_queue *qq)
 	kqq->num_perf_group_leaders = 0;
 	TAILQ_INIT(&kqq->kprobe_states);
 	kqq->qid = qid;
-	kqq->data_offset = data_offset;
 	qq->queue_be = kqq;
 
 	for (i = 0; i < get_nprocs_conf(); i++) {
