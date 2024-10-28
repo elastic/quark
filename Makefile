@@ -74,6 +74,7 @@ EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/$(ARCH
 
 # LIBQUARK
 LIBQUARK_DEPS:= $(wildcard *.h) bpf_prog_skel.h $(EEBPF_FILES) include
+LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
 LIBQUARK_SRCS:=			\
 	bpf_queue.c		\
 	btf.c			\
@@ -198,7 +199,7 @@ docker: docker-image clean-all
 	$(call msg,DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) /bin/bash -c "make -C $(PWD)"
 
-docker-cross-arm64: clean-all docker-image
+docker-cross-arm64: clean-all docker-image manpages.h
 	$(call msg,DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run				\
 		-e ARCH=arm64				\
@@ -278,29 +279,52 @@ init: init.c
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
 
-quark-mon: quark-mon.c $(LIBQUARK_STATIC_BIG)
+quark-mon: quark-mon.c manpages.h $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+		-o $@ $< $(LIBQUARK_STATIC_BIG)
+
+quark-btf: quark-btf.c manpages.h $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+		-o $@ $< $(LIBQUARK_STATIC_BIG)
+
+quark-test: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+		-o $@ $< $(LIBQUARK_STATIC_BIG)
+
+quark-mon-static: quark-mon.c manpages.h $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DNO_PRIVDROP $(CDIAGFLAGS) \
+		-static -o $@ $< $(LIBQUARK_STATIC_BIG)
+
+quark-btf-static: quark-btf.c manpages.h $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+		-static -o $@ $< $(LIBQUARK_STATIC_BIG)
+
+quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+		-static -o $@ $< $(LIBQUARK_STATIC_BIG)
+
+man-embedder: man-embedder.c
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
 
-quark-btf: quark-btf.c $(LIBQUARK_STATIC_BIG)
-	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
-
-quark-test: quark-test.c $(LIBQUARK_STATIC_BIG)
-	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
-
-quark-mon-static: quark-mon.c $(LIBQUARK_STATIC_BIG)
-	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DNO_PRIVDROP $(CDIAGFLAGS) -static -o $@ $^
-
-quark-btf-static: quark-btf.c $(LIBQUARK_STATIC_BIG)
-	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
-
-quark-test-static: quark-test.c $(LIBQUARK_STATIC_BIG)
-	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
+manpages.h: man-embedder display_man.c quark-btf.8 quark-mon.8 quark-test.8
+	$(Q)echo '// SPDX-License-Identifier: Apache-2.0' > $@
+	$(Q)echo '/* Copyright (c) 2024 Elastic NV */' >> $@
+	$(Q)echo '' >> $@
+	$(call msg,MAN-EMB,quark-btf.8)
+	$(Q)./man-embedder quark-btf.8 MAN_QUARK_BTF >> $@
+	$(call msg,MAN-EMB,quark-mon.8)
+	$(Q)./man-embedder quark-mon.8 MAN_QUARK_MON >> $@
+	$(call msg,MAN-EMB,quark-test.8)
+	$(Q)./man-embedder quark-test.8 MAN_QUARK_TEST >> $@
+	$(call msg,MAN-EMB,display_man.c)
+	$(Q)cat display_man.c >> $@
 
 docs/index.html: docs/quark.7.html
 	$(call msg,CP,index.html)
@@ -336,6 +360,8 @@ clean:
 	$(Q)rm -f			\
 		*.o			\
 		*.a			\
+		man-embedder		\
+		manpages.h		\
 		quark-mon		\
 		quark-mon-static	\
 		quark-btf		\

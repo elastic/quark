@@ -9,7 +9,12 @@
 #include <strings.h>
 #include <unistd.h>
 
+#include <sys/wait.h>
+
 #include "quark.h"
+
+#define MAN_QUARK_BTF
+#include "manpages.h"
 
 static int		bflag;
 static int		fflag;
@@ -29,6 +34,8 @@ disply_version(void)
 static void
 usage(void)
 {
+	fprintf(stderr, "usage: %s -h\n",
+	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-bv] [targets...]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-bv] [-f btf_file]\n",
@@ -229,7 +236,7 @@ main(int argc, char *argv[])
 	int			 ch;
 	const char		*path = NULL;
 
-	while ((ch = getopt(argc, argv, "bf:glvV")) != -1) {
+	while ((ch = getopt(argc, argv, "bf:ghlvV")) != -1) {
 		switch (ch) {
 		case 'b':
 			bflag = 1;
@@ -237,6 +244,12 @@ main(int argc, char *argv[])
 		case 'g':
 			gflag = 1;
 			break;
+		case 'h':
+			if (isatty(STDOUT_FILENO))
+				display_man();
+			else
+				usage();
+			break;	/* NOTREACHED */
 		case 'l':
 			lflag = 1;
 			break;

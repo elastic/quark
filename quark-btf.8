@@ -16,6 +16,8 @@
 .Nm quark-btf
 .Op Fl v
 .Fl g Ar btf_file name version
+.Nm quark-btf
+.Fl h
 .Nm quark-btf Fl V
 .Sh DESCRIPTION
 The
@@ -45,11 +47,14 @@ is a human identifier, like ubuntu-22.
 is the kernel version as returned by
 .Em uname -r .
 .El
-This option only used to generate
+.Pp
+This option is only used to generate
 .Pa btfhub.c
 via
 .Pa genbtf.sh ,
 chances are you'll never need this.
+.It Fl h
+Display this manpage.
 .It Fl l Ar version
 Lookup the kernel
 .Em version

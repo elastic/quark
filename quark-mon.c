@@ -12,7 +12,12 @@
 #include <strings.h>
 #include <unistd.h>
 
+#include <sys/wait.h>
+
 #include "quark.h"
+
+#define MAN_QUARK_MON
+#include "manpages.h"
 
 static int gotsigint;
 
@@ -87,6 +92,7 @@ display_version(void)
 static void
 usage(void)
 {
+	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-bDefkstv] "
 	    "[-C filename ] [-l maxlength] [-m maxnodes]\n",
 	    program_invocation_short_name);
@@ -113,7 +119,7 @@ main(int argc, char *argv[])
 	nqevs = 32;
 	graph_by_time = graph_by_pidtime = graph_cache = NULL;
 
-	while ((ch = getopt(argc, argv, "bC:Degklm:tsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "bC:Deghklm:tsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -134,6 +140,12 @@ main(int argc, char *argv[])
 		case 'g':
 			qa.flags |= QQ_MIN_AGG;
 			break;
+		case 'h':
+			if (isatty(STDOUT_FILENO))
+				display_man();
+			else
+				usage();
+			break;	/* NOTREACHED */
 		case 'k':
 			qa.flags |= QQ_KPROBE;
 			break;
