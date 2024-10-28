@@ -16,6 +16,9 @@
 
 #include "quark.h"
 
+#define MAN_QUARK_TEST
+#include "manpages.h"
+
 static int	bflag;	/* run bpf tests */
 static int	kflag;	/* run kprobe tests */
 
@@ -145,6 +148,8 @@ display_version(void)
 static void
 usage(void)
 {
+	fprintf(stderr, "usage: %s -h\n",
+	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-bkv] [tests ...]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -l\n",
@@ -692,11 +697,17 @@ main(int argc, char *argv[])
 {
 	int	ch, x, failed;
 
-	while ((ch = getopt(argc, argv, "bklNvV")) != -1) {
+	while ((ch = getopt(argc, argv, "bhklNvV")) != -1) {
 		switch (ch) {
 		case 'b':
 			bflag = 1;
 			break;
+		case 'h':
+			if (isatty(STDOUT_FILENO))
+				display_man();
+			else
+				usage();
+			break;	/* NOTREACHED */
 		case 'k':
 			kflag = 1;
 			break;
