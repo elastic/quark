@@ -293,7 +293,7 @@ str_of_dataloc(struct perf_record_sample *sample,
 	return (sample->data + data_loc->offset);
 }
 
-static struct sample_attr *
+static const struct sample_attr *
 sample_attr_of_id(struct kprobe_queue *kqq, int id)
 {
 	int	i;
@@ -343,7 +343,7 @@ sample_data_id(struct perf_record_sample *sample)
 }
 
 static inline const void *
-sample_data_body(struct perf_record_sample *sample, struct sample_attr *sattr)
+sample_data_body(struct perf_record_sample *sample, const struct sample_attr *sattr)
 {
 	return (sample->data + sattr->data_offset);
 }
@@ -399,7 +399,7 @@ qstr_copy_data_loc(struct qstr *qstr,
 }
 
 static void
-task_sample_to_raw_task(struct kprobe_queue *kqq, struct sample_attr *sattr,
+task_sample_to_raw_task(struct kprobe_queue *kqq, const struct sample_attr *sattr,
     struct perf_record_sample *sample, struct raw_task *task)
 {
 	const struct task_sample	*w = sample_data_body(sample, sattr);
@@ -459,11 +459,11 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, struct sample_attr *sattr,
 static struct raw_event *
 perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 {
-	struct kprobe_queue	*kqq = qq->queue_be;
-	struct sample_attr	*sattr;
-	int			 id, kind;
-	ssize_t			 n;
-	struct raw_event	*raw = NULL;
+	struct kprobe_queue		*kqq = qq->queue_be;
+	const struct sample_attr	*sattr;
+	int				 id, kind;
+	ssize_t				 n;
+	struct raw_event		*raw = NULL;
 
 	id = sample_data_id(sample);
 	sattr = sample_attr_of_id(kqq, id);
