@@ -217,15 +217,15 @@ struct kprobe {
 };
 
 struct path_ctx {
-	char	*root;
-	u64	 root_k;
-	char	*mnt_root;
-	u64	 mnt_root_k;
-	char	*mnt_mountpoint;
-	u64	 mnt_mountpoint_k;
+	const char	*root;
+	u64		 root_k;
+	const char	*mnt_root;
+	u64		 mnt_root_k;
+	const char	*mnt_mountpoint;
+	u64		 mnt_mountpoint_k;
 	struct {
-		char	*pwd;
-		u64	 pwd_k;
+		const char	*pwd;
+		u64		 pwd_k;
 	} pwd[MAX_PWD];
 };
 
@@ -286,9 +286,9 @@ struct quark_queue_ops queue_ops_kprobe = {
 
 static ssize_t	parse_data_offset(const char *);
 
-static char *
+static const char *
 str_of_dataloc(struct perf_record_sample *sample,
-    struct perf_sample_data_loc *data_loc)
+    const struct perf_sample_data_loc *data_loc)
 {
 	return (sample->data + data_loc->offset);
 }
@@ -342,7 +342,7 @@ sample_data_id(struct perf_record_sample *sample)
 	return (h->common_type);
 }
 
-static inline void *
+static inline const void *
 sample_data_body(struct perf_record_sample *sample, struct sample_attr *sattr)
 {
 	return (sample->data + sattr->data_offset);
@@ -351,9 +351,10 @@ sample_data_body(struct perf_record_sample *sample, struct sample_attr *sattr)
 static int
 build_path(struct path_ctx *ctx, struct qstr *dst)
 {
-	int	 i, done;
-	char	*p, *pwd, *ppwd, path[MAXPATHLEN];
-	u64	 pwd_k;
+	int		 i, done;
+	char		*p, path[MAXPATHLEN];
+	const char	*pwd, *ppwd;
+	u64		 pwd_k;
 
 	p = &path[sizeof(path) - 1];
 	*p = 0;
@@ -386,7 +387,8 @@ build_path(struct path_ctx *ctx, struct qstr *dst)
 
 static int
 qstr_copy_data_loc(struct qstr *qstr,
-    struct perf_record_sample *sample, struct perf_sample_data_loc *data_loc)
+    struct perf_record_sample *sample,
+    const struct perf_sample_data_loc *data_loc)
 {
 	/* size includes NUL */
 	if (qstr_ensure(qstr, data_loc->size) == -1)
@@ -400,7 +402,7 @@ static void
 task_sample_to_raw_task(struct kprobe_queue *kqq, struct sample_attr *sattr,
     struct perf_record_sample *sample, struct raw_task *task)
 {
-	struct task_sample	*w = sample_data_body(sample, sattr);
+	const struct task_sample	*w = sample_data_body(sample, sattr);
 	struct path_ctx		 pctx;
 	int			 i;
 
@@ -472,7 +474,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 
 	switch (kind) {
 	case EXEC_SAMPLE: {
-		struct exec_sample *exec = sample_data_body(sample, sattr);
+		const struct exec_sample *exec = sample_data_body(sample, sattr);
 		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
 			return (NULL);
 		n = qstr_copy_data_loc(&raw->exec.filename, sample, &exec->filename);
@@ -482,8 +484,8 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
 	case EXIT_THREAD_SAMPLE: {
-		struct task_sample	*w = sample_data_body(sample, sattr);
-		int			 raw_type;
+		const struct task_sample	*w = sample_data_body(sample, sattr);
+		int				 raw_type;
 
 		/*
 		 * ev->sample.sample_id.pid is the parent, if the new task has
@@ -507,10 +509,10 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		break;
 	}
 	case EXEC_CONNECTOR_SAMPLE: {
-		char				*start, *p, *end;
-		int				 i;
-		struct exec_connector_sample	*exec_sample;
-		struct raw_exec_connector	*exec;
+		const char				*start, *p, *end;
+		int					 i;
+		const struct exec_connector_sample	*exec_sample;
+		struct raw_exec_connector		*exec;
 
 		exec_sample = sample_data_body(sample, sattr);
 
@@ -518,7 +520,7 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			return (NULL);
 		exec = &raw->exec_connector;
 
-		start = p = (char *)&exec_sample->stack[0];
+		start = p = (const char *)&exec_sample->stack[0];
 		end = start + sizeof(exec_sample->stack);
 
 		for (i = 0; i < (int)exec_sample->argc && p < end; i++)
