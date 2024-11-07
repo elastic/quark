@@ -197,7 +197,9 @@ DOCKER_RUN_ARGS=$(QDOCKER)				\
 
 docker: docker-image clean-all
 	$(call msg,DOCKER-RUN,Dockerfile)
-	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) /bin/bash -c "make -C $(PWD)"
+	$(Q)$(DOCKER) run				\
+		$(DOCKER_RUN_ARGS)			\
+		/bin/bash -c "make -C $(PWD) all initramfs.gz"
 
 docker-cross-arm64: clean-all docker-image manpages.h
 	$(call msg,DOCKER-RUN,Dockerfile)
