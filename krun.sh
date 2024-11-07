@@ -24,7 +24,7 @@ function qemu {
 			-initrd "$initramfs"					\
 			-kernel "$kernel"					\
 			-nographic						\
-			--append "console=ttyS0 quiet $cmdline"
+			--append "console=ttyS0 quiet TERM=dumb $cmdline"
 		;;
 	ARM64)
 		qemu-system-aarch64						\
