@@ -4,16 +4,18 @@ Script=${0##*/}
 
 function usage
 {
-	echo "usage: $Script initramfs_path kernel_path" 1>&2
+	echo "usage: $Script initramfs_path kernel_path cmd_line" 1>&2
 	exit 1
 }
 
-if [ $# -ne 2 ]; then
+if [ $# -lt 3 ]; then
    usage
 fi
 
 initramfs="$1"
 kernel="$2"
+shift 2
+cmdline="$*"
 
 function qemu {
 	case "$(file -b "$kernel" | awk '{print $3}')" in
@@ -23,7 +25,7 @@ function qemu {
 			-initrd "$initramfs"					\
 			-kernel "$kernel"					\
 			-nographic						\
-			--append "console=ttyS0 TERM=dumb quark-test"
+			--append "console=ttyS0 quiet $cmdline"
 		;;
 	ARM64)
 		qemu-system-aarch64						\
@@ -32,13 +34,14 @@ function qemu {
 			-initrd "$initramfs"					\
 			-kernel "$kernel"					\
 			-nographic						\
-			--append "console=ttyAMA0 quiet TERM=dumb quark-test"
+			--append "console=ttyAMA0 quiet $cmdline"
 		;;
 	*)
 		echo unknown kernel image arch 1>&2; exit 1;;
 	esac
 }
 
+exitcode=1
 while read -r line
 do
 	echo "$line"
@@ -48,7 +51,6 @@ do
 	fi
 done < <(qemu)
 
-#echo -n "$exitcode" | hexyl
 echo exited with "$exitcode"
 
 exit $((exitcode))
