@@ -17,6 +17,6 @@ download quark-test .
 chmod +x quark-test
 
 sudo ./quark-test
-sudo apt install -y qemu-amd64-static
+sudo apt install -y qemu-user-static
 ./krun.sh initramfs.gz kernel-images/linux-4.18.0-553.el8_10.x86_64 quark-test
 exit $?

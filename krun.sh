@@ -21,7 +21,6 @@ function qemu {
 	case "$(file -b "$kernel" | awk '{print $3}')" in
 	x86)
 		qemu-amd64-static						\
-			-enable-kvm						\
 			-initrd "$initramfs"					\
 			-kernel "$kernel"					\
 			-nographic						\
