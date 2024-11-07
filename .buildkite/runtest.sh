@@ -19,7 +19,7 @@ chmod +x quark-test
 sudo ./quark-test
 ls /usr/bin
 sudo apt-get update -y
-sudo apt install -y --no-install-recommends qemu-user-static
+sudo apt install -y --no-install-recommends qemu-system-x86
 ls /usr/bin
 ./krun.sh initramfs.gz kernel-images/linux-4.18.0-553.el8_10.x86_64 quark-test
 exit $?
