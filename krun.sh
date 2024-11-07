@@ -20,7 +20,7 @@ cmdline="$*"
 function qemu {
 	case "$(file -b "$kernel" | awk '{print $3}')" in
 	x86)
-		qemu-amd64-static						\
+		qemu-x86_64-static						\
 			-initrd "$initramfs"					\
 			-kernel "$kernel"					\
 			-nographic						\
