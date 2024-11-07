@@ -16,10 +16,11 @@ download initramfs.gz .
 download quark-test .
 chmod +x quark-test
 
+echo updating packages...
+sudo apt-get -qq update -y
+echo installing packages...
+sudo apt-get -qq install -y --no-install-recommends qemu-system-x86 > /dev/null
+
 sudo ./quark-test
-ls /usr/bin
-sudo apt-get update -y
-sudo apt install -y --no-install-recommends qemu-system-x86
-ls /usr/bin
 ./krun.sh initramfs.gz kernel-images/linux-4.18.0-553.el8_10.x86_64 quark-test
 exit $?
