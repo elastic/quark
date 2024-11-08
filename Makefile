@@ -266,6 +266,14 @@ include: $(LIBBPF_DEPS)
 
 svg: $(SVGS)
 
+test: quark-test
+	sudo ./quark-test
+
+test-kernel: initramfs.gz
+	./ktest-all.sh
+
+test-all: test test-kernel
+
 initramfs:
 	mkdir initramfs
 
@@ -399,7 +407,10 @@ clean-docs:
 	docker-cross-arm64	\
 	docker-image		\
 	docker-shell		\
-	eebpf-sync
+	eebpf-sync		\
+	test			\
+	test-all		\
+	test-kernel
 
 .NOTPARALLEL:			\
 	centos7			\
@@ -409,6 +420,9 @@ clean-docs:
 	docker-cross-arm64	\
 	docker-image		\
 	docker-shell		\
-	initramfs.gz
+	initramfs.gz		\
+	test			\
+	test-all		\
+	test-kernel
 
 .SUFFIXES:
