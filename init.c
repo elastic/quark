@@ -12,6 +12,7 @@
 #include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 
 static void
@@ -27,11 +28,31 @@ powerdown(void)
 	}
 }
 
+static void
+display_banner(char *argv[])
+{
+	struct utsname	  uts;
+	char		**pp;
+
+	if (uname(&uts) == -1)
+		warn("uname");
+	else {
+		putchar('`');
+		for (pp = argv; *pp != 0; pp++) {
+			if (pp != argv)
+				putchar(' ');
+			printf("%s", *pp);
+		}
+		putchar('`');
+		printf(" on %s %s\n", uts.release, uts.machine);
+	}
+}
+
 int
 main(int argc, char *argv[])
 {
-	pid_t		 pid;
-	int		 status;
+	pid_t	pid;
+	int	status;
 
 	/*
 	 * Cut the kernel some slack until it is in a good shape, I see TSC
@@ -55,7 +76,6 @@ main(int argc, char *argv[])
 
 	/* child */
 	if (pid == 0) {
-
 		if (mkdir("/proc", 0666) != 0)
 			err(1, "mkdir /proc");
 		if (mkdir("/sys", 0666) != 0)
@@ -75,6 +95,8 @@ main(int argc, char *argv[])
 				errx(1, "couldn't mount tracefs or debugfs");
 			}
 		}
+
+		display_banner(argv);
 
 		return (execv(argv[0], argv));
 	}
