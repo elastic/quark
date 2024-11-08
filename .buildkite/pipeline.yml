@@ -2,6 +2,8 @@ steps:
   - label: "build amd64 in docker"
     key: make_docker
     command: "make docker"
+    artifact_paths:
+      - "initramfs.gz"
     agents:
       image: family/core-ubuntu-2204
       provider: gcp
@@ -29,6 +31,7 @@ steps:
     key: test
     command: "./.buildkite/runtest.sh"
     depends_on:
+      - make_docker
       - make_centos7
     agents:
       image: family/core-ubuntu-2204
