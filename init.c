@@ -110,8 +110,8 @@ main(int argc, char *argv[])
 	if (WIFEXITED(status))
 		printf("%s exited with %d\n", argv[0], WEXITSTATUS(status));
 	else if (WIFSIGNALED(status))
-		printf("%s exited with signal %d (SIG%s)\n", argv[0],
-		    WTERMSIG(status), sigabbrev_np(WTERMSIG(status)));
+		printf("%s exited with signal %d (%s)\n", argv[0],
+		    WTERMSIG(status), strsignal(WTERMSIG(status)));
 	else if (WCOREDUMP(status))
 		printf("%s core dumped\n", argv[0]);
 	else
