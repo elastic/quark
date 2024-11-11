@@ -628,6 +628,11 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 		color(x);
 	}
 	fflush(stdout);
+	if (WIFSIGNALED(status))
+		fprintf(stderr, "exited with signal %d (%s)\n",
+		    WTERMSIG(status), strsignal(WTERMSIG(status)));
+	else if (WCOREDUMP(status))
+		fprintf(stderr, "core dumped\n");
 
 	/*
 	 * Children exited, close the stream and print it out.
