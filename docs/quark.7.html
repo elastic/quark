@@ -169,10 +169,9 @@ $ ls -1 /tmp | wc -l</pre>
 <p class="Pp" id="git">Make sure to clone the repository recursively:
     <a class="permalink" href="#git"><i class="Em">git clone
     --recursive</i></a>.</p>
-<p class="Pp" id="make"><a class="permalink" href="#make"><i class="Em">make</i></a>
-    builds the repository, including <span class="Pa">quark-mon</span>,
-    <span class="Pa">libquark_big.a</span> and a
-    <span class="Pa">libquark.a</span>.</p>
+<p class="Pp"><i class="Em">make</i> builds the repository, including
+    <span class="Pa">quark-mon</span>, <span class="Pa">libquark_big.a</span>
+    and a <span class="Pa">libquark.a</span>.</p>
 <p class="Pp"><span class="Pa">libquark_big.a</span> includes all needed
     dependencies in one big archive. This includes a
     <span class="Pa">libbpf.a</span>, <span class="Pa">libelf_pic.a</span> (from
@@ -192,12 +191,23 @@ $ ls -1 /tmp | wc -l</pre>
   <dd>Builds <code class="Nm">quark</code> inside a docker container, so you
       don't have to worry about having build dependencies.</dd>
   <dt id="docker-cross-arm64"><a class="permalink" href="#docker-cross-arm64"><i class="Em">docker-cross-arm64</i></a></dt>
-  <dd>Builds <code class="Nm">quark</code> for arm64 inside a docker container,
-      only links and won't work at this time.</dd>
+  <dd>Builds <code class="Nm">quark</code> for arm64 inside a docker
+    container.</dd>
+  <dt id="centos7"><a class="permalink" href="#centos7"><i class="Em">centos7</i></a></dt>
+  <dd>Builds <code class="Nm">quark</code> inside a centos7 docker container,
+      useful for linking against ancient glibc-2.17.</dd>
+  <dt id="test"><a class="permalink" href="#test"><i class="Em">test</i></a></dt>
+  <dd>Builds and runs
+    <a class="Xr" href="quark-test.8.html">quark-test(8)</a>.</dd>
+  <dt id="test-kernel"><a class="permalink" href="#test-kernel"><i class="Em">test-kernel</i></a></dt>
+  <dd>Runs <a class="Xr" href="quark-test.8.html">quark-test(8)</a> over all
+      kernels in <span class="Pa">kernel_images/</span>.</dd>
+  <dt id="test-all"><a class="permalink" href="#test-all"><i class="Em">test-all</i></a></dt>
+  <dd>Shortcut for test + test-kernels.</dd>
   <dt id="btfhub"><a class="permalink" href="#btfhub"><i class="Em">btfhub</i></a></dt>
   <dd>Regenerates <span class="Pa">btfhub.c</span>. Usage:
     <div class="Bd Pp Li">
-    <pre>make btfhub BTFHUB_ARCHIVE_PATH=/my/path/to/btfhub-archive</pre>
+    <pre>$ make btfhub BTFHUB_ARCHIVE_PATH=/my/path/to/btfhub-archive</pre>
     </div>
   </dd>
   <dt id="clean-all"><a class="permalink" href="#clean-all"><i class="Em">clean-all</i></a></dt>
@@ -222,14 +232,9 @@ $ ls -1 /tmp | wc -l</pre>
     </div>
   </dd>
   <dt id="initramfs.gz"><a class="permalink" href="#initramfs.gz"><i class="Em">initramfs.gz</i></a></dt>
-  <dd>Build a initramfs file containing all quark binaries so that it can be run
-      as the init process on boot, useful for testing any kernel under qemu,
-      notice how you can pass parameters normally to quark-mon:
-    <div class="Bd Pp Li">
-    <pre>$ make initramfs.gz
-$ qemu-system-x86_64 -initrd initramfs.gz -kernel linux-image-x86_64-5.10.92-2 -nographic --append &quot;console=ttyS0 quark-mon -kvvv&quot;</pre>
-    </div>
-  </dd>
+  <dd>Builds an initramfs file containing all quark binaries so that it can be
+      run as the init process on boot, useful for testing any kernel under qemu.
+      See <a class="Sx" href="#TESTING">TESTING</a>.</dd>
 </dl>
 <p class="Pp" id="V=1">All the targets above can generate debug output by
     specifying <a class="permalink" href="#V=1"><i class="Em">V=1</i></a>, as
@@ -249,8 +254,17 @@ $ cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf
 <section class="Sh">
 <h1 class="Sh" id="TESTING"><a class="permalink" href="#TESTING">TESTING</a></h1>
 <p class="Pp"><a class="Xr" href="quark-test.8.html">quark-test(8)</a> is the
-    main test utility ran by the CI(soon). All tests are self-contained in this
-    binary.</p>
+    main test utility ran by the CI, can be invoked via <i class="Em">make
+    test</i>. All tests are self-contained in this binary.</p>
+<p class="Pp">Some included kernels can be tested in qemu via <i class="Em">make
+    test-kernel</i>. Any <code class="Nm">quark</code> utility can be run on a
+    custom kernel via the <span class="Pa">krun.sh</span> script, as in:</p>
+<div class="Bd Pp Li">
+<pre>$ make initramfs.gz
+$ ./krun.sh initramfs.gz kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 quark-test -vvv</pre>
+</div>
+<p class="Pp">Note that you can pass arguments to the utility and you have to
+    make <span class="Pa">initramfs.gz</span> first.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="INCLUDED_BINARIES"><a class="permalink" href="#INCLUDED_BINARIES">INCLUDED
@@ -397,7 +411,7 @@ main(void)
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">October 25, 2024</td>
+    <td class="foot-date">November 12, 2024</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
