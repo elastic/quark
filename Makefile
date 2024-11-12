@@ -108,7 +108,8 @@ LIBBPF_SRC:= libbpf/src
 LIBBPF_STATIC:= $(LIBBPF_SRC)/libbpf.a
 LIBBPF_DEPS:=	$(wildcard libbpf/src/*.[ch])		\
 		$(wildcard libbpf/include/*.[ch])	\
-		$(ELFTOOLCHAIN_FILES)
+		$(ELFTOOLCHAIN_FILES)			\
+		$(ELFTOOLCHAIN_STATIC)
 LIBBPF_EXTRA_CFLAGS:= -DQUARK
 LIBBPF_EXTRA_CFLAGS+= -fPIC
 LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/libelf
