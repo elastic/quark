@@ -385,6 +385,7 @@ clean-all: clean
 	$(call msg,CLEAN-ALL)
 	$(Q)rm -f $(SVGS)
 	$(Q)rm -rf include
+	$(Q)rm -f initramfs.gz
 	$(Q)make -C $(LIBBPF_SRC) clean NO_PKG_CONFIG=y
 	$(Q)make -C $(ELFTOOLCHAIN_SRC)/libelf clean
 	$(Q)make -C $(ZLIB_SRC) clean || true
