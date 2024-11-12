@@ -192,7 +192,7 @@ as
 is quite big.
 .Pp
 Other useful build targets include:
-.Bl -tag -width "man-lint"
+.Bl -tag -width "docker-cross-arm64"
 .It Em clean
 Clean object files from
 .Nm .
@@ -204,13 +204,28 @@ having build dependencies.
 .It Em docker-cross-arm64
 Builds
 .Nm quark
-for arm64 inside a docker container, only links and won't work at this time.
+for arm64 inside a docker container.
+.It Em centos7
+Builds
+.Nm quark
+inside a centos7 docker container, useful for linking against
+ancient glibc-2.17.
+.It Em test
+Builds and runs
+.Xr quark-test 8 .
+.It Em test-kernel
+Runs
+.Xr quark-test 8
+over all kernels in
+.Pa kernel_images/ .
+.It Em test-all
+Shortcut for test + test-kernels.
 .It Em btfhub
 Regenerates
 .Pa btfhub.c .
 Usage:
 .Bd -literal
-make btfhub BTFHUB_ARCHIVE_PATH=/my/path/to/btfhub-archive
+$ make btfhub BTFHUB_ARCHIVE_PATH=/my/path/to/btfhub-archive
 .Ed
 .It Em clean-all
 Clean all object files, including the ones from
@@ -237,13 +252,10 @@ Usage:
 $ make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf
 .Ed
 .It Em initramfs.gz
-Build a initramfs file containing all quark binaries so that it can be run as
-the init process on boot, useful for testing any kernel under qemu, notice how
-you can pass parameters normally to quark-mon:
-.Bd -literal
-$ make initramfs.gz
-$ qemu-system-x86_64 -initrd initramfs.gz -kernel linux-image-x86_64-5.10.92-2 -nographic --append "console=ttyS0 quark-mon -kvvv"
-.Ed
+Builds an initramfs file containing all quark binaries so that it can be run as
+the init process on boot, useful for testing any kernel under qemu.
+See
+.Sx TESTING .
 .El
 .Pp
 All the targets above can generate debug output by specifying
@@ -260,8 +272,25 @@ $ cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf
 .Ed
 .Sh TESTING
 .Xr quark-test 8
-is the main test utility ran by the CI(soon).
+is the main test utility ran by the CI, can be invoked via
+.Em make test .
 All tests are self-contained in this binary.
+.Pp
+Some included kernels can be tested in qemu via
+.Em make test-kernel .
+Any
+.Nm quark
+utility can be run on a custom kernel via the
+.Pa krun.sh
+script, as in:
+.Bd -literal
+$ make initramfs.gz
+$ ./krun.sh initramfs.gz kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 quark-test -vvv
+.Ed
+.Pp
+Note that you can pass arguments to the utility and you have to make
+.Pa initramfs.gz
+first.
 .Sh INCLUDED BINARIES
 .Xr quark-mon 8
 is a program that dumps
