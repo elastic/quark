@@ -414,6 +414,8 @@ clean-docs:
 	test-kernel
 
 .NOTPARALLEL:			\
+	clean			\
+	clean-all		\
 	centos7			\
 	centos7-image		\
 	centos7-shell		\
