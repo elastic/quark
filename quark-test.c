@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -128,6 +129,37 @@ spin(void)
 
 	printf("%c\b", ch);
 	fflush(stdout);
+}
+
+static u32
+sproc_self_namespace(const char *path)
+{
+	const char	*errstr;
+	char		 buf[512], *start, *end;
+	ssize_t		 n;
+	u32		 v;
+	int		 dfd;
+
+	if ((dfd = open("/proc/self", O_PATH)) == -1)
+		err(1, "open /proc/self");
+	n = qreadlinkat(dfd, path, buf, sizeof(buf));
+	close(dfd);
+	if (n == -1)
+		err(1, "qreadlinkat %s", path);
+	else if (n >= (ssize_t)sizeof(buf))
+		errx(1, "qreadlinkat %s truncation", path);
+	if ((start = strchr(buf, '[')) == NULL)
+		errx(1, "no [");
+	if ((end = strchr(buf, ']')) == NULL)
+		errx(1, "no ]");
+	start++;
+	*end = 0;
+
+	v = strtonum(start, 0, UINT32_MAX, &errstr);
+	if (errstr != NULL)
+		errx(1, "strtonum %s: %s", start, errstr);
+
+	return (v);
 }
 
 struct test {
@@ -326,6 +358,31 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_namespace(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	qq;
+	struct quark_event	qev;
+	pid_t			child;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	child = fork_exec_nop();
+	if (drain_for_pid(&qq, child, &qev) != 0)
+		err(1, "drain_for_pid");
+
+	assert(qev.process != NULL);
+	assert(qev.process->proc_uts_inonum == sproc_self_namespace("ns/uts"));
+	assert(qev.process->proc_ipc_inonum == sproc_self_namespace("ns/ipc"));
+	assert(qev.process->proc_mnt_inonum == sproc_self_namespace("ns/mnt"));
+	assert(qev.process->proc_net_inonum == sproc_self_namespace("ns/net"));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
 t_cache_grace(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
@@ -475,6 +532,7 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 const struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
+	T(t_namespace),
 	T(t_cache_grace),
 	T(t_min_agg),
 	T(t_stats),

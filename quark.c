@@ -820,6 +820,10 @@ quark_event_dump(struct quark_event *qev, FILE *f)
 		P("  %.4s\ttime_boot=%llu tty_major=%d tty_minor=%d\n",
 		    flagname, qp->proc_time_boot,
 		    qp->proc_tty_major, qp->proc_tty_minor);
+		P("  %.4s\tuts_inonum=%u ipc_inonum=%u\n",
+		    flagname, qp->proc_uts_inonum, qp->proc_ipc_inonum);
+		P("  %.4s\tmnt_inonum=%u net_inonum=%u\n",
+		    flagname, qp->proc_mnt_inonum, qp->proc_net_inonum);
 		P("  %.4s\tentry_leader_type=%s entry_leader=%d\n", flagname,
 		    entry_leader_type_str(qp->proc_entry_leader_type),
 		    qp->proc_entry_leader);
@@ -1010,6 +1014,10 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src, struct
 		qp->proc_sid = raw_task->sid;
 		qp->proc_tty_major = raw_task->tty_major;
 		qp->proc_tty_minor = raw_task->tty_minor;
+		qp->proc_uts_inonum = raw_task->uts_inonum;
+		qp->proc_ipc_inonum = raw_task->ipc_inonum;
+		qp->proc_mnt_inonum = raw_task->mnt_inonum;
+		qp->proc_net_inonum = raw_task->net_inonum;
 
 		/* Don't set cwd as it's not valid on exit */
 		comm = raw_task->comm;
@@ -1265,6 +1273,39 @@ sproc_cmdline(struct quark_process *qp, int dfd)
 	return (0);
 }
 
+/*
+ * Note that defunct processes can return ENOENT on the actual link
+ */
+static int
+sproc_namespace(struct quark_process *qp, const char *path, u32 *dst, int dfd)
+{
+	const char	*errstr;
+	char		 buf[512], *start, *end;
+	ssize_t		 n;
+	u32		 v;
+
+	/* 0 is an invalid inode, so good enough for the error case */
+	*dst = 0;
+	n = qreadlinkat(dfd, path, buf, sizeof(buf));
+	if (n == -1)
+		return (-1);
+	else if (n >= (ssize_t)sizeof(buf))
+		return (errno = ENAMETOOLONG, -1);
+	if ((start = strchr(buf, '[')) == NULL)
+		return (errno = EINVAL, -1);
+	if ((end = strchr(buf, ']')) == NULL)
+		return (errno = EINVAL, -1);
+	start++;
+	*end = 0;
+
+	v = strtonum(start, 0, UINT32_MAX, &errstr);
+	if (errstr != NULL)
+		return (errno = EINVAL, -1);
+	*dst = v;
+
+	return (0);
+}
+
 static int
 sproc_pid(struct quark_queue *qq, int pid, int dfd)
 {
@@ -1281,6 +1322,11 @@ sproc_pid(struct quark_queue *qq, int pid, int dfd)
 
 	if (sproc_status(qp, dfd) == 0 && sproc_stat(qp, dfd) == 0)
 		qp->flags |= QUARK_F_PROC;
+	/* Fail silently, inonum is set to zero */
+	sproc_namespace(qp, "ns/uts", &qp->proc_uts_inonum, dfd);
+	sproc_namespace(qp, "ns/ipc", &qp->proc_ipc_inonum, dfd);
+	sproc_namespace(qp, "ns/mnt", &qp->proc_mnt_inonum, dfd);
+	sproc_namespace(qp, "ns/net", &qp->proc_net_inonum, dfd);
 
 	/* QUARK_F_COMM */
 	if (readlineat(dfd, "comm", qp->comm, sizeof(qp->comm)) > 0)

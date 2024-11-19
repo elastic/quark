@@ -32,9 +32,16 @@ struct quark_btf_target base_targets[] = {
 	{ "fs_struct.pwd.dentry",	-1 },
 	{ "fs_struct.pwd.mnt",		-1 },
 	{ "fs_struct.root.dentry",	-1 },
+	{ "ipc_namespace.proc_inum",	-1 },  /* or ipc_namespace.ns.inum */
 	{ "mm_struct.(anon).start_stack",-1 }, /* or mm_struct.start_stack */
 	{ "mount.mnt",			-1 },
 	{ "mount.mnt_mountpoint",	-1 },
+	{ "mnt_namespace.proc_inum",	-1 },  /* or mnt_namespace.ns.inum */
+	{ "net_namespace.proc_inum",	-1 },  /* or net.ns.inum or net.proc_inum */
+	{ "nsproxy.ipc_ns",		-1 },
+	{ "nsproxy.mnt_ns",		-1 },
+	{ "nsproxy.net_ns",		-1 },
+	{ "nsproxy.uts_ns",		-1 },
 	{ "pid.numbers",		-1 },
 	{ "pid_type.PIDTYPE_PGID",	-1 },
 	{ "pid_type.PIDTYPE_SID",	-1 },
@@ -46,6 +53,7 @@ struct quark_btf_target base_targets[] = {
 	{ "task_struct.fs",		-1 },
 	{ "task_struct.group_leader",	-1 },
 	{ "task_struct.mm",		-1 },
+	{ "task_struct.nsproxy",	-1 },
 	{ "task_struct.pid",		-1 },
 	{ "task_struct.pids",		-1 },
 	{ "task_struct.real_parent",	-1 },
@@ -57,6 +65,7 @@ struct quark_btf_target base_targets[] = {
 	{ "tty_struct.driver",		-1 },
 	{ "tty_struct.index",		-1 },
 	{ "upid.nr",			-1 },
+	{ "uts_namespace.proc_inum",	-1 }, /* or uts_namespace.ns.inum */
 	{ "vfsmount.mnt_root",		-1 },
 	{ NULL,				-1 },
 };
@@ -67,24 +76,13 @@ struct btf_alternative {
 } btf_alternatives[] = {
 	{ "task_struct.start_boottime",		"task_struct.real_start_time"	},
 	{ "mm_struct.(anon).start_stack",	"mm_struct.start_stack"		},
+	{ "uts_namespace.proc_inum",		"uts_namespace.ns.inum"		},
+	{ "ipc_namespace.proc_inum",		"ipc_namespace.ns.inum"		},
+	{ "mnt_namespace.proc_inum",		"mnt_namespace.ns.inum"		},
+	{ "net_namespace.proc_inum",		"net.ns.inum"			},
+	{ "net_namespace.proc_inum",		"net.proc_inum"		 	},
 	{ NULL,					NULL				},
 };
-
-static const char *
-btf_alternative_name(struct btf *btf, const char *new_name)
-{
-	struct btf_alternative	*p;
-
-	for (p = btf_alternatives; p->new != NULL; p++) {
-		if (strcmp(p->new, new_name))
-			continue;
-
-		qwarnx("found alternative for %s as %s", p->new, p->old);
-		return (p->old);
-	}
-
-	return (NULL);
-}
 
 static const struct btf_type *
 btf_type_by_name_kind(struct btf *btf, s32 *off, const char *name, int kind)
@@ -179,18 +177,25 @@ btf_root_offset2(struct btf *btf, const char *dotname)
 s32
 btf_root_offset(struct btf *btf, const char *dotname)
 {
-	s32	off;
+	s32			 off;
+	struct btf_alternative	*alt;
 
 	off = btf_root_offset2(btf, dotname);
 	if (off != -1)
 		return (off);
 
-	/* Try a translation */
-	dotname = btf_alternative_name(btf, dotname);
-	if (dotname == NULL)
-		return (-1);
+	for (alt = btf_alternatives; alt->new != NULL; alt++) {
+		if (strcmp(alt->new, dotname))
+			continue;
+		off = btf_root_offset2(btf, alt->old);
+		if (off != -1) {
+			qwarnx("found alternative for %s as %s (%d)",
+			    dotname, alt->old, off);
+			break;
+		}
+	}
 
-	return (btf_root_offset2(btf, dotname));
+	return (off);
 }
 
 static int

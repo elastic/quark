@@ -174,6 +174,10 @@ struct task_sample {
 	u32	tty_major;
 	u32	tty_minor_start;
 	u32	tty_minor_index;
+	u32	uts_inonum;
+	u32	ipc_inonum;
+	u32	mnt_inonum;
+	u32	net_inonum;
 	/* 16bit */
 	/* 8bit */
 };
@@ -182,7 +186,7 @@ struct exec_connector_sample {
 	struct task_sample		task_sample;	/* must be 8 byte aligned */
 	/* 64bit */
 	u64				argc;
-	u64				stack[60];	/* sync with kprobe_defs */
+	u64				stack[55];	/* sync with kprobe_defs */
 };
 
 #ifndef NO_PUSH_PRAGMA
@@ -425,6 +429,10 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, const struct sample_attr *satt
 		task->tty_major = w->tty_major;
 		task->tty_minor = w->tty_minor_start + w->tty_minor_index;
 	}
+	task->uts_inonum = w->uts_inonum;
+	task->ipc_inonum = w->ipc_inonum;
+	task->mnt_inonum = w->mnt_inonum;
+	task->net_inonum = w->net_inonum;
 	/* cwd below */
 	strlcpy(task->comm, str_of_dataloc(sample, &w->comm),
 	    sizeof(task->comm));
