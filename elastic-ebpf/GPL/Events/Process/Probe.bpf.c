@@ -52,13 +52,15 @@ int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct 
     if (!event)
         goto out;
 
-    event->hdr.type = EBPF_EVENT_PROCESS_FORK;
-    event->hdr.ts   = bpf_ktime_get_ns();
+    event->hdr.type    = EBPF_EVENT_PROCESS_FORK;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
     ebpf_pid_info__fill(&event->parent_pids, parent);
     ebpf_pid_info__fill(&event->child_pids, child);
     ebpf_cred_info__fill(&event->creds, parent);
     ebpf_ctty__fill(&event->ctty, child);
     ebpf_comm__fill(event->comm, sizeof(event->comm), child);
+    ebpf_ns__fill(&event->ns, child);
 
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);
@@ -102,13 +104,15 @@ int BPF_PROG(sched_process_exec,
     if (!event)
         goto out;
 
-    event->hdr.type = EBPF_EVENT_PROCESS_EXEC;
-    event->hdr.ts   = bpf_ktime_get_ns();
+    event->hdr.type    = EBPF_EVENT_PROCESS_EXEC;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
     ebpf_pid_info__fill(&event->pids, task);
     ebpf_cred_info__fill(&event->creds, task);
     ebpf_ctty__fill(&event->ctty, task);
     ebpf_comm__fill(event->comm, sizeof(event->comm), task);
+    ebpf_ns__fill(&event->ns, task);
 
     // set setuid and setgid flags
     struct file *f        = BPF_CORE_READ(binprm, file);
@@ -198,8 +202,9 @@ static int taskstats_exit__enter(const struct task_struct *task, int group_dead)
     if (!event)
         goto out;
 
-    event->hdr.type = EBPF_EVENT_PROCESS_EXIT;
-    event->hdr.ts   = bpf_ktime_get_ns();
+    event->hdr.type    = EBPF_EVENT_PROCESS_EXIT;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
     // The exit _status_ is stored in the second byte of task->exit_code
     int exit_code    = BPF_CORE_READ(task, exit_code);
@@ -208,6 +213,7 @@ static int taskstats_exit__enter(const struct task_struct *task, int group_dead)
     ebpf_cred_info__fill(&event->creds, task);
     ebpf_ctty__fill(&event->ctty, task);
     ebpf_comm__fill(event->comm, sizeof(event->comm), task);
+    ebpf_ns__fill(&event->ns, task);
 
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);
@@ -254,8 +260,9 @@ int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
     if (!event)
         goto out;
 
-    event->hdr.type = EBPF_EVENT_PROCESS_SETSID;
-    event->hdr.ts   = bpf_ktime_get_ns();
+    event->hdr.type    = EBPF_EVENT_PROCESS_SETSID;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
     ebpf_pid_info__fill(&event->pids, task);
 
@@ -280,8 +287,9 @@ int BPF_PROG(module_load, struct module *mod)
     if (!event)
         goto out;
 
-    event->hdr.type = EBPF_EVENT_PROCESS_LOAD_MODULE;
-    event->hdr.ts   = bpf_ktime_get_ns();
+    event->hdr.type    = EBPF_EVENT_PROCESS_LOAD_MODULE;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
     ebpf_pid_info__fill(&event->pids, task);
 
@@ -350,8 +358,9 @@ int BPF_KPROBE(kprobe__ptrace_attach,
     if (!event)
         goto out;
 
-    event->hdr.type = EBPF_EVENT_PROCESS_PTRACE;
-    event->hdr.ts   = bpf_ktime_get_ns();
+    event->hdr.type    = EBPF_EVENT_PROCESS_PTRACE;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
     ebpf_pid_info__fill(&event->pids, task);
 
@@ -390,8 +399,9 @@ int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
     if (!event)
         goto out;
 
-    event->hdr.type = EBPF_EVENT_PROCESS_SHMGET;
-    event->hdr.ts   = bpf_ktime_get_ns();
+    event->hdr.type    = EBPF_EVENT_PROCESS_SHMGET;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
     ebpf_pid_info__fill(&event->pids, task);
 
     event->key    = ex_args->key;
@@ -430,9 +440,10 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
     if (!event)
         goto out;
 
-    event->hdr.type = EBPF_EVENT_PROCESS_MEMFD_CREATE;
-    event->hdr.ts   = bpf_ktime_get_ns();
-    event->flags    = ex_args->flags;
+    event->hdr.type    = EBPF_EVENT_PROCESS_MEMFD_CREATE;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    event->flags       = ex_args->flags;
 
     ebpf_pid_info__fill(&event->pids, task);
 
@@ -472,8 +483,9 @@ static int commit_creds__enter(struct cred *new)
         if (!event)
             goto out;
 
-        event->hdr.type = EBPF_EVENT_PROCESS_SETUID;
-        event->hdr.ts   = bpf_ktime_get_ns();
+        event->hdr.type    = EBPF_EVENT_PROCESS_SETUID;
+        event->hdr.ts      = bpf_ktime_get_ns();
+        event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
         ebpf_pid_info__fill(&event->pids, task);
 
@@ -497,8 +509,9 @@ static int commit_creds__enter(struct cred *new)
         if (!event)
             goto out;
 
-        event->hdr.type = EBPF_EVENT_PROCESS_SETGID;
-        event->hdr.ts   = bpf_ktime_get_ns();
+        event->hdr.type    = EBPF_EVENT_PROCESS_SETGID;
+        event->hdr.ts      = bpf_ktime_get_ns();
+        event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
         ebpf_pid_info__fill(&event->pids, task);
 
@@ -544,6 +557,7 @@ static int output_tty_event(struct ebpf_tty_dev *slave, const void *base, size_t
     task                     = (struct task_struct *)bpf_get_current_task();
     event->hdr.type          = EBPF_EVENT_PROCESS_TTY_WRITE;
     event->hdr.ts            = bpf_ktime_get_ns();
+    event->hdr.ts_boot       = bpf_ktime_get_boot_ns_helper();
     u64 len_cap              = base_len > TTY_OUT_MAX ? TTY_OUT_MAX : base_len;
     event->tty_out_truncated = base_len > TTY_OUT_MAX ? base_len - TTY_OUT_MAX : 0;
     event->tty               = *slave;
@@ -610,7 +624,6 @@ static int tty_write__enter(struct kiocb *iocb, struct iov_iter *from)
         iov = BPF_CORE_READ(from, iov);
     else
         goto out;
-
     u64 nr_segs = BPF_CORE_READ(from, nr_segs);
     nr_segs     = nr_segs > MAX_NR_SEGS ? MAX_NR_SEGS : nr_segs;
 
