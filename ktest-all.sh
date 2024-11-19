@@ -20,7 +20,9 @@ function maybe_kflag
 	return 1
 }
 
-for k in kernel-images/amd64/*
+mkdir -p kernel-images/{amd64,arm64}
+
+while IFS= read -r -d '' k
 do
 	kname="$(basename "$k")"
 	echo testing "$kname"
@@ -31,7 +33,7 @@ do
 		failures=$((failures+1))
 	fi
 	result="${result}${r}\n"
-done
+done < <(find kernel-images/{amd64,arm64} -type f -print0)
 
 echo -ne "$result"
 echo failures $failures
