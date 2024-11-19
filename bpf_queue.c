@@ -62,11 +62,12 @@ libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list ap)
 }
 
 struct ebpf_ctx {
-	struct ebpf_pid_info	*pids;
-	struct ebpf_cred_info	*creds;
-	struct ebpf_tty_dev	*ctty;
-	char			*comm;
-	char			*cwd;
+	struct ebpf_pid_info		*pids;
+	struct ebpf_cred_info		*creds;
+	struct ebpf_tty_dev		*ctty;
+	char				*comm;
+	struct ebpf_namespace_info	*ns;
+	char				*cwd;
 };
 
 static void
@@ -90,6 +91,10 @@ ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 	/* skip exit_* */
 	task->tty_major = ebpf_ctx->ctty->major;
 	task->tty_minor = ebpf_ctx->ctty->minor;
+	task->uts_inonum = ebpf_ctx->ns->uts_inonum;
+	task->ipc_inonum = ebpf_ctx->ns->ipc_inonum;
+	task->mnt_inonum = ebpf_ctx->ns->mnt_inonum;
+	task->net_inonum = ebpf_ctx->ns->net_inonum;
 	if (ebpf_ctx->cwd != NULL)
 		qstr_strcpy(&task->cwd, ebpf_ctx->cwd);
 	else
@@ -123,6 +128,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.creds = &fork->creds;
 		ebpf_ctx.ctty = &fork->ctty;
 		ebpf_ctx.comm = fork->comm;
+		ebpf_ctx.ns = &fork->ns;
 		ebpf_ctx.cwd = NULL;
 		/* the macro doesn't take a pointer so we can't pass down :) */
 		FOR_EACH_VARLEN_FIELD(fork->vl_fields, field) {
@@ -149,6 +155,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.creds = &exit->creds;
 		ebpf_ctx.ctty = &exit->ctty;
 		ebpf_ctx.comm = exit->comm;
+		ebpf_ctx.ns = &exit->ns;
 		ebpf_ctx.cwd = NULL;
 		raw->task.exit_code = exit->exit_code;
 		raw->task.exit_time_event = raw->time;
@@ -166,6 +173,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.creds = &exec->creds;
 		ebpf_ctx.ctty = &exec->ctty;
 		ebpf_ctx.comm = exec->comm;
+		ebpf_ctx.ns = &exec->ns;
 		ebpf_ctx.cwd = NULL;
 
 		FOR_EACH_VARLEN_FIELD(exec->vl_fields, field) {

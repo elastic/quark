@@ -168,6 +168,10 @@ struct raw_task {
 	u64		exit_time_event;	/* only available at exit */
 	u32		tty_major;
 	u32		tty_minor;
+	u32		uts_inonum;
+	u32		ipc_inonum;
+	u32		mnt_inonum;
+	u32		net_inonum;
 	struct qstr	cwd;
 	char		comm[16];
 };
@@ -310,6 +314,10 @@ struct quark_process {
 	u32	proc_tty_minor;
 	u32	proc_entry_leader_type;
 	u32	proc_entry_leader;
+	u32	proc_uts_inonum;
+	u32	proc_ipc_inonum;
+	u32	proc_mnt_inonum;
+	u32	proc_net_inonum;
 	/* QUARK_F_EXIT */
 	s32	exit_code;
 	u64	exit_time_event;

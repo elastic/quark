@@ -57,7 +57,6 @@ struct kprobe_arg ka_task_new_sid = {
 	"sid", XS(ARG_0), "u32", "task_struct.group_leader task_struct.signal (signal_struct.pids+(8*pid_type.PIDTYPE_SID)) (pid.numbers+0).upid.nr"
 };
 
-
 #define TASK_SAMPLE(_r)																	   \
 	{ "cap_inheritable",	XS(_r), "u64",		"task_struct.cred cred.cap_inheritable"								}, \
 	{ "cap_permitted",	XS(_r), "u64",		"task_struct.cred cred.cap_permitted",								}, \
@@ -101,7 +100,11 @@ struct kprobe_arg ka_task_new_sid = {
 	{ "exit_code",		XS(_r), "s32",		"task_struct.exit_code"										}, \
 	{ "tty_major",		XS(_r), "u32",		"task_struct.signal signal_struct.tty tty_struct.driver tty_driver.major"			}, \
 	{ "tty_minor_start",	XS(_r), "u32",		"task_struct.signal signal_struct.tty tty_struct.driver tty_driver.minor_start"			}, \
-	{ "tty_minor_index",	XS(_r), "u32",		"task_struct.signal signal_struct.tty tty_struct.index"						}
+	{ "tty_minor_index",	XS(_r), "u32",		"task_struct.signal signal_struct.tty tty_struct.index"						}, \
+	{ "uts_inonum",		XS(_r), "u32",		"task_struct.nsproxy nsproxy.uts_ns uts_namespace.proc_inum"					}, \
+	{ "ipc_inonum",		XS(_r), "u32",		"task_struct.nsproxy nsproxy.ipc_ns ipc_namespace.proc_inum"					}, \
+	{ "mnt_inonum",		XS(_r), "u32",		"task_struct.nsproxy nsproxy.mnt_ns mnt_namespace.proc_inum"					}, \
+	{ "net_inonum",		XS(_r), "u32",		"task_struct.nsproxy nsproxy.net_ns net_namespace.proc_inum"					}
 
 struct kprobe kp_wake_up_new_task = {
 	"wake_up_new_task",
@@ -185,11 +188,6 @@ struct kprobe kp_exec_connector = {
 	{ "stack_52",		XS(ARG_0),	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +424"	},
 	{ "stack_53",		XS(ARG_0),	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +432"	},
 	{ "stack_54",		XS(ARG_0),	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +440"	},
-	{ "stack_55",		XS(ARG_0),	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +448"	},
-	{ "stack_56",		XS(ARG_0),	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +456"	},
-	{ "stack_57",		XS(ARG_0),	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +464"	},
-	{ "stack_58",		XS(ARG_0),	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +472"	},
-	{ "stack_59",		XS(ARG_0),	"u64",	  "task_struct.mm mm_struct.(anon).start_stack +8 +480"	},
 	{ NULL,			NULL,		NULL,	  NULL							},
 }};
 
