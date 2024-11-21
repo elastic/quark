@@ -1002,7 +1002,16 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src, struct
 		qp->proc_cap_effective = raw_task->cap_effective;
 		qp->proc_cap_bset = raw_task->cap_bset;
 		qp->proc_cap_ambient = raw_task->cap_ambient;
-		qp->proc_time_boot = quark.boottime + raw_task->start_boottime;
+		/*
+		 * Never change proc_time_boot after set, if we get
+		 * proc_time_boot from /proc it has less precision, so the
+		 * values would differ after an exec/exit. It makes more sense
+		 * for this to be immutable than to "upgrade" to the higher
+		 * precision one.
+		 */
+		if (qp->proc_time_boot == 0)
+			qp->proc_time_boot = quark.boottime +
+			    raw_task->start_boottime;
 		qp->proc_ppid = raw_task->ppid;
 		qp->proc_uid = raw_task->uid;
 		qp->proc_gid = raw_task->gid;
@@ -1186,7 +1195,8 @@ sproc_stat(struct quark_process *qp, int dfd)
 		qp->proc_tty_minor = ((tty >> 12) & 0xfff00) | (tty & 0xff);
 		qp->proc_time_boot =
 		    quark.boottime +
-		    (((u64)starttime / (u64)quark.hz) * NS_PER_S);
+		    ((starttime / (u64)quark.hz) * NS_PER_S) +
+		    (((starttime % (u64)quark.hz) * NS_PER_S) / 100);
 
 		ret = 0;
 	}
