@@ -7,3 +7,8 @@ Quark Breaking Changes
 Changes from 0.1 to 0.2
 ~~~~~~~~~~~~~~~~~~~~~~~
   o quark_queue_stats{} got a "backend" member.
+
+Changes from 0.2 to 0.3
+~~~~~~~~~~~~~~~~~~~~~~~
+  o quark_queue_process{} got {uts,ipc,mnt,net}_inonum members.
+  o -h on quark-{mon,test,btf} now invokes the manpage instead of usage.
