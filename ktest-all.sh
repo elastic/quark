@@ -1,18 +1,17 @@
 #!/bin/bash
 
-Script=${0##*/}
-
 set -euo pipefail
 
 kprobe_only=(linux-3.10.0-123.el7.x86_64)
 result=""
+error_run=""
 declare -i failures=0
+all_kernels="$(find kernel-images/{amd64,arm64} -type f)"
 
 function maybe_kflag
 {
 	for k in "${kprobe_only[@]}"; do
 		if [ "$1" = "$k" ]; then
-			echo "-k"
 			return 0
 		fi
 	done
@@ -20,22 +19,28 @@ function maybe_kflag
 	return 1
 }
 
-mkdir -p kernel-images/{amd64,arm64}
-
-while IFS= read -r -d '' k
+for k in $all_kernels
 do
 	kname="$(basename "$k")"
-	echo testing "$kname"
-	if ./krun.sh initramfs.gz "$k" quark-test "$(maybe_kflag "$kname")"; then
+	cmdline="./krun.sh initramfs.gz $k quark-test"
+	if maybe_kflag "$kname"; then
+		cmdline+=" -k"
+	fi
+	if eval "$cmdline"; then
 		r="$(printf "%s: ok" "$kname")"
 	else
 		r="$(printf "%s: fail" "$kname")"
+		error_run+="${cmdline}"$'\n'
 		failures=$((failures+1))
 	fi
-	result="${result}${r}\n"
-done < <(find kernel-images/{amd64,arm64} -type f -print0)
+	result+="${r}"$'\n'
+done
 
-echo -ne "$result"
+echo -n "$result"
 echo failures $failures
+if test -n "$error_run"; then
+	echo to reproduce failed cases, run:
+	echo -n "$error_run"
+fi
 
 exit $failures
