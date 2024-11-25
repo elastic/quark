@@ -5,7 +5,7 @@
 #define _QUARK_H_
 
 /* Version is shared between library and utilities */
-#define QUARK_VERSION "0.3a"
+#define QUARK_VERSION "0.3"
 
 /* Misc types */
 #include <stdio.h>
