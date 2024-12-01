@@ -28,12 +28,19 @@ else
 	QDOCKER = -q
 endif
 
+define assert_no_syslib
+  $(if $(SYSLIB), $(error cant build target $@ with SYSLIB))
+endef
+
 CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
 ifdef CENTOS7
 CFLAGS+= -std=gnu99 -DNO_PUSH_PRAGMA
 endif
 
-CPPFLAGS?= -D_GNU_SOURCE -Iinclude/usr/include
+CPPFLAGS?= -D_GNU_SOURCE
+ifndef SYSLIB
+CPPFLAGS+= -Iinclude/usr/include
+endif
 
 CDIAGFLAGS+= -Wall
 CDIAGFLAGS+= -Wextra
@@ -73,7 +80,10 @@ EEBPF_FILES:= $(shell find elastic-ebpf)
 EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)
 
 # LIBQUARK
-LIBQUARK_DEPS:= $(wildcard *.h) bpf_prog_skel.h $(EEBPF_FILES) include
+LIBQUARK_DEPS:= $(wildcard *.h) bpf_prog_skel.h
+ifndef SYSLIB
+LIBQUARK_DEPS+= $(EEBPF_FILES) include
+endif
 LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
 LIBQUARK_SRCS:=			\
 	bpf_queue.c		\
@@ -86,7 +96,14 @@ LIBQUARK_SRCS:=			\
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 LIBQUARK_STATIC_BIG:= libquark_big.a
-SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
+# If we are _not_ using system libraries, we link everything with
+# _big, so that's our target.
+ifndef SYSLIB
+LIBQUARK_TARGET=$(LIBQUARK_STATIC_BIG)
+else
+LIBQUARK_TARGET=$(LIBQUARK_STATIC)
+EXTRA_LDFLAGS:= -lbpf
+endif
 
 # ZLIB
 ZLIB_SRC:= zlib
@@ -107,9 +124,12 @@ ELFTOOLCHAIN_STATIC:= $(ELFTOOLCHAIN_SRC)/libelf/libelf_pic.a
 LIBBPF_SRC:= libbpf/src
 LIBBPF_STATIC:= $(LIBBPF_SRC)/libbpf.a
 LIBBPF_DEPS:=	$(wildcard libbpf/src/*.[ch])		\
-		$(wildcard libbpf/include/*.[ch])	\
-		$(ELFTOOLCHAIN_FILES)			\
-		$(ELFTOOLCHAIN_STATIC)
+		$(wildcard libbpf/include/*.[ch])
+ifndef SYSLIB
+LIBBPF_DEPS+=	$(ELFTOOLCHAIN_FILES)			\
+		$(ELFTOOLCHAIN_STATIC)			\
+		$(ZLIB_STATIC)
+endif
 LIBBPF_EXTRA_CFLAGS:= -DQUARK
 LIBBPF_EXTRA_CFLAGS+= -fPIC
 LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/libelf
@@ -121,7 +141,13 @@ endif
 
 # BPFPROG (kernel side)
 BPFPROG_OBJ:= bpf_prog.o
-BPFPROG_DEPS:= bpf_prog.c $(LIBBPF_DEPS) $(EEBPF_FILES) include
+BPFPROG_DEPS:= bpf_prog.c
+ifndef SYSLIB
+BPFPROG_DEPS+= $(LIBBPF_DEPS) $(EEBPF_FILES) include
+endif
+
+# SVGS
+SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
 
 # DOCS_HTML, matches docs/%.html
 DOCS:= $(wildcard *.[378])
@@ -129,21 +155,18 @@ DOCS_HTML:= $(patsubst %.3,docs/%.3.html,$(wildcard *.3))
 DOCS_HTML+= $(patsubst %.7,docs/%.7.html,$(wildcard *.7))
 DOCS_HTML+= $(patsubst %.8,docs/%.8.html,$(wildcard *.8))
 
-all:	$(ZLIB_STATIC)			\
-	$(ELFTOOLCHAIN_STATIC)		\
-	$(LIBBPF_STATIC)		\
-	$(BPFPROG_OBJ)			\
-	$(LIBQUARK_STATIC)		\
-	$(LIBQUARK_STATIC_BIG)		\
+all:	$(LIBQUARK_TARGET)		\
 	quark-mon			\
 	quark-btf			\
 	quark-test
 
 $(ZLIB_STATIC): $(ZLIB_FILES)
+	$(call assert_no_syslib)
 	@cd zlib && CFLAGS="-O3 -fPIC" ./configure --static $(QREDIR)
 	@make -C zlib libz.a
 
 $(ELFTOOLCHAIN_STATIC): $(ELFTOOLCHAIN_FILES)
+	$(call assert_no_syslib)
 	$(Q)make -C elftoolchain/libelf
 
 $(LIBBPF_STATIC): $(LIBBPF_DEPS)
@@ -158,6 +181,7 @@ $(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
 
 $(LIBQUARK_STATIC_BIG): $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC) $(ZLIB_STATIC)
 	$(call msg,AR,$@)
+	$(call assert_no_syslib)
 	$(Q)printf "\
 	create libquark_big.a\n\
 	addlib libquark.a\n\
@@ -278,6 +302,7 @@ initramfs:
 	mkdir initramfs
 
 initramfs.gz: init quark-mon-static quark-btf-static quark-test-static initramfs
+	$(call assert_no_syslib)
 	cp init initramfs/
 	cp quark-mon-static initramfs/quark-mon
 	cp quark-btf-static initramfs/quark-btf
@@ -288,33 +313,36 @@ init: init.c
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
 
-quark-mon: quark-mon.c manpages.h $(LIBQUARK_STATIC_BIG)
+quark-mon: quark-mon.c manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
-		-o $@ $< $(LIBQUARK_STATIC_BIG)
+		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
 
-quark-btf: quark-btf.c manpages.h $(LIBQUARK_STATIC_BIG)
+quark-btf: quark-btf.c manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
-		-o $@ $< $(LIBQUARK_STATIC_BIG)
+		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
 
-quark-test: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
+quark-test: quark-test.c manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
-		-o $@ $< $(LIBQUARK_STATIC_BIG)
+		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
 
 quark-mon-static: quark-mon.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
+	$(call assert_no_syslib)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DNO_PRIVDROP $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG)
 
 quark-btf-static: quark-btf.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
+	$(call assert_no_syslib)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG)
 
 quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
+	$(call assert_no_syslib)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG)
 
@@ -389,6 +417,7 @@ clean-all: clean
 	$(Q)make -C $(LIBBPF_SRC) clean NO_PKG_CONFIG=y
 	$(Q)make -C $(ELFTOOLCHAIN_SRC)/libelf clean
 	$(Q)make -C $(ZLIB_SRC) clean || true
+	$(Q)rm -f $(ZLIB_SRC)/{Makefile,zconf.h,configure.log}
 
 clean-docs:
 	$(call msg,CLEAN,docs)
