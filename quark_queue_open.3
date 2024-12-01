@@ -56,7 +56,7 @@ for a snapshot of the existing processes in the system.
 is smart enough to open the rings before the scraping, as to be make sure no
 process is lost.
 These initial process events will be available on the first call to
-.Xr quark_queue_get_events 3
+.Xr quark_queue_get_event 3
 with the
 .Vt events
 member set to
@@ -132,7 +132,7 @@ via
 .Xr quark_process_lookup 3 .
 .It Em hold_time
 How long to buffer (hold) an event before delivering it to the user via
-.Xr quark_queue_get_events 3 .
+.Xr quark_queue_get_event 3 .
 .Pp
 Events received from the backend are not immediately forwarded to the user, this
 allows multiple events to be aggregated as well as ordered by time.
@@ -157,7 +157,7 @@ should NOT be issued.
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_default_attr 3 ,
 .Xr quark_queue_get_epollfd 3 ,
-.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_event 3 ,
 .Xr quark_queue_get_stats 3 ,
 .Xr quark 7 ,
 .Xr quark-btf 8 ,

@@ -1,20 +1,18 @@
 .Dd $Mdocdate$
-.Dt QUARK_QUEUE_GET_EVENTS 3
+.Dt QUARK_QUEUE_GET_EVENT 3
 .Os
 .Sh NAME
-.Nm quark_queue_get_events
+.Nm quark_queue_get_event
 .Nd main quark driver
 .Sh SYNOPSIS
 .In quark.h
-.Ft int
-.Fn quark_queue_get_events "struct quark_queue *qq" "struct quark_event *qev" "int nqev"
+.Ft const struct quark_event *
+.Fn quark_queue_get_event "struct quark_queue *qq"
 .Sh DESCRIPTION
 .Nm
-fills the array of events pointed to by
-.Fa qev
-to a maximum of
-.Fa neqv
-entries.
+returns a pointer to the next
+.Vt quark_event ,
+or NULL if there isn't any.
 .Pp
 This function is the main driver of quark.
 Quark doesn't create threads or introduces hidden control flows, all its state
@@ -30,13 +28,12 @@ populate function.
 Attempts to collect raw events that are deemed old enough from its priority
 queue, if successfull tries to aggregate such events.
 .It
-Converts the collected raw events into proper
-.Vt quark_events .
-This involves consulting its internal cache and enriching said events.
-These
-.Vt quark_events
-are then passed to the user via
-.Fa qev .
+Converts the collected raw events into a proper
+.Vt quark_event .
+This involves consulting its internal cache and enriching said event.
+The storage for the returned
+.Vt quark_event
+is static and must not be modified.
 .It
 Garbage collects cached events that are marked for deletion and are old enough.
 When a process exits, its event cache is marked for deletion, but a grace time
@@ -152,25 +149,23 @@ is valid.
 .El
 .El
 .Sh MEMORY PROTOCOL
+The returned
+.Vt quark_event
+pointer as well as the
 .Em process
-points to internal data, it
+member point to internal data, they
 .Em MUST NOT
 be modified and/or stored.
-In the case of multithreading, the pointer should not be accessed concurrently
-with another thread which executes
+In the case of multithreading, the pointers should not be accessed concurrently
+with another running
 .Nm .
 .Pp
 In other words, read the stuff you want, copy it out, and forget about it.
 .Sh RETURN VALUES
-The number of filled events via
-.Fa qev
-to a maximum of
-.Fa nqev .
-If zero is returned, the user should consider calling
+A pointer to
+.Vt quark_event .
+If there aren't events, NULL is returned and the user should consider calling
 .Xr quark_queue_block 3 .
-In the case of an internal error, -1 is returned and
-.Va errno
-is set.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
 .Xr quark_process_lookup 3 ,
