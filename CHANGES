@@ -12,3 +12,7 @@ Changes from 0.2 to 0.3
 ~~~~~~~~~~~~~~~~~~~~~~~
   o quark_queue_process{} got {uts,ipc,mnt,net}_inonum members.
   o -h on quark-{mon,test,btf} now invokes the manpage instead of usage.
+
+Changes from 0.3 to 0.4
+~~~~~~~~~~~~~~~~~~~~~~~
+  o quark_queue_get_events(3) was removed in favor of quark_queue_get_event(3).
