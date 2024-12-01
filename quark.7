@@ -318,10 +318,10 @@ In the case of multithreading, these pointers should not be accessed if another
 thread is driving
 .Nm quark
 through
-.Xr quark_queue_get_events 3 .
+.Xr quark_queue_get_event 3 .
 .It
 No threads are created, the library is driven solely through
-.Xr quark_queue_get_events 3 .
+.Xr quark_queue_get_event 3 .
 .It
 Access to a
 .Vt quark_queue
@@ -341,11 +341,11 @@ It must be paired with a
 .Xr quark_queue_close 3
 on exit.
 .Pp
-.Xr quark_queue_get_events 3
+.Xr quark_queue_get_event 3
 is the main driver of the library, it does the buffering, per-ring scanning,
-aggregation and event cache garbage collecting.
+aggregation and event cache garbage collection.
 In case there are no events it
-returns zero and the user is expected to call
+returns NULL and the user is expected to call
 .Xr quark_queue_block 3
 or equivalent.
 .Sh EXAMPLES
@@ -357,24 +357,22 @@ or equivalent.
 int
 main(void)
 {
-	struct quark_queue	qq;
-	struct quark_event	qevs[32], *qev;
-	int			n, i;
+	struct quark_queue	 	 qq;
+	const struct quark_event	*qev;
 
 	if (quark_queue_open(&qq, NULL) == -1)
 		err(1, "quark_queue_open");
 
 	for (; ;) {
-		n = quark_queue_get_events(&qq, qevs, 32);
-		if (n == -1) {
-			warn("quark_queue_get_events");
-			break;
+		qev = quark_queue_get_event(&qq);
+
+		/* No events, just block */
+		if (qev == NULL) {
+			quark_queue_block(qq);
+			continue;
 		}
-		/* Scan each event */
-		for (i = 0, qev = qevs; i < n; i++, qev++)
-			quark_event_dump(qev, stdout);
-		if (n == 0)
-			quark_queue_block(&qq);
+
+		quark_event_dump(qev, stdout);
 	}
 
 	quark_queue_close(&qq);
@@ -389,8 +387,8 @@ open a queue to receive events, initial library call.
 .It Xr quark_queue_default_attr 3
 get default attributes of
 .Xr quark_queue_open 3 .
-.It Xr quark_queue_get_events 3
-get events, main library call.
+.It Xr quark_queue_get_event 3
+get event, main library call.
 .It Xr quark_process_lookup 3
 lookup a process in quark's internal cache
 .It Xr quark_event_dump 3
@@ -405,7 +403,7 @@ basic queue statistics.
 close a queue.
 .El
 .Sh FURTHER READING
-.Xr quark_queue_get_events 3
+.Xr quark_queue_get_event 3
 is the meat of the library and contains further useful documentation.
 .Pp
 .Xr quark-mon 8
@@ -420,7 +418,7 @@ describes initialization options that can be useful.
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_get_epollfd 3 ,
-.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_event 3 ,
 .Xr quark_queue_get_stats 3 ,
 .Xr quark_queue_open 3 ,
 .Xr quark-btf 8 ,

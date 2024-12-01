@@ -27,8 +27,8 @@ Some backends will only make the file descriptor readable once a certain
 watermark of bytes have been read, so without the timeout you might get very
 late events.
 100ms is a safe value, the user should then call
-.Xr quark_queue_get_events 3
-to fetch the expired events.
+.Xr quark_queue_get_event 3
+to fetch the expired event.
 .Sh RETURN VALUES
 Returns the epoll file descriptor or -1 if deemed invalid, as trying to get the
 descriptor of a closed queue.
@@ -60,7 +60,7 @@ my_own_blocking(struct quark_queue *qq)
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_default_attr 3 ,
-.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_event 3 ,
 .Xr quark_queue_get_stats 3 ,
 .Xr quark_queue_open 3 ,
 .Xr quark 7 ,

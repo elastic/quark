@@ -11,7 +11,7 @@
 .Sh DESCRIPTION
 .Nm
 blocks the calling process until there would be events to be read with
-.Xr quark_queue_get_events 3 .
+.Xr quark_queue_get_event 3 .
 .Pp
 Internally this will call
 .Xr epoll_wait 2
@@ -23,7 +23,7 @@ surpasses a threshold.
 On the return from
 .Nm ,
 the caller should call
-.Xr quark_queue_get_events 3
+.Xr quark_queue_get_event 3
 until it returns zero, signifying there are no more events to be read.
 See
 .Xr quark 7
@@ -38,7 +38,7 @@ is set.
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_default_attr 3 ,
 .Xr quark_queue_get_epollfd 3 ,
-.Xr quark_queue_get_events 3 ,
+.Xr quark_queue_get_event 3 ,
 .Xr quark_queue_get_stats 3 ,
 .Xr quark_queue_open 3 ,
 .Xr quark 7 ,
