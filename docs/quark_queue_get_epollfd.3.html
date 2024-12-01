@@ -43,8 +43,8 @@
     backends will only make the file descriptor readable once a certain
     watermark of bytes have been read, so without the timeout you might get very
     late events. 100ms is a safe value, the user should then call
-    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>
-    to fetch the expired events.</p>
+    <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>
+    to fetch the expired event.</p>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
   VALUES</a></h1>
@@ -82,7 +82,7 @@ my_own_blocking(struct quark_queue *qq)
     <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>,
     <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
     <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>,
-    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>,
+    <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
     <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
     <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
     <a class="Xr" href="quark.7.html">quark(7)</a>,
@@ -93,7 +93,7 @@ my_own_blocking(struct quark_queue *qq)
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">October 25, 2024</td>
+    <td class="foot-date">December 1, 2024</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

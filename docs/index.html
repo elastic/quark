@@ -289,9 +289,9 @@ $ ./krun.sh initramfs.gz kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 quar
       and/or stored. In the case of multithreading, these pointers should not be
       accessed if another thread is driving <code class="Nm">quark</code>
       through
-      <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>.</li>
+      <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>.</li>
   <li>No threads are created, the library is driven solely through
-      <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>.</li>
+      <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>.</li>
   <li>Access to a <var class="Vt">quark_queue</var> must be synchronized by the
       user in the case of multithreading.</li>
 </ul>
@@ -307,10 +307,10 @@ $ ./krun.sh initramfs.gz kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 quar
     EBPF programs buffering data-structures and the like. It must be paired with
     a <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a> on
     exit.</p>
-<p class="Pp"><a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>
+<p class="Pp"><a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>
     is the main driver of the library, it does the buffering, per-ring scanning,
-    aggregation and event cache garbage collecting. In case there are no events
-    it returns zero and the user is expected to call
+    aggregation and event cache garbage collection. In case there are no events
+    it returns NULL and the user is expected to call
     <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a> or
     equivalent.</p>
 </section>
@@ -324,24 +324,22 @@ $ ./krun.sh initramfs.gz kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 quar
 int
 main(void)
 {
-	struct quark_queue	qq;
-	struct quark_event	qevs[32], *qev;
-	int			n, i;
+	struct quark_queue	 	 qq;
+	const struct quark_event	*qev;
 
 	if (quark_queue_open(&amp;qq, NULL) == -1)
 		err(1, &quot;quark_queue_open&quot;);
 
 	for (; ;) {
-		n = quark_queue_get_events(&amp;qq, qevs, 32);
-		if (n == -1) {
-			warn(&quot;quark_queue_get_events&quot;);
-			break;
+		qev = quark_queue_get_event(&amp;qq);
+
+		/* No events, just block */
+		if (qev == NULL) {
+			quark_queue_block(qq);
+			continue;
 		}
-		/* Scan each event */
-		for (i = 0, qev = qevs; i &lt; n; i++, qev++)
-			quark_event_dump(qev, stdout);
-		if (n == 0)
-			quark_queue_block(&amp;qq);
+
+		quark_event_dump(qev, stdout);
 	}
 
 	quark_queue_close(&amp;qq);
@@ -358,8 +356,8 @@ main(void)
   <dt><a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a></dt>
   <dd>get default attributes of
       <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</dd>
-  <dt><a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a></dt>
-  <dd>get events, main library call.</dd>
+  <dt><a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a></dt>
+  <dd>get event, main library call.</dd>
   <dt><a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a></dt>
   <dd>lookup a process in quark's internal cache</dd>
   <dt><a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a></dt>
@@ -377,7 +375,7 @@ main(void)
 <section class="Sh">
 <h1 class="Sh" id="FURTHER_READING"><a class="permalink" href="#FURTHER_READING">FURTHER
   READING</a></h1>
-<p class="Pp"><a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>
+<p class="Pp"><a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>
     is the meat of the library and contains further useful documentation.</p>
 <p class="Pp"><a class="Xr" href="quark-mon.8.html">quark-mon(8)</a> is the
     easiest way to get started with <code class="Nm">quark</code>.</p>
@@ -392,7 +390,7 @@ main(void)
     <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>,
     <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
     <a class="Xr" href="quark_queue_get_epollfd.3.html">quark_queue_get_epollfd(3)</a>,
-    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>,
+    <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
     <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
     <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
     <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
@@ -411,7 +409,7 @@ main(void)
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 12, 2024</td>
+    <td class="foot-date">December 1, 2024</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

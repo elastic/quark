@@ -32,7 +32,7 @@
 <h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
 <code class="Nm">quark_queue_block</code> blocks the calling process until there
   would be events to be read with
-  <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>.
+  <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>.
 <p class="Pp">Internally this will call
     <a class="Xr" href="epoll_wait.2.html">epoll_wait(2)</a> on the descriptor
     returned by
@@ -41,7 +41,7 @@
     perf-ring file descriptors only become readable once a certain amount of
     data surpasses a threshold. On the return from
     <code class="Nm">quark_queue_block</code>, the caller should call
-    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>
+    <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>
     until it returns zero, signifying there are no more events to be read. See
     <a class="Xr" href="quark.7.html">quark(7)</a> for an example.</p>
 <section class="Sh">
@@ -58,7 +58,7 @@
     <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
     <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>,
     <a class="Xr" href="quark_queue_get_epollfd.3.html">quark_queue_get_epollfd(3)</a>,
-    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>,
+    <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
     <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
     <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
     <a class="Xr" href="quark.7.html">quark(7)</a>,
@@ -69,7 +69,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">October 25, 2024</td>
+    <td class="foot-date">December 1, 2024</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

@@ -61,7 +61,7 @@
       enough to open the rings before the scraping, as to be make sure no
       process is lost. These initial process events will be available on the
       first call to
-      <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>
+      <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>
       with the <var class="Vt">events</var> member set to
       <code class="Dv">QUARK_EV_SNAPSHOT</code>.</li>
 </ul>
@@ -132,7 +132,7 @@
   </dd>
   <dt id="hold_time"><a class="permalink" href="#hold_time"><i class="Em">hold_time</i></a></dt>
   <dd>How long to buffer (hold) an event before delivering it to the user via
-      <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>.
+      <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>.
     <p class="Pp">Events received from the backend are not immediately forwarded
         to the user, this allows multiple events to be aggregated as well as
         ordered by time. In case quark is overloaded, it will use a stepping
@@ -159,7 +159,7 @@
     <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
     <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>,
     <a class="Xr" href="quark_queue_get_epollfd.3.html">quark_queue_get_epollfd(3)</a>,
-    <a class="Xr" href="quark_queue_get_events.3.html">quark_queue_get_events(3)</a>,
+    <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
     <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
     <a class="Xr" href="quark.7.html">quark(7)</a>,
     <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
@@ -169,7 +169,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">October 25, 2024</td>
+    <td class="foot-date">December 1, 2024</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

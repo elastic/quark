@@ -4,37 +4,34 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <link rel="stylesheet" href="mandoc.css" type="text/css" media="all"/>
-  <title>QUARK_QUEUE_GET_EVENTS(3)</title>
+  <title>QUARK_QUEUE_GET_EVENT(3)</title>
 </head>
 <body>
 <table class="head">
   <tr>
-    <td class="head-ltitle">QUARK_QUEUE_GET_EVENTS(3)</td>
+    <td class="head-ltitle">QUARK_QUEUE_GET_EVENT(3)</td>
     <td class="head-vol">Library Functions Manual</td>
-    <td class="head-rtitle">QUARK_QUEUE_GET_EVENTS(3)</td>
+    <td class="head-rtitle">QUARK_QUEUE_GET_EVENT(3)</td>
   </tr>
 </table>
 <div class="manual-text">
 <section class="Sh">
 <h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
-<p class="Pp"><code class="Nm">quark_queue_get_events</code> &#x2014;
+<p class="Pp"><code class="Nm">quark_queue_get_event</code> &#x2014;
     <span class="Nd">main quark driver</span></p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
 <p class="Pp"><code class="In">#include
   &lt;<a class="In">quark.h</a>&gt;</code></p>
-<p class="Pp"><var class="Ft">int</var>
+<p class="Pp"><var class="Ft">const struct quark_event *</var>
   <br/>
-  <code class="Fn">quark_queue_get_events</code>(<var class="Fa" style="white-space: nowrap;">struct
-    quark_queue *qq</var>, <var class="Fa" style="white-space: nowrap;">struct
-    quark_event *qev</var>, <var class="Fa" style="white-space: nowrap;">int
-    nqev</var>);</p>
+  <code class="Fn">quark_queue_get_event</code>(<var class="Fa" style="white-space: nowrap;">struct
+    quark_queue *qq</var>);</p>
 </section>
 <h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
-<code class="Nm">quark_queue_get_events</code> fills the array of events pointed
-  to by <var class="Fa">qev</var> to a maximum of <var class="Fa">neqv</var>
-  entries.
+<code class="Nm">quark_queue_get_event</code> returns a pointer to the next
+  <var class="Vt">quark_event</var>, or NULL if there isn't any.
 <p class="Pp">This function is the main driver of quark. Quark doesn't create
     threads or introduces hidden control flows, all its state is mutated through
     this function call. For a better explanation of quark's design, refer to
@@ -45,10 +42,10 @@
       populate function.</li>
   <li>Attempts to collect raw events that are deemed old enough from its
       priority queue, if successfull tries to aggregate such events.</li>
-  <li>Converts the collected raw events into proper
-      <var class="Vt">quark_events</var>. This involves consulting its internal
-      cache and enriching said events. These <var class="Vt">quark_events</var>
-      are then passed to the user via <var class="Fa">qev</var>.</li>
+  <li>Converts the collected raw events into a proper
+      <var class="Vt">quark_event</var>. This involves consulting its internal
+      cache and enriching said event. The storage for the returned
+      <var class="Vt">quark_event</var> is static and must not be modified.</li>
   <li>Garbage collects cached events that are marked for deletion and are old
       enough. When a process exits, its event cache is marked for deletion, but
       a grace time is given before purging it so that the user might still query
@@ -162,23 +159,21 @@
 <section class="Sh">
 <h1 class="Sh" id="MEMORY_PROTOCOL"><a class="permalink" href="#MEMORY_PROTOCOL">MEMORY
   PROTOCOL</a></h1>
-<p class="Pp"><i class="Em">process</i> points to internal data, it
+<p class="Pp">The returned <var class="Vt">quark_event</var> pointer as well as
+    the <i class="Em">process</i> member point to internal data, they
     <a class="permalink" href="#MUST"><i class="Em" id="MUST">MUST NOT</i></a>
-    be modified and/or stored. In the case of multithreading, the pointer should
-    not be accessed concurrently with another thread which executes
-    <code class="Nm">quark_queue_get_events</code>.</p>
+    be modified and/or stored. In the case of multithreading, the pointers
+    should not be accessed concurrently with another running
+    <code class="Nm">quark_queue_get_event</code>.</p>
 <p class="Pp">In other words, read the stuff you want, copy it out, and forget
     about it.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
   VALUES</a></h1>
-<p class="Pp">The number of filled events via <var class="Fa">qev</var> to a
-    maximum of <var class="Fa">nqev</var>. If zero is returned, the user should
-    consider calling
-    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>. In
-    the case of an internal error, -1 is returned and
-    <var class="Va">errno</var> is set.</p>
+<p class="Pp">A pointer to <var class="Vt">quark_event</var>. If there aren't
+    events, NULL is returned and the user should consider calling
+    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
@@ -199,7 +194,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 20, 2024</td>
+    <td class="foot-date">December 1, 2024</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
