@@ -104,11 +104,11 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
-	int				 ch, maxnodes, n, i;
-	int				 do_priv_drop, nqevs;
+	int				 ch, maxnodes;
+	int				 do_priv_drop;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
-	struct quark_event		*qev, *qevs;
+	const struct quark_event	*qev;
 	struct sigaction		 sigact;
 	FILE				*graph_by_time, *graph_by_pidtime, *graph_cache;
 
@@ -116,7 +116,6 @@ main(int argc, char *argv[])
 	qa.flags &= ~QQ_ALL_BACKENDS;
 	maxnodes = -1;
 	do_priv_drop = 0;
-	nqevs = 32;
 	graph_by_time = graph_by_pidtime = graph_cache = NULL;
 
 	while ((ch = getopt(argc, argv, "bC:Deghklm:tsvV")) != -1) {
@@ -200,8 +199,6 @@ main(int argc, char *argv[])
 		err(1, "calloc");
 	if (quark_queue_open(qq, &qa) != 0)
 		err(1, "quark_queue_open");
-	if ((qevs = calloc(nqevs, sizeof(*qevs))) == NULL)
-		err(1, "calloc");
 
 	if (quark_verbose)
 		printf("using %s for backend\n", fetch_backend(qq));
@@ -223,18 +220,15 @@ main(int argc, char *argv[])
 	 * Normal mode, collect, pop and dump elements until we get a sigint
 	 */
 	while (!gotsigint && maxnodes == -1) {
-		n = quark_queue_get_events(qq, qevs, nqevs);
-		if (n == -1)
-			err(1, "quark_queue_get_events");
-		/* Scan each event */
-		for (i = 0, qev = qevs; i < n; i++, qev++)
-			quark_event_dump(qev, stdout);
+		qev = quark_queue_get_event(qq);
+
 		/* No events, just block */
-		if (n == 0) {
+		if (qev == NULL) {
 			if (quark_queue_block(qq) == -1 && errno != EINTR)
 				err(1, "quark_queue_block");
 			continue;
 		}
+		quark_event_dump(qev, stdout);
 	}
 
 	if (graph_by_pidtime != NULL && graph_by_time != NULL) {
@@ -252,7 +246,6 @@ main(int argc, char *argv[])
 		graph_cache = NULL;
 	}
 
-	free(qevs);
 	dump_stats(qq);
 	quark_queue_close(qq);
 	free(qq);

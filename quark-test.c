@@ -224,21 +224,21 @@ fork_exec_nop(void)
 	return (child);
 }
 
-static int
-drain_for_pid(struct quark_queue *qq, pid_t pid, struct quark_event *qev)
+static const struct quark_event *
+drain_for_pid(struct quark_queue *qq, pid_t pid)
 {
-	int			n;
+	const struct quark_event	*qev;
+
+	qev = NULL;
 
 	for (;;) {
-		n = quark_queue_get_events(qq, qev, 1);
-		if (n == -1) {
-			err(1, "quark_queue_get_events");
-		} else if (n == 0) {
+		qev = quark_queue_get_event(qq);
+
+		if (qev == NULL) {
 			if (quark_queue_block(qq) == -1)
 				err(1, "quark_queue_block");
 			continue;
-		} else if (n != 1)
-			errx(1, "quark_queue_get_events is broken");
+		}
 
 		if (qev->process == NULL)
 			continue;
@@ -247,7 +247,7 @@ drain_for_pid(struct quark_queue *qq, pid_t pid, struct quark_event *qev)
 		break;
 	}
 
-	return (0);
+	return (qev);
 }
 
 static int
@@ -266,7 +266,7 @@ static int
 t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
-	struct quark_event		 qev;
+	const struct quark_event	*qev;
 	const struct quark_process	*qp;
 	pid_t				 child;
 	struct args			*args;
@@ -278,15 +278,14 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "quark_queue_open");
 
 	child = fork_exec_nop();
-	if (drain_for_pid(&qq, child, &qev) != 0)
-		err(1, "drain_for_pid");
+	qev = drain_for_pid(&qq, child);
 
 	/* check qev.events */
-	assert(qev.events & QUARK_EV_FORK);
-	assert(qev.events & QUARK_EV_EXEC);
-	assert(qev.events & QUARK_EV_EXIT);
+	assert(qev->events & QUARK_EV_FORK);
+	assert(qev->events & QUARK_EV_EXEC);
+	assert(qev->events & QUARK_EV_EXIT);
 	/* check qev.process */
-	qp = qev.process;
+	qp = qev->process;
 	assert(qp != NULL);
 	assert(qp->flags & QUARK_F_EXIT);
 	assert(qp->flags & QUARK_F_COMM);
@@ -360,22 +359,21 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_namespace(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	qq;
-	struct quark_event	qev;
-	pid_t			child;
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	pid_t				 child;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
 	child = fork_exec_nop();
-	if (drain_for_pid(&qq, child, &qev) != 0)
-		err(1, "drain_for_pid");
+	qev = drain_for_pid(&qq, child);
 
-	assert(qev.process != NULL);
-	assert(qev.process->proc_uts_inonum == sproc_self_namespace("ns/uts"));
-	assert(qev.process->proc_ipc_inonum == sproc_self_namespace("ns/ipc"));
-	assert(qev.process->proc_mnt_inonum == sproc_self_namespace("ns/mnt"));
-	assert(qev.process->proc_net_inonum == sproc_self_namespace("ns/net"));
+	assert(qev->process != NULL);
+	assert(qev->process->proc_uts_inonum == sproc_self_namespace("ns/uts"));
+	assert(qev->process->proc_ipc_inonum == sproc_self_namespace("ns/ipc"));
+	assert(qev->process->proc_mnt_inonum == sproc_self_namespace("ns/mnt"));
+	assert(qev->process->proc_net_inonum == sproc_self_namespace("ns/net"));
 
 	quark_queue_close(&qq);
 
@@ -386,7 +384,6 @@ static int
 t_cache_grace(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
-	struct quark_event		 qev;
 	const struct quark_process	*qp;
 	pid_t				 child;
 
@@ -410,8 +407,7 @@ t_cache_grace(const struct test *t, struct quark_queue_attr *qa)
 	 * Fork a child, drain until we see it.
 	 */
 	child = fork_exec_nop();
-	if (drain_for_pid(&qq, child, &qev) != 0)
-		err(1, "drain_for_pid");
+	(void)drain_for_pid(&qq, child);
 	/* Must be in cache now */
 	qp = quark_process_lookup(&qq, child);
 	assert(qp != NULL);
@@ -421,8 +417,7 @@ t_cache_grace(const struct test *t, struct quark_queue_attr *qa)
 	 * trigger the removal, ensure child is gone.
 	 */
 	msleep(qa->cache_grace_time);
-	if (quark_queue_get_events(&qq, &qev, 1) == -1)
-		err(1, "quark_queue_get_events");
+	(void)quark_queue_get_event(&qq);
 
 	assert(quark_process_lookup(&qq, child) == NULL);
 
@@ -435,7 +430,7 @@ static int
 t_min_agg(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
-	struct quark_event		 qev;
+	const struct quark_event	*qev;
 	const struct quark_process	*qp;
 	pid_t				 child;
 
@@ -451,26 +446,23 @@ t_min_agg(const struct test *t, struct quark_queue_attr *qa)
 	child = fork_exec_nop();
 
 	/* Fork */
-	if (drain_for_pid(&qq, child, &qev) != 0)
-		err(1, "drain_for_pid fork");
-	assert(qev.events & QUARK_EV_FORK);
-	assert(!(qev.events & (QUARK_EV_EXEC|QUARK_EV_EXIT)));
-	qp = qev.process;
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_FORK);
+	assert(!(qev->events & (QUARK_EV_EXEC|QUARK_EV_EXIT)));
+	qp = qev->process;
 	assert(qp != NULL);
 	assert((pid_t)qp->pid == child);
 	assert(qp->flags & QUARK_F_PROC);
 	/* Exec */
-	if (drain_for_pid(&qq, child, &qev) != 0)
-		err(1, "drain_for_pid exec");
-	assert(qev.events & QUARK_EV_EXEC);
-	assert(!(qev.events & (QUARK_EV_FORK|QUARK_EV_EXIT)));
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_EXEC);
+	assert(!(qev->events & (QUARK_EV_FORK|QUARK_EV_EXIT)));
 	assert((pid_t)qp->pid == child);
 	/* Exit */
-	if (drain_for_pid(&qq, child, &qev) != 0)
-		err(1, "drain_for_pid exit");
-	assert(qev.events & QUARK_EV_EXIT);
-	assert(!(qev.events & (QUARK_EV_FORK|QUARK_EV_EXEC)));
-	qp = qev.process;
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_EXIT);
+	assert(!(qev->events & (QUARK_EV_FORK|QUARK_EV_EXEC)));
+	qp = qev->process;
 	assert(qp != NULL);
 	assert((pid_t)qp->pid == child);
 	assert(qp->flags & QUARK_F_EXIT);
@@ -486,7 +478,6 @@ static int
 t_stats(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
-	struct quark_event		 qev;
 	pid_t				 child;
 	struct quark_queue_stats	 old_stats, stats;
 
@@ -504,8 +495,7 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 	 * Fork a child, drain until we see it.
 	 */
 	child = fork_exec_nop();
-	if (drain_for_pid(&qq, child, &qev) != 0)
-		err(1, "drain_for_pid");
+	(void)drain_for_pid(&qq, child);
 	/*
 	 * Stats must have bumped now
 	 */

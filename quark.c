@@ -765,7 +765,7 @@ entry_leader_type_str(u32 entry_leader_type)
 			return (-1);			\
 	} while(0)
 int
-quark_event_dump(struct quark_event *qev, FILE *f)
+quark_event_dump(const struct quark_event *qev, FILE *f)
 {
 	const char			*flagname;
 	char				 events[1024];
@@ -874,11 +874,11 @@ quark_process_iter_next(struct quark_process_iter *qi)
 	return (qp);
 }
 
-static int
-raw_event_process(struct quark_queue *qq, struct raw_event *src, struct
-    quark_event *dst)
+static struct quark_event *
+raw_event_process(struct quark_queue *qq, struct raw_event *src)
 {
 	struct quark_process		*qp;
+	struct quark_event		*dst;
 	struct raw_event                *agg;
 	struct raw_task                 *raw_fork, *raw_exit, *raw_task;
 	struct raw_comm                 *raw_comm;
@@ -890,6 +890,7 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src, struct
 	size_t				 args_len;
 	u64				 events;
 
+	dst = &qq->event_storage;
 	raw_fork = NULL;
 	raw_exit = NULL;
 	raw_task = NULL;
@@ -904,7 +905,7 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src, struct
 	/* XXX pass if this is a fork down, so we can evict the old one XXX */
 	qp = process_cache_get(qq, src->pid, 1);
 	if (qp == NULL)
-		return (-1);
+		return (NULL);
 
 	events = 0;
 
@@ -930,7 +931,7 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src, struct
 		raw_exec_connector = &src->exec_connector;
 		break;
 	default:
-		return (errno = EINVAL, -1);
+		return (NULL);
 		break;		/* NOTREACHED */
 	};
 
@@ -1083,7 +1084,7 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src, struct
 	dst->events = events;
 	dst->process = qp;
 
-	return (0);
+	return (dst);
 }
 
 static int
@@ -1951,53 +1952,56 @@ quark_queue_pop_raw(struct quark_queue *qq)
 	return (min);
 }
 
-int
-quark_queue_get_events(struct quark_queue *qq, struct quark_event *qevs,
-    int nqevs)
+static const struct quark_event *
+quark_queue_get_snap_event(struct quark_queue *qq)
 {
-	struct raw_event	*raw;
-	int			 got;
+	struct quark_process	*qp;
+	struct quark_event	*qev;
 
-	got = 0;
-	while (got != nqevs) {
-		/* Are we in the middle of a snapshot? */
-		if (unlikely(qq->snap_pid != -1)) {
-			struct quark_process	*qp;
+	qev = &qq->event_storage;
+	qp = process_cache_get(qq, qq->snap_pid, 0);
+	if (qp == NULL) {
+		qwarnx("event vanished during snapshot, "
+		    "this is a bug");
+		qq->snap_pid = -1;
 
-			qp = process_cache_get(qq, qq->snap_pid, 0);
-			if (qp == NULL) {
-				qwarnx("event vanished during snapshot, "
-				    "this is a bug");
-				qq->snap_pid = -1;
-				/* errno set by cache_lookup */
-				return (-1);
-			}
-			/* Copy out to user */
-			qevs->events = QUARK_EV_SNAPSHOT;
-			qevs->process = qp;
-			qp = RB_NEXT(process_by_pid, &qq->process_by_pid, qp);
-			/* Are we done with the snapshot? If not, record next */
-			if (qp == NULL)
-				qq->snap_pid = -1;
-			else
-				qq->snap_pid = qp->pid;
-		} else {
-			raw = quark_queue_pop_raw(qq);
-			if (raw == NULL)
-				break;
-			if (raw_event_process(qq, raw, qevs) == -1) {
-				raw_event_free(raw);
-				qwarnx("raw_event_process");
-				continue;
-			}
-			raw_event_free(raw);
-		}
-		got++;
-		qevs++;
+		return (NULL);
+	}
+	/* Copy out to user */
+	qev->events = QUARK_EV_SNAPSHOT;
+	qev->process = qp;
+	qp = RB_NEXT(process_by_pid, &qq->process_by_pid, qp);
+	/* Are we done with the snapshot? If not, record next */
+	if (qp == NULL)
+		qq->snap_pid = -1;
+	else
+		qq->snap_pid = qp->pid;
+
+	return (qev);
+}
+
+const struct quark_event *
+quark_queue_get_event(struct quark_queue *qq)
+{
+	struct raw_event		*raw;
+	const struct quark_event	*qev;
+
+	qev = NULL;
+	/* If we are booting we send a snap of every existing process */
+	if (unlikely(qq->snap_pid != -1)) {
+		qev = quark_queue_get_snap_event(qq);
+		goto done;
 	}
 
+	/* Normal path, get a quark_event out of raw_event */
+	if ((raw = quark_queue_pop_raw(qq)) != NULL) {
+		qev = raw_event_process(qq, raw);
+		raw_event_free(raw);
+	}
+
+done:
 	/* GC all processes that exited after some grace time */
 	process_cache_gc(qq);
 
-	return (got);
+	return (qev);
 }
