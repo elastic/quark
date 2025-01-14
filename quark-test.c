@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <sys/select.h>
@@ -228,10 +229,19 @@ static const struct quark_event *
 drain_for_pid(struct quark_queue *qq, pid_t pid)
 {
 	const struct quark_event	*qev;
+	struct timespec			 start, now;
 
 	qev = NULL;
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	now = start;
 
-	for (;;) {
+	for (; ; (void)clock_gettime(CLOCK_MONOTONIC, &now)) {
+		if ((now.tv_sec - start.tv_sec) >= 5) {
+			errno = ETIME;
+			err(1, "drain_for_pid");
+		}
+
 		qev = quark_queue_get_event(qq);
 
 		if (qev == NULL) {

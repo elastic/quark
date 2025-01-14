@@ -223,8 +223,8 @@ bpf_ringbuf_cb(void *vqq, void *vdata, size_t len)
 	struct raw_event		*raw;
 
 	raw = ebpf_events_to_raw(ev);
-	if (raw != NULL)
-		raw_event_insert(qq, raw);
+	if (raw != NULL && raw_event_insert(qq, raw) == -1)
+		raw_event_free(raw);
 
 	return (0);
 }

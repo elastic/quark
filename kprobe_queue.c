@@ -1467,7 +1467,10 @@ kprobe_queue_populate(struct quark_queue *qq)
 			empty_rings = 0;
 			raw = perf_event_to_raw(qq, ev);
 			if (raw != NULL) {
-				raw_event_insert(qq, raw);
+				if (raw_event_insert(qq, raw) == -1) {
+					raw_event_free(raw);
+					raw = NULL;
+				}
 				npop++;
 			}
 			perf_mmap_consume(&pgl->mmap);

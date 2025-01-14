@@ -148,7 +148,7 @@ now64(void)
 	struct timespec ts;
 
 	if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
-		err(1, "clock_gettime");
+		return (0);
 
 	return ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
 }
@@ -196,11 +196,11 @@ raw_event_expired(struct quark_queue *qq, struct raw_event *raw, u64 now)
  * Insert without a colision, cheat on the timestamp in case we do. NOTE: since
  * we bump "time" here, we shouldn't copy "time" before it sits in the tree.
  */
-void
+int
 raw_event_insert(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct raw_event	*col;
-	int			 attempts = 10;
+	int			 attempts = 1000;
 
 	/*
 	 * Link it first by time
@@ -215,25 +215,34 @@ raw_event_insert(struct quark_queue *qq, struct raw_event *raw)
 		 * We just bump time by one until we can insert it.
 		 */
 		raw->time++;
-		qwarnx("raw_event_by_time collision");
 	} while (--attempts > 0);
 
-	if (unlikely(col != NULL))
-		err(1, "we got consecutive collisions, this is a bug");
+	if (unlikely(col != NULL)) {
+		qwarnx("raw_event_by_time consecutive collisions, "
+		    "this is a bug, dropping event");
+
+		return (-1);
+	}
 
 	/*
 	 * Link it in the combined tree, we accept no collisions here as the
 	 * above case already saves us, but trust nothing.
 	 */
-	/* XXX this should be by tid, but we're not there yet XXX */
 	col = RB_INSERT(raw_event_by_pidtime, &qq->raw_event_by_pidtime, raw);
-	if (unlikely(col != NULL))
-		err(1, "collision on pidtime tree, this is a bug");
+	if (unlikely(col != NULL)) {
+		qwarnx("collision on pidtime tree, this is a bug, "
+		    "dropping event");
+		RB_REMOVE(raw_event_by_time, &qq->raw_event_by_time, raw);
+
+		return (-1);
+	}
 
 	/* if (qq->min == NULL || raw_event_by_time_cmp(raw, qq->min) == -1) */
 	/* 	qq->min = raw; */
 	qq->length++;
 	qq->stats.insertions++;
+
+	return (0);
 }
 
 static void
@@ -1755,6 +1764,11 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 {
 	struct quark_process		*qp;
 	struct quark_queue_attr		 qa_default;
+	struct timespec			 unused;
+
+	/* Test if clock_gettime() works */
+	if (clock_gettime(CLOCK_MONOTONIC, &unused) == -1)
+		return (-1);
 
 	if (qa == NULL) {
 		quark_queue_default_attr(&qa_default);
