@@ -31,7 +31,7 @@ struct quark_queue_attr;
 struct quark_queue_stats;
 struct raw_event *raw_event_alloc(int);
 void	 raw_event_free(struct raw_event *);
-void	 raw_event_insert(struct quark_queue *, struct raw_event *);
+int	 raw_event_insert(struct quark_queue *, struct raw_event *);
 void	 quark_queue_default_attr(struct quark_queue_attr *);
 int	 quark_queue_open(struct quark_queue *, struct quark_queue_attr *);
 void	 quark_queue_close(struct quark_queue *);
