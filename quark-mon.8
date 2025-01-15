@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl bDekstv
+.Op Fl bDekSstv
 .Op Fl C Ar filename
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
@@ -68,6 +68,8 @@ Maximum lenght of the quark queue, essentially how much quark is willing to
 buffer, refer to
 .Xr quark_queue_open 3
 for further details.
+.It Fl S
+Enable socket events (experimental).
 .It Fl s
 Don't send the initial snapshot of existing processes.
 .It Fl t

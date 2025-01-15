@@ -16,3 +16,6 @@ Changes from 0.2 to 0.3
 Changes from 0.3 to 0.4
 ~~~~~~~~~~~~~~~~~~~~~~~
   o quark_queue_get_events(3) was removed in favor of quark_queue_get_event(3).
+  o quark_event{} got a new member socket,
+    QUARK_EV_SOCK_CONN_{ESTABLISHED,CLOSED}. The probes still have
+    some issues so it's mostly experimental.
