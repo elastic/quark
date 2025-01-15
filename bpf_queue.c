@@ -4,6 +4,7 @@
 #include <sys/epoll.h>
 #include <sys/sysinfo.h>
 
+#include <fcntl.h>
 #include <err.h>
 #include <errno.h>
 #include <stdio.h>
@@ -102,6 +103,8 @@ ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 	strlcpy(task->comm, ebpf_ctx->comm, sizeof(task->comm));
 }
 
+#include <arpa/inet.h>
+
 static struct raw_event *
 ebpf_events_to_raw(struct ebpf_event_header *ev)
 {
@@ -109,6 +112,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 	struct ebpf_process_fork_event	*fork;
 	struct ebpf_process_exit_event	*exit;
 	struct ebpf_process_exec_event	*exec;
+	struct ebpf_net_event		*sock_state;
 	struct ebpf_varlen_field	*field;
 	struct ebpf_ctx			 ebpf_ctx;
 
@@ -164,6 +168,9 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		break;
 	case EBPF_EVENT_PROCESS_EXEC:
 		exec = (struct ebpf_process_exec_event *)ev;
+		/* XXX THIS WAS MISSING !!!! */
+		if (exec->pids.tid != exec->pids.tgid)
+			goto bad;
 		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
 			goto bad;
 		raw->pid = exec->pids.tid;
@@ -199,6 +206,51 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 			}
 		}
 		ebpf_ctx_to_task(&ebpf_ctx, &raw->exec.ext.task);
+
+		break;
+	case EBPF_EVENT_NETWORK_SOCK_STATE:
+		sock_state = (struct ebpf_net_event *)ev;
+		if ((raw = raw_event_alloc(RAW_SOCK_STATE)) == NULL)
+			goto bad;
+
+		raw->pid = sock_state->pids.tgid; /* not tid!!! */
+		raw->time = ev->ts;
+		printf("\n\nfamily=%d\n\n", sock_state->net.family);
+
+		if (sock_state->net.family == EBPF_NETWORK_EVENT_AF_INET) {
+			printf("\n\nXXXXXXXX\n\n");
+			
+			raw->sock_state.src.sin.sin_family = AF_INET;
+			memcpy(&raw->sock_state.src.sin.sin_addr,
+			    sock_state->net.saddr, 4);
+			raw->sock_state.src.sin.sin_port = htons(sock_state->net.sport);
+			printf("LOCAL=%s\n", inet_ntoa(raw->sock_state.src.sin.sin_addr));
+
+			raw->sock_state.dst.sin.sin_family = AF_INET;
+			memcpy(&raw->sock_state.dst.sin.sin_addr,
+			    sock_state->net.daddr, 4);
+			raw->sock_state.dst.sin.sin_port = htons(sock_state->net.dport);
+			printf("REMOTE=%s:%d\n",
+			    inet_ntoa(raw->sock_state.dst.sin.sin_addr),
+			    raw->sock_state.dst.sin.sin_port);
+
+		} else if (sock_state->net.family == EBPF_NETWORK_EVENT_AF_INET6) {
+			printf("\n\nYYYYYY\n\n");
+			raw->sock_state.src.sin6.sin6_family = AF_INET6;
+			memcpy(&raw->sock_state.src.sin6.sin6_addr,
+			    sock_state->net.saddr6, 16);
+			raw->sock_state.src.sin6.sin6_port = htons(sock_state->net.sport);
+
+			raw->sock_state.dst.sin.sin_family = AF_INET6;
+			memcpy(&raw->sock_state.dst.sin6.sin6_addr,
+			    sock_state->net.daddr, 16);
+			raw->sock_state.dst.sin6.sin6_port = be32toh(sock_state->net.dport);
+
+			raw->sock_state.dst.sin6.sin6_flowinfo = 0;
+			raw->sock_state.dst.sin6.sin6_scope_id = 0;
+		} else
+			errx(1, "bad family %d", sock_state->net.family);
+		raw->sock_state.state = sock_state->net.state;
 
 		break;
 	default:
@@ -264,7 +316,15 @@ bpf_queue_open(struct quark_queue *qq)
 	bpf_program__set_autoload(bqq->prog->progs.sched_process_fork, 1);
 	bpf_program__set_autoload(bqq->prog->progs.sched_process_exec, 1);
 	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
+	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
+	bpf_program__set_autoload(bqq->prog->progs.sockops_state, 1);
+	/* bpf_program__set_autoload(bqq->prog->progs.bpf_sockops_test, 1); */
+	/* bpf_program__set_autoload(bqq->prog->progs.bpf_sock_create, 1); */
+	/* bpf_program__set_autoload(bqq->prog->progs.bpf_post_bind4, 1); */
+	/* bpf_program__set_autoload(bqq->prog->progs.bpf_udp4_sendmsg, 1); */
+	/* bpf_program__set_autoload(bqq->prog->progs.bpf_socket_egress, 1); */
 
+	
 	error = bpf_map__set_max_entries(bqq->prog->maps.event_buffer_map,
 	    get_nprocs_conf());
 	if (error != 0) {
@@ -284,8 +344,43 @@ bpf_queue_open(struct quark_queue *qq)
 		goto fail;
 	}
 
+	{
+		int cgroup_fd;	/* XXX LEAKS */
+
+		cgroup_fd = open("/sys/fs/cgroup", O_RDONLY);
+		if (cgroup_fd == -1)
+			err(1, "open cgroup");
+
+		/* XXX leaks */
+
+		if (bpf_program__attach_cgroup(bqq->prog->progs.sockops_state,
+		    cgroup_fd) == NULL)
+			err(1, "attach cgroup");
+
+		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_sockops_test, */
+		/*     cgroup_fd) == NULL) */
+		/* 	err(1, "attach cgroup"); */
+
+		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_sock_create, */
+		/*     cgroup_fd) == NULL) */
+		/* 	err(1, "attach cgroup"); */
+
+		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_post_bind4, */
+		/*     cgroup_fd) == NULL) */
+		/* 	err(1, "attach cgroup"); */
+
+		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_udp4_sendmsg, */
+		/*     cgroup_fd) == NULL) */
+		/* 	err(1, "attach cgroup"); */
+
+		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_socket_egress, */
+		/*     cgroup_fd) == NULL) */
+		/* 	err(1, "attach cgroup"); */
+
+	}
+
 	/*
-	 * There doesn't seem to be a watermark setting for ebpf!
+	 * there doesn't seem to be a watermark setting for ebpf!
 	 */
 	ringbuf_opts.sz = sizeof(ringbuf_opts);
 	bqq->ringbuf = ring_buffer__new(bpf_map__fd(bqq->prog->maps.ringbuf),

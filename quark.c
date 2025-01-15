@@ -75,6 +75,7 @@ raw_event_alloc(int type)
 		qstr_init(&raw->exec_connector.task.cwd);
 		break;
 	case RAW_COMM:		/* nada */
+	case RAW_SOCK_STATE:
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -105,6 +106,7 @@ raw_event_free(struct raw_event *raw)
 		qstr_free(&raw->exec_connector.task.cwd);
 		break;
 	case RAW_COMM:		/* nada */
+	case RAW_SOCK_STATE:
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -888,11 +890,11 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 {
 	struct quark_process		*qp;
 	struct quark_event		*dst;
-	struct raw_event                *agg;
-	struct raw_task                 *raw_fork, *raw_exit, *raw_task;
-	struct raw_comm                 *raw_comm;
-	struct raw_exec                 *raw_exec;
-	struct raw_exec_connector       *raw_exec_connector;
+	struct raw_event		*agg;
+	struct raw_task			*raw_fork, *raw_exit, *raw_task;
+	struct raw_comm			*raw_comm;
+	struct raw_exec			*raw_exec;
+	struct raw_exec_connector	*raw_exec_connector;
 	char				*comm;
 	char				*cwd;
 	char				*args;
@@ -1994,6 +1996,41 @@ quark_queue_get_snap_event(struct quark_queue *qq)
 	return (qev);
 }
 
+#include <arpa/inet.h>
+
+static void
+debug_raw_sock_state(struct raw_event *raw)
+{
+	struct sockaddr_in	*src, *dst;
+	char			 src_buf[64], dst_buf[64];
+
+	src = &raw->sock_state.src.sin;
+	dst = &raw->sock_state.dst.sin;
+
+	if (src->sin_family != AF_INET ||
+	    dst->sin_family != AF_INET) {
+		printf("HEIN HEIN family=%d\n", src->sin_family);
+		printf("HEIN HEIN family=%d\n", dst->sin_family);
+		return;
+	}
+
+	bzero(src_buf, sizeof(src_buf));
+	bzero(dst_buf, sizeof(dst_buf));
+	if (inet_ntop(AF_INET, &src->sin_addr, src_buf, sizeof(src_buf)) == NULL)
+		errx(1, "src");
+	if (inet_ntop(AF_INET, &dst->sin_addr, dst_buf, sizeof(dst_buf)) == NULL)
+		errx(1, "dst");
+
+	printf("%d: (%d) local=%s:%d remote=%s:%d\n",
+	    raw->pid, raw->sock_state.state,
+	    src_buf, ntohs(src->sin_port),
+	    dst_buf, ntohs(dst->sin_port));
+
+//	printf("FIM REMOTE=%s\n", inet_ntoa(raw->sock_state.dst.sin.sin_addr));
+
+
+}
+
 const struct quark_event *
 quark_queue_get_event(struct quark_queue *qq)
 {
@@ -2010,6 +2047,8 @@ quark_queue_get_event(struct quark_queue *qq)
 	/* Normal path, get a quark_event out of raw_event */
 	if ((raw = quark_queue_pop_raw(qq)) != NULL) {
 		qev = raw_event_process(qq, raw);
+		if (raw->type == RAW_SOCK_STATE)
+			debug_raw_sock_state(raw);
 		raw_event_free(raw);
 	}
 

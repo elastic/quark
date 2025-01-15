@@ -10,3 +10,5 @@ struct {
 } ringbuf SEC(".maps");
 
 #include "Process/Probe.bpf.c"
+#include "Network/Probe.bpf.c"
+//#include "sock-ops.c"

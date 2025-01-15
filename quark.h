@@ -8,6 +8,10 @@
 #define QUARK_VERSION "0.4a"
 
 /* Misc types */
+#include <sys/socket.h>
+
+#include <netinet/in.h>
+
 #include <stdio.h>
 
 /* Compat, tree.h, queue.h */
@@ -26,6 +30,7 @@ struct raw_event;
 struct quark_event;
 struct quark_process;
 struct quark_process_iter;
+//struct quark_socket;
 struct quark_queue;
 struct quark_queue_attr;
 struct quark_queue_stats;
@@ -44,8 +49,9 @@ int	 quark_dump_process_cache_graph(struct quark_queue *, FILE *);
 int	 quark_dump_raw_event_graph(struct quark_queue *, FILE *, FILE *);
 int	 quark_event_dump(const struct quark_event *, FILE *);
 void	 quark_process_iter_init(struct quark_process_iter *, struct quark_queue *);
-const struct quark_process *quark_process_iter_next(struct quark_process_iter *);
-const struct quark_process *quark_process_lookup(struct quark_queue *, int);
+const struct quark_process	*quark_process_iter_next(struct quark_process_iter *);
+const struct quark_process	*quark_process_lookup(struct quark_queue *, int);
+//const struct quark_socket	*quark_socket_lookup(struct sockaddr *);
 
 /* btf.c */
 struct quark_btf_target {
@@ -141,6 +147,7 @@ enum {
 	RAW_EXIT_THREAD,
 	RAW_COMM,
 	RAW_EXEC_CONNECTOR,
+	RAW_SOCK_STATE,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -195,6 +202,20 @@ struct raw_exec_connector {
 	struct raw_task	task;
 };
 
+/* XXX move me */
+struct quark_sockaddr {
+	union {
+		struct sockaddr_in sin;
+		struct sockaddr_in6 sin6;
+	};
+};
+
+struct raw_sock_state {
+	struct quark_sockaddr	src;
+	struct quark_sockaddr	dst;
+	int			state;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -211,6 +232,7 @@ struct raw_event {
 		struct raw_comm			comm;
 		struct raw_task			task;
 		struct raw_exec_connector	exec_connector;
+		struct raw_sock_state		sock_state;
 	};
 };
 
@@ -336,6 +358,12 @@ struct quark_process_iter {
 	struct quark_queue	*qq;
 	struct quark_process	*qp;
 };
+
+/* struct quark_sock { */
+/* 	struct quark_sockaddr	src; */
+/* 	struct quark_sockaddr	dst; */
+/* 	int			proc_ref; /\* how many quark_proc references us *\/ */
+/* }; */
 
 struct quark_queue_stats {
 	u64	insertions;

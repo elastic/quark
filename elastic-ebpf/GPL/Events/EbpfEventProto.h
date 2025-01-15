@@ -45,6 +45,7 @@ enum ebpf_event_type {
     EBPF_EVENT_PROCESS_PTRACE               = (1 << 18),
     EBPF_EVENT_PROCESS_LOAD_MODULE          = (1 << 19),
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
+    EBPF_EVENT_NETWORK_SOCK_STATE           = (1 << 21),
 };
 
 struct ebpf_event_header {
@@ -384,15 +385,18 @@ struct ebpf_net_info {
     enum ebpf_net_info_af family;
     union {
         uint8_t saddr[4];
+	    uint32_t saddr_v;
         uint8_t saddr6[16];
     }; // Network byte order
     union {
         uint8_t daddr[4];
+	    uint32_t daddr_v;
         uint8_t daddr6[16];
     };              // Network byte order
     uint16_t sport; // Host byte order
     uint16_t dport; // Host byte order
     uint32_t netns;
+	uint32_t state;		/* XXX moveme */
     union {
         struct ebpf_net_info_tcp_close close;
     } tcp;
