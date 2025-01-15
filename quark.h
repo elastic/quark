@@ -8,6 +8,10 @@
 #define QUARK_VERSION "0.4a"
 
 /* Misc types */
+#include <sys/socket.h>
+
+#include <netinet/in.h>
+
 #include <stdio.h>
 
 /* Compat, tree.h, queue.h */
@@ -26,6 +30,9 @@ struct raw_event;
 struct quark_event;
 struct quark_process;
 struct quark_process_iter;
+struct quark_socket;
+struct quark_socket_iter;
+struct quark_sockaddr;
 struct quark_queue;
 struct quark_queue_attr;
 struct quark_queue_stats;
@@ -46,6 +53,10 @@ int	 quark_event_dump(const struct quark_event *, FILE *);
 void	 quark_process_iter_init(struct quark_process_iter *, struct quark_queue *);
 const struct quark_process *quark_process_iter_next(struct quark_process_iter *);
 const struct quark_process *quark_process_lookup(struct quark_queue *, int);
+void	 quark_socket_iter_init(struct quark_socket_iter *, struct quark_queue *);
+const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
+const struct quark_socket *quark_socket_lookup(struct quark_queue *,
+    struct quark_sockaddr *, struct quark_sockaddr *);
 
 /* btf.c */
 struct quark_btf_target {
@@ -141,6 +152,7 @@ enum {
 	RAW_EXIT_THREAD,
 	RAW_COMM,
 	RAW_EXEC_CONNECTOR,
+	RAW_SOCK_CONN,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -195,6 +207,31 @@ struct raw_exec_connector {
 	struct raw_task	task;
 };
 
+/* not like sockaddr{}, we won't use this on sockets anyway */
+struct quark_sockaddr {
+	int af;
+
+	union {
+		u32	addr4;
+		u8	addr6[16];
+	};
+
+	u16 port;
+};
+
+enum sock_conn {
+	SOCK_CONN_INVALID,
+	SOCK_CONN_CLOSE,
+	SOCK_CONN_ACCEPT,
+	SOCK_CONN_CONNECT,
+};
+
+struct raw_sock_conn {
+	struct quark_sockaddr	local;
+	struct quark_sockaddr	remote;
+	enum sock_conn		conn;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -211,6 +248,7 @@ struct raw_event {
 		struct raw_comm			comm;
 		struct raw_task			task;
 		struct raw_exec_connector	exec_connector;
+		struct raw_sock_conn		sock_conn;
 	};
 };
 
@@ -229,13 +267,16 @@ RB_HEAD(raw_event_by_time, raw_event);
 RB_HEAD(raw_event_by_pidtime, raw_event);
 
 struct quark_event {
-#define QUARK_EV_FORK		(1 << 0)
-#define QUARK_EV_EXEC		(1 << 1)
-#define QUARK_EV_EXIT		(1 << 2)
-#define QUARK_EV_SETPROCTITLE	(1 << 3)
-#define QUARK_EV_SNAPSHOT	(1 << 4)
+#define QUARK_EV_FORK			(1 << 0)
+#define QUARK_EV_EXEC			(1 << 1)
+#define QUARK_EV_EXIT			(1 << 2)
+#define QUARK_EV_SETPROCTITLE		(1 << 3)
+#define QUARK_EV_SNAPSHOT		(1 << 4)
+#define QUARK_EV_SOCK_CONN_ESTABLISHED	(1 << 5)
+#define QUARK_EV_SOCK_CONN_CLOSED	(1 << 6)
 	u64				 events;
 	const struct quark_process	*process;
+	const struct quark_socket	*socket;
 };
 
 /*
@@ -244,11 +285,9 @@ struct quark_event {
 RB_HEAD(process_by_pid, quark_process);
 
 /*
- * Process cache gc list, after they are marked for deletion, they still get a
- * grace time of qq->cache_grace_time before removal, this is to allow lookups
- * from users on processes that just vanished.
+ * Socket tree, indexed by src and dst
  */
-TAILQ_HEAD(quark_process_list, quark_process);
+RB_HEAD(socket_by_src_dst, quark_socket);
 
 enum {
 	QUARK_TTY_UNKNOWN,
@@ -271,6 +310,25 @@ enum {
 	QUARK_ELT_CONSOLE,
 };
 
+enum gc_type {
+	GC_INVALID,
+	GC_PROCESS,
+	GC_SOCKET,
+};
+
+struct gc_link {
+	TAILQ_ENTRY(gc_link)	gc_entry;
+	u64			gc_time;
+	enum gc_type		gc_type;
+};
+
+/*
+ * gc queue, after processes or sockets are are marked for deletion, they still
+ * get a grace time of qq->cache_grace_time before removal, this is to allow
+ * lookups from users on processes and sockets that have just vanished.
+ */
+TAILQ_HEAD(gc_queue, gc_link);
+
 /*
  * Main external working set, user passes this back and forth, members only have
  * a meaning if its respective flag is set, say proc_cap_inheritable should only
@@ -278,10 +336,9 @@ enum {
  */
 
 struct quark_process {
-#define quark_process_zero_start entry_by_pid
+#define quark_process_zero_start gc
+	struct gc_link			gc;		/* must be first */
 	RB_ENTRY(quark_process)		entry_by_pid;
-	TAILQ_ENTRY(quark_process)	entry_gc;
-	u64			 	gc_time;
 #define quark_process_zero_end pid
 	/* Always present */
 	u32	pid;
@@ -337,12 +394,30 @@ struct quark_process_iter {
 	struct quark_process	*qp;
 };
 
+struct quark_socket {
+	struct gc_link		gc;			/* must be first */
+	RB_ENTRY(quark_socket)	entry_by_src_dst;
+	struct quark_sockaddr	local;
+	struct quark_sockaddr	remote;
+	u32			pid_origin;
+	u32			pid_last_use;
+	u64			established_time;
+	u64			close_time;
+	int			from_scrape;
+};
+
+struct quark_socket_iter {
+	struct quark_queue	*qq;
+	struct quark_socket	*qsk;
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
 	u64	aggregations;
 	u64	non_aggregations;
 	u64	lost;
+	u64	garbage_collections;
 	int	backend;	/* active backend, QQ_EBPF or QQ_KPROBE */
 	/* TODO u64	peak_nodes; */
 };
@@ -361,6 +436,7 @@ struct quark_queue_attr {
 #define QQ_NO_SNAPSHOT		(1 << 3)
 #define QQ_MIN_AGG		(1 << 4)
 #define QQ_ENTRY_LEADER		(1 << 5)
+#define QQ_SOCK_CONN		(1 << 6)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;
@@ -376,7 +452,8 @@ struct quark_queue {
 	struct raw_event_by_time	 raw_event_by_time;
 	struct raw_event_by_pidtime	 raw_event_by_pidtime;
 	struct process_by_pid		 process_by_pid;
-	struct quark_process_list	 event_gc;
+	struct gc_queue			 event_gc;
+	struct socket_by_src_dst	 socket_by_src_dst;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
 	const u8			(*agg_matrix)[RAW_NUM_TYPES];

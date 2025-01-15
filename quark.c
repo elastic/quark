@@ -2,8 +2,15 @@
 /* Copyright (c) 2024 Elastic NV */
 
 #include <sys/epoll.h>
+#include <sys/socket.h>
+
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
+#include <arpa/inet.h>
 
 #include <ctype.h>
+#include <dirent.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -24,6 +31,10 @@
 static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
 static int	process_by_pid_cmp(struct quark_process *, struct quark_process *);
+static int	socket_by_src_dst_cmp(struct quark_socket *, struct quark_socket *);
+
+static void	process_cache_delete(struct quark_queue *, struct quark_process *);
+static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
 
 /* For debugging */
 int	quark_verbose;
@@ -32,6 +43,11 @@ RB_PROTOTYPE(process_by_pid, quark_process,
     entry_by_pid, process_by_pid_cmp);
 RB_GENERATE(process_by_pid, quark_process,
     entry_by_pid, process_by_pid_cmp);
+
+RB_PROTOTYPE(socket_by_src_dst, quark_socket,
+    entry_by_src_dst, socket_by_src_dst_cmp);
+RB_GENERATE(socket_by_src_dst, quark_socket,
+    entry_by_src_dst, socket_by_src_dst_cmp);
 
 RB_PROTOTYPE(raw_event_by_time, raw_event,
     entry_by_time, raw_event_by_time_cmp);
@@ -75,6 +91,7 @@ raw_event_alloc(int type)
 		qstr_init(&raw->exec_connector.task.cwd);
 		break;
 	case RAW_COMM:		/* nada */
+	case RAW_SOCK_CONN:	/* nada */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -105,6 +122,7 @@ raw_event_free(struct raw_event *raw)
 		qstr_free(&raw->exec_connector.task.cwd);
 		break;
 	case RAW_COMM:		/* nada */
+	case RAW_SOCK_CONN:	/* nada */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -353,6 +371,59 @@ event_copy_out(struct quark_process *dst, struct quark_process *src, u64 events)
 	event_copy_fields(dst, src);
 }
 #endif
+
+static void
+gc_mark(struct quark_queue *qq, struct gc_link *gc, enum gc_type type)
+{
+	/* Already marked, bail */
+	if (gc->gc_time)
+		return;
+
+	gc->gc_time = now64();
+	gc->gc_type = type;
+	TAILQ_INSERT_TAIL(&qq->event_gc, gc, gc_entry);
+}
+
+static void
+gc_unlink(struct quark_queue *qq, struct gc_link *gc)
+{
+	if (gc->gc_time) {
+		TAILQ_REMOVE(&qq->event_gc, gc, gc_entry);
+		gc->gc_time = 0;
+	}
+}
+
+static int
+gc_collect(struct quark_queue *qq)
+{
+	struct gc_link	*gc;
+	u64		 now;
+	int		 n;
+
+	now = now64();
+	n = 0;
+	while ((gc = TAILQ_FIRST(&qq->event_gc)) != NULL) {
+		if (AGE(gc->gc_time, now) < qq->cache_grace_time)
+			break;
+		switch (gc->gc_type) {
+		case GC_PROCESS:
+			process_cache_delete(qq, (struct quark_process *)gc);
+			break;
+		case GC_SOCKET:
+			socket_cache_delete(qq, (struct quark_socket *)gc);
+			break;
+		default:
+			qwarnx("invalid gc_type %d, will leak", gc->gc_type);
+			gc_unlink(qq, gc);
+		}
+		n++;
+	}
+
+	qq->stats.garbage_collections += n;
+
+	return (n);
+}
+
 static struct quark_process *
 process_cache_get(struct quark_queue *qq, int pid, int alloc)
 {
@@ -411,29 +482,12 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 static void
 process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 {
+	struct gc_link	*gc;
+
+	gc = &qp->gc;
 	RB_REMOVE(process_by_pid, &qq->process_by_pid, qp);
-	if (qp->gc_time)
-		TAILQ_REMOVE(&qq->event_gc, qp, entry_gc);
+	gc_unlink(qq, gc);
 	free(qp);
-}
-
-static int
-process_cache_gc(struct quark_queue *qq)
-{
-	struct quark_process	*qp;
-	u64			 now;
-	int			 n;
-
-	now = now64();
-	n = 0;
-	while ((qp = TAILQ_FIRST(&qq->event_gc)) != NULL) {
-		if (AGE(qp->gc_time, now) < qq->cache_grace_time)
-			break;
-		process_cache_delete(qq, qp);
-		n++;
-	}
-
-	return (n);
 }
 
 static int
@@ -445,6 +499,126 @@ process_by_pid_cmp(struct quark_process *a, struct quark_process *b)
 		return (1);
 
 	return (0);
+}
+
+/*
+ * Socket stuff
+ */
+
+static struct quark_socket *
+socket_cache_lookup(struct quark_queue *qq,
+    struct quark_sockaddr *local, struct quark_sockaddr *remote)
+{
+	struct quark_socket	 key;
+	struct quark_socket	*qsk;
+
+	if ((local->af != AF_INET && local->af != AF_INET6) ||
+	    (remote->af != AF_INET && remote->af != AF_INET6) ||
+	    (local->af != remote->af))
+		return (errno = EINVAL, NULL);
+
+	key.local = *local;
+	key.remote = *remote;
+	qsk = RB_FIND(socket_by_src_dst, &qq->socket_by_src_dst, &key);
+	if (qsk == NULL)
+		errno = ESRCH;
+
+	return (qsk);
+}
+
+static struct quark_socket *
+socket_alloc_and_insert(struct quark_queue *qq, struct quark_sockaddr *local,
+    struct quark_sockaddr *remote, u32 pid_origin, u64 est_time)
+{
+	struct quark_socket *qsk, *col;
+
+	qsk = calloc(1, sizeof(*qsk));
+	if (qsk == NULL)
+		return (NULL);
+	qsk->local = *local;
+	qsk->remote = *remote;
+	qsk->pid_origin = qsk->pid_last_use = pid_origin;
+	qsk->established_time = est_time;
+
+	col = RB_INSERT(socket_by_src_dst, &qq->socket_by_src_dst, qsk);
+	if (col) {
+		qwarnx("socket collision, this is a bug");
+		free(qsk);
+		qsk = NULL;
+	}
+
+	return (qsk);
+}
+
+static void
+socket_cache_delete(struct quark_queue *qq, struct quark_socket *qsk)
+{
+	RB_REMOVE(socket_by_src_dst, &qq->socket_by_src_dst, qsk);
+	gc_unlink(qq, &qsk->gc);
+	free(qsk);
+}
+
+static int
+socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
+{
+	size_t	cmplen;
+	int	r;
+
+	if (a->remote.port < b->remote.port)
+		return (-1);
+	else if (a->remote.port > b->remote.port)
+		return (1);
+
+	if (a->local.port < b->local.port)
+		return (-1);
+	else if (a->local.port > b->local.port)
+		return (1);
+
+	if (a->remote.af < b->remote.af)
+		return (-1);
+	else if (a->remote.af > b->remote.af)
+		return (1);
+
+	if (a->local.af < b->local.af)
+		return (-1);
+	else if (a->local.af > b->local.af)
+		return (1);
+
+	cmplen = a->remote.af == AF_INET ? 4 : 16;
+	r = memcmp(&a->remote.addr6, &b->remote.addr6, cmplen);
+	if (r != 0)
+		return (r);
+
+	cmplen = a->local.af == AF_INET ? 4 : 16;
+	r = memcmp(&a->local.addr6, &b->local.addr6, cmplen);
+
+	return (r);
+}
+
+const struct quark_socket *
+quark_socket_lookup(struct quark_queue *qq,
+    struct quark_sockaddr *local, struct quark_sockaddr *remote)
+{
+	return (socket_cache_lookup(qq, local, remote));
+}
+
+void
+quark_socket_iter_init(struct quark_socket_iter *qi, struct quark_queue *qq)
+{
+	qi->qq = qq;
+	qi->qsk = RB_MIN(socket_by_src_dst, &qq->socket_by_src_dst);
+}
+
+const struct quark_socket *
+quark_socket_iter_next(struct quark_socket_iter *qi)
+{
+	const struct quark_socket	*qsk;
+
+	qsk = qi->qsk;
+	if (qi->qsk != NULL)
+		qi->qsk = RB_NEXT(socket_by_src_dst, &qq->socket_by_src_dst, qi->qsk);
+
+	return (qsk);
 }
 
 static const char *
@@ -482,6 +656,10 @@ event_type_str(u64 event)
 		return "SETPROCTITLE";
 	case QUARK_EV_SNAPSHOT:
 		return "SNAPSHOT";
+	case QUARK_EV_SOCK_CONN_ESTABLISHED:
+		return "SOCK_CONN_ESTABLISHED";
+	case QUARK_EV_SOCK_CONN_CLOSED:
+		return "SOCK_CONN_CLOSED";
 	default:
 		return "?";
 	}
@@ -530,7 +708,6 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 		qp->proc_entry_leader = 1;
 
 		return (0);
-
 	}
 
 	is_ses_leader = qp->pid == qp->proc_sid;
@@ -779,14 +956,39 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const char			*flagname;
 	char				 events[1024];
 	const struct quark_process	*qp;
+	const struct quark_socket	*qsk;
+	int				 pid;
 
 	qp = qev->process;
+	qsk = qev->socket;
+
+	pid = qp != NULL ? qp->pid : 0;
+	events_type_str(qev->events, events, sizeof(events));
+	P("->%d (%s)\n", pid, events);
+
+	if (qev->events & (QUARK_EV_SOCK_CONN_ESTABLISHED|QUARK_EV_SOCK_CONN_CLOSED)) {
+		char local[INET6_ADDRSTRLEN], remote[INET6_ADDRSTRLEN];
+		flagname = "SOCK";
+
+		if (qsk == NULL)
+			return (-1);
+
+		if (inet_ntop(qsk->local.af, &qsk->local.addr6,
+		    local, sizeof(local)) == NULL)
+			strlcpy(local, "bad address", sizeof(local));
+
+		if (inet_ntop(qsk->remote.af, &qsk->remote.addr6,
+		    remote, sizeof(remote)) == NULL)
+			strlcpy(remote, "bad address", sizeof(remote));
+
+		P("  %.4s\tlocal=%s:%d remote=%s:%d\n", flagname,
+		    local, ntohs(qsk->local.port),
+		    remote, ntohs(qsk->remote.port));
+	}
+
 	if (qp == NULL)
 		return (-1);
 
-	/* TODO: add tid */
-	events_type_str(qev->events, events, sizeof(events));
-	P("->%d (%s)\n", qp->pid, events);
 	if (qp->flags & QUARK_F_COMM) {
 		flagname = event_flag_str(QUARK_F_COMM);
 		P("  %.4s\tcomm=%s\n", flagname, qp->comm);
@@ -888,11 +1090,11 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 {
 	struct quark_process		*qp;
 	struct quark_event		*dst;
-	struct raw_event                *agg;
-	struct raw_task                 *raw_fork, *raw_exit, *raw_task;
-	struct raw_comm                 *raw_comm;
-	struct raw_exec                 *raw_exec;
-	struct raw_exec_connector       *raw_exec_connector;
+	struct raw_event		*agg;
+	struct raw_task			*raw_fork, *raw_exit, *raw_task;
+	struct raw_comm			*raw_comm;
+	struct raw_exec			*raw_exec;
+	struct raw_exec_connector	*raw_exec_connector;
 	char				*comm;
 	char				*cwd;
 	char				*args;
@@ -1085,16 +1287,41 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 	 * trying to remove it twice. In other words, gc_time guards
 	 * presence in the TAILQ.
 	 */
-	if (raw_exit != NULL && qp->gc_time == 0) {
-		qp->gc_time = now64();
-		TAILQ_INSERT_TAIL(&qq->event_gc, qp, entry_gc);
-	}
-
+	if (raw_exit != NULL)
+		gc_mark(qq, &qp->gc, GC_PROCESS);
 	dst->events = events;
 	dst->process = qp;
 
 	return (dst);
 }
+
+/*
+ * /proc parsing
+ */
+
+struct sproc_socket {
+	RB_ENTRY(sproc_socket)	entry_by_inode;
+	uint64_t		inode;
+	struct quark_socket	socket;
+};
+
+static int
+sproc_socket_by_inode_cmp(struct sproc_socket *a, struct sproc_socket *b)
+{
+	if (a->inode < b->inode)
+		return (-1);
+	else if (a->inode > b->inode)
+		return (1);
+
+	return (0);
+}
+
+RB_HEAD(sproc_socket_by_inode, sproc_socket);
+
+RB_PROTOTYPE(sproc_socket_by_inode, sproc_socket,
+    entry_by_inode, sproc_socket_by_inode_cmp);
+RB_GENERATE(sproc_socket_by_inode, sproc_socket,
+    entry_by_inode, sproc_socket_by_inode_cmp);
 
 static int
 sproc_status_line(struct quark_process *qp, const char *k, const char *v)
@@ -1329,7 +1556,86 @@ sproc_namespace(struct quark_process *qp, const char *path, u32 *dst, int dfd)
 }
 
 static int
-sproc_pid(struct quark_queue *qq, int pid, int dfd)
+sproc_pid_sockets(struct quark_queue *qq,
+    struct sproc_socket_by_inode *by_inode, int pid, int dfd)
+{
+	DIR		*dir;
+	struct dirent	*d;
+	int		 fdfd;
+
+	if ((fdfd = openat(dfd, "fd", O_RDONLY)) == -1) {
+		qwarn("open fd");
+		return (-1);
+	}
+	dir = fdopendir(fdfd);
+	if (dir == NULL) {
+		close(fdfd);
+		qwarn("fdopendir fdfd");
+		return (-1);
+	}
+
+	while ((d = readdir(dir)) != NULL) {
+		char			 buf[256];
+		ssize_t			 n;
+		u_long			 inode	= 0;
+		const char		*needle = "socket:[";
+		struct sproc_socket	*ss, ss_key;
+		struct quark_socket	*qsk;
+
+		if (d->d_type != DT_LNK)
+			continue;
+		n = qreadlinkat(fdfd, d->d_name, buf, sizeof(buf));
+		if (n == -1)
+			qwarn("qreadlinkat %s", d->d_name);
+		if (n <= 0)
+			continue;
+		if (strncmp(buf, needle, strlen(needle)))
+			continue;
+		if (sscanf(buf, "socket:[%lu]", &inode) != 1) {
+			qwarnx("sscanf can't get inode");
+			continue;
+		}
+
+		bzero(&ss_key, sizeof(ss_key));
+		ss_key.inode = inode;
+		ss = RB_FIND(sproc_socket_by_inode, by_inode, &ss_key);
+		/*
+		 * We're only interested in TCP sockets, we end up finding
+		 * AF_UNIX and SOCK_DGRAM here as well, so it's normal to have
+		 * many misses.
+		 */
+		if (ss == NULL)
+			continue;
+
+		/*
+		 * Another process already references the same socket. Maybe it
+		 * accept(2)ed and forked.
+		 */
+		qsk = socket_cache_lookup(qq, &ss->socket.local, &ss->socket.remote);
+		if (qsk != NULL)
+			continue;
+
+		qsk = socket_alloc_and_insert(qq, &ss->socket.local,
+		    &ss->socket.remote,  pid, now64());
+		if (qsk == NULL) {
+			qwarn("socket_alloc");
+			continue;
+		}
+		qsk->from_scrape = 1;
+
+		qdebugx("pid %d fd %s -> %s (inode=%lu, ss=%p)", pid,
+		    d->d_name, buf, inode, ss);
+	}
+
+	/* closedir() closes the backing `fdfd` */
+	closedir(dir);
+
+	return (0);
+}
+
+static int
+sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
+    int pid, int dfd)
 {
 	struct quark_process	*qp;
 
@@ -1362,12 +1668,181 @@ sproc_pid(struct quark_queue *qq, int pid, int dfd)
 	/* QUARK_F_CWD */
 	if (qreadlinkat(dfd, "cwd", qp->cwd, sizeof(qp->cwd)) > 0)
 		qp->flags |= QUARK_F_CWD;
+	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */
+	if (by_inode != NULL)
+		return (sproc_pid_sockets(qq, by_inode, pid, dfd));
 
 	return (0);
 }
 
 static int
-sproc_scrape(struct quark_queue *qq)
+sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
+    struct sproc_socket_by_inode *by_inode)
+{
+	u_int	local_addr4, remote_addr4;
+	u_int	local_addr6[4], remote_addr6[4];
+	u_int	local_port, remote_port;
+	u_long	inode;
+	u_int	state;
+	int	r;
+
+	if (af != AF_INET && af != AF_INET6)
+		return (-1);
+
+	if (af == AF_INET) {
+		r = sscanf(line,
+		    "%*s "	/* sl */
+		    "%x:%x "	/* local_address */
+		    "%x:%x "	/* remote_address */
+		    "%x "	/* st */
+		    "%*s "	/* tx_queue+rx_queue */
+		    "%*s "	/* tr+tm->when */
+		    "%*s "	/* retnsmt */
+		    "%*s "	/* uid */
+		    "%*s "	/* timeout */
+		    "%lu "	/* inode */
+		    "%*s ",	/* ignored */
+		    &local_addr4, &local_port,
+		    &remote_addr4, &remote_port,
+		    &state,
+		    &inode);
+
+		if (r != 6) {
+			qwarnx("unexpected sscanf %d", r);
+			return (-1);
+		}
+	}
+
+	if (af == AF_INET6) {
+		r = sscanf(line,
+		    "%*s "			/* sl */
+		    "%08x%08x%08x%08x:%x"	/* local_address */
+		    "%08x%08x%08x%08x:%x"	/* remote_address */
+		    "%x "			/* st */
+		    "%*s "			/* tx_queue+rx_queue */
+		    "%*s "			/* tr+tm->when */
+		    "%*s "			/* retnsmt */
+		    "%*s "			/* uid */
+		    "%*s "			/* timeout */
+		    "%lu "			/* inode */
+		    "%*s ",			/* ignored */
+		    &local_addr6[0], &local_addr6[1],
+		    &local_addr6[2], &local_addr6[3], &local_port,
+		    &remote_addr6[0], &remote_addr6[1],
+		    &remote_addr6[2], &remote_addr6[3], &remote_port,
+		    &state,
+		    &inode);
+
+		if (r != 12) {
+			qwarnx("unexpected sscanf %d", r);
+			return (-1);
+		}
+	}
+
+	/*
+	 * We're tracking the active side, the stack goes to ESTABLISHED when it
+	 * receives the SYN/ACK. We go to TCP_CLOSE_WAIT when we get the FIN but
+	 * didn't close().
+	 */
+	if (state != TCP_ESTABLISHED && state != TCP_CLOSE_WAIT)
+		return (0);
+
+	/*
+	 * Inodes might be zero, in this case this is deemed an unnamed socket,
+	 * in kernel, a named socket is one where sock->socket != NULL. An
+	 * unnamed socket doesn't have a process attached to it anymore/yet.
+	 */
+	if (inode > 0) {
+		struct sproc_socket	*ss, *col;
+
+		if ((ss = calloc(1, sizeof(*ss))) == NULL)
+			return (-1);
+		ss->inode = (u64)inode;
+
+		ss->socket.local.port = htons(local_port);
+		ss->socket.remote.port = htons(remote_port);
+
+		if (af == AF_INET) {
+			ss->socket.local.af = AF_INET;
+			ss->socket.local.addr4 = local_addr4;
+
+			ss->socket.remote.af = AF_INET;
+			ss->socket.remote.addr4 = remote_addr4;
+		}
+
+		if (af == AF_INET6) {
+			ss->socket.local.af = AF_INET6;
+			memcpy(ss->socket.local.addr6, local_addr6, 16);
+
+			ss->socket.remote.af = AF_INET6;
+			memcpy(ss->socket.remote.addr6, remote_addr6, 16);
+		}
+
+		col = RB_INSERT(sproc_socket_by_inode, by_inode, ss);
+		if (col != NULL) {
+			free(ss);
+			qwarnx("socket collision");
+			return (-1);
+		}
+	}
+
+	return (0);
+}
+
+static int
+sproc_net_tcp(struct quark_queue *qq, int af, struct sproc_socket_by_inode *by_inode)
+{
+	int		 ret, fd, linenum;
+	FILE		*f;
+	ssize_t		 n;
+	size_t		 line_len;
+	char		*line;
+	const char	*path;
+
+	if (af != AF_INET && af != AF_INET6)
+		return (-1);
+
+	if (af == AF_INET)
+		path = "/proc/net/tcp";
+	else
+		path = "/proc/net/tcp6";
+
+	if ((fd = open(path, O_RDONLY)) == -1) {
+		qwarn("open %s", path);
+		return (-1);
+	}
+	f = fdopen(fd, "r");
+	if (f == NULL) {
+		close(fd);
+		return (-1);
+	}
+
+	ret = 0;
+	line_len = 0;
+	line = NULL;
+	for (linenum = 0; (n = getline(&line, &line_len, f)) != -1; linenum++) {
+		if (n < 1 || line[n - 1] != '\n') {
+			qwarnx("bad line");
+			ret = -1;
+			break;
+		}
+		line[n - 1] = 0;
+		/* Skip header */
+		if (linenum == 0)
+			continue;
+
+		ret = sproc_net_tcp_line(qq, line, af, by_inode);
+		if (ret == -1)
+			break;
+	}
+	free(line);
+	fclose(f);
+
+	return (ret);
+}
+
+static int
+sproc_scrape_processes(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode)
 {
 	FTS	*tree;
 	FTSENT	*f, *p;
@@ -1413,7 +1888,7 @@ sproc_scrape(struct quark_queue *qq)
 				qwarnx("bad pid %s: %s", p->fts_name, errstr);
 				goto next;
 			}
-			if (sproc_pid(qq, pid, dfd) == -1)
+			if (sproc_pid(qq, by_inode, pid, dfd) == -1)
 				qwarnx("can't scrape %s", p->fts_name);
 next:
 			close(dfd);
@@ -1424,6 +1899,38 @@ next:
 	fts_close(tree);
 
 	return (0);
+}
+
+static int
+sproc_scrape(struct quark_queue *qq)
+{
+	int				 r;
+	struct sproc_socket_by_inode	 socket_tmp_tree, *by_inode;
+	struct sproc_socket		*ss;
+
+	RB_INIT(&socket_tmp_tree);
+	by_inode = NULL;
+
+	if (qq->flags & QQ_SOCK_CONN) {
+		r = sproc_net_tcp(qq, AF_INET, &socket_tmp_tree);
+		if (r == -1)
+			goto done;
+		r = sproc_net_tcp(qq, AF_INET6, &socket_tmp_tree);
+		if (r == -1)
+			goto done;
+
+		by_inode = &socket_tmp_tree;
+	}
+
+	r = sproc_scrape_processes(qq, by_inode);
+
+done:
+	while ((ss = RB_ROOT(&socket_tmp_tree)) != NULL) {
+		RB_REMOVE(sproc_socket_by_inode, &socket_tmp_tree, ss);
+		free(ss);
+	}
+
+	return (r);
 }
 
 static u64
@@ -1791,6 +2298,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	RB_INIT(&qq->raw_event_by_time);
 	RB_INIT(&qq->raw_event_by_pidtime);
 	RB_INIT(&qq->process_by_pid);
+	RB_INIT(&qq->socket_by_src_dst);
 	TAILQ_INIT(&qq->event_gc);
 	qq->flags = qa->flags;
 	qq->max_length = qa->max_length;
@@ -1856,8 +2364,9 @@ fail:
 void
 quark_queue_close(struct quark_queue *qq)
 {
-	struct raw_event		*raw;
-	struct quark_process		*qp;
+	struct raw_event	*raw;
+	struct quark_process	*qp;
+	struct quark_socket	*qsk;
 
 	/* Clean up all allocated raw events */
 	while ((raw = RB_ROOT(&qq->raw_event_by_time)) != NULL) {
@@ -1869,6 +2378,9 @@ quark_queue_close(struct quark_queue *qq)
 	/* Clean up all cached quark_processs */
 	while ((qp = RB_ROOT(&qq->process_by_pid)) != NULL)
 		process_cache_delete(qq, qp);
+	/* Clean up all cached sockets */
+	while ((qsk = RB_ROOT(&qq->socket_by_src_dst)) != NULL)
+		socket_cache_delete(qq, qsk);
 	/* Clean up backend */
 	if (qq->queue_ops != NULL)
 		qq->queue_ops->close(qq);
@@ -1996,6 +2508,86 @@ quark_queue_get_snap_event(struct quark_queue *qq)
 	return (qev);
 }
 
+static const struct quark_event *
+raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+	struct quark_socket	*qsk;
+	struct raw_sock_conn	*conn;
+
+	conn = &raw->sock_conn;
+	qev = &qq->event_storage;
+
+	qsk = socket_cache_lookup(qq, &conn->local, &conn->remote);
+
+	switch (conn->conn) {
+	case SOCK_CONN_ACCEPT:	/* FALLTHROUGH */
+	case SOCK_CONN_CONNECT:
+		/*
+		 * We found an existing socket, this has two possibilities:
+		 * 1 - We lost the original CLOSE.
+		 * 2 - We just got it from scraping /proc, but since the rings
+		 *     were opened during scraping, we end up seeing it "twice".
+		 */
+		if (qsk != NULL) {
+			/*
+			 * If we learned it by scraping, supress it.
+			 */
+			if (qsk->pid_origin == raw->pid && qsk->from_scrape) {
+				qsk->pid_last_use = qsk->pid_origin;
+				return (NULL);
+			}
+
+			/*
+			 * This probably means we lost the CLOSE, so evict the
+			 * old one.
+			 */
+			qwarnx("evicting possibly old socket");
+			socket_cache_delete(qq, qsk);
+			qsk = NULL;
+		}
+
+		qsk = socket_alloc_and_insert(qq, &conn->local, &conn->remote,
+		    raw->pid, raw->time);
+		if (qsk == NULL) {
+			qwarn("socket_alloc");
+			return (NULL);
+		}
+		qev->events = QUARK_EV_SOCK_CONN_ESTABLISHED;
+		break;
+	case SOCK_CONN_CLOSE:
+		/*
+		 * If there was no previous socket, good chances we lost ACCEPT
+		 * or CONNECT, let the user decide what to do, but mark it as
+		 * deleted anyway.
+		 */
+		if (qsk == NULL) {
+			qsk = socket_alloc_and_insert(qq, &conn->local, &conn->remote,
+			    raw->pid, raw->time);
+			if (qsk == NULL) {
+				qwarn("socket_alloc");
+				return (NULL);
+			}
+		}
+		if (qsk->close_time == 0)
+			qsk->close_time = raw->time;
+		gc_mark(qq, &qsk->gc, GC_SOCKET);
+		qev->events = QUARK_EV_SOCK_CONN_CLOSED;
+
+		break;
+	default:
+		qwarnx("invalid conn->conn %d\n", conn->conn);
+		return (NULL);
+	}
+
+	qsk->pid_last_use = raw->pid;
+
+	qev->socket = qsk;
+	qev->process = quark_process_lookup(qq, qsk->pid_origin);
+
+	return (qev);
+}
+
 const struct quark_event *
 quark_queue_get_event(struct quark_queue *qq)
 {
@@ -2011,13 +2603,16 @@ quark_queue_get_event(struct quark_queue *qq)
 
 	/* Normal path, get a quark_event out of raw_event */
 	if ((raw = quark_queue_pop_raw(qq)) != NULL) {
-		qev = raw_event_process(qq, raw);
+		if (raw->type == RAW_SOCK_CONN)
+			qev = raw_event_sock(qq, raw);
+		else
+			qev = raw_event_process(qq, raw);
 		raw_event_free(raw);
 	}
 
 done:
-	/* GC all processes that exited after some grace time */
-	process_cache_gc(qq);
+	/* GC all processes and sockets that exited after some grace time */
+	gc_collect(qq);
 
 	return (qev);
 }

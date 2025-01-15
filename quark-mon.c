@@ -27,10 +27,32 @@ dump_stats(struct quark_queue *qq)
 	struct quark_queue_stats	s;
 
 	quark_queue_get_stats(qq, &s);
-	printf("%8llu insertions %8llu removals %8llu aggregations "
-	    "%8llu non-aggregations %8llu lost\n",
+	putchar('\n');
+	printf(
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s",
+	    "insertions",
+	    "removals",
+	    "aggs",
+	    "non-aggs",
+	    "lost",
+	    "gc-cols"
+	);
+	putchar('\n');
+	printf(
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu",
 	    s.insertions, s.removals, s.aggregations,
-	    s.non_aggregations, s.lost);
+	    s.non_aggregations, s.lost, s.garbage_collections);
+	putchar('\n');
 }
 
 static const char *
@@ -93,7 +115,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-bDefkstv] "
+	fprintf(stderr, "usage: %s [-bDefkSstv] "
 	    "[-C filename ] [-l maxlength] [-m maxnodes] [-P ppid]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
@@ -120,7 +142,7 @@ main(int argc, char *argv[])
 	filter_ppid = 0;
 	graph_by_time = graph_by_pidtime = graph_cache = NULL;
 
-	while ((ch = getopt(argc, argv, "bC:Deghklm:P:tsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "bC:Deghklm:P:tSsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -181,6 +203,9 @@ main(int argc, char *argv[])
 			break;
 		case 's':
 			qa.flags |= QQ_NO_SNAPSHOT;
+			break;
+		case 'S':
+			qa.flags |= QQ_SOCK_CONN;
 			break;
 		case 't':
 			qa.flags |= QQ_THREAD_EVENTS;
