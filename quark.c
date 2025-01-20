@@ -1433,6 +1433,34 @@ sproc_pid(struct quark_queue *qq, int pid, int dfd)
 }
 
 static int
+sproc_net_tcp4(struct quark_queue *qq, int dfd)
+{
+	int	 fd;
+	FILE	*f;
+	ssize_t	 n;
+	size_t	 line_len;
+	char	*line, *k, *v;
+
+	if ((fd = openat(dfd, "net/tcp", O_RDONLY)) == -1) {
+		qwarn("open net/tcp");
+		return (-1);
+	}
+	f = fdopen(fd, "r");
+	if (f == NULL)
+		return (-1);
+
+	ret = 0;
+	line_len = 0;
+	line = NULL;
+	while ((n = getline(&line, &line_len, f)) != -1) {
+		
+	}
+	free(line);
+	fclose(f);
+
+}
+
+static int
 sproc_scrape(struct quark_queue *qq)
 {
 	FTS	*tree;
