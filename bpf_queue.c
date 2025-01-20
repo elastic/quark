@@ -212,12 +212,10 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 	case EBPF_EVENT_NETWORK_CONNECTION_ATTEMPTED:
 	case EBPF_EVENT_NETWORK_CONNECTION_CLOSED:
 		net = (struct ebpf_net_event *)ev;
-		if (net->pids.tid != net->pids.tgid)
-			goto bad;
 		if ((raw = raw_event_alloc(RAW_CONNECTION)) == NULL)
 			goto bad;
 
-		raw->pid = net->pids.tgid;
+		raw->pid = net->pids.tgid; /* tgid not tid! */
 		raw->time = ev->ts;
 
 		ebpf_ctx.pids = &net->pids;
@@ -235,7 +233,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 			raw->connection.dst.sin.sin_family = AF_INET;
 			memcpy(&raw->connection.dst.sin.sin_addr,
 			    net->net.daddr, 4);
-			raw->connection.dst.sin.sin_port = htons(net->net.dport);
+			raw->connection.dst.sin.sin_port =
+			    htons(net->net.dport);
 
 		} else if (net->net.family == EBPF_NETWORK_EVENT_AF_INET6) {
 			raw->connection.src.sin6.sin6_family = AF_INET6;

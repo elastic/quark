@@ -499,6 +499,13 @@ socket_cache_get(struct quark_queue *qq,
 	return (qsock);
 }
 
+static void
+socket_cache_delete(struct quark_queue *qq, struct quark_socket *qs)
+{
+	RB_REMOVE(socket_by_src_dst, &qq->socket_by_src_dst, qs);
+	free(qs);
+}
+
 static int
 socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
 {
@@ -1546,7 +1553,7 @@ sproc_net_tcp4_line(struct quark_queue *qq, const char *line1, struct sproc_sock
 		goto bad;
 	}
 	if (errno == ERANGE && ino64 == ULLONG_MAX) {
-		qwarnx("malformed line: inode");
+		qwarn("malformed line: inode");
 		goto bad;
 	}
 
@@ -1643,18 +1650,12 @@ sproc_net_tcp4(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode)
 }
 
 static int
-sproc_scrape(struct quark_queue *qq)
+sproc_scrape_processes(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode)
 {
 	FTS	*tree;
 	FTSENT	*f, *p;
 	int	 dfd, rootfd;
 	char	*argv[] = { "/proc", NULL };
-	struct sproc_socket_by_inode socket_by_inode;
-
-	/* XXX */
-	RB_INIT(&socket_by_inode);
-	if (sproc_net_tcp4(qq, &socket_by_inode) == -1)
-		return (-1);
 
 	if ((tree = fts_open(argv, FTS_NOCHDIR, NULL)) == NULL)
 		return (-1);
@@ -1706,6 +1707,30 @@ next:
 	fts_close(tree);
 
 	return (0);
+}
+
+static int
+sproc_scrape(struct quark_queue *qq)
+{
+	int				 r;
+	struct sproc_socket_by_inode	 socket_by_inode;
+	struct sproc_socket		*ss;
+
+	RB_INIT(&socket_by_inode);
+
+	r = sproc_net_tcp4(qq, &socket_by_inode);
+	if (r != 0)
+		goto done;
+
+	r = sproc_scrape_processes(qq, &socket_by_inode);
+
+done:
+	while ((ss = RB_ROOT(&socket_by_inode)) != NULL) {
+		RB_REMOVE(sproc_socket_by_inode, &socket_by_inode, ss);
+		free(ss);
+	}
+
+	return (r);
 }
 
 static u64
@@ -2139,8 +2164,9 @@ fail:
 void
 quark_queue_close(struct quark_queue *qq)
 {
-	struct raw_event		*raw;
-	struct quark_process		*qp;
+	struct raw_event	*raw;
+	struct quark_process	*qp;
+	struct quark_socket	*qs;
 
 	/* Clean up all allocated raw events */
 	while ((raw = RB_ROOT(&qq->raw_event_by_time)) != NULL) {
@@ -2152,6 +2178,9 @@ quark_queue_close(struct quark_queue *qq)
 	/* Clean up all cached quark_processs */
 	while ((qp = RB_ROOT(&qq->process_by_pid)) != NULL)
 		process_cache_delete(qq, qp);
+	/* Clean up all cached sockets */
+	while ((qs = RB_ROOT(&qq->socket_by_src_dst)) != NULL)
+		socket_cache_delete(qq, qs);
 	/* Clean up backend */
 	if (qq->queue_ops != NULL)
 		qq->queue_ops->close(qq);
@@ -2279,7 +2308,6 @@ quark_queue_get_snap_event(struct quark_queue *qq)
 	return (qev);
 }
 
-#include <arpa/inet.h>
 static struct quark_socket *
 socket_cache_get(struct quark_queue *qq, struct quark_sockaddr *src, struct
 quark_sockaddr *dst, int alloc, int *);
