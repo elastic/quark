@@ -147,7 +147,7 @@ enum {
 	RAW_EXIT_THREAD,
 	RAW_COMM,
 	RAW_EXEC_CONNECTOR,
-	RAW_SOCK_STATE,
+	RAW_CONNECTION,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -210,11 +210,17 @@ struct quark_sockaddr {
 	};
 };
 
-struct raw_sock_state {
+enum connection {
+	CONNECTION_INVALID,
+	CONNECTION_CLOSE,
+	CONNECTION_ACCEPT,
+	CONNECTION_CONNECT,
+};
+
+struct raw_connection {
 	struct quark_sockaddr	src;
 	struct quark_sockaddr	dst;
-	int			state;
-	int op;
+	enum connection		conn;
 };
 
 struct raw_event {
@@ -233,7 +239,7 @@ struct raw_event {
 		struct raw_comm			comm;
 		struct raw_task			task;
 		struct raw_exec_connector	exec_connector;
-		struct raw_sock_state		sock_state;
+		struct raw_connection		connection;
 	};
 };
 

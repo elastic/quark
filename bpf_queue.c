@@ -112,7 +112,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 	struct ebpf_process_fork_event	*fork;
 	struct ebpf_process_exit_event	*exit;
 	struct ebpf_process_exec_event	*exec;
-	struct ebpf_net_event		*sock_state;
+	struct ebpf_net_event		*net;
 	struct ebpf_varlen_field	*field;
 	struct ebpf_ctx			 ebpf_ctx;
 
@@ -208,49 +208,63 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx_to_task(&ebpf_ctx, &raw->exec.ext.task);
 
 		break;
-	case EBPF_EVENT_NETWORK_SOCK_STATE:
-		sock_state = (struct ebpf_net_event *)ev;
-		if ((raw = raw_event_alloc(RAW_SOCK_STATE)) == NULL)
+	case EBPF_EVENT_NETWORK_CONNECTION_ACCEPTED:
+	case EBPF_EVENT_NETWORK_CONNECTION_ATTEMPTED:
+	case EBPF_EVENT_NETWORK_CONNECTION_CLOSED:
+		net = (struct ebpf_net_event *)ev;
+		if (net->pids.tid != net->pids.tgid)
+			goto bad;
+		if ((raw = raw_event_alloc(RAW_CONNECTION)) == NULL)
 			goto bad;
 
-		printf("12345 pid=%d\n", sock_state->pids.tgid);
-		raw->pid = sock_state->pids.tgid; /* not tid!!! */
+		raw->pid = net->pids.tgid;
 		raw->time = ev->ts;
 
-		if (sock_state->net.family == EBPF_NETWORK_EVENT_AF_INET) {
-			raw->sock_state.src.sin.sin_family = AF_INET;
-			memcpy(&raw->sock_state.src.sin.sin_addr,
-			    sock_state->net.saddr, 4);
-			raw->sock_state.src.sin.sin_port = htons(sock_state->net.sport);
-			/* printf("LOCAL=%s\n", inet_ntoa(raw->sock_state.src.sin.sin_addr)); */
+		ebpf_ctx.pids = &net->pids;
+		ebpf_ctx.creds = &net->creds;
+		ebpf_ctx.ctty = &net->ctty;
+		ebpf_ctx.comm = net->comm;
+		ebpf_ctx.ns = &net->ns;
+		ebpf_ctx.cwd = NULL;
 
-			raw->sock_state.dst.sin.sin_family = AF_INET;
-			memcpy(&raw->sock_state.dst.sin.sin_addr,
-			    sock_state->net.daddr, 4);
-			raw->sock_state.dst.sin.sin_port = htons(sock_state->net.dport);
-			/* printf("REMOTE=%s:%d\n", */
-			/*     inet_ntoa(raw->sock_state.dst.sin.sin_addr), */
-			/*     raw->sock_state.dst.sin.sin_port); */
+		if (net->net.family == EBPF_NETWORK_EVENT_AF_INET) {
+			raw->connection.src.sin.sin_family = AF_INET;
+			memcpy(&raw->connection.src.sin.sin_addr, net->net.saddr, 4);
+			raw->connection.src.sin.sin_port = htons(net->net.sport);
 
-		} else if (sock_state->net.family == EBPF_NETWORK_EVENT_AF_INET6) {
-			printf("\n\nYYYYYY\n\n");
-			raw->sock_state.src.sin6.sin6_family = AF_INET6;
-			memcpy(&raw->sock_state.src.sin6.sin6_addr,
-			    sock_state->net.saddr6, 16);
-			raw->sock_state.src.sin6.sin6_port = htons(sock_state->net.sport);
+			raw->connection.dst.sin.sin_family = AF_INET;
+			memcpy(&raw->connection.dst.sin.sin_addr,
+			    net->net.daddr, 4);
+			raw->connection.dst.sin.sin_port = htons(net->net.dport);
 
-			raw->sock_state.dst.sin.sin_family = AF_INET6;
-			memcpy(&raw->sock_state.dst.sin6.sin6_addr,
-			    sock_state->net.daddr, 16);
-			raw->sock_state.dst.sin6.sin6_port = be32toh(sock_state->net.dport);
+		} else if (net->net.family == EBPF_NETWORK_EVENT_AF_INET6) {
+			raw->connection.src.sin6.sin6_family = AF_INET6;
+			memcpy(&raw->connection.src.sin6.sin6_addr,
+			    net->net.saddr6, 16);
+			raw->connection.src.sin6.sin6_port = htons(net->net.sport);
 
-			raw->sock_state.dst.sin6.sin6_flowinfo = 0;
-			raw->sock_state.dst.sin6.sin6_scope_id = 0;
+			raw->connection.dst.sin.sin_family = AF_INET6;
+			memcpy(&raw->connection.dst.sin6.sin6_addr, net->net.daddr, 16);
+			raw->connection.dst.sin6.sin6_port = htons(net->net.dport);
+
+			raw->connection.dst.sin6.sin6_flowinfo = 0;
+			raw->connection.dst.sin6.sin6_scope_id = 0;
 		} else
-			errx(1, "bad family %d", sock_state->net.family);
-		printf("sock_state->net.state=%d\n", sock_state->net.state);
-		raw->sock_state.state = sock_state->net.state;
-		raw->sock_state.op = sock_state->net.op;
+			errx(1, "bad family %d", net->net.family);
+
+		switch (ev->type) {
+		case EBPF_EVENT_NETWORK_CONNECTION_ACCEPTED:
+			raw->connection.conn = CONNECTION_ACCEPT;
+			break;
+		case EBPF_EVENT_NETWORK_CONNECTION_ATTEMPTED:
+			raw->connection.conn = CONNECTION_CONNECT;
+			break;
+		case EBPF_EVENT_NETWORK_CONNECTION_CLOSED:
+			raw->connection.conn = CONNECTION_CLOSE;
+			break;
+		default:
+			goto bad;
+		}
 
 		break;
 	default:
@@ -316,8 +330,17 @@ bpf_queue_open(struct quark_queue *qq)
 	bpf_program__set_autoload(bqq->prog->progs.sched_process_fork, 1);
 	bpf_program__set_autoload(bqq->prog->progs.sched_process_exec, 1);
 	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
-	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
-	bpf_program__set_autoload(bqq->prog->progs.sockops_state, 1);
+
+	bpf_program__set_autoload(bqq->prog->progs.kretprobe__inet_csk_accept, 1);
+
+	bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_v4_connect, 1);
+	bpf_program__set_autoload(bqq->prog->progs.kretprobe__tcp_v4_connect, 1);
+
+	bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_v6_connect, 1);
+	bpf_program__set_autoload(bqq->prog->progs.kretprobe__tcp_v6_connect, 1);
+
+	bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_close, 1);
+	/* bpf_program__set_autoload(bqq->prog->progs.sockops_state, 1); */
 	/* bpf_program__set_autoload(bqq->prog->progs.test_egress, 1); */
 	/* bpf_program__set_autoload(bqq->prog->progs.test_ingress, 1); */
 	/* bpf_program__set_autoload(bqq->prog->progs.bpf_sockops_test, 1); */
@@ -347,17 +370,17 @@ bpf_queue_open(struct quark_queue *qq)
 	}
 
 	{
-		int cgroup_fd;	/* XXX LEAKS */
+		/* int cgroup_fd;	/\* XXX LEAKS *\/ */
 
-		cgroup_fd = open("/sys/fs/cgroup", O_RDONLY);
-		if (cgroup_fd == -1)
-			err(1, "open cgroup");
+		/* cgroup_fd = open("/sys/fs/cgroup", O_RDONLY); */
+		/* if (cgroup_fd == -1) */
+		/* 	err(1, "open cgroup"); */
 
 		/* XXX leaks */
 
-		if (bpf_program__attach_cgroup(bqq->prog->progs.sockops_state,
-		    cgroup_fd) == NULL)
-			err(1, "attach cgroup");
+		/* if (bpf_program__attach_cgroup(bqq->prog->progs.sockops_state, */
+		/*     cgroup_fd) == NULL) */
+		/* 	err(1, "attach cgroup"); */
 
 		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_sockops_test, */
 		/*     cgroup_fd) == NULL) */

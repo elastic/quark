@@ -45,7 +45,6 @@ enum ebpf_event_type {
     EBPF_EVENT_PROCESS_PTRACE               = (1 << 18),
     EBPF_EVENT_PROCESS_LOAD_MODULE          = (1 << 19),
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
-    EBPF_EVENT_NETWORK_SOCK_STATE           = (1 << 21),
 };
 
 struct ebpf_event_header {
@@ -408,6 +407,9 @@ struct ebpf_net_event {
     struct ebpf_pid_info pids;
     struct ebpf_net_info net;
     char comm[TASK_COMM_LEN];
+	struct ebpf_cred_info creds;
+	struct ebpf_tty_dev ctty;
+	struct ebpf_namespace_info ns;
 } __attribute__((packed));
 
 struct ebpf_dns_event {

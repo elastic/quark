@@ -81,7 +81,7 @@ raw_event_alloc(int type)
 		qstr_init(&raw->exec_connector.task.cwd);
 		break;
 	case RAW_COMM:		/* nada */
-	case RAW_SOCK_STATE:
+	case RAW_CONNECTION:	/* nada */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -112,7 +112,7 @@ raw_event_free(struct raw_event *raw)
 		qstr_free(&raw->exec_connector.task.cwd);
 		break;
 	case RAW_COMM:		/* nada */
-	case RAW_SOCK_STATE:
+	case RAW_CONNECTION:	/* nada */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -2063,103 +2063,23 @@ quark_queue_get_snap_event(struct quark_queue *qq)
 	return (qev);
 }
 
-#include <linux/bpf.h>
-
-static const char *
-state_to_str(int state)
-{
-	switch (state) {
-	case BPF_TCP_ESTABLISHED:
-		return "ESTABLISHED";
-	case BPF_TCP_SYN_SENT:
-		return "SYN_SENT";
-	case BPF_TCP_SYN_RECV:
-		return "SYN_RECV";
-	case BPF_TCP_FIN_WAIT1:
-		return "FIN_WAIT1";
-	case BPF_TCP_FIN_WAIT2:
-		return "FIN_WAIT2";
-	case BPF_TCP_TIME_WAIT:
-		return "TIME_WAIT";
-	case BPF_TCP_CLOSE:
-		return "CLOSE";
-	case BPF_TCP_CLOSE_WAIT:
-		return "WAIT";
-	case BPF_TCP_LAST_ACK:
-		return "LAST_ACK";
-	case BPF_TCP_LISTEN:
-		return "LISTEN";
-	case BPF_TCP_CLOSING:
-		return "CLOSING";
-	case BPF_TCP_NEW_SYN_RECV:
-		return "NEW_SYN_RECV";
-		/* case BPF_TCP_BOUND_INACTIVE: */
-		/* 	return "BOUND_INACTIVE"; */
-	default:
-		return "OTHER";
-	}
-}
-
-static const char *
-op_to_str(int state)
-{
-	switch (state) {
-	case BPF_SOCK_OPS_VOID:
-		return "BPF_SOCK_OPS_VOID";
-	case BPF_SOCK_OPS_TIMEOUT_INIT:
-		return "BPF_SOCK_OPS_TIMEOUT_INIT";
-	case BPF_SOCK_OPS_RWND_INIT:
-		return "BPF_SOCK_OPS_RWND_INIT";
-	case BPF_SOCK_OPS_TCP_CONNECT_CB:
-		return "BPF_SOCK_OPS_TCP_CONNECT_CB";
-	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
-		return "BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB";
-	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
-		return "BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB";
-	case BPF_SOCK_OPS_NEEDS_ECN:
-		return "BPF_SOCK_OPS_NEEDS_ECN";
-	case BPF_SOCK_OPS_BASE_RTT:
-		return "BPF_SOCK_OPS_BASE_RTT";
-	case BPF_SOCK_OPS_RTO_CB:
-		return "BPF_SOCK_OPS_RTO_CB";
-	case BPF_SOCK_OPS_RETRANS_CB:
-		return "BPF_SOCK_OPS_RETRANS_CB";
-	case BPF_SOCK_OPS_STATE_CB:
-		return "BPF_SOCK_OPS_STATE_CB";
-	case BPF_SOCK_OPS_TCP_LISTEN_CB:
-		return "BPF_SOCK_OPS_TCP_LISTEN_CB";
-	case BPF_SOCK_OPS_RTT_CB:
-		return "BPF_SOCK_OPS_RTT_CB";
-	case BPF_SOCK_OPS_PARSE_HDR_OPT_CB:
-		return "BPF_SOCK_OPS_PARSE_HDR_OPT_CB";
-	case BPF_SOCK_OPS_HDR_OPT_LEN_CB:
-		return "BPF_SOCK_OPS_HDR_OPT_LEN_CB";
-	case BPF_SOCK_OPS_WRITE_HDR_OPT_CB:
-		return "BPF_SOCK_OPS_WRITE_HDR_OPT_CB";
-	default:
-		return "OTHER";
-	}
-}
-
-
 #include <arpa/inet.h>
 static struct quark_socket *
 socket_cache_get(struct quark_queue *qq, struct quark_sockaddr *src, struct
 quark_sockaddr *dst, int alloc, int *);
 
 static const struct quark_event *
-raw_event_sock_state(struct quark_queue *qq, struct raw_event *raw)
+raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 {
 	char			 src_buf[64], dst_buf[64];
 	/* struct quark_event	*qev; */
 	struct quark_socket	*qsock;
-	int old_state;
 	int lookup;
 
 	/* qev = &qq->event_storage; */
 
-	if (raw->sock_state.src.sin.sin_family != AF_INET ||
-	    raw->sock_state.dst.sin.sin_family != AF_INET) {
+	if (raw->connection.src.sin.sin_family != AF_INET ||
+	    raw->connection.dst.sin.sin_family != AF_INET) {
 		printf("HEIN HEIN\n");
 		printf("HEIN HEIN\n");
 		return (NULL);
@@ -2171,12 +2091,11 @@ raw_event_sock_state(struct quark_queue *qq, struct raw_event *raw)
 	/*     dst_buf, ntohs(dst->sin_port)); */
 
 
-	qsock = socket_cache_get(qq, &raw->sock_state.src, &raw->sock_state.dst,
+	qsock = socket_cache_get(qq, &raw->connection.src, &raw->connection.dst,
 	    1, &lookup);
 	if (qsock == NULL)
 		return (NULL);
-	old_state = qsock->state;
-	qsock->state = raw->sock_state.state;
+	qsock->state = 0;	/* XXX TODO */
 
 	bzero(src_buf, sizeof(src_buf));
 	bzero(dst_buf, sizeof(dst_buf));
@@ -2187,12 +2106,21 @@ raw_event_sock_state(struct quark_queue *qq, struct raw_event *raw)
 	    dst_buf, sizeof(dst_buf)) == NULL)
 		errx(1, "dst");
 
-	printf("%s(pid=%d) %s:%d -> %s:%d\t(%s/%s) lookup=%d)\n",
-	    old_state == 0 ? "NEW" : "EXISTING",
+	const char *str;
+	if (raw->connection.conn == CONNECTION_ACCEPT)
+		str = "ACCEPT";
+	else if (raw->connection.conn == CONNECTION_CONNECT)
+		str = "CONNECT";
+	else if (raw->connection.conn == CONNECTION_CLOSE)
+		str = "CLOSE";
+	else
+		str = "WHAT WHAT ???";
+
+	printf("(pid=%d) %s:%d -> %s:%d\t(%s) lookup=%d)\n",
 	    raw->pid,
 	    src_buf, ntohs(qsock->src.sin.sin_port),
 	    dst_buf, ntohs(qsock->dst.sin.sin_port),
-	    state_to_str(qsock->state), op_to_str(raw->sock_state.op), lookup);
+	    str, lookup);
 
 	/* printf("%s:%d (st=%d)\n", */
 	/*     old_state == 0 ? "NEW" : "EXISTING", */
@@ -2219,8 +2147,8 @@ quark_queue_get_event(struct quark_queue *qq)
 
 	/* Normal path, get a quark_event out of raw_event */
 	if ((raw = quark_queue_pop_raw(qq)) != NULL) {
-		if (raw->type == RAW_SOCK_STATE)
-			qev = raw_event_sock_state(qq, raw);
+		if (raw->type == RAW_CONNECTION)
+			qev = raw_event_connection(qq, raw);
 		else
 			qev = raw_event_process(qq, raw);
 		raw_event_free(raw);
