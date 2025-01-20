@@ -357,32 +357,48 @@ int sockops_state(struct bpf_sock_ops *ops)
 	if (!ops->is_fullsock)
 		goto out;
 
-	switch (ops->state) {
-	case BPF_TCP_ESTABLISHED:
-		cb_flags = ops->bpf_sock_ops_cb_flags;
-		if (cb_flags & BPF_SOCK_OPS_STATE_CB_FLAG) {
-			bpf_printk("AAAAAA remote = %d\n", ops->remote_port);
-			break;
-		}
+	bpf_printk("op = %d state = %d\n", ops->op, ops->state);
+	cb_flags = ops->bpf_sock_ops_cb_flags;
+	if ((cb_flags & BPF_SOCK_OPS_STATE_CB_FLAG) == 0) {
 		if (bpf_sock_ops_cb_flags_set(ops,
 		    cb_flags | BPF_SOCK_OPS_STATE_CB_FLAG) != 0) {
-			bpf_printk("BBBBB");
+			bpf_printk("BAIL 0");
 			goto out;
 		}
-		break;
-	case BPF_TCP_CLOSE:
-		break;
-	default:
-		goto out;
-		break;		/* NOTREACHED */
 	}
+
+	/* switch (ops->state) { */
+	/* case BPF_TCP_ESTABLISHED: */
+	/* 	cb_flags = ops->bpf_sock_ops_cb_flags; */
+	/* 	if (cb_flags & BPF_SOCK_OPS_STATE_CB_FLAG) { */
+	/* 		bpf_printk("AAAAAA remote = %d\n", ops->remote_port); */
+	/* 		break; */
+	/* 	} */
+	/* 	if (bpf_sock_ops_cb_flags_set(ops, */
+	/* 	    cb_flags | BPF_SOCK_OPS_STATE_CB_FLAG) != 0) { */
+	/* 		bpf_printk("BBBBB"); */
+	/* 		goto out; */
+	/* 	} else */
+	/* 		bpf_printk("flag set"); */
+	/* 	break; */
+	/* default: */
+	/* 	break; */
+	/* case BPF_TCP_CLOSE: */
+	/* 	break; */
+	/* default: */
+	/* 	goto out; */
+	/* 	break;		/\* NOTREACHED *\/ */
+	/* } */
 
 	event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
 	if (event == NULL) {
+		bpf_printk("BAIL 1");
+
 		goto out;
 	}
 
 	if (ebpf_network_event__fill_from_sock_ops(event, ops) != 0) {
+		bpf_printk("BAIL 2");
 		bpf_ringbuf_discard(event, 0);
 		goto out;
 	}
@@ -394,3 +410,22 @@ out:
 	return (1);		/* ALLOW */
 }
 
+SEC("cgroup_skb/egress")
+int test_egress(struct __sk_buff *skb)
+{
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+	bpf_printk("%s EGRESS\n", task->comm);
+
+	return 1;
+}
+
+SEC("cgroup_skb/ingress")
+int test_ingress(struct __sk_buff *skb)
+{
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+	bpf_printk("%s INGRESS\n", task->comm);
+
+	return 1;
+}

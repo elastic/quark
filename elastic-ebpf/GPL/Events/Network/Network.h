@@ -131,6 +131,9 @@ static int ebpf_network_event__fill_from_sock_ops(struct ebpf_net_event *evt, st
 	evt->net.sport = ops->local_port;
 	evt->net.dport = bpf_ntohl(ops->remote_port);
 	evt->net.state = ops->state;
+	evt->net.op = ops->op;
+	bpf_printk("evt->net.state=%d, ops->state=%d\n",
+	    evt->net.state, ops->state);
 	evt->net.transport = EBPF_NETWORK_EVENT_TRANSPORT_TCP;
 	ebpf_pid_info__fill(&evt->pids, task);
 //	bpf_get_current_comm(evt->comm, TASK_COMM_LEN);

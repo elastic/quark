@@ -396,6 +396,7 @@ struct ebpf_net_info {
     uint16_t sport; // Host byte order
     uint16_t dport; // Host byte order
     uint32_t netns;
+	uint32_t op;
 	uint32_t state;		/* XXX moveme */
     union {
         struct ebpf_net_info_tcp_close close;

@@ -30,7 +30,7 @@ struct raw_event;
 struct quark_event;
 struct quark_process;
 struct quark_process_iter;
-//struct quark_socket;
+struct quark_socket;
 struct quark_queue;
 struct quark_queue_attr;
 struct quark_queue_stats;
@@ -51,7 +51,7 @@ int	 quark_event_dump(const struct quark_event *, FILE *);
 void	 quark_process_iter_init(struct quark_process_iter *, struct quark_queue *);
 const struct quark_process	*quark_process_iter_next(struct quark_process_iter *);
 const struct quark_process	*quark_process_lookup(struct quark_queue *, int);
-//const struct quark_socket	*quark_socket_lookup(struct sockaddr *);
+/* const struct quark_socket	*quark_socket_lookup(struct quark_sockaddr *); */
 
 /* btf.c */
 struct quark_btf_target {
@@ -214,6 +214,7 @@ struct raw_sock_state {
 	struct quark_sockaddr	src;
 	struct quark_sockaddr	dst;
 	int			state;
+	int op;
 };
 
 struct raw_event {
@@ -256,8 +257,10 @@ struct quark_event {
 #define QUARK_EV_EXIT		(1 << 2)
 #define QUARK_EV_SETPROCTITLE	(1 << 3)
 #define QUARK_EV_SNAPSHOT	(1 << 4)
+#define QUARK_EV_SOCKET		(1 << 5)
 	u64				 events;
 	const struct quark_process	*process;
+	const struct quark_socket	*socket;
 };
 
 /*
@@ -271,6 +274,11 @@ RB_HEAD(process_by_pid, quark_process);
  * from users on processes that just vanished.
  */
 TAILQ_HEAD(quark_process_list, quark_process);
+
+/*
+ * Socket tree, indexed by src and dst
+ */
+RB_HEAD(socket_by_src_dst, quark_socket);
 
 enum {
 	QUARK_TTY_UNKNOWN,
@@ -359,11 +367,13 @@ struct quark_process_iter {
 	struct quark_process	*qp;
 };
 
-/* struct quark_sock { */
-/* 	struct quark_sockaddr	src; */
-/* 	struct quark_sockaddr	dst; */
-/* 	int			proc_ref; /\* how many quark_proc references us *\/ */
-/* }; */
+struct quark_socket {
+	RB_ENTRY(quark_socket)	entry_by_src_dst;
+	struct quark_sockaddr	src;
+	struct quark_sockaddr	dst;
+	int			state;
+	u32			pid;
+};
 
 struct quark_queue_stats {
 	u64	insertions;
@@ -405,6 +415,7 @@ struct quark_queue {
 	struct raw_event_by_pidtime	 raw_event_by_pidtime;
 	struct process_by_pid		 process_by_pid;
 	struct quark_process_list	 event_gc;
+	struct socket_by_src_dst	 socket_by_src_dst;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
 	const u8			(*agg_matrix)[RAW_NUM_TYPES];

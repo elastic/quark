@@ -213,26 +213,24 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		if ((raw = raw_event_alloc(RAW_SOCK_STATE)) == NULL)
 			goto bad;
 
+		printf("12345 pid=%d\n", sock_state->pids.tgid);
 		raw->pid = sock_state->pids.tgid; /* not tid!!! */
 		raw->time = ev->ts;
-		printf("\n\nfamily=%d\n\n", sock_state->net.family);
 
 		if (sock_state->net.family == EBPF_NETWORK_EVENT_AF_INET) {
-			printf("\n\nXXXXXXXX\n\n");
-			
 			raw->sock_state.src.sin.sin_family = AF_INET;
 			memcpy(&raw->sock_state.src.sin.sin_addr,
 			    sock_state->net.saddr, 4);
 			raw->sock_state.src.sin.sin_port = htons(sock_state->net.sport);
-			printf("LOCAL=%s\n", inet_ntoa(raw->sock_state.src.sin.sin_addr));
+			/* printf("LOCAL=%s\n", inet_ntoa(raw->sock_state.src.sin.sin_addr)); */
 
 			raw->sock_state.dst.sin.sin_family = AF_INET;
 			memcpy(&raw->sock_state.dst.sin.sin_addr,
 			    sock_state->net.daddr, 4);
 			raw->sock_state.dst.sin.sin_port = htons(sock_state->net.dport);
-			printf("REMOTE=%s:%d\n",
-			    inet_ntoa(raw->sock_state.dst.sin.sin_addr),
-			    raw->sock_state.dst.sin.sin_port);
+			/* printf("REMOTE=%s:%d\n", */
+			/*     inet_ntoa(raw->sock_state.dst.sin.sin_addr), */
+			/*     raw->sock_state.dst.sin.sin_port); */
 
 		} else if (sock_state->net.family == EBPF_NETWORK_EVENT_AF_INET6) {
 			printf("\n\nYYYYYY\n\n");
@@ -250,7 +248,9 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 			raw->sock_state.dst.sin6.sin6_scope_id = 0;
 		} else
 			errx(1, "bad family %d", sock_state->net.family);
+		printf("sock_state->net.state=%d\n", sock_state->net.state);
 		raw->sock_state.state = sock_state->net.state;
+		raw->sock_state.op = sock_state->net.op;
 
 		break;
 	default:
@@ -318,6 +318,8 @@ bpf_queue_open(struct quark_queue *qq)
 	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
 	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
 	bpf_program__set_autoload(bqq->prog->progs.sockops_state, 1);
+	/* bpf_program__set_autoload(bqq->prog->progs.test_egress, 1); */
+	/* bpf_program__set_autoload(bqq->prog->progs.test_ingress, 1); */
 	/* bpf_program__set_autoload(bqq->prog->progs.bpf_sockops_test, 1); */
 	/* bpf_program__set_autoload(bqq->prog->progs.bpf_sock_create, 1); */
 	/* bpf_program__set_autoload(bqq->prog->progs.bpf_post_bind4, 1); */
@@ -377,6 +379,12 @@ bpf_queue_open(struct quark_queue *qq)
 		/*     cgroup_fd) == NULL) */
 		/* 	err(1, "attach cgroup"); */
 
+		/* if (bpf_program__attach_cgroup(bqq->prog->progs.test_egress, */
+		/*     cgroup_fd) == NULL) */
+		/* 	err(1, "attach cgroup"); */
+		/* if (bpf_program__attach_cgroup(bqq->prog->progs.test_ingress, */
+		/*     cgroup_fd) == NULL) */
+		/* 	err(1, "attach cgroup"); */
 	}
 
 	/*
