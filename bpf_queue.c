@@ -164,6 +164,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		break;
 	case EBPF_EVENT_PROCESS_EXEC:
 		exec = (struct ebpf_process_exec_event *)ev;
+		if (exec->pids.tid != exec->pids.tgid)
+			goto bad;
 		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
 			goto bad;
 		raw->pid = exec->pids.tid;
