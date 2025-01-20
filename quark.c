@@ -1232,8 +1232,10 @@ sproc_status(struct quark_process *qp, int dfd)
 		return (-1);
 	}
 	f = fdopen(fd, "r");
-	if (f == NULL)
+	if (f == NULL) {
+		close(fd);
 		return (-1);
+	}
 
 	ret = 0;
 	line_len = 0;
