@@ -279,13 +279,6 @@ struct quark_event {
 RB_HEAD(process_by_pid, quark_process);
 
 /*
- * Process cache gc list, after they are marked for deletion, they still get a
- * grace time of qq->cache_grace_time before removal, this is to allow lookups
- * from users on processes that just vanished.
- */
-TAILQ_HEAD(quark_process_list, quark_process);
-
-/*
  * Socket tree, indexed by src and dst
  */
 RB_HEAD(socket_by_src_dst, quark_socket);
@@ -311,6 +304,25 @@ enum {
 	QUARK_ELT_CONSOLE,
 };
 
+enum gc_type {
+	GC_INVALID,
+	GC_PROCESS,
+	GC_SOCKET,
+};
+
+struct gc_link {
+	TAILQ_ENTRY(gc_link)	gc_entry;
+	u64			gc_time;
+	enum gc_type		gc_type;
+};
+
+/*
+ * gc queue, after processes or sockets are are marked for deletion, they still
+ * get a grace time of qq->cache_grace_time before removal, this is to allow
+ * lookups from users on processes and sockets that have just vanished.
+ */
+TAILQ_HEAD(gc_queue, gc_link);
+
 /*
  * Main external working set, user passes this back and forth, members only have
  * a meaning if its respective flag is set, say proc_cap_inheritable should only
@@ -318,10 +330,9 @@ enum {
  */
 
 struct quark_process {
-#define quark_process_zero_start entry_by_pid
+#define quark_process_zero_start gc
+	struct gc_link			gc;		/* must be first */
 	RB_ENTRY(quark_process)		entry_by_pid;
-	TAILQ_ENTRY(quark_process)	entry_gc;
-	u64			 	gc_time;
 #define quark_process_zero_end pid
 	/* Always present */
 	u32	pid;
@@ -378,6 +389,7 @@ struct quark_process_iter {
 };
 
 struct quark_socket {
+	struct gc_link		gc;			/* must be first */
 	RB_ENTRY(quark_socket)	entry_by_src_dst;
 	struct quark_sockaddr	local;
 	struct quark_sockaddr	remote;
@@ -393,6 +405,7 @@ struct quark_queue_stats {
 	u64	aggregations;
 	u64	non_aggregations;
 	u64	lost;
+	u64	garbage_collections;
 	int	backend;	/* active backend, QQ_EBPF or QQ_KPROBE */
 	/* TODO u64	peak_nodes; */
 };
@@ -426,7 +439,7 @@ struct quark_queue {
 	struct raw_event_by_time	 raw_event_by_time;
 	struct raw_event_by_pidtime	 raw_event_by_pidtime;
 	struct process_by_pid		 process_by_pid;
-	struct quark_process_list	 event_gc;
+	struct gc_queue			 event_gc;
 	struct socket_by_src_dst	 socket_by_src_dst;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;

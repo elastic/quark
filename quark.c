@@ -31,6 +31,9 @@ static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
 static int	process_by_pid_cmp(struct quark_process *, struct quark_process *);
 static int	socket_by_src_dst_cmp(struct quark_socket *, struct quark_socket *);
 
+static void	process_cache_delete(struct quark_queue *, struct quark_process *);
+static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
+
 /* For debugging */
 int	quark_verbose;
 
@@ -366,6 +369,59 @@ event_copy_out(struct quark_process *dst, struct quark_process *src, u64 events)
 	event_copy_fields(dst, src);
 }
 #endif
+
+static void
+gc_mark(struct quark_queue *qq, struct gc_link *gc, enum gc_type type)
+{
+	/* Already marked, bail */
+	if (gc->gc_time)
+		return;
+
+	gc->gc_time = now64();
+	gc->gc_type = type;
+	TAILQ_INSERT_TAIL(&qq->event_gc, gc, gc_entry);
+}
+
+static void
+gc_unlink(struct quark_queue *qq, struct gc_link *gc)
+{
+	if (gc->gc_time) {
+		TAILQ_REMOVE(&qq->event_gc, gc, gc_entry);
+		gc->gc_time = 0;
+	}
+}
+
+static int
+gc_collect(struct quark_queue *qq)
+{
+	struct gc_link	*gc;
+	u64		 now;
+	int		 n;
+
+	now = now64();
+	n = 0;
+	while ((gc = TAILQ_FIRST(&qq->event_gc)) != NULL) {
+		if (AGE(gc->gc_time, now) < qq->cache_grace_time)
+			break;
+		switch (gc->gc_type) {
+		case GC_PROCESS:
+			process_cache_delete(qq, (struct quark_process *)gc);
+			break;
+		case GC_SOCKET:
+			socket_cache_delete(qq, (struct quark_socket *)gc);
+			break;
+		default:
+			qwarnx("invalid gc_type %d, will leak", gc->gc_type);
+			gc_unlink(qq, gc);
+		}
+		n++;
+	}
+
+	qq->stats.garbage_collections += n;
+
+	return (n);
+}
+
 static struct quark_process *
 process_cache_get(struct quark_queue *qq, int pid, int alloc)
 {
@@ -421,32 +477,16 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 	}
 }
 
+
 static void
 process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 {
+	struct gc_link	*gc;
+
+	gc = &qp->gc;
 	RB_REMOVE(process_by_pid, &qq->process_by_pid, qp);
-	if (qp->gc_time)
-		TAILQ_REMOVE(&qq->event_gc, qp, entry_gc);
+	gc_unlink(qq, gc);
 	free(qp);
-}
-
-static int
-process_cache_gc(struct quark_queue *qq)
-{
-	struct quark_process	*qp;
-	u64			 now;
-	int			 n;
-
-	now = now64();
-	n = 0;
-	while ((qp = TAILQ_FIRST(&qq->event_gc)) != NULL) {
-		if (AGE(qp->gc_time, now) < qq->cache_grace_time)
-			break;
-		process_cache_delete(qq, qp);
-		n++;
-	}
-
-	return (n);
 }
 
 static int
@@ -508,6 +548,7 @@ static void
 socket_cache_delete(struct quark_queue *qq, struct quark_socket *qsk)
 {
 	RB_REMOVE(socket_by_src_dst, &qq->socket_by_src_dst, qsk);
+	gc_unlink(qq, &qsk->gc);
 	free(qsk);
 }
 
@@ -1211,11 +1252,8 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 	 * trying to remove it twice. In other words, gc_time guards
 	 * presence in the TAILQ.
 	 */
-	if (raw_exit != NULL && qp->gc_time == 0) {
-		qp->gc_time = now64();
-		TAILQ_INSERT_TAIL(&qq->event_gc, qp, entry_gc);
-	}
-
+	if (raw_exit != NULL)
+		gc_mark(qq, &qp->gc, GC_PROCESS);
 	dst->events = events;
 	dst->process = qp;
 
@@ -2386,13 +2424,12 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 	}
 
 	/*
-	 * If this is a close, register for GC, tm_closed marks its inclusion in
-	 * the GC list, so be careful to not do it twice (even though we can't
-	 * get two closes).
+	 * If this is a close, register it for GC
 	 */
-	if (conn->conn == CONNECTION_CLOSE && !qsk->close_time) {
-		/* XXX TODO XXX */
-		;
+	if (conn->conn == CONNECTION_CLOSE) {
+		if (qsk->close_time == 0)
+			qsk->close_time = raw->time;
+		gc_mark(qq, &qsk->gc, GC_SOCKET);
 	}
 
 	qev->events = QUARK_EV_CONNECTION;
@@ -2458,8 +2495,8 @@ quark_queue_get_event(struct quark_queue *qq)
 	}
 
 done:
-	/* GC all processes that exited after some grace time */
-	process_cache_gc(qq);
+	/* GC all processes and sockets that exited after some grace time */
+	gc_collect(qq);
 
 	return (qev);
 }
