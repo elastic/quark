@@ -1468,10 +1468,11 @@ sproc_pid(struct quark_queue *qq, int pid, int dfd)
 }
 
 /* example 017CA8C0:81E0 */
+#if 0
 static int
 sproc_net_tcp4_parse_addr(char *token, u32 *addr4, u16 *port)
 {
-	long	 lv;
+	u_long	 lv;
 	char	*p, *ep;
 
 	p = strchr(token, ':');
@@ -1480,14 +1481,125 @@ sproc_net_tcp4_parse_addr(char *token, u32 *addr4, u16 *port)
 
 	*p++ = 0;
 	errno = 0;
-	lv = strtol(token, &ep, 16);
+	lv = strtoul(token, &ep, 16);
 	if (token[0] == 0 || *ep != 0)
 		return (errno = EINVAL, -1);
-	if (errno == ERANGE && (lv == LONG_MAX || lv == LONG_MIN))
+	if (errno == ERANGE && lv == ULONG_MAX)
 		return (-1);
 	if (ntohl(lv) > UINT32_MAX)
 		return (errno = ERANGE, -1);
 	*addr4 = (uint32_t)lv;
+
+	errno = 0;
+	lv = strtoul(p, &ep, 16);
+	if (p[0] == 0 || *ep != 0)
+		return (errno = EINVAL, -1);
+	if (errno == ERANGE && lv == ULONG_MAX)
+		return (-1);
+	if (lv > UINT16_MAX)
+		return (errno = ERANGE, -1);
+	*port = (u16)lv;
+
+	return (0);
+}
+#endif
+#if 1
+static int
+sproc_net_tcp4_parse_addr(char *token, u32 *addr4, u16 *port)
+{
+	int	 r;
+	u_int	 ia, ip;
+
+	r = sscanf(token, "%x:%x", &ia, &ip);
+	if (r != 2 || ip > 65535)
+		return (errno = EINVAL, -1);
+
+	*addr4 = ia;
+	*port = ip;
+
+	return (0);
+}
+#endif
+
+/* example 0000 0000 0000 0000 FFFF 0000 0100 007F:E0AE */
+#if 0
+static int
+sproc_net_tcp6_parse_addr(char *token, u8 addr6[16], u16 *port)
+{
+	u_long	 lv;
+	char	*p, *ep, *addr_end;
+	int	 i;
+
+	addr_end = strchr(token, ':');
+	if (addr_end == NULL)
+		return (errno = EINVAL, -1);
+
+	*addr_end = 0;
+	/* paranoia */
+	if (strlen(token) != 32)
+		return (errno = EINVAL, -1);
+
+	i = 0;
+	for (p = token; p != addr_end; p += 2) {
+		char buf[3];
+
+		errno = 0;
+		lv = strtoul(token, &ep, 16);
+		if (token[0] == 0 || *ep != 0)
+			return (errno = EINVAL, -1);
+		if (errno == ERANGE && lv == ULONG_MAX)
+			return (-1);
+		if (lv > UINT8_MAX)
+			return (errno = ERANGE, -1);
+		*addr4 = (uint32_t)lv;
+
+	}
+
+	errno = 0;
+	lv = strtol(p, &ep, 16);
+	if (p[0] == 0 || *ep != 0)
+		return (errno = EINVAL, -1);
+	if (errno == ERANGE && (lv == LONG_MAX || lv == LONG_MIN))
+		return (-1);
+	if (lv > UINT16_MAX)
+		return (errno = ERANGE, -1);
+	*port = (u16)lv;
+
+	return (0);
+}
+#endif
+
+static int
+sproc_net_tcp6_parse_addr(char *token, u8 addr6[16], u16 *port)
+{
+	u_long	 lv;
+	char	*p, *ep, *addr_end;
+	int	 i;
+
+	addr_end = strchr(token, ':');
+	if (addr_end == NULL)
+		return (errno = EINVAL, -1);
+
+	*addr_end = 0;
+	/* paranoia */
+	if (strlen(token) != 32)
+		return (errno = EINVAL, -1);
+
+	i = 0;
+	for (p = token; p != addr_end; p += 2) {
+		char buf[3];
+
+		errno = 0;
+		lv = strtoul(token, &ep, 16);
+		if (token[0] == 0 || *ep != 0)
+			return (errno = EINVAL, -1);
+		if (errno == ERANGE && lv == ULONG_MAX)
+			return (-1);
+		if (lv > UINT8_MAX)
+			return (errno = ERANGE, -1);
+		*addr4 = (uint32_t)lv;
+
+	}
 
 	errno = 0;
 	lv = strtol(p, &ep, 16);
@@ -1502,11 +1614,13 @@ sproc_net_tcp4_parse_addr(char *token, u32 *addr4, u16 *port)
 	return (0);
 }
 
+
 static int
-sproc_net_tcp4_line(struct quark_queue *qq, const char *line1, struct sproc_socket_by_inode *by_inode)
+sproc_net_tcp_line(struct quark_queue *qq, const char *line1, int af, struct sproc_socket_by_inode *by_inode)
 {
 	int		 i;
 	char		*tok, *last, *line, *local, *remote, *inode, *ep;
+	/* u8		 local_addr6[16], remote_addr6[16]; */
 	u32		 local_addr4, remote_addr4;
 	u16		 local_port, remote_port;
 	u64		 ino64;
@@ -1535,18 +1649,42 @@ sproc_net_tcp4_line(struct quark_queue *qq, const char *line1, struct sproc_sock
 	if (local == NULL || remote == NULL || inode == NULL)
 		goto bad;
 
-	/* Parse local */
-	if (sproc_net_tcp4_parse_addr(local, &local_addr4, &local_port) == -1) {
-		qwarnx("malformed line: local");
-		goto bad;
+	/* Parse local and remote for AF_INET */
+	if (1 || af == AF_INET) {
+		if (sproc_net_tcp4_parse_addr(local,
+		    &local_addr4, &local_port) == -1) {
+			qwarnx("malformed line: local");
+			goto bad;
+		}
+		/* Parse remote */
+		if (sproc_net_tcp4_parse_addr(remote,
+		    &remote_addr4, &remote_port) == -1) {
+			qwarnx("malformed line: remote");
+			goto bad;
+
+		}
 	}
-	/* Parse remote */
-	if (sproc_net_tcp4_parse_addr(remote, &remote_addr4, &remote_port) == -1) {
-		qwarnx("malformed line: remote");
-		goto bad;
+	/* Parse local and remote for AF_INET6 */
+#if 0
+	if (af == AF_INET6) {
+		if (sproc_net_tcp6_parse_addr(local,
+		    local_addr6, &local_port) == -1) {
+			qwarnx("malformed line: local");
+			goto bad;
+		}
+		/* Parse remote */
+		if (sproc_net_tcp6_parse_addr(remote,
+		    remote_addr6, &remote_port) == -1) {
+			qwarnx("malformed line: remote");
+			goto bad;
+
+		}
 	}
+#endif
 	/* Parse inode */
 	errno = 0;
+	/* printf("inode str=%s\n", inode); */
+	/* fflush(stdout); */
 	ino64 = strtoull(inode, &ep, 10);
 	if (inode[0] == 0 || *ep != 0) {
 		qwarnx("malformed line: inode");
@@ -1570,7 +1708,9 @@ sproc_net_tcp4_line(struct quark_queue *qq, const char *line1, struct sproc_sock
 			qwarn("inet_ntop");
 			goto bad;
 		}
-		printf("%s:%s (%llu)\n", local_buf, remote_buf, ino64);
+		printf("%s:%d -> %s:%d (%llu)\n",
+		    local_buf, local_port,
+		    remote_buf, remote_port, ino64);
 	}
 
 	/*
@@ -1612,17 +1752,26 @@ bad:
 }
 
 static int
-sproc_net_tcp4(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode)
+sproc_net_tcp(struct quark_queue *qq, int af, struct sproc_socket_by_inode *by_inode)
 {
-	int	 ret, fd;
-	FILE	*f;
-	ssize_t	 n;
-	size_t	 line_len;
-	char	*line;
+	int		 ret, fd, linenum;
+	FILE		*f;
+	ssize_t		 n;
+	size_t		 line_len;
+	char		*line;
+	const char	*path;
 	/* char	*line, *k, *v; */
 
-	if ((fd = open("/proc/net/tcp", O_RDONLY)) == -1) {
-		qwarn("open net/tcp");
+	if (af != AF_INET && af != AF_INET6)
+		return (-1);
+
+	if (af == AF_INET)
+		path = "/proc/net/tcp";
+	else
+		path = "/proc/net/tcp6";
+
+	if ((fd = open(path, O_RDONLY)) == -1) {
+		qwarn("open %s", path);
 		return (-1);
 	}
 	f = fdopen(fd, "r");
@@ -1634,14 +1783,18 @@ sproc_net_tcp4(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode)
 	ret = 0;
 	line_len = 0;
 	line = NULL;
-	while ((n = getline(&line, &line_len, f)) != -1) {
+	for (linenum = 0; (n = getline(&line, &line_len, f)) != -1; linenum++) {
 		if (n < 5 || line[n - 1] != '\n') {
 			qwarnx("bad line");
 			ret = -1;
 			break;
 		}
 		line[n - 1] = 0;
-		sproc_net_tcp4_line(qq, line, by_inode);
+		/* Skip header */
+		if (linenum == 0)
+			continue;
+		
+		sproc_net_tcp_line(qq, line, af, by_inode); /* XXX check error */
 	}
 	free(line);
 	fclose(f);
@@ -1718,9 +1871,12 @@ sproc_scrape(struct quark_queue *qq)
 
 	RB_INIT(&socket_by_inode);
 
-	r = sproc_net_tcp4(qq, &socket_by_inode);
-	if (r != 0)
+	r = sproc_net_tcp(qq, AF_INET, &socket_by_inode);
+	if (r == -1)
 		goto done;
+	/* r = sproc_net_tcp(qq, AF_INET6, &socket_by_inode); */
+	/* if (r == -1) */
+	/* 	goto done; */
 
 	r = sproc_scrape_processes(qq, &socket_by_inode);
 
