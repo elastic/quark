@@ -881,14 +881,38 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const char			*flagname;
 	char				 events[1024];
 	const struct quark_process	*qp;
+	const struct quark_socket	*qsk;
+	int				 pid;
 
 	qp = qev->process;
+	qsk = qev->socket;
+
+	pid = qp != NULL ? qp->pid : 0;
+	events_type_str(qev->events, events, sizeof(events));
+	P("->%d (%s)\n", pid, events);
+
+	if (qev->events & QUARK_EV_CONNECTION) {
+		char local[INET6_ADDRSTRLEN], remote[INET6_ADDRSTRLEN];
+		flagname = "NET";
+
+		if (qsk == NULL)
+			return (-1);
+
+		if (inet_ntop(qsk->local.af, &qsk->local.addr6,
+		    local, sizeof(local)) == NULL)
+			return (-1);
+		if (inet_ntop(qsk->remote.af, &qsk->remote.addr6,
+		    remote, sizeof(remote)) == NULL)
+			return (-1);
+
+		P("  %.4s\tlocal=%s:%d, remote=%s:%d\n", flagname,
+		    local, ntohs(qsk->local.port),
+		    remote, ntohs(qsk->remote.port));
+	}
+
 	if (qp == NULL)
 		return (-1);
 
-	/* TODO: add tid */
-	events_type_str(qev->events, events, sizeof(events));
-	P("->%d (%s)\n", qp->pid, events);
 	if (qp->flags & QUARK_F_COMM) {
 		flagname = event_flag_str(QUARK_F_COMM);
 		P("  %.4s\tcomm=%s\n", flagname, qp->comm);
@@ -2342,18 +2366,24 @@ quark_queue_get_snap_event(struct quark_queue *qq)
 static const struct quark_event *
 raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 {
-	/* struct quark_event	*qev; */
+	struct quark_event	*qev;
 	struct quark_socket	*qsk;
 	struct raw_connection	*conn;
 	int			 lookup;
 
 	conn = &raw->connection;
 
-	/* qev = &qq->event_storage; */
+	qev = &qq->event_storage;
 
 	qsk = socket_cache_get(qq, &conn->local, &conn->remote, 1, &lookup);
 	if (qsk == NULL)
 		return (NULL);
+
+	/* Is this the first entry ? */
+	if (qsk->pid_origin == 0) {
+		qsk->pid_origin = qsk->pid_last_use = raw->pid;
+		qsk->established_time = raw->time;
+	}
 
 	/*
 	 * If this is a close, register for GC, tm_closed marks its inclusion in
@@ -2365,7 +2395,13 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 		;
 	}
 
-#if 1
+	qev->events = QUARK_EV_CONNECTION;
+	qev->socket = qsk;
+	qev->process = quark_process_lookup(qq, qsk->pid_origin);
+
+	return (qev);
+
+#if 0
 	char			 src_buf[64], dst_buf[64];
 
 	bzero(src_buf, sizeof(src_buf));
@@ -2394,9 +2430,9 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 	    str, lookup);
 
 	fflush(stdout);
-#endif
 
 	return (NULL);
+#endif
 }
 
 const struct quark_event *

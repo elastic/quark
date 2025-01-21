@@ -228,7 +228,7 @@ main(int argc, char *argv[])
 				err(1, "quark_queue_block");
 			continue;
 		}
-		/* quark_event_dump(qev, stdout); */
+		quark_event_dump(qev, stdout);
 	}
 
 	if (graph_by_pidtime != NULL && graph_by_time != NULL) {

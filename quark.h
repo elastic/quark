@@ -207,8 +207,8 @@ struct quark_sockaddr {
 	int af;
 
 	union {
-		u32 addr4;
-		u32 addr6[4];
+		u32	addr4;
+		u32	addr6[4];
 	};
 
 	u16 port;
