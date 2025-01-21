@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 
 #include <ctype.h>
+#include <dirent.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -1273,7 +1274,12 @@ struct sproc_socket {
 static int
 socket_by_inode_cmp(struct sproc_socket *a, struct sproc_socket *b)
 {
-	return (a->inode - b->inode);
+	if (a->inode < b->inode)
+		return (-1);
+	else if (a->inode > b->inode)
+		return (1);
+
+	return (0);
 }
 
 RB_HEAD(sproc_socket_by_inode, sproc_socket);
@@ -1514,6 +1520,52 @@ sproc_namespace(struct quark_process *qp, const char *path, u32 *dst, int dfd)
 }
 
 static int
+sproc_pid_sockets(struct quark_queue *qq, int pid, int dfd)
+{
+	DIR		*dir;
+	struct dirent	*d;
+	int		 fdfd, ret;
+
+	ret = -1;
+	dir = NULL;
+
+	if ((fdfd = openat(dfd, "fd", O_RDONLY)) == -1) {
+		qwarn("open fd");
+		goto fail;
+	}
+	dir = fdopendir(fdfd);
+	if (dir == NULL) {
+		qwarn("fdopendir fdfd");
+		goto fail;
+	}
+
+	while ((d = readdir(dir)) != NULL) {
+		char	buf[256];
+		ssize_t n;
+
+		if (d->d_type != DT_LNK)
+			continue;
+
+		n = qreadlinkat(fdfd, d->d_name, buf, sizeof(buf));
+		if (n == -1)
+			qwarn("qreadlinkat %s", d->d_name);
+		if (n <= 0)
+			continue;
+
+		printf("pid %d fd %s -> %s\n", pid, d->d_name, buf);
+	}
+
+	ret = 0;
+fail:
+	if (dir != NULL)
+		closedir(dir);
+	if (fdfd != -1)
+		close(fdfd);
+
+	return (ret);
+}
+
+static int
 sproc_pid(struct quark_queue *qq, int pid, int dfd)
 {
 	struct quark_process	*qp;
@@ -1548,7 +1600,7 @@ sproc_pid(struct quark_queue *qq, int pid, int dfd)
 	if (qreadlinkat(dfd, "cwd", qp->cwd, sizeof(qp->cwd)) > 0)
 		qp->flags |= QUARK_F_CWD;
 
-	return (0);
+	return sproc_pid_sockets(qq, pid, dfd);
 }
 
 static int
