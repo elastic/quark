@@ -469,15 +469,20 @@ socket_cache_get(struct quark_queue *qq,
     struct quark_sockaddr *local, struct quark_sockaddr *remote, int alloc, int *lookup)
 {
 	struct quark_socket	 key;
-	struct quark_socket	*qsock;
+	struct quark_socket	*qsk;
+
+	if ((local->af != AF_INET && local->af != AF_INET6) ||
+	    (remote->af != AF_INET && remote->af != AF_INET6) ||
+	    (local->af != remote->af))
+		return (errno = EINVAL, NULL);
 
 	*lookup = 0;
 	key.local = *local;
 	key.remote = *remote;
-	qsock = RB_FIND(socket_by_src_dst, &qq->socket_by_src_dst, &key);
-	if (qsock != NULL) {
+	qsk = RB_FIND(socket_by_src_dst, &qq->socket_by_src_dst, &key);
+	if (qsk != NULL) {
 		*lookup = 1;
-		return (qsock);
+		return (qsk);
 	}
 
 	if (!alloc) {
@@ -485,25 +490,25 @@ socket_cache_get(struct quark_queue *qq,
 		return (NULL);
 	}
 
-	qsock = calloc(1, sizeof(*qsock));
-	if (qsock == NULL)
+	qsk = calloc(1, sizeof(*qsk));
+	if (qsk == NULL)
 		return (NULL);
-	qsock->local = key.local;
-	qsock->remote = key.remote;
-	if (RB_INSERT(socket_by_src_dst, &qq->socket_by_src_dst, qsock) != NULL) {
+	qsk->local = key.local;
+	qsk->remote = key.remote;
+	if (RB_INSERT(socket_by_src_dst, &qq->socket_by_src_dst, qsk) != NULL) {
 		err(1, "collision, this is a bug");
-		free(qsock);
+		free(qsk);
 		return (NULL);
 	}
 
-	return (qsock);
+	return (qsk);
 }
 
 static void
-socket_cache_delete(struct quark_queue *qq, struct quark_socket *qs)
+socket_cache_delete(struct quark_queue *qq, struct quark_socket *qsk)
 {
-	RB_REMOVE(socket_by_src_dst, &qq->socket_by_src_dst, qs);
-	free(qs);
+	RB_REMOVE(socket_by_src_dst, &qq->socket_by_src_dst, qsk);
+	free(qsk);
 }
 
 static int
@@ -2192,7 +2197,7 @@ quark_queue_close(struct quark_queue *qq)
 {
 	struct raw_event	*raw;
 	struct quark_process	*qp;
-	struct quark_socket	*qs;
+	struct quark_socket	*qsk;
 
 	/* Clean up all allocated raw events */
 	while ((raw = RB_ROOT(&qq->raw_event_by_time)) != NULL) {
@@ -2205,8 +2210,8 @@ quark_queue_close(struct quark_queue *qq)
 	while ((qp = RB_ROOT(&qq->process_by_pid)) != NULL)
 		process_cache_delete(qq, qp);
 	/* Clean up all cached sockets */
-	while ((qs = RB_ROOT(&qq->socket_by_src_dst)) != NULL)
-		socket_cache_delete(qq, qs);
+	while ((qsk = RB_ROOT(&qq->socket_by_src_dst)) != NULL)
+		socket_cache_delete(qq, qsk);
 	/* Clean up backend */
 	if (qq->queue_ops != NULL)
 		qq->queue_ops->close(qq);
@@ -2337,37 +2342,38 @@ quark_queue_get_snap_event(struct quark_queue *qq)
 static const struct quark_event *
 raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 {
-	char			 src_buf[64], dst_buf[64];
 	/* struct quark_event	*qev; */
-	struct quark_socket	*qsock;
-	int lookup;
+	struct quark_socket	*qsk;
+	struct raw_connection	*conn;
+	int			 lookup;
+
+	conn = &raw->connection;
 
 	/* qev = &qq->event_storage; */
 
-	if (raw->connection.local.af != AF_INET ||
-	    raw->connection.remote.af != AF_INET) {
-		printf("HEIN HEIN\n");
-		printf("HEIN HEIN\n");
+	qsk = socket_cache_get(qq, &conn->local, &conn->remote, 1, &lookup);
+	if (qsk == NULL)
 		return (NULL);
+
+	/*
+	 * If this is a close, register for GC, tm_closed marks its inclusion in
+	 * the GC list, so be careful to not do it twice (even though we can't
+	 * get two closes).
+	 */
+	if (conn->conn == CONNECTION_CLOSE && !qsk->close_time) {
+		/* XXX TODO XXX */
+		;
 	}
 
-	/* printf("%d: (%d) local=%s:%d remote=%s:%d\n", */
-	/*     raw->pid, raw->sock_state.state, */
-	/*     src_buf, ntohs(src->sin_port), */
-	/*     dst_buf, ntohs(dst->sin_port)); */
-
-
-	qsock = socket_cache_get(qq, &raw->connection.local, &raw->connection.remote,
-	    1, &lookup);
-	if (qsock == NULL)
-		return (NULL);
+#if 1
+	char			 src_buf[64], dst_buf[64];
 
 	bzero(src_buf, sizeof(src_buf));
 	bzero(dst_buf, sizeof(dst_buf));
-	if (inet_ntop(AF_INET, &qsock->local.addr4,
+	if (inet_ntop(AF_INET, &qsk->local.addr4,
 	    src_buf, sizeof(src_buf)) == NULL)
 		errx(1, "src");
-	if (inet_ntop(AF_INET, &qsock->remote.addr4,
+	if (inet_ntop(AF_INET, &qsk->remote.addr4,
 	    dst_buf, sizeof(dst_buf)) == NULL)
 		errx(1, "dst");
 
@@ -2383,11 +2389,12 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 
 	printf("(pid=%d) %s:%d -> %s:%d\t(%s) lookup=%d)\n",
 	    raw->pid,
-	    src_buf, ntohs(qsock->local.port),
-	    dst_buf, ntohs(qsock->remote.port),
+	    src_buf, ntohs(qsk->local.port),
+	    dst_buf, ntohs(qsk->remote.port),
 	    str, lookup);
 
 	fflush(stdout);
+#endif
 
 	return (NULL);
 }

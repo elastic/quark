@@ -383,8 +383,8 @@ struct quark_socket {
 	struct quark_sockaddr	remote;
 	u32			pid_origin;
 	u32			pid_last_use;
-	u64			tm_established;
-	u64			tm_closed;
+	u64			established_time;
+	u64			close_time;
 };
 
 struct quark_queue_stats {
