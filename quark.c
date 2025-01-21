@@ -1467,288 +1467,145 @@ sproc_pid(struct quark_queue *qq, int pid, int dfd)
 	return (0);
 }
 
-/* example 017CA8C0:81E0 */
-#if 0
 static int
-sproc_net_tcp4_parse_addr(char *token, u32 *addr4, u16 *port)
+sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
+    struct sproc_socket_by_inode *by_inode)
 {
-	u_long	 lv;
-	char	*p, *ep;
+	u_int	local_addr4, remote_addr4;
+	u_int	local_addr6[4], remote_addr6[4];
+	u_int	local_port, remote_port;
+	u_long	inode;
+	int	r;
 
-	p = strchr(token, ':');
-	if (p == NULL)
-		return (errno = EINVAL, -1);
-
-	*p++ = 0;
-	errno = 0;
-	lv = strtoul(token, &ep, 16);
-	if (token[0] == 0 || *ep != 0)
-		return (errno = EINVAL, -1);
-	if (errno == ERANGE && lv == ULONG_MAX)
+	if (af != AF_INET && af != AF_INET6)
 		return (-1);
-	if (ntohl(lv) > UINT32_MAX)
-		return (errno = ERANGE, -1);
-	*addr4 = (uint32_t)lv;
 
-	errno = 0;
-	lv = strtoul(p, &ep, 16);
-	if (p[0] == 0 || *ep != 0)
-		return (errno = EINVAL, -1);
-	if (errno == ERANGE && lv == ULONG_MAX)
-		return (-1);
-	if (lv > UINT16_MAX)
-		return (errno = ERANGE, -1);
-	*port = (u16)lv;
+	if (af == AF_INET) {
+		r = sscanf(line,
+		    "%*s "	/* sl */
+		    "%x:%x "	/* local_address */
+		    "%x:%x "	/* remote_address */
+		    "%*s "	/* st */
+		    "%*s "	/* tx_queue+rx_queue */
+		    "%*s "	/* tr+tm->when */
+		    "%*s "	/* retnsmt */
+		    "%*s "	/* uid */
+		    "%*s "	/* timeout */
+		    "%lx "	/* inode */
+		    "%*s ",	/* ignored */
+		    &local_addr4, &local_port,
+		    &remote_addr4, &remote_port,
+		    &inode);
 
-	return (0);
-}
-#endif
-#if 1
-static int
-sproc_net_tcp4_parse_addr(char *token, u32 *addr4, u16 *port)
-{
-	int	 r;
-	u_int	 ia, ip;
-
-	r = sscanf(token, "%x:%x", &ia, &ip);
-	if (r != 2 || ip > 65535)
-		return (errno = EINVAL, -1);
-
-	*addr4 = ia;
-	*port = ip;
-
-	return (0);
-}
-#endif
-
-/* example 0000 0000 0000 0000 FFFF 0000 0100 007F:E0AE */
-#if 0
-static int
-sproc_net_tcp6_parse_addr(char *token, u8 addr6[16], u16 *port)
-{
-	u_long	 lv;
-	char	*p, *ep, *addr_end;
-	int	 i;
-
-	addr_end = strchr(token, ':');
-	if (addr_end == NULL)
-		return (errno = EINVAL, -1);
-
-	*addr_end = 0;
-	/* paranoia */
-	if (strlen(token) != 32)
-		return (errno = EINVAL, -1);
-
-	i = 0;
-	for (p = token; p != addr_end; p += 2) {
-		char buf[3];
-
-		errno = 0;
-		lv = strtoul(token, &ep, 16);
-		if (token[0] == 0 || *ep != 0)
-			return (errno = EINVAL, -1);
-		if (errno == ERANGE && lv == ULONG_MAX)
+		if (r != 5) {
+			qwarnx("unexpected sscanf %d", r);
 			return (-1);
-		if (lv > UINT8_MAX)
-			return (errno = ERANGE, -1);
-		*addr4 = (uint32_t)lv;
-
-	}
-
-	errno = 0;
-	lv = strtol(p, &ep, 16);
-	if (p[0] == 0 || *ep != 0)
-		return (errno = EINVAL, -1);
-	if (errno == ERANGE && (lv == LONG_MAX || lv == LONG_MIN))
-		return (-1);
-	if (lv > UINT16_MAX)
-		return (errno = ERANGE, -1);
-	*port = (u16)lv;
-
-	return (0);
-}
-#endif
-
-static int
-sproc_net_tcp6_parse_addr(char *token, u8 addr6[16], u16 *port)
-{
-	u_long	 lv;
-	char	*p, *ep, *addr_end;
-	int	 i;
-
-	addr_end = strchr(token, ':');
-	if (addr_end == NULL)
-		return (errno = EINVAL, -1);
-
-	*addr_end = 0;
-	/* paranoia */
-	if (strlen(token) != 32)
-		return (errno = EINVAL, -1);
-
-	i = 0;
-	for (p = token; p != addr_end; p += 2) {
-		char buf[3];
-
-		errno = 0;
-		lv = strtoul(token, &ep, 16);
-		if (token[0] == 0 || *ep != 0)
-			return (errno = EINVAL, -1);
-		if (errno == ERANGE && lv == ULONG_MAX)
-			return (-1);
-		if (lv > UINT8_MAX)
-			return (errno = ERANGE, -1);
-		*addr4 = (uint32_t)lv;
-
-	}
-
-	errno = 0;
-	lv = strtol(p, &ep, 16);
-	if (p[0] == 0 || *ep != 0)
-		return (errno = EINVAL, -1);
-	if (errno == ERANGE && (lv == LONG_MAX || lv == LONG_MIN))
-		return (-1);
-	if (lv > UINT16_MAX)
-		return (errno = ERANGE, -1);
-	*port = (u16)lv;
-
-	return (0);
-}
-
-
-static int
-sproc_net_tcp_line(struct quark_queue *qq, const char *line1, int af, struct sproc_socket_by_inode *by_inode)
-{
-	int		 i;
-	char		*tok, *last, *line, *local, *remote, *inode, *ep;
-	/* u8		 local_addr6[16], remote_addr6[16]; */
-	u32		 local_addr4, remote_addr4;
-	u16		 local_port, remote_port;
-	u64		 ino64;
-
-	if ((line = strdup(line1)) == NULL)
-		goto bad;
-
-	/*
-	 * Split the string and point local, remote and inode.
-	 */
-	i = 0;
-	local = remote = inode = NULL;
-	for (tok = strtok_r(line, " ", &last);
-	     tok != NULL;
-	     tok = strtok_r(NULL, " ", &last)) {
-		if (i == 1)
-			local = tok;
-		else if (i == 2)
-			remote = tok;
-		else if (i == 9)
-			inode = tok;
-		i++;
-	}
-
-	/* Make sure we got all 3 */
-	if (local == NULL || remote == NULL || inode == NULL)
-		goto bad;
-
-	/* Parse local and remote for AF_INET */
-	if (1 || af == AF_INET) {
-		if (sproc_net_tcp4_parse_addr(local,
-		    &local_addr4, &local_port) == -1) {
-			qwarnx("malformed line: local");
-			goto bad;
-		}
-		/* Parse remote */
-		if (sproc_net_tcp4_parse_addr(remote,
-		    &remote_addr4, &remote_port) == -1) {
-			qwarnx("malformed line: remote");
-			goto bad;
-
 		}
 	}
-	/* Parse local and remote for AF_INET6 */
-#if 0
+
 	if (af == AF_INET6) {
-		if (sproc_net_tcp6_parse_addr(local,
-		    local_addr6, &local_port) == -1) {
-			qwarnx("malformed line: local");
-			goto bad;
-		}
-		/* Parse remote */
-		if (sproc_net_tcp6_parse_addr(remote,
-		    remote_addr6, &remote_port) == -1) {
-			qwarnx("malformed line: remote");
-			goto bad;
+		r = sscanf(line,
+		    "%*s "			/* sl */
+		    "%08x%08x%08x%08x:%x"	/* local_address */
+		    "%08x%08x%08x%08x:%x"	/* remote_address */
+		    "%*s "			/* st */
+		    "%*s "			/* tx_queue+rx_queue */
+		    "%*s "			/* tr+tm->when */
+		    "%*s "			/* retnsmt */
+		    "%*s "			/* uid */
+		    "%*s "			/* timeout */
+		    "%lx "			/* inode */
+		    "%*s ",			/* ignored */
+		    &local_addr6[0], &local_addr6[1],
+		    &local_addr6[2], &local_addr6[3], &local_port,
+		    &remote_addr6[0], &remote_addr6[1],
+		    &remote_addr6[2], &remote_addr6[3], &remote_port,
+		    &inode);
 
+		if (r != 11) {
+			qwarnx("unexpected sscanf %d", r);
+			return (-1);
 		}
+	}
+
+#if 1
+	if (inode > 0) {
+		char local_buf[256], remote_buf[256];
+
+		if (af == AF_INET) {
+			if (inet_ntop(AF_INET, &local_addr4, local_buf,
+			    sizeof(local_buf)) == NULL) {
+				qwarn("inet_ntop");
+				return (-1);
+			}
+			if (inet_ntop(AF_INET, &remote_addr4, remote_buf,
+			    sizeof(remote_buf)) == NULL) {
+				qwarn("inet_ntop");
+				return (-1);
+			}
+		}
+		if (af == AF_INET6) {
+			if (inet_ntop(AF_INET6, local_addr6, local_buf,
+			    sizeof(local_buf)) == NULL) {
+				qwarn("inet_ntop");
+				return (-1);
+			}
+			if (inet_ntop(AF_INET6, local_addr6, remote_buf,
+			    sizeof(remote_buf)) == NULL) {
+				qwarn("inet_ntop");
+				return (-1);
+			}
+		}
+		printf("%s:%d -> %s:%d (%lu)\n",
+		    local_buf, local_port,
+		    remote_buf, remote_port, inode);
 	}
 #endif
-	/* Parse inode */
-	errno = 0;
-	/* printf("inode str=%s\n", inode); */
-	/* fflush(stdout); */
-	ino64 = strtoull(inode, &ep, 10);
-	if (inode[0] == 0 || *ep != 0) {
-		qwarnx("malformed line: inode");
-		goto bad;
-	}
-	if (errno == ERANGE && ino64 == ULLONG_MAX) {
-		qwarn("malformed line: inode");
-		goto bad;
-	}
-
-	if (ino64 > 0) {
-		char local_buf[32], remote_buf[32];
-
-		if (inet_ntop(AF_INET, &local_addr4, local_buf,
-		    sizeof(local_buf)) == NULL) {
-			qwarn("inet_ntop");
-			goto bad;
-		}
-		if (inet_ntop(AF_INET, &remote_addr4, remote_buf,
-		    sizeof(remote_buf)) == NULL) {
-			qwarn("inet_ntop");
-			goto bad;
-		}
-		printf("%s:%d -> %s:%d (%llu)\n",
-		    local_buf, local_port,
-		    remote_buf, remote_port, ino64);
-	}
-
 	/*
 	 * Inodes might be zero, in this case this is deemed an unnamed socket,
 	 * in kernel, a named socket is one where sock->socket != NULL. An
 	 * unnamed socket doesn't have a process attached to it anymore/yet.
 	 */
-	if (ino64 > 0) {
+	if (inode > 0) {
 		struct sproc_socket	*ss, *col;
 
 		if ((ss = calloc(1, sizeof(*ss))) == NULL)
-			goto bad;
-		ss->inode = ino64;
+			return (-1);
+		ss->inode = (u64)inode;
 
-		ss->socket.src.sin.sin_family = AF_INET;
-		ss->socket.src.sin.sin_addr.s_addr = local_addr4;
-		ss->socket.src.sin.sin_port = htons(local_port);
+		if (af == AF_INET) {
+			ss->socket.src.sin.sin_family = AF_INET;
+			ss->socket.src.sin.sin_addr.s_addr = local_addr4;
+			ss->socket.src.sin.sin_port = htons(local_port);
 
-		ss->socket.dst.sin.sin_family = AF_INET;
-		ss->socket.dst.sin.sin_addr.s_addr = remote_addr4;
-		ss->socket.dst.sin.sin_port = htons(remote_port);
+			ss->socket.dst.sin.sin_family = AF_INET;
+			ss->socket.dst.sin.sin_addr.s_addr = remote_addr4;
+			ss->socket.dst.sin.sin_port = htons(remote_port);
+		}
+
+		if (af == AF_INET6) {
+			ss->socket.src.sin.sin_family = AF_INET6;
+			memcpy(&ss->socket.src.sin6.sin6_addr, local_addr6, 16);
+			ss->socket.src.sin6.sin6_port = htons(local_port);
+			ss->socket.src.sin6.sin6_scope_id = 0;
+			ss->socket.src.sin6.sin6_flowinfo = 0;
+
+			ss->socket.dst.sin.sin_family = AF_INET6;
+			memcpy(&ss->socket.dst.sin6.sin6_addr, remote_addr6, 16);
+			ss->socket.dst.sin6.sin6_port = htons(remote_port);
+			ss->socket.dst.sin6.sin6_scope_id = 0;
+			ss->socket.dst.sin6.sin6_flowinfo = 0;
+		}
 
 		col = RB_INSERT(sproc_socket_by_inode, by_inode, ss);
 		if (col != NULL) {
 			free(ss);
 			qwarnx("socket collision");
-			goto bad;
+			return (-1);
 		}
 	}
 
-	free(line);
-
 	return (0);
-
-bad:
-	free(line);
-
-	return (-1);
 }
 
 static int
@@ -1760,7 +1617,6 @@ sproc_net_tcp(struct quark_queue *qq, int af, struct sproc_socket_by_inode *by_i
 	size_t		 line_len;
 	char		*line;
 	const char	*path;
-	/* char	*line, *k, *v; */
 
 	if (af != AF_INET && af != AF_INET6)
 		return (-1);
@@ -1793,8 +1649,10 @@ sproc_net_tcp(struct quark_queue *qq, int af, struct sproc_socket_by_inode *by_i
 		/* Skip header */
 		if (linenum == 0)
 			continue;
-		
-		sproc_net_tcp_line(qq, line, af, by_inode); /* XXX check error */
+
+		ret = sproc_net_tcp_line(qq, line, af, by_inode);
+		if (ret == -1)
+			break;
 	}
 	free(line);
 	fclose(f);
@@ -1871,12 +1729,12 @@ sproc_scrape(struct quark_queue *qq)
 
 	RB_INIT(&socket_by_inode);
 
-	r = sproc_net_tcp(qq, AF_INET, &socket_by_inode);
-	if (r == -1)
-		goto done;
-	/* r = sproc_net_tcp(qq, AF_INET6, &socket_by_inode); */
+	/* r = sproc_net_tcp(qq, AF_INET, &socket_by_inode); */
 	/* if (r == -1) */
 	/* 	goto done; */
+	r = sproc_net_tcp(qq, AF_INET6, &socket_by_inode);
+	if (r == -1)
+		goto done;
 
 	r = sproc_scrape_processes(qq, &socket_by_inode);
 
