@@ -1513,7 +1513,7 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 		    "%*s "	/* retnsmt */
 		    "%*s "	/* uid */
 		    "%*s "	/* timeout */
-		    "%lx "	/* inode */
+		    "%lu "	/* inode */
 		    "%*s ",	/* ignored */
 		    &local_addr4, &local_port,
 		    &remote_addr4, &remote_port,
@@ -1536,7 +1536,7 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 		    "%*s "			/* retnsmt */
 		    "%*s "			/* uid */
 		    "%*s "			/* timeout */
-		    "%lx "			/* inode */
+		    "%lu "			/* inode */
 		    "%*s ",			/* ignored */
 		    &local_addr6[0], &local_addr6[1],
 		    &local_addr6[2], &local_addr6[3], &local_port,
