@@ -379,8 +379,8 @@ struct quark_process_iter {
 
 struct quark_socket {
 	RB_ENTRY(quark_socket)	entry_by_src_dst;
-	struct quark_sockaddr	src;
-	struct quark_sockaddr	dst;
+	struct quark_sockaddr	local;
+	struct quark_sockaddr	remote;
 	u32			pid_origin;
 	u32			pid_last_use;
 	u64			tm_established;

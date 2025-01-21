@@ -466,14 +466,14 @@ process_by_pid_cmp(struct quark_process *a, struct quark_process *b)
 
 static struct quark_socket *
 socket_cache_get(struct quark_queue *qq,
-    struct quark_sockaddr *src, struct quark_sockaddr *dst, int alloc, int *lookup)
+    struct quark_sockaddr *local, struct quark_sockaddr *remote, int alloc, int *lookup)
 {
 	struct quark_socket	 key;
 	struct quark_socket	*qsock;
 
 	*lookup = 0;
-	key.src = *src;
-	key.dst = *dst;
+	key.local = *local;
+	key.remote = *remote;
 	qsock = RB_FIND(socket_by_src_dst, &qq->socket_by_src_dst, &key);
 	if (qsock != NULL) {
 		*lookup = 1;
@@ -488,8 +488,8 @@ socket_cache_get(struct quark_queue *qq,
 	qsock = calloc(1, sizeof(*qsock));
 	if (qsock == NULL)
 		return (NULL);
-	qsock->src = key.src;
-	qsock->dst = key.dst;
+	qsock->local = key.local;
+	qsock->remote = key.remote;
 	if (RB_INSERT(socket_by_src_dst, &qq->socket_by_src_dst, qsock) != NULL) {
 		err(1, "collision, this is a bug");
 		free(qsock);
@@ -512,33 +512,33 @@ socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
 	size_t	cmplen;
 	int	r;
 
-	if (a->dst.port < b->dst.port)
+	if (a->remote.port < b->remote.port)
 		return (-1);
-	else if (a->dst.port > b->dst.port)
+	else if (a->remote.port > b->remote.port)
 		return (1);
 
-	if (a->src.port < b->src.port)
+	if (a->local.port < b->local.port)
 		return (-1);
-	else if (a->src.port > b->src.port)
+	else if (a->local.port > b->local.port)
 		return (1);
 
-	if (a->dst.af < b->dst.af)
+	if (a->remote.af < b->remote.af)
 		return (-1);
-	else if (a->dst.af > b->dst.af)
+	else if (a->remote.af > b->remote.af)
 		return (1);
 
-	if (a->src.af < b->src.af)
+	if (a->local.af < b->local.af)
 		return (-1);
-	else if (a->src.af > b->src.af)
+	else if (a->local.af > b->local.af)
 		return (1);
 
-	cmplen = a->dst.af == AF_INET ? 4 : 16;
-	r = memcmp(&a->dst.addr6, &b->dst.addr6, cmplen);
+	cmplen = a->remote.af == AF_INET ? 4 : 16;
+	r = memcmp(&a->remote.addr6, &b->remote.addr6, cmplen);
 	if (r != 0)
 		return (r);
 
-	cmplen = a->src.af == AF_INET ? 4 : 16;
-	r = memcmp(&a->src.addr6, &b->src.addr6, cmplen);
+	cmplen = a->local.af == AF_INET ? 4 : 16;
+	r = memcmp(&a->local.addr6, &b->local.addr6, cmplen);
 
 	return (r);
 }
@@ -1590,23 +1590,23 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 			return (-1);
 		ss->inode = (u64)inode;
 
-		ss->socket.src.port = htons(local_port);
-		ss->socket.dst.port = htons(remote_port);
+		ss->socket.local.port = htons(local_port);
+		ss->socket.remote.port = htons(remote_port);
 
 		if (af == AF_INET) {
-			ss->socket.src.af = AF_INET;
-			ss->socket.src.addr4 = local_addr4;
+			ss->socket.local.af = AF_INET;
+			ss->socket.local.addr4 = local_addr4;
 
-			ss->socket.dst.af = AF_INET;
-			ss->socket.dst.addr4 = remote_addr4;
+			ss->socket.remote.af = AF_INET;
+			ss->socket.remote.addr4 = remote_addr4;
 		}
 
 		if (af == AF_INET6) {
-			ss->socket.src.af = AF_INET6;
-			memcpy(ss->socket.src.addr6, local_addr6, 16);
+			ss->socket.local.af = AF_INET6;
+			memcpy(ss->socket.local.addr6, local_addr6, 16);
 
-			ss->socket.dst.af = AF_INET6;
-			memcpy(ss->socket.dst.addr6, remote_addr6, 16);
+			ss->socket.remote.af = AF_INET6;
+			memcpy(ss->socket.remote.addr6, remote_addr6, 16);
 		}
 
 		col = RB_INSERT(sproc_socket_by_inode, by_inode, ss);
@@ -2364,10 +2364,10 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 
 	bzero(src_buf, sizeof(src_buf));
 	bzero(dst_buf, sizeof(dst_buf));
-	if (inet_ntop(AF_INET, &qsock->src.addr4,
+	if (inet_ntop(AF_INET, &qsock->local.addr4,
 	    src_buf, sizeof(src_buf)) == NULL)
 		errx(1, "src");
-	if (inet_ntop(AF_INET, &qsock->dst.addr4,
+	if (inet_ntop(AF_INET, &qsock->remote.addr4,
 	    dst_buf, sizeof(dst_buf)) == NULL)
 		errx(1, "dst");
 
@@ -2383,15 +2383,10 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 
 	printf("(pid=%d) %s:%d -> %s:%d\t(%s) lookup=%d)\n",
 	    raw->pid,
-	    src_buf, ntohs(qsock->src.port),
-	    dst_buf, ntohs(qsock->dst.port),
+	    src_buf, ntohs(qsock->local.port),
+	    dst_buf, ntohs(qsock->remote.port),
 	    str, lookup);
 
-	/* printf("%s:%d (st=%d)\n", */
-	/*     old_state == 0 ? "NEW" : "EXISTING", */
-	/*     inet_ntoa(qsock->dst.sin.sin_addr), */
-	/*     ntohs(qsock->dst.sin.sin_port), */
-	/*     raw->sock_state.state); */
 	fflush(stdout);
 
 	return (NULL);
