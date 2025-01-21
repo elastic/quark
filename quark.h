@@ -263,7 +263,7 @@ struct quark_event {
 #define QUARK_EV_EXIT		(1 << 2)
 #define QUARK_EV_SETPROCTITLE	(1 << 3)
 #define QUARK_EV_SNAPSHOT	(1 << 4)
-#define QUARK_EV_SOCKET		(1 << 5)
+#define QUARK_EV_CONNECTION	(1 << 5)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
@@ -377,8 +377,10 @@ struct quark_socket {
 	RB_ENTRY(quark_socket)	entry_by_src_dst;
 	struct quark_sockaddr	src;
 	struct quark_sockaddr	dst;
-	int			state;
-	u32			pid;
+	u32			pid_origin;
+	u32			pid_last_use;
+	u64			tm_established;
+	u64			tm_closed;
 };
 
 struct quark_queue_stats {

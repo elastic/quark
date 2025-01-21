@@ -561,8 +561,8 @@ event_type_str(u64 event)
 		return "SETPROCTITLE";
 	case QUARK_EV_SNAPSHOT:
 		return "SNAPSHOT";
-	case QUARK_EV_SOCKET:
-		return "SOCKET";
+	case QUARK_EV_CONNECTION:
+		return "CONNECTION";
 	default:
 		return "?";
 	}
@@ -1640,7 +1640,7 @@ sproc_net_tcp(struct quark_queue *qq, int af, struct sproc_socket_by_inode *by_i
 	line_len = 0;
 	line = NULL;
 	for (linenum = 0; (n = getline(&line, &line_len, f)) != -1; linenum++) {
-		if (n < 5 || line[n - 1] != '\n') {
+		if (n < 1 || line[n - 1] != '\n') {
 			qwarnx("bad line");
 			ret = -1;
 			break;
@@ -1729,9 +1729,9 @@ sproc_scrape(struct quark_queue *qq)
 
 	RB_INIT(&socket_by_inode);
 
-	/* r = sproc_net_tcp(qq, AF_INET, &socket_by_inode); */
-	/* if (r == -1) */
-	/* 	goto done; */
+	r = sproc_net_tcp(qq, AF_INET, &socket_by_inode);
+	if (r == -1)
+		goto done;
 	r = sproc_net_tcp(qq, AF_INET6, &socket_by_inode);
 	if (r == -1)
 		goto done;
@@ -2322,10 +2322,6 @@ quark_queue_get_snap_event(struct quark_queue *qq)
 	return (qev);
 }
 
-static struct quark_socket *
-socket_cache_get(struct quark_queue *qq, struct quark_sockaddr *src, struct
-quark_sockaddr *dst, int alloc, int *);
-
 static const struct quark_event *
 raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 {
@@ -2353,7 +2349,6 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 	    1, &lookup);
 	if (qsock == NULL)
 		return (NULL);
-	qsock->state = 0;	/* XXX TODO */
 
 	bzero(src_buf, sizeof(src_buf));
 	bzero(dst_buf, sizeof(dst_buf));
