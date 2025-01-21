@@ -202,12 +202,16 @@ struct raw_exec_connector {
 	struct raw_task	task;
 };
 
-/* XXX move me */
+/* not like sockaddr{}, we won't use this on sockets anyway */
 struct quark_sockaddr {
+	int af;
+
 	union {
-		struct sockaddr_in sin;
-		struct sockaddr_in6 sin6;
+		u32 addr4;
+		u32 addr6[4];
 	};
+
+	u16 port;
 };
 
 enum connection {
@@ -218,8 +222,8 @@ enum connection {
 };
 
 struct raw_connection {
-	struct quark_sockaddr	src;
-	struct quark_sockaddr	dst;
+	struct quark_sockaddr	local;
+	struct quark_sockaddr	remote;
 	enum connection		conn;
 };
 

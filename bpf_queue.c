@@ -112,7 +112,6 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 	struct ebpf_process_fork_event	*fork;
 	struct ebpf_process_exit_event	*exit;
 	struct ebpf_process_exec_event	*exec;
-	struct ebpf_net_event		*net;
 	struct ebpf_varlen_field	*field;
 	struct ebpf_ctx			 ebpf_ctx;
 
@@ -210,11 +209,15 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		break;
 	case EBPF_EVENT_NETWORK_CONNECTION_ACCEPTED:
 	case EBPF_EVENT_NETWORK_CONNECTION_ATTEMPTED:
-	case EBPF_EVENT_NETWORK_CONNECTION_CLOSED:
+	case EBPF_EVENT_NETWORK_CONNECTION_CLOSED: {
+		struct ebpf_net_event	*net;
+		struct raw_connection	*conn;
+
 		net = (struct ebpf_net_event *)ev;
 		if ((raw = raw_event_alloc(RAW_CONNECTION)) == NULL)
 			goto bad;
 
+		conn = &raw->connection;
 		raw->pid = net->pids.tgid; /* tgid not tid! */
 		raw->time = ev->ts;
 
@@ -226,30 +229,24 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.cwd = NULL;
 
 		if (net->net.family == EBPF_NETWORK_EVENT_AF_INET) {
-			raw->connection.src.sin.sin_family = AF_INET;
-			memcpy(&raw->connection.src.sin.sin_addr, net->net.saddr, 4);
-			raw->connection.src.sin.sin_port = htons(net->net.sport);
+			conn->local.af = AF_INET;
+			memcpy(&conn->local.addr4, net->net.saddr, 4);
+			conn->local.port = htons(net->net.sport);
 
-			raw->connection.dst.sin.sin_family = AF_INET;
-			memcpy(&raw->connection.dst.sin.sin_addr,
-			    net->net.daddr, 4);
-			raw->connection.dst.sin.sin_port =
-			    htons(net->net.dport);
-
+			conn->remote.af = AF_INET;
+			memcpy(&conn->remote.addr4, net->net.daddr, 4);
+			conn->remote.port = htons(net->net.dport);
 		} else if (net->net.family == EBPF_NETWORK_EVENT_AF_INET6) {
-			raw->connection.src.sin6.sin6_family = AF_INET6;
-			memcpy(&raw->connection.src.sin6.sin6_addr,
-			    net->net.saddr6, 16);
-			raw->connection.src.sin6.sin6_port = htons(net->net.sport);
+			conn->local.af = AF_INET6;
+			memcpy(conn->local.addr6, net->net.saddr6, 16);
 
-			raw->connection.dst.sin.sin_family = AF_INET6;
-			memcpy(&raw->connection.dst.sin6.sin6_addr, net->net.daddr, 16);
-			raw->connection.dst.sin6.sin6_port = htons(net->net.dport);
-
-			raw->connection.dst.sin6.sin6_flowinfo = 0;
-			raw->connection.dst.sin6.sin6_scope_id = 0;
+			conn->remote.af = AF_INET6;
+			memcpy(conn->remote.addr6, net->net.daddr6, 16);
 		} else
-			errx(1, "bad family %d", net->net.family);
+			goto bad;
+
+		conn->local.port = htons(net->net.sport);
+		conn->remote.port = htons(net->net.dport);
 
 		switch (ev->type) {
 		case EBPF_EVENT_NETWORK_CONNECTION_ACCEPTED:
@@ -266,6 +263,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		}
 
 		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;

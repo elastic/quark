@@ -509,21 +509,38 @@ socket_cache_delete(struct quark_queue *qq, struct quark_socket *qs)
 static int
 socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
 {
-	size_t	slen;
+	size_t	cmplen;
+	int	r;
 
-	if (a->src.sin.sin_family != AF_INET) {
-		err(1, "yeah");
+	if (a->dst.port < b->dst.port)
 		return (-1);
-	}
-
-	if (a->src.sin.sin_family != b->src.sin.sin_family)
-		return (-1);
-	else if (a->dst.sin.sin_port != b->dst.sin.sin_port)
+	else if (a->dst.port > b->dst.port)
 		return (1);
 
-	slen = a->src.sin.sin_family == AF_INET6 ? 16 : 4;
+	if (a->src.port < b->src.port)
+		return (-1);
+	else if (a->src.port > b->src.port)
+		return (1);
 
-	return (memcmp(&a->src.sin.sin_addr, &b->src.sin.sin_addr, slen));
+	if (a->dst.af < b->dst.af)
+		return (-1);
+	else if (a->dst.af > b->dst.af)
+		return (1);
+
+	if (a->src.af < b->src.af)
+		return (-1);
+	else if (a->src.af > b->src.af)
+		return (1);
+
+	cmplen = a->dst.af == AF_INET ? 4 : 16;
+	r = memcmp(&a->dst.addr6, &b->dst.addr6, cmplen);
+	if (r != 0)
+		return (r);
+
+	cmplen = a->src.af == AF_INET ? 4 : 16;
+	r = memcmp(&a->src.addr6, &b->src.addr6, cmplen);
+
+	return (r);
 }
 
 static const char *
@@ -1573,28 +1590,23 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 			return (-1);
 		ss->inode = (u64)inode;
 
-		if (af == AF_INET) {
-			ss->socket.src.sin.sin_family = AF_INET;
-			ss->socket.src.sin.sin_addr.s_addr = local_addr4;
-			ss->socket.src.sin.sin_port = htons(local_port);
+		ss->socket.src.port = htons(local_port);
+		ss->socket.dst.port = htons(remote_port);
 
-			ss->socket.dst.sin.sin_family = AF_INET;
-			ss->socket.dst.sin.sin_addr.s_addr = remote_addr4;
-			ss->socket.dst.sin.sin_port = htons(remote_port);
+		if (af == AF_INET) {
+			ss->socket.src.af = AF_INET;
+			ss->socket.src.addr4 = local_addr4;
+
+			ss->socket.dst.af = AF_INET;
+			ss->socket.dst.addr4 = remote_addr4;
 		}
 
 		if (af == AF_INET6) {
-			ss->socket.src.sin.sin_family = AF_INET6;
-			memcpy(&ss->socket.src.sin6.sin6_addr, local_addr6, 16);
-			ss->socket.src.sin6.sin6_port = htons(local_port);
-			ss->socket.src.sin6.sin6_scope_id = 0;
-			ss->socket.src.sin6.sin6_flowinfo = 0;
+			ss->socket.src.af = AF_INET6;
+			memcpy(ss->socket.src.addr6, local_addr6, 16);
 
-			ss->socket.dst.sin.sin_family = AF_INET6;
-			memcpy(&ss->socket.dst.sin6.sin6_addr, remote_addr6, 16);
-			ss->socket.dst.sin6.sin6_port = htons(remote_port);
-			ss->socket.dst.sin6.sin6_scope_id = 0;
-			ss->socket.dst.sin6.sin6_flowinfo = 0;
+			ss->socket.dst.af = AF_INET6;
+			memcpy(ss->socket.dst.addr6, remote_addr6, 16);
 		}
 
 		col = RB_INSERT(sproc_socket_by_inode, by_inode, ss);
@@ -2332,8 +2344,8 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 
 	/* qev = &qq->event_storage; */
 
-	if (raw->connection.src.sin.sin_family != AF_INET ||
-	    raw->connection.dst.sin.sin_family != AF_INET) {
+	if (raw->connection.local.af != AF_INET ||
+	    raw->connection.remote.af != AF_INET) {
 		printf("HEIN HEIN\n");
 		printf("HEIN HEIN\n");
 		return (NULL);
@@ -2345,17 +2357,17 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 	/*     dst_buf, ntohs(dst->sin_port)); */
 
 
-	qsock = socket_cache_get(qq, &raw->connection.src, &raw->connection.dst,
+	qsock = socket_cache_get(qq, &raw->connection.local, &raw->connection.remote,
 	    1, &lookup);
 	if (qsock == NULL)
 		return (NULL);
 
 	bzero(src_buf, sizeof(src_buf));
 	bzero(dst_buf, sizeof(dst_buf));
-	if (inet_ntop(AF_INET, &qsock->src.sin.sin_addr,
+	if (inet_ntop(AF_INET, &qsock->src.addr4,
 	    src_buf, sizeof(src_buf)) == NULL)
 		errx(1, "src");
-	if (inet_ntop(AF_INET, &qsock->dst.sin.sin_addr,
+	if (inet_ntop(AF_INET, &qsock->dst.addr4,
 	    dst_buf, sizeof(dst_buf)) == NULL)
 		errx(1, "dst");
 
@@ -2371,8 +2383,8 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 
 	printf("(pid=%d) %s:%d -> %s:%d\t(%s) lookup=%d)\n",
 	    raw->pid,
-	    src_buf, ntohs(qsock->src.sin.sin_port),
-	    dst_buf, ntohs(qsock->dst.sin.sin_port),
+	    src_buf, ntohs(qsock->src.port),
+	    dst_buf, ntohs(qsock->dst.port),
 	    str, lookup);
 
 	/* printf("%s:%d (st=%d)\n", */
