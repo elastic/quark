@@ -31,6 +31,8 @@ struct quark_event;
 struct quark_process;
 struct quark_process_iter;
 struct quark_socket;
+struct quark_socket_iter;
+struct quark_sockaddr;
 struct quark_queue;
 struct quark_queue_attr;
 struct quark_queue_stats;
@@ -49,9 +51,12 @@ int	 quark_dump_process_cache_graph(struct quark_queue *, FILE *);
 int	 quark_dump_raw_event_graph(struct quark_queue *, FILE *, FILE *);
 int	 quark_event_dump(const struct quark_event *, FILE *);
 void	 quark_process_iter_init(struct quark_process_iter *, struct quark_queue *);
-const struct quark_process	*quark_process_iter_next(struct quark_process_iter *);
-const struct quark_process	*quark_process_lookup(struct quark_queue *, int);
-/* const struct quark_socket	*quark_socket_lookup(struct quark_sockaddr *); */
+const struct quark_process *quark_process_iter_next(struct quark_process_iter *);
+const struct quark_process *quark_process_lookup(struct quark_queue *, int);
+void	 quark_socket_iter_init(struct quark_socket_iter *, struct quark_queue *);
+const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
+const struct quark_socket *quark_socket_lookup(struct quark_queue *,
+    struct quark_sockaddr *, struct quark_sockaddr *);
 
 /* btf.c */
 struct quark_btf_target {
@@ -397,6 +402,11 @@ struct quark_socket {
 	u32			pid_last_use;
 	u64			established_time;
 	u64			close_time;
+};
+
+struct quark_socket_iter {
+	struct quark_queue	*qq;
+	struct quark_socket	*qsk;
 };
 
 struct quark_queue_stats {

@@ -505,6 +505,7 @@ process_by_pid_cmp(struct quark_process *a, struct quark_process *b)
 /*
  * Socket stuff
  */
+
 #if 0
 static int
 sockaddr_to_str(const struct quark_sockaddr *qsa, char *buf, size_t len)
@@ -547,7 +548,7 @@ socket_to_str(const struct quark_socket *qsk, char *buf, size_t len)
 
 static struct quark_socket *
 socket_cache_get(struct quark_queue *qq,
-    struct quark_sockaddr *local, struct quark_sockaddr *remote, int alloc, int *lookup)
+    struct quark_sockaddr *local, struct quark_sockaddr *remote, int alloc)
 {
 	struct quark_socket	 key;
 	struct quark_socket	*qsk;
@@ -557,14 +558,11 @@ socket_cache_get(struct quark_queue *qq,
 	    (local->af != remote->af))
 		return (errno = EINVAL, NULL);
 
-	*lookup = 0;
 	key.local = *local;
 	key.remote = *remote;
 	qsk = RB_FIND(socket_by_src_dst, &qq->socket_by_src_dst, &key);
-	if (qsk != NULL) {
-		*lookup = 1;
+	if (qsk != NULL)
 		return (qsk);
-	}
 
 	if (!alloc) {
 		errno = ESRCH;
@@ -628,6 +626,32 @@ socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
 	r = memcmp(&a->local.addr6, &b->local.addr6, cmplen);
 
 	return (r);
+}
+
+const struct quark_socket *
+quark_socket_lookup(struct quark_queue *qq,
+    struct quark_sockaddr *local, struct quark_sockaddr *remote)
+{
+	return (socket_cache_get(qq, local, remote, 0));
+}
+
+void
+quark_socket_iter_init(struct quark_socket_iter *qi, struct quark_queue *qq)
+{
+	qi->qq = qq;
+	qi->qsk = RB_MIN(socket_by_src_dst, &qq->socket_by_src_dst);
+}
+
+const struct quark_socket *
+quark_socket_iter_next(struct quark_socket_iter *qi)
+{
+	const struct quark_socket	*qsk;
+
+	qsk = qi->qsk;
+	if (qi->qsk != NULL)
+		qi->qsk = RB_NEXT(socket_by_src_dst, &qq->socket_by_src_dst, qi->qsk);
+
+	return (qsk);
 }
 
 static const char *
