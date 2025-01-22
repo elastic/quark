@@ -384,19 +384,15 @@ struct ebpf_net_info {
     enum ebpf_net_info_af family;
     union {
         uint8_t saddr[4];
-	    uint32_t saddr_v;
         uint8_t saddr6[16];
     }; // Network byte order
     union {
         uint8_t daddr[4];
-	    uint32_t daddr_v;
         uint8_t daddr6[16];
     };              // Network byte order
     uint16_t sport; // Host byte order
     uint16_t dport; // Host byte order
     uint32_t netns;
-	uint32_t op;
-	uint32_t state;		/* XXX moveme */
     union {
         struct ebpf_net_info_tcp_close close;
     } tcp;
@@ -407,9 +403,6 @@ struct ebpf_net_event {
     struct ebpf_pid_info pids;
     struct ebpf_net_info net;
     char comm[TASK_COMM_LEN];
-	struct ebpf_cred_info creds;
-	struct ebpf_tty_dev ctty;
-	struct ebpf_namespace_info ns;
 } __attribute__((packed));
 
 struct ebpf_dns_event {

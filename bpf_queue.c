@@ -103,8 +103,6 @@ ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 	strlcpy(task->comm, ebpf_ctx->comm, sizeof(task->comm));
 }
 
-#include <arpa/inet.h>
-
 static struct raw_event *
 ebpf_events_to_raw(struct ebpf_event_header *ev)
 {
@@ -221,13 +219,6 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		raw->pid = net->pids.tgid; /* tgid not tid! */
 		raw->time = ev->ts;
 
-		ebpf_ctx.pids = &net->pids;
-		ebpf_ctx.creds = &net->creds;
-		ebpf_ctx.ctty = &net->ctty;
-		ebpf_ctx.comm = net->comm;
-		ebpf_ctx.ns = &net->ns;
-		ebpf_ctx.cwd = NULL;
-
 		if (net->net.family == EBPF_NETWORK_EVENT_AF_INET) {
 			conn->local.af = AF_INET;
 			memcpy(&conn->local.addr4, net->net.saddr, 4);
@@ -337,15 +328,6 @@ bpf_queue_open(struct quark_queue *qq)
 	bpf_program__set_autoload(bqq->prog->progs.kretprobe__tcp_v6_connect, 1);
 
 	bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_close, 1);
-	/* bpf_program__set_autoload(bqq->prog->progs.sockops_state, 1); */
-	/* bpf_program__set_autoload(bqq->prog->progs.test_egress, 1); */
-	/* bpf_program__set_autoload(bqq->prog->progs.test_ingress, 1); */
-	/* bpf_program__set_autoload(bqq->prog->progs.bpf_sockops_test, 1); */
-	/* bpf_program__set_autoload(bqq->prog->progs.bpf_sock_create, 1); */
-	/* bpf_program__set_autoload(bqq->prog->progs.bpf_post_bind4, 1); */
-	/* bpf_program__set_autoload(bqq->prog->progs.bpf_udp4_sendmsg, 1); */
-	/* bpf_program__set_autoload(bqq->prog->progs.bpf_socket_egress, 1); */
-
 	
 	error = bpf_map__set_max_entries(bqq->prog->maps.event_buffer_map,
 	    get_nprocs_conf());
@@ -364,47 +346,6 @@ bpf_queue_open(struct quark_queue *qq)
 	if (error) {
 		qwarn("bpf_prog__attach");
 		goto fail;
-	}
-
-	{
-		/* int cgroup_fd;	/\* XXX LEAKS *\/ */
-
-		/* cgroup_fd = open("/sys/fs/cgroup", O_RDONLY); */
-		/* if (cgroup_fd == -1) */
-		/* 	err(1, "open cgroup"); */
-
-		/* XXX leaks */
-
-		/* if (bpf_program__attach_cgroup(bqq->prog->progs.sockops_state, */
-		/*     cgroup_fd) == NULL) */
-		/* 	err(1, "attach cgroup"); */
-
-		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_sockops_test, */
-		/*     cgroup_fd) == NULL) */
-		/* 	err(1, "attach cgroup"); */
-
-		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_sock_create, */
-		/*     cgroup_fd) == NULL) */
-		/* 	err(1, "attach cgroup"); */
-
-		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_post_bind4, */
-		/*     cgroup_fd) == NULL) */
-		/* 	err(1, "attach cgroup"); */
-
-		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_udp4_sendmsg, */
-		/*     cgroup_fd) == NULL) */
-		/* 	err(1, "attach cgroup"); */
-
-		/* if (bpf_program__attach_cgroup(bqq->prog->progs.bpf_socket_egress, */
-		/*     cgroup_fd) == NULL) */
-		/* 	err(1, "attach cgroup"); */
-
-		/* if (bpf_program__attach_cgroup(bqq->prog->progs.test_egress, */
-		/*     cgroup_fd) == NULL) */
-		/* 	err(1, "attach cgroup"); */
-		/* if (bpf_program__attach_cgroup(bqq->prog->progs.test_ingress, */
-		/*     cgroup_fd) == NULL) */
-		/* 	err(1, "attach cgroup"); */
 	}
 
 	/*

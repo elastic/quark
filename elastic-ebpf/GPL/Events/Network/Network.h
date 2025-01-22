@@ -88,10 +88,6 @@ static int ebpf_network_event__fill(struct ebpf_net_event *evt, struct sock *sk)
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     ebpf_pid_info__fill(&evt->pids, task);
     bpf_get_current_comm(evt->comm, TASK_COMM_LEN);
-    ebpf_cred_info__fill(&evt->creds, task);
-    ebpf_ctty__fill(&evt->ctty, task);
-    /* ebpf_comm__fill(event->comm, sizeof(event->comm), task); */
-    ebpf_ns__fill(&evt->ns, task);
     evt->hdr.ts      = bpf_ktime_get_ns();
     evt->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 

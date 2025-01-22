@@ -343,4 +343,3 @@ int BPF_KPROBE(kprobe__tcp_close, struct sock *sk, long timeout)
 {
     return tcp_close__enter(sk);
 }
-
