@@ -1272,7 +1272,7 @@ struct sproc_socket {
 };
 
 static int
-socket_by_inode_cmp(struct sproc_socket *a, struct sproc_socket *b)
+sproc_socket_by_inode_cmp(struct sproc_socket *a, struct sproc_socket *b)
 {
 	if (a->inode < b->inode)
 		return (-1);
@@ -1285,9 +1285,9 @@ socket_by_inode_cmp(struct sproc_socket *a, struct sproc_socket *b)
 RB_HEAD(sproc_socket_by_inode, sproc_socket);
 
 RB_PROTOTYPE(sproc_socket_by_inode, sproc_socket,
-    entry_by_inode, socket_by_inode_cmp);
+    entry_by_inode, sproc_socket_by_inode_cmp);
 RB_GENERATE(sproc_socket_by_inode, sproc_socket,
-    entry_by_inode, socket_by_inode_cmp);
+    entry_by_inode, sproc_socket_by_inode_cmp);
 
 static int
 sproc_status_line(struct quark_process *qp, const char *k, const char *v)
@@ -1520,53 +1520,101 @@ sproc_namespace(struct quark_process *qp, const char *path, u32 *dst, int dfd)
 }
 
 static int
-sproc_pid_sockets(struct quark_queue *qq, int pid, int dfd)
+sproc_pid_sockets(struct quark_queue *qq,
+    struct sproc_socket_by_inode *by_inode, int pid, int dfd)
 {
 	DIR		*dir;
 	struct dirent	*d;
-	int		 fdfd, ret;
-
-	ret = -1;
-	dir = NULL;
+	int		 fdfd;
 
 	if ((fdfd = openat(dfd, "fd", O_RDONLY)) == -1) {
 		qwarn("open fd");
-		goto fail;
+		return (-1);
 	}
 	dir = fdopendir(fdfd);
 	if (dir == NULL) {
+		close(fdfd);
 		qwarn("fdopendir fdfd");
-		goto fail;
+		return (-1);
 	}
 
 	while ((d = readdir(dir)) != NULL) {
-		char	buf[256];
-		ssize_t n;
+		char			 buf[256];
+		ssize_t			 n;
+		u_long			 inode	= 0;
+		const char		*needle = "socket:[";
+		struct sproc_socket	*ss, ss_key;
+		struct quark_socket	*qsk, qsk_key;
 
 		if (d->d_type != DT_LNK)
 			continue;
-
 		n = qreadlinkat(fdfd, d->d_name, buf, sizeof(buf));
 		if (n == -1)
 			qwarn("qreadlinkat %s", d->d_name);
 		if (n <= 0)
 			continue;
+		if (strncmp(buf, needle, strlen(needle)))
+			continue;
+		if (sscanf(buf, "socket:[%lu]", &inode) != 1) {
+			qwarnx("sscanf can't get inode");
+			continue;
+		}
 
-		printf("pid %d fd %s -> %s\n", pid, d->d_name, buf);
+		bzero(&ss_key, sizeof(ss_key));
+		ss_key.inode = inode;
+		ss = RB_FIND(sproc_socket_by_inode, by_inode, &ss_key);
+		/*
+		 * We're only interested in TCP sockets, we end up finding
+		 * AF_UNIX and SOCK_DGRAM here as well, so it's normal to have
+		 * many misses.
+		 */
+		if (ss == NULL)
+			continue;
+
+		/*
+		 * Maybe another process already references the same socket.
+		 */
+		bzero(&qsk_key, sizeof(qsk_key));
+		qsk_key.local = ss->socket.local;
+		qsk_key.remote = ss->socket.remote;
+		qsk = RB_FIND(socket_by_src_dst, &qq->socket_by_src_dst,
+		    &qsk_key);
+		if (qsk != NULL) {
+			/* XXX TODO WRITE AN EXAMPLE TO TRIGGER THIS */
+			printf("EXISTING !!! pid %d fd %s -> %s (inode=%lu, ss=%p)\n", pid,
+			    d->d_name, buf, inode, ss);
+
+			continue;
+		}
+
+		qsk = calloc(1, sizeof(*qsk));
+		if (qsk == NULL) {
+			qwarn("calloc");
+			continue;
+		}
+		qsk->local = ss->socket.local;
+		qsk->remote = ss->socket.remote;
+		qsk->established_time = 1; /* XXXXXXXX */
+		qsk->pid_origin = qsk->pid_last_use = pid; /* can't assert origin */
+
+		if (RB_INSERT(socket_by_src_dst, &qq->socket_by_src_dst,
+		    qsk) != NULL) {
+			qwarnx("socket collision, this is a bug");
+			free(qsk);
+			continue;
+		}
+		printf("pid %d fd %s -> %s (inode=%lu, ss=%p)\n", pid,
+		    d->d_name, buf, inode, ss);
 	}
 
-	ret = 0;
-fail:
-	if (dir != NULL)
-		closedir(dir);
-	if (fdfd != -1)
-		close(fdfd);
+	closedir(dir);
 
-	return (ret);
+	return (0);
 }
 
 static int
-sproc_pid(struct quark_queue *qq, int pid, int dfd)
+sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
+    int pid, int dfd)
 {
 	struct quark_process	*qp;
 
@@ -1600,7 +1648,7 @@ sproc_pid(struct quark_queue *qq, int pid, int dfd)
 	if (qreadlinkat(dfd, "cwd", qp->cwd, sizeof(qp->cwd)) > 0)
 		qp->flags |= QUARK_F_CWD;
 
-	return sproc_pid_sockets(qq, pid, dfd);
+	return sproc_pid_sockets(qq, by_inode, pid, dfd);
 }
 
 static int
@@ -1838,7 +1886,7 @@ sproc_scrape_processes(struct quark_queue *qq, struct sproc_socket_by_inode *by_
 				qwarnx("bad pid %s: %s", p->fts_name, errstr);
 				goto next;
 			}
-			if (sproc_pid(qq, pid, dfd) == -1)
+			if (sproc_pid(qq, by_inode, pid, dfd) == -1)
 				qwarnx("can't scrape %s", p->fts_name);
 next:
 			close(dfd);
