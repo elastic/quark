@@ -349,7 +349,7 @@ bpf_queue_open(struct quark_queue *qq)
 	}
 
 	/*
-	 * there doesn't seem to be a watermark setting for ebpf!
+	 * There doesn't seem to be a watermark setting for ebpf!
 	 */
 	ringbuf_opts.sz = sizeof(ringbuf_opts);
 	bqq->ringbuf = ring_buffer__new(bpf_map__fd(bqq->prog->maps.ringbuf),
