@@ -689,8 +689,10 @@ event_type_str(u64 event)
 		return "SETPROCTITLE";
 	case QUARK_EV_SNAPSHOT:
 		return "SNAPSHOT";
-	case QUARK_EV_CONNECTION:
-		return "CONNECTION";
+	case QUARK_EV_CONNECTION_ESTABLISHED:
+		return "CONNECTION_ESTABLISHED";
+	case QUARK_EV_CONNECTION_CLOSED:
+		return "CONNECTION_CLOSED";
 	default:
 		return "?";
 	}
@@ -997,7 +999,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	events_type_str(qev->events, events, sizeof(events));
 	P("->%d (%s)\n", pid, events);
 
-	if (qev->events & QUARK_EV_CONNECTION) {
+	if (qev->events & (QUARK_EV_CONNECTION_ESTABLISHED|QUARK_EV_CONNECTION_CLOSED)) {
 		char local[INET6_ADDRSTRLEN], remote[INET6_ADDRSTRLEN];
 		flagname = "NET";
 
@@ -1671,6 +1673,7 @@ sproc_pid_sockets(struct quark_queue *qq,
 		    d->d_name, buf, inode, ss);
 	}
 
+	/* closedir() closes the backing `fdfd` */
 	closedir(dir);
 
 	return (0);
@@ -1723,6 +1726,7 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 	u_int	local_addr6[4], remote_addr6[4];
 	u_int	local_port, remote_port;
 	u_long	inode;
+	u_int	state;
 	int	r;
 
 	if (af != AF_INET && af != AF_INET6)
@@ -1733,7 +1737,7 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 		    "%*s "	/* sl */
 		    "%x:%x "	/* local_address */
 		    "%x:%x "	/* remote_address */
-		    "%*s "	/* st */
+		    "%x "	/* st */
 		    "%*s "	/* tx_queue+rx_queue */
 		    "%*s "	/* tr+tm->when */
 		    "%*s "	/* retnsmt */
@@ -1743,9 +1747,10 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 		    "%*s ",	/* ignored */
 		    &local_addr4, &local_port,
 		    &remote_addr4, &remote_port,
+		    &state,
 		    &inode);
 
-		if (r != 5) {
+		if (r != 6) {
 			qwarnx("unexpected sscanf %d", r);
 			return (-1);
 		}
@@ -1756,7 +1761,7 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 		    "%*s "			/* sl */
 		    "%08x%08x%08x%08x:%x"	/* local_address */
 		    "%08x%08x%08x%08x:%x"	/* remote_address */
-		    "%*s "			/* st */
+		    "%x "			/* st */
 		    "%*s "			/* tx_queue+rx_queue */
 		    "%*s "			/* tr+tm->when */
 		    "%*s "			/* retnsmt */
@@ -1768,13 +1773,22 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 		    &local_addr6[2], &local_addr6[3], &local_port,
 		    &remote_addr6[0], &remote_addr6[1],
 		    &remote_addr6[2], &remote_addr6[3], &remote_port,
+		    &state,
 		    &inode);
 
-		if (r != 11) {
+		if (r != 12) {
 			qwarnx("unexpected sscanf %d", r);
 			return (-1);
 		}
 	}
+
+	/*
+	 * We're tracking the active side, the stack goes to ESTABLISHED when it
+	 * receives the SYN/ACK. We go to TCP_CLOSE_WAIT when we get the FIN but
+	 * didn't close().
+	 */
+	if (state != TCP_ESTABLISHED && state != TCP_CLOSE_WAIT)
+		return (0);
 
 #if 1
 	if (inode > 0) {
@@ -2571,32 +2585,45 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 	struct quark_event	*qev;
 	struct quark_socket	*qsk;
 	struct raw_connection	*conn;
-	int			 lookup;
 
 	conn = &raw->connection;
 
 	qev = &qq->event_storage;
 
-	qsk = socket_cache_get(qq, &conn->local, &conn->remote, 1, &lookup);
+	qsk = socket_cache_get(qq, &conn->local, &conn->remote, 1);
 	if (qsk == NULL)
 		return (NULL);
 
-	/* Is this the first entry ? */
-	if (qsk->pid_origin == 0) {
-		qsk->pid_origin = qsk->pid_last_use = raw->pid;
-		qsk->established_time = raw->time;
-	}
+	qsk->pid_last_use = raw->pid;
 
-	/*
-	 * If this is a close, register it for GC
-	 */
-	if (conn->conn == CONNECTION_CLOSE) {
+	switch (conn->conn) {
+	case CONNECTION_ACCEPT:	/* FALLTHROUGH */
+	case CONNECTION_CONNECT:
+		/*
+		 * We might race, this socket might have been created via /proc
+		 * parsing, but we sill got an ACCEPT/CONNECT since the rings
+		 * were opened before
+		 */
+		if (qsk->pid_origin != 0 && qsk->established_time != 0)
+			return (NULL);
+		if (qsk->pid_origin == 0)
+			qsk->pid_origin = qsk->pid_last_use = raw->pid;
+		if (qsk->established_time == 0)
+			qsk->established_time = raw->time;
+		qev->events = QUARK_EV_CONNECTION_ESTABLISHED;
+		break;
+	case CONNECTION_CLOSE:
 		if (qsk->close_time == 0)
 			qsk->close_time = raw->time;
 		gc_mark(qq, &qsk->gc, GC_SOCKET);
+		qev->events = QUARK_EV_CONNECTION_CLOSED;
+
+		break;
+	default:
+		qwarnx("invalid conn->conn %d\n", conn->conn);
+		return (NULL);
 	}
 
-	qev->events = QUARK_EV_CONNECTION;
 	qev->socket = qsk;
 	qev->process = quark_process_lookup(qq, qsk->pid_origin);
 

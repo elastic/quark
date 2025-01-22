@@ -267,12 +267,13 @@ RB_HEAD(raw_event_by_time, raw_event);
 RB_HEAD(raw_event_by_pidtime, raw_event);
 
 struct quark_event {
-#define QUARK_EV_FORK		(1 << 0)
-#define QUARK_EV_EXEC		(1 << 1)
-#define QUARK_EV_EXIT		(1 << 2)
-#define QUARK_EV_SETPROCTITLE	(1 << 3)
-#define QUARK_EV_SNAPSHOT	(1 << 4)
-#define QUARK_EV_CONNECTION	(1 << 5)
+#define QUARK_EV_FORK			(1 << 0)
+#define QUARK_EV_EXEC			(1 << 1)
+#define QUARK_EV_EXIT			(1 << 2)
+#define QUARK_EV_SETPROCTITLE		(1 << 3)
+#define QUARK_EV_SNAPSHOT		(1 << 4)
+#define QUARK_EV_CONNECTION_ESTABLISHED	(1 << 5)
+#define QUARK_EV_CONNECTION_CLOSED	(1 << 6)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
