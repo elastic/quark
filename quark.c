@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #include <arpa/inet.h>
 
@@ -504,6 +505,45 @@ process_by_pid_cmp(struct quark_process *a, struct quark_process *b)
 /*
  * Socket stuff
  */
+#if 0
+static int
+sockaddr_to_str(const struct quark_sockaddr *qsa, char *buf, size_t len)
+{
+	size_t	n;
+	int	r;
+
+	if (inet_ntop(qsa->af, qsa->addr6, buf, len) == NULL)
+		return (-1);
+	n = strlen(buf);
+	buf += n;
+	len -= n;
+	if (len == 0)
+		return (-1);
+	r = snprintf(buf, len, ":%d", ntohs(qsa->port));
+	if (r <= 0 || r >= (int)len)
+		return (-1);
+
+	return (0);
+}
+
+static int
+socket_to_str(const struct quark_socket *qsk, char *buf, size_t len)
+{
+	size_t	n;
+
+	if (sockaddr_to_str(&qsk->local, buf, len) == -1)
+		return (-1);
+	n = strlcat(buf, " -> ", len);
+	if (n >= len)
+		return (-1);
+	buf += n;
+	len -= n;
+	if (sockaddr_to_str(&qsk->remote, buf, len) == -1)
+		return (-1);
+
+	return (0);
+}
+#endif
 
 static struct quark_socket *
 socket_cache_get(struct quark_queue *qq,
@@ -2537,39 +2577,6 @@ raw_event_connection(struct quark_queue *qq, struct raw_event *raw)
 	qev->process = quark_process_lookup(qq, qsk->pid_origin);
 
 	return (qev);
-
-#if 0
-	char			 src_buf[64], dst_buf[64];
-
-	bzero(src_buf, sizeof(src_buf));
-	bzero(dst_buf, sizeof(dst_buf));
-	if (inet_ntop(AF_INET, &qsk->local.addr4,
-	    src_buf, sizeof(src_buf)) == NULL)
-		errx(1, "src");
-	if (inet_ntop(AF_INET, &qsk->remote.addr4,
-	    dst_buf, sizeof(dst_buf)) == NULL)
-		errx(1, "dst");
-
-	const char *str;
-	if (raw->connection.conn == CONNECTION_ACCEPT)
-		str = "ACCEPT";
-	else if (raw->connection.conn == CONNECTION_CONNECT)
-		str = "CONNECT";
-	else if (raw->connection.conn == CONNECTION_CLOSE)
-		str = "CLOSE";
-	else
-		str = "WHAT WHAT ???";
-
-	printf("(pid=%d) %s:%d -> %s:%d\t(%s) lookup=%d)\n",
-	    raw->pid,
-	    src_buf, ntohs(qsk->local.port),
-	    dst_buf, ntohs(qsk->remote.port),
-	    str, lookup);
-
-	fflush(stdout);
-
-	return (NULL);
-#endif
 }
 
 const struct quark_event *
