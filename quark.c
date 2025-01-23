@@ -1660,7 +1660,7 @@ sproc_pid_sockets(struct quark_queue *qq,
 		}
 		qsk->local = ss->socket.local;
 		qsk->remote = ss->socket.remote;
-		qsk->established_time = 1; /* XXXXXXXX */
+		qsk->established_time = now64(); /* XXX */
 		qsk->pid_origin = qsk->pid_last_use = pid; /* can't assert origin */
 
 		if (RB_INSERT(socket_by_src_dst, &qq->socket_by_src_dst,
