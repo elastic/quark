@@ -1716,8 +1716,11 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	/* QUARK_F_CWD */
 	if (qreadlinkat(dfd, "cwd", qp->cwd, sizeof(qp->cwd)) > 0)
 		qp->flags |= QUARK_F_CWD;
+	/* if by_inode != NULL we are doing network, QQ_NET is set */
+	if (by_inode != NULL)
+		return (sproc_pid_sockets(qq, by_inode, pid, dfd));
 
-	return sproc_pid_sockets(qq, by_inode, pid, dfd);
+	return (0);
 }
 
 static int
@@ -1983,23 +1986,28 @@ static int
 sproc_scrape(struct quark_queue *qq)
 {
 	int				 r;
-	struct sproc_socket_by_inode	 socket_by_inode;
+	struct sproc_socket_by_inode	 socket_tmp_tree, *by_inode;
 	struct sproc_socket		*ss;
 
-	RB_INIT(&socket_by_inode);
+	RB_INIT(&socket_tmp_tree);
+	by_inode = NULL;
 
-	r = sproc_net_tcp(qq, AF_INET, &socket_by_inode);
-	if (r == -1)
-		goto done;
-	r = sproc_net_tcp(qq, AF_INET6, &socket_by_inode);
-	if (r == -1)
-		goto done;
+	if (qq->flags & QQ_NET) {
+		r = sproc_net_tcp(qq, AF_INET, &socket_tmp_tree);
+		if (r == -1)
+			goto done;
+		r = sproc_net_tcp(qq, AF_INET6, &socket_tmp_tree);
+		if (r == -1)
+			goto done;
 
-	r = sproc_scrape_processes(qq, &socket_by_inode);
+		by_inode = &socket_tmp_tree;
+	}
+
+	r = sproc_scrape_processes(qq, by_inode);
 
 done:
-	while ((ss = RB_ROOT(&socket_by_inode)) != NULL) {
-		RB_REMOVE(sproc_socket_by_inode, &socket_by_inode, ss);
+	while ((ss = RB_ROOT(&socket_tmp_tree)) != NULL) {
+		RB_REMOVE(sproc_socket_by_inode, &socket_tmp_tree, ss);
 		free(ss);
 	}
 
@@ -2336,6 +2344,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	bzero(qa, sizeof(*qa));
 
 	qa->flags = QQ_ALL_BACKENDS;
+	qa->flags |= QQ_NET;	/* XXX REMOVE ME XXX */
 	qa->max_length = 10000;
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
