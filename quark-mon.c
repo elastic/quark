@@ -27,10 +27,32 @@ dump_stats(struct quark_queue *qq)
 	struct quark_queue_stats	s;
 
 	quark_queue_get_stats(qq, &s);
-	printf("%8llu insertions %8llu removals %8llu aggregations "
-	    "%8llu non-aggregations %8llu lost\n",
+	putchar('\n');
+	printf(
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s",
+	    "insertions",
+	    "removals",
+	    "aggs",
+	    "non-aggs",
+	    "lost",
+	    "gc-cols"
+	);
+	putchar('\n');
+	printf(
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu",
 	    s.insertions, s.removals, s.aggregations,
-	    s.non_aggregations, s.lost);
+	    s.non_aggregations, s.lost, s.garbage_collections);
+	putchar('\n');
 }
 
 static const char *

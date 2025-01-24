@@ -327,7 +327,7 @@ bpf_queue_open(struct quark_queue *qq)
 	bpf_program__set_autoload(bqq->prog->progs.kretprobe__tcp_v6_connect, 1);
 
 	bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_close, 1);
-	
+
 	error = bpf_map__set_max_entries(bqq->prog->maps.event_buffer_map,
 	    get_nprocs_conf());
 	if (error != 0) {
