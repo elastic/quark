@@ -4,6 +4,7 @@
 #include <sys/epoll.h>
 #include <sys/sysinfo.h>
 
+#include <fcntl.h>
 #include <err.h>
 #include <errno.h>
 #include <stdio.h>
@@ -203,6 +204,56 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx_to_task(&ebpf_ctx, &raw->exec.ext.task);
 
 		break;
+	case EBPF_EVENT_NETWORK_CONNECTION_ACCEPTED:
+	case EBPF_EVENT_NETWORK_CONNECTION_ATTEMPTED:
+	case EBPF_EVENT_NETWORK_CONNECTION_CLOSED: {
+		struct ebpf_net_event	*net;
+		struct raw_connection	*conn;
+
+		net = (struct ebpf_net_event *)ev;
+		if ((raw = raw_event_alloc(RAW_CONNECTION)) == NULL)
+			goto bad;
+
+		conn = &raw->connection;
+		raw->pid = net->pids.tgid; /* tgid not tid! */
+		raw->time = ev->ts;
+
+		if (net->net.family == EBPF_NETWORK_EVENT_AF_INET) {
+			conn->local.af = AF_INET;
+			memcpy(&conn->local.addr4, net->net.saddr, 4);
+			conn->local.port = htons(net->net.sport);
+
+			conn->remote.af = AF_INET;
+			memcpy(&conn->remote.addr4, net->net.daddr, 4);
+			conn->remote.port = htons(net->net.dport);
+		} else if (net->net.family == EBPF_NETWORK_EVENT_AF_INET6) {
+			conn->local.af = AF_INET6;
+			memcpy(conn->local.addr6, net->net.saddr6, 16);
+
+			conn->remote.af = AF_INET6;
+			memcpy(conn->remote.addr6, net->net.daddr6, 16);
+		} else
+			goto bad;
+
+		conn->local.port = htons(net->net.sport);
+		conn->remote.port = htons(net->net.dport);
+
+		switch (ev->type) {
+		case EBPF_EVENT_NETWORK_CONNECTION_ACCEPTED:
+			raw->connection.conn = CONNECTION_ACCEPT;
+			break;
+		case EBPF_EVENT_NETWORK_CONNECTION_ATTEMPTED:
+			raw->connection.conn = CONNECTION_CONNECT;
+			break;
+		case EBPF_EVENT_NETWORK_CONNECTION_CLOSED:
+			raw->connection.conn = CONNECTION_CLOSE;
+			break;
+		default:
+			goto bad;
+		}
+
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;
@@ -266,6 +317,16 @@ bpf_queue_open(struct quark_queue *qq)
 	bpf_program__set_autoload(bqq->prog->progs.sched_process_fork, 1);
 	bpf_program__set_autoload(bqq->prog->progs.sched_process_exec, 1);
 	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
+
+	bpf_program__set_autoload(bqq->prog->progs.kretprobe__inet_csk_accept, 1);
+
+	bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_v4_connect, 1);
+	bpf_program__set_autoload(bqq->prog->progs.kretprobe__tcp_v4_connect, 1);
+
+	bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_v6_connect, 1);
+	bpf_program__set_autoload(bqq->prog->progs.kretprobe__tcp_v6_connect, 1);
+
+	bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_close, 1);
 
 	error = bpf_map__set_max_entries(bqq->prog->maps.event_buffer_map,
 	    get_nprocs_conf());
