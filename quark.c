@@ -1013,7 +1013,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    remote, sizeof(remote)) == NULL)
 			return (-1);
 
-		P("  %.4s\tlocal=%s:%d, remote=%s:%d\n", flagname,
+		P("  %.4s\tlocal=%s:%d remote=%s:%d\n", flagname,
 		    local, ntohs(qsk->local.port),
 		    remote, ntohs(qsk->remote.port));
 	}
