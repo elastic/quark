@@ -258,7 +258,7 @@ fork_clone_and_exit(void)
 	/* continue on child ... */
 
 	/*
-	 * Set up a stack, clone3() is like fork and we just give it a stack
+	 * Set up a stack, clone() is like fork and we just give it a stack
 	 * without a starting addr.
 	 */
 	stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
