@@ -118,11 +118,9 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 	switch (ev->type) {
 	case EBPF_EVENT_PROCESS_FORK:
 		fork = (struct ebpf_process_fork_event *)ev;
-		if (fork->child_pids.tid != fork->child_pids.tgid)
-			goto bad;
 		if ((raw = raw_event_alloc(RAW_WAKE_UP_NEW_TASK)) == NULL)
 			goto bad;
-		raw->pid = fork->child_pids.tid;
+		raw->pid = fork->child_pids.tgid;
 		raw->time = ev->ts;
 		ebpf_ctx.pids = &fork->child_pids;
 		ebpf_ctx.creds = &fork->creds;
@@ -145,11 +143,9 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		break;
 	case EBPF_EVENT_PROCESS_EXIT:
 		exit = (struct ebpf_process_exit_event *)ev;
-		if (exit->pids.tid != exit->pids.tgid)
-			goto bad;
 		if ((raw = raw_event_alloc(RAW_EXIT_THREAD)) == NULL)
 			goto bad;
-		raw->pid = exit->pids.tid;
+		raw->pid = exit->pids.tgid;
 		raw->time = ev->ts;
 		ebpf_ctx.pids = &exit->pids;
 		ebpf_ctx.creds = &exit->creds;
@@ -164,11 +160,9 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		break;
 	case EBPF_EVENT_PROCESS_EXEC:
 		exec = (struct ebpf_process_exec_event *)ev;
-		if (exec->pids.tid != exec->pids.tgid)
-			goto bad;
 		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
 			goto bad;
-		raw->pid = exec->pids.tid;
+		raw->pid = exec->pids.tgid;
 		raw->time = ev->ts;
 		raw->exec.flags |= RAW_EXEC_F_EXT;
 		ebpf_ctx.pids = &exec->pids;
