@@ -10,6 +10,7 @@
 .Op Fl C Ar filename
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
+.Op Fl P Ar ppid
 .Nm quark-mon
 .Fl h
 .Nm quark-mon Fl V
@@ -87,6 +88,9 @@ Exits after
 .Ar maxnodes
 has been reached.
 This is used purely for internal debugging.
+.It Fl P Ar ppid
+Display only events where parent pid is
+.Ar ppid .
 .It Fl V
 Print version and exit.
 .El
