@@ -94,7 +94,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-bDefkstv] "
-	    "[-C filename ] [-l maxlength] [-m maxnodes]\n",
+	    "[-C filename ] [-l maxlength] [-m maxnodes] [-P ppid]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
 
@@ -106,6 +106,7 @@ main(int argc, char *argv[])
 {
 	int				 ch, maxnodes;
 	int				 do_priv_drop;
+	u32				 filter_ppid;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
 	const struct quark_event	*qev;
@@ -116,9 +117,10 @@ main(int argc, char *argv[])
 	qa.flags &= ~QQ_ALL_BACKENDS;
 	maxnodes = -1;
 	do_priv_drop = 0;
+	filter_ppid = 0;
 	graph_by_time = graph_by_pidtime = graph_cache = NULL;
 
-	while ((ch = getopt(argc, argv, "bC:Deghklm:tsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "bC:Deghklm:P:tsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -169,6 +171,13 @@ main(int argc, char *argv[])
 			graph_by_pidtime = fopen("quark_by_pidtime.dot", "w");
 			if (graph_by_pidtime == NULL)
 				err(1, "fopen");
+			break;
+		case 'P':
+			if (optarg == NULL)
+				usage();
+			filter_ppid = strtonum(optarg, 1, UINT32_MAX, &errstr);
+			if (errstr != NULL)
+				errx(1, "invalid ppid: %s", errstr);
 			break;
 		case 's':
 			qa.flags |= QQ_NO_SNAPSHOT;
@@ -228,6 +237,16 @@ main(int argc, char *argv[])
 				err(1, "quark_queue_block");
 			continue;
 		}
+
+		/*
+		 * Filter out processes by parent pid if set.
+		 */
+		if (filter_ppid &&
+		    qev->process != NULL &&
+		    (qev->process->flags & QUARK_F_PROC) &&
+		    filter_ppid != qev->process->proc_ppid)
+			continue;
+
 		quark_event_dump(qev, stdout);
 	}
 
