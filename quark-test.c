@@ -282,7 +282,7 @@ fork_clone_and_exit(void)
 	if (pid == -1)
 		err(1, "clone3");
 
-	/* Wait for the child to exit */
+	/* Wait for the clone thread to exit */
 	for (;;)
 		sleep(1);
 
