@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,7 +14,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <sys/mman.h>
 #include <sys/select.h>
+#include <sys/unistd.h>
 #include <sys/wait.h>
 
 #include "quark.h"
@@ -225,6 +228,73 @@ fork_exec_nop(void)
 	return (child);
 }
 
+static int
+clone_start(void *nada)
+{
+	_exit(0);
+
+	/* NOTREACHED */
+	return (0);
+}
+
+#define STACK_SIZE (1024UL * 128UL)
+
+static pid_t
+fork_clone_and_exit(void)
+{
+	int	 flags;
+	u8	*stack, *stack_start;
+	pid_t	 pid;
+
+	/*
+	 * First we do a normal fork, in this new process we will clone a new
+	 * thread and call exit.
+	 */
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+	/* parent just returns */
+	if (pid != 0)
+		return (pid);
+	/* continue on child ... */
+
+	/*
+	 * Set up a stack, clone() is like fork and we just give it a stack
+	 * without a starting addr.
+	 */
+	stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
+	    MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+	if (stack == MAP_FAILED)
+		err(1, "mmap");
+	stack_start = stack + STACK_SIZE;
+
+	flags =
+	    CLONE_VM |
+	    CLONE_FS |
+	    CLONE_FILES |
+	    CLONE_SIGHAND |
+	    CLONE_THREAD |
+	    CLONE_SYSVSEM;
+
+	/*
+	 * clone the new thread, pid is tid
+	 */
+	pid = clone(clone_start, stack_start, flags, NULL);
+	if (pid == -1)
+		err(1, "clone3");
+
+	/* Wait for the clone thread to exit */
+	for (;;)
+		sleep(1);
+
+	/* NOTREACHED */
+	if (munmap(stack, STACK_SIZE) == -1)
+		err(1, "munmap");
+
+	return 0;
+}
+
+#undef STACK_SIZE
+
 static const struct quark_event *
 drain_for_pid(struct quark_queue *qq, pid_t pid)
 {
@@ -360,6 +430,37 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	if (getcwd(cwd, sizeof(cwd)) == NULL)
 		err(1, "getcwd");
 	assert(!strcmp(cwd, qp->cwd));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/* Make sure an exit comes from tgid, not tid */
+static int
+t_exit_tgid(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	pid_t				 pid;
+	int				 i;
+
+	/* More aggressive since we loop */
+	qa->hold_time = 10;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * The actual tid is not reliable, sometimes an EBPF event would come
+	 * with tid==tgid, so try it a few times
+	 */
+	for (i = 0; i < 20; i++) {
+		pid = fork_clone_and_exit();
+		qev = drain_for_pid(&qq, pid);
+		assert(qev->process != NULL);
+		assert(qev->events & QUARK_EV_FORK);
+		assert(qev->events & QUARK_EV_EXIT);
+	}
 
 	quark_queue_close(&qq);
 
@@ -532,6 +633,7 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 const struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
+	T(t_exit_tgid),
 	T(t_namespace),
 	T(t_cache_grace),
 	T(t_min_agg),
