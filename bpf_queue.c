@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "quark.h"
 #include "bpf_prog_skel.h"
@@ -252,6 +253,14 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_NETWORK_DNS_PKT: {
+		struct ebpf_dns_event2 *dns;
+
+		dns = (struct ebpf_dns_event2 *)ev;
+		printf("dns tgid=%d len=%d/%d direction=%d\n",
+		    dns->tgid, dns->cap_len, dns->orig_len, dns->direction);
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;
@@ -287,6 +296,7 @@ bpf_queue_open(struct quark_queue *qq)
 	struct ring_buffer_opts	 ringbuf_opts;
 	struct bpf_program	*bp;
 	int			 error;
+	int			 cgroup_fd;
 
 	libbpf_set_print(libbpf_print_fn);
 
@@ -297,6 +307,7 @@ bpf_queue_open(struct quark_queue *qq)
 		return (-1);
 
 	qq->queue_be = bqq;
+	cgroup_fd = -1;
 
 	bqq->prog = bpf_prog__open();
 	if (bqq->prog == NULL) {
@@ -329,6 +340,22 @@ bpf_queue_open(struct quark_queue *qq)
 		bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_close, 1);
 	}
 
+	/* QQ_DNS or whatever */
+	if (1) {
+		cgroup_fd = open("/sys/fs/cgroup", O_RDONLY);
+		if (cgroup_fd == -1) {
+			qwarn("open cgroup");
+			goto fail;
+		}
+		bpf_program__set_autoload(bqq->prog->progs.skb_egress, 1);
+		bpf_program__set_autoload(bqq->prog->progs.skb_ingress, 1);
+		bpf_program__set_autoload(bqq->prog->progs.sock_create, 1);
+		bpf_program__set_autoload(bqq->prog->progs.sock_release, 1);
+		bpf_program__set_autoload(bqq->prog->progs.sendmsg4, 1);
+		bpf_program__set_autoload(bqq->prog->progs.connect4, 1);
+		bpf_program__set_autoload(bqq->prog->progs.recvmsg4, 1);
+	}
+
 	error = bpf_map__set_max_entries(bqq->prog->maps.event_buffer_map,
 	    get_nprocs_conf());
 	if (error != 0) {
@@ -346,6 +373,44 @@ bpf_queue_open(struct quark_queue *qq)
 	if (error) {
 		qwarn("bpf_prog__attach");
 		goto fail;
+	}
+
+	if (cgroup_fd != -1) {
+		if (bpf_program__attach_cgroup(bqq->prog->progs.skb_egress,
+		    cgroup_fd) == NULL) {
+			qwarn("attach skb_egress");
+			goto fail;
+		}
+		if (bpf_program__attach_cgroup(bqq->prog->progs.skb_ingress,
+		    cgroup_fd) == NULL) {
+			qwarn("attach skb_ingress");
+			goto fail;
+		}
+		if (bpf_program__attach_cgroup(bqq->prog->progs.sock_create,
+		    cgroup_fd) == NULL) {
+			qwarn("attach sock_create");
+			goto fail;
+		}
+		if (bpf_program__attach_cgroup(bqq->prog->progs.sock_release,
+		    cgroup_fd) == NULL) {
+			qwarn("attach sock_release");
+			goto fail;
+		}
+		if (bpf_program__attach_cgroup(bqq->prog->progs.sendmsg4,
+		    cgroup_fd) == NULL) {
+			qwarn("attach sendmsg4");
+			goto fail;
+		}
+		if (bpf_program__attach_cgroup(bqq->prog->progs.connect4,
+		    cgroup_fd) == NULL) {
+			qwarn("attach connect4");
+			goto fail;
+		}
+		if (bpf_program__attach_cgroup(bqq->prog->progs.recvmsg4,
+		    cgroup_fd) == NULL) {
+			qwarn("attach recvmsg4");
+			goto fail;
+		}
 	}
 
 	/*
@@ -368,6 +433,11 @@ bpf_queue_open(struct quark_queue *qq)
 
 	return (0);
 fail:
+	if (cgroup_fd != -1) {
+		close(cgroup_fd);
+		cgroup_fd = -1;
+	}
+
 	bpf_queue_close(qq);
 
 	return (-1);
