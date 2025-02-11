@@ -143,9 +143,14 @@ void	 qlog_func(int, int, const char *, int, const char *, ...) __attribute__((f
 #endif /* MS_TO_NS */
 
 /*
+ * Generic exported constants
+ */
+#define QUARK_MAX_PACKET	2048
+
+/*
  * Raw events
  */
-enum {
+enum raw_types {
 	RAW_INVALID,
 	RAW_EXEC,
 	RAW_WAKE_UP_NEW_TASK,
@@ -153,11 +158,12 @@ enum {
 	RAW_COMM,
 	RAW_EXEC_CONNECTOR,
 	RAW_SOCK_CONN,
+	RAW_PACKET,
 	RAW_NUM_TYPES		/* must be last */
 };
 
 struct raw_comm {
-	char			comm[16];
+	char	comm[16];
 };
 
 struct raw_task {
@@ -176,7 +182,7 @@ struct raw_task {
 	u32		pgid;
 	u32		sid;
 	u32		ppid;
-	s32		exit_code;		/* only available at exit */
+	s32		exit_code;	/* only available at exit */
 	u64		exit_time_event;	/* only available at exit */
 	u32		tty_major;
 	u32		tty_minor;
@@ -209,14 +215,14 @@ struct raw_exec_connector {
 
 /* not like sockaddr{}, we won't use this on sockets anyway */
 struct quark_sockaddr {
-	int af;
+	int	af;
 
 	union {
 		u32	addr4;
 		u8	addr6[16];
 	};
 
-	u16 port;
+	u16	port;
 };
 
 enum sock_conn {
@@ -230,6 +236,29 @@ struct raw_sock_conn {
 	struct quark_sockaddr	local;
 	struct quark_sockaddr	remote;
 	enum sock_conn		conn;
+};
+
+enum quark_packet_direction {
+	QUARK_PACKET_DIR_INVALID,
+	QUARK_PACKET_DIR_EGRESS,
+	QUARK_PACKET_DIR_INGRESS,
+};
+
+enum quark_packet_origin {
+	QUARK_PACKET_ORIGIN_INVALID,
+	QUARK_PACKET_ORIGIN_DNS,
+};
+
+struct quark_packet {
+	enum quark_packet_direction	direction;
+	enum quark_packet_origin	origin;
+	size_t				orig_len;
+	size_t				cap_len;
+	char				data[];
+};
+
+struct raw_packet {
+	struct quark_packet	*quark_packet;
 };
 
 struct raw_event {
@@ -249,6 +278,7 @@ struct raw_event {
 		struct raw_task			task;
 		struct raw_exec_connector	exec_connector;
 		struct raw_sock_conn		sock_conn;
+		struct raw_packet		packet;
 	};
 };
 
@@ -273,9 +303,11 @@ struct quark_event {
 #define QUARK_EV_SETPROCTITLE		(1 << 3)
 #define QUARK_EV_SOCK_CONN_ESTABLISHED	(1 << 4)
 #define QUARK_EV_SOCK_CONN_CLOSED	(1 << 5)
+#define QUARK_EV_PACKET			(1 << 6)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
+	struct quark_packet		*packet;
 };
 
 /*
@@ -435,6 +467,7 @@ struct quark_queue_attr {
 #define QQ_MIN_AGG		(1 << 3)
 #define QQ_ENTRY_LEADER		(1 << 4)
 #define QQ_SOCK_CONN		(1 << 5)
+#define QQ_DNS			(1 << 6)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;
