@@ -271,9 +271,8 @@ struct quark_event {
 #define QUARK_EV_EXEC			(1 << 1)
 #define QUARK_EV_EXIT			(1 << 2)
 #define QUARK_EV_SETPROCTITLE		(1 << 3)
-#define QUARK_EV_SNAPSHOT		(1 << 4)
-#define QUARK_EV_SOCK_CONN_ESTABLISHED	(1 << 5)
-#define QUARK_EV_SOCK_CONN_CLOSED	(1 << 6)
+#define QUARK_EV_SOCK_CONN_ESTABLISHED	(1 << 4)
+#define QUARK_EV_SOCK_CONN_CLOSED	(1 << 5)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
@@ -433,10 +432,9 @@ struct quark_queue_attr {
 #define QQ_THREAD_EVENTS	(1 << 0)
 #define QQ_KPROBE		(1 << 1)
 #define QQ_EBPF			(1 << 2)
-#define QQ_NO_SNAPSHOT		(1 << 3)
-#define QQ_MIN_AGG		(1 << 4)
-#define QQ_ENTRY_LEADER		(1 << 5)
-#define QQ_SOCK_CONN		(1 << 6)
+#define QQ_MIN_AGG		(1 << 3)
+#define QQ_ENTRY_LEADER		(1 << 4)
+#define QQ_SOCK_CONN		(1 << 5)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;
@@ -462,8 +460,6 @@ struct quark_queue {
 	int				 max_length;
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
-	/* Next pid to be sent out of a snapshot */
-	int				 snap_pid;
 	int				 epollfd;
 	/* Backend related state */
 	struct quark_queue_ops		*queue_ops;

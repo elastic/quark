@@ -128,7 +128,7 @@ main(int argc, char *argv[])
 {
 	int				 ch, maxnodes;
 	int				 do_priv_drop;
-	u32				 filter_ppid;
+	u32				 filter_ppid, do_snap;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
 	const struct quark_event	*qev;
@@ -140,6 +140,7 @@ main(int argc, char *argv[])
 	maxnodes = -1;
 	do_priv_drop = 0;
 	filter_ppid = 0;
+	do_snap = 1;
 	graph_by_time = graph_by_pidtime = graph_cache = NULL;
 
 	while ((ch = getopt(argc, argv, "bC:Deghklm:P:tSsvV")) != -1) {
@@ -202,7 +203,7 @@ main(int argc, char *argv[])
 				errx(1, "invalid ppid: %s", errstr);
 			break;
 		case 's':
-			qa.flags |= QQ_NO_SNAPSHOT;
+			do_snap = 0;
 			break;
 		case 'S':
 			qa.flags |= QQ_SOCK_CONN;
@@ -248,6 +249,20 @@ main(int argc, char *argv[])
 	while (!gotsigint && maxnodes != -1 && qq->length < maxnodes) {
 		quark_queue_populate(qq);
 		quark_queue_block(qq);
+	}
+
+	/*
+	 * Should we print all processes learned through scraping
+	 */
+	if (do_snap) {
+		struct quark_process_iter	 qi;
+		struct quark_event		 fake_ev;
+
+		bzero(&fake_ev, sizeof(fake_ev));
+		quark_process_iter_init(&qi, qq);
+
+		while ((fake_ev.process = quark_process_iter_next(&qi)) != NULL)
+			quark_event_dump(&fake_ev, stdout);
 	}
 
 	/*
