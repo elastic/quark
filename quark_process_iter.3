@@ -1,0 +1,42 @@
+.Dd $Mdocdate$
+.Dt QUARK_PROCESS_ITER 3
+.Os
+.Sh NAME
+.Nm quark_process_iter_init ,
+.Nm quark_process_iter_next
+.Nd string process iteration operations
+.Sh SYNOPSIS
+.In quark.h
+.Ft void
+.Fn quark_process_iter_init "struct quark_process_iter *" "struct quark_queue *qq"
+.Ft const quark_process *
+.Fn quark_process_iter_next "struct quark_process_iter *"
+.Sh DESCRIPTION
+Initialize and iterate over the internal cache of processes, it can be used on
+boot up to get a list of all learned processes, or else.
+.Sh EXAMPLES
+.Bd -literal
+
+struct quark_process_iter qi;
+struct quark_process *qp;
+
+quark_process_iter_init(&qi, qq);
+while ((qp = quark_process_next(&qi)) != NULL)
+	printf("process %d\n", qp->pid);
+.Ed
+.Sh RETURNS
+The returned process points to internal memory and must not be modified, the
+pointer is invalidated on any subsequent call of
+.Xr quark_queue_get_event 3 .
+.Sh SEE ALSO
+.Xr quark_process_lookup 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_default_attr 3 ,
+.Xr quark_queue_get_epollfd 3 ,
+.Xr quark_queue_get_event 3 ,
+.Xr quark_queue_get_stats 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark 7 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8
