@@ -826,12 +826,12 @@ run_tests(int argc, char *argv[])
 
 	quark_queue_default_attr(&bpf_attr);
 	bpf_attr.flags &= ~QQ_ALL_BACKENDS;
-	bpf_attr.flags |= QQ_EBPF | QQ_NO_SNAPSHOT | QQ_ENTRY_LEADER;
+	bpf_attr.flags |= QQ_EBPF | QQ_ENTRY_LEADER;
 	bpf_attr.hold_time = 100;
 
 	quark_queue_default_attr(&kprobe_attr);
 	kprobe_attr.flags &= ~QQ_ALL_BACKENDS;
-	kprobe_attr.flags |= QQ_KPROBE | QQ_NO_SNAPSHOT | QQ_ENTRY_LEADER;
+	kprobe_attr.flags |= QQ_KPROBE | QQ_ENTRY_LEADER;
 	kprobe_attr.hold_time = 100;
 
 	failed = 0;

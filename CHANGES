@@ -19,3 +19,5 @@ Changes from 0.3 to 0.4
   o quark_event{} got a new member socket,
     QUARK_EV_SOCK_CONN_{ESTABLISHED,CLOSED}. The probes still have
     some issues so it's mostly experimental.
+  o Initial snapshot of process events is not sent anymore. User is
+    expected to retrieve them via quark_process_iter(3) if desired.

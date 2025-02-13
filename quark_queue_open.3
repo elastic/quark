@@ -55,12 +55,8 @@ for a snapshot of the existing processes in the system.
 .Nm
 is smart enough to open the rings before the scraping, as to be make sure no
 process is lost.
-These initial process events will be available on the first call to
-.Xr quark_queue_get_event 3
-with the
-.Vt events
-member set to
-.Dv QUARK_EV_SNAPSHOT .
+These initial processes are available through
+.Xr quark_process_iter 3 .
 .El
 .Pp
 Default queue behaviour can be tweaked with
@@ -96,8 +92,6 @@ Shorthand for (QQ_EBPF | QQ_KPROBE).
 .It Dv QQ_THREAD_EVENTS
 Include per-thread events, instead of per-process events.
 This option will be removed in the future, but it may be useful for debugging.
-.It Dv QQ_NO_SNAPSHOT
-Don't send the initial snapshot of existing processes.
 .It Dv QQ_MIN_AGG
 Don't aggregate
 .Em fork ,
