@@ -314,6 +314,7 @@ bpf_queue_open(struct quark_queue *qq)
 	 */
 	bpf_program__set_autoload(bqq->prog->progs.sched_process_fork, 1);
 	bpf_program__set_autoload(bqq->prog->progs.sched_process_exec, 1);
+	bpf_program__set_autoload(bqq->prog->progs.sched_process_exit, 1);
 	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
 
 	if (qq->flags & QQ_SOCK_CONN) {
