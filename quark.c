@@ -654,8 +654,6 @@ event_type_str(u64 event)
 		return "EXIT";
 	case QUARK_EV_SETPROCTITLE:
 		return "SETPROCTITLE";
-	case QUARK_EV_SNAPSHOT:
-		return "SNAPSHOT";
 	case QUARK_EV_SOCK_CONN_ESTABLISHED:
 		return "SOCK_CONN_ESTABLISHED";
 	case QUARK_EV_SOCK_CONN_CLOSED:
@@ -964,7 +962,10 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 
 	pid = qp != NULL ? qp->pid : 0;
 	events_type_str(qev->events, events, sizeof(events));
-	P("->%d (%s)\n", pid, events);
+	P("->%d", pid);
+	if (qev->events)
+		P(" (%s)\n", events);
+	putchar('\n');
 
 	if (qev->events & (QUARK_EV_SOCK_CONN_ESTABLISHED|QUARK_EV_SOCK_CONN_CLOSED)) {
 		char local[INET6_ADDRSTRLEN], remote[INET6_ADDRSTRLEN];
@@ -2271,7 +2272,6 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 int
 quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 {
-	struct quark_process		*qp;
 	struct quark_queue_attr		 qa_default;
 	struct timespec			 unused;
 
@@ -2332,22 +2332,6 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (entry_leaders_build(qq) == -1) {
 		qwarnx("can't compute entry leaders");
 		return (-1);
-	}
-
-	/*
-	 * We want quark_get_events() to start by giving up a snapshot of
-	 * everything we scraped, this snapshot will end up being spread into
-	 * multiple quark_get_events() calls as there isn't enough storage for
-	 * all of them. We need a way to know where we are in the snapshot.
-	 */
-	if (qq->flags & QQ_NO_SNAPSHOT)
-		qq->snap_pid = -1;
-	else {
-		qp = RB_MIN(process_by_pid, &qq->process_by_pid);
-		if (qp != NULL)
-			qq->snap_pid = qp->pid;
-		else
-			qq->snap_pid = -1;
 	}
 
 	return (0);
@@ -2481,34 +2465,6 @@ quark_queue_pop_raw(struct quark_queue *qq)
 }
 
 static const struct quark_event *
-quark_queue_get_snap_event(struct quark_queue *qq)
-{
-	struct quark_process	*qp;
-	struct quark_event	*qev;
-
-	qev = &qq->event_storage;
-	qp = process_cache_get(qq, qq->snap_pid, 0);
-	if (qp == NULL) {
-		qwarnx("event vanished during snapshot, "
-		    "this is a bug");
-		qq->snap_pid = -1;
-
-		return (NULL);
-	}
-	/* Copy out to user */
-	qev->events = QUARK_EV_SNAPSHOT;
-	qev->process = qp;
-	qp = RB_NEXT(process_by_pid, &qq->process_by_pid, qp);
-	/* Are we done with the snapshot? If not, record next */
-	if (qp == NULL)
-		qq->snap_pid = -1;
-	else
-		qq->snap_pid = qp->pid;
-
-	return (qev);
-}
-
-static const struct quark_event *
 raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -2595,13 +2551,8 @@ quark_queue_get_event(struct quark_queue *qq)
 	const struct quark_event	*qev;
 
 	qev = NULL;
-	/* If we are booting we send a snap of every existing process */
-	if (unlikely(qq->snap_pid != -1)) {
-		qev = quark_queue_get_snap_event(qq);
-		goto done;
-	}
 
-	/* Normal path, get a quark_event out of raw_event */
+	/* Get a quark_event out of raw_event */
 	if ((raw = quark_queue_pop_raw(qq)) != NULL) {
 		if (raw->type == RAW_SOCK_CONN)
 			qev = raw_event_sock(qq, raw);
@@ -2610,7 +2561,6 @@ quark_queue_get_event(struct quark_queue *qq)
 		raw_event_free(raw);
 	}
 
-done:
 	/* GC all processes and sockets that exited after some grace time */
 	gc_collect(qq);
 

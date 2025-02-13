@@ -349,7 +349,7 @@ returns NULL and the user is expected to call
 .Xr quark_queue_block 3
 or equivalent.
 .Sh EXAMPLES
-.Bd -literal -offset indent
+.Bd -literal
 #include <err.h>
 #include <quark.h>
 #include <stdio.h>
@@ -393,6 +393,8 @@ get event, main library call.
 lookup a process in quark's internal cache
 .It Xr quark_event_dump 3
 dump event, mainly a debugging utility.
+.It Xr quark_process_iter 3
+iterate over existing processes.
 .It Xr quark_queue_get_epollfd 3
 get a descriptor suitable for blocking.
 .It Xr quark_queue_block 3
@@ -414,6 +416,7 @@ is the easiest way to get started with
 describes initialization options that can be useful.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
+.Xr quark_process_iter 3 ,
 .Xr quark_process_lookup 3 ,
 .Xr quark_queue_block 3 ,
 .Xr quark_queue_close 3 ,

@@ -59,11 +59,8 @@
   <li>Scrapes <span class="Pa">/proc</span> for a snapshot of the existing
       processes in the system. <code class="Nm">quark_queue_open</code> is smart
       enough to open the rings before the scraping, as to be make sure no
-      process is lost. These initial process events will be available on the
-      first call to
-      <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>
-      with the <var class="Vt">events</var> member set to
-      <code class="Dv">QUARK_EV_SNAPSHOT</code>.</li>
+      process is lost. These initial processes are available through
+      <a class="Xr" href="quark_process_iter.3.html">quark_process_iter(3)</a>.</li>
 </ul>
 <p class="Pp">Default queue behaviour can be tweaked with
     <var class="Fa">attr</var>. A default configuration for tweaking can be
@@ -96,8 +93,6 @@
       <dd>Include per-thread events, instead of per-process events. This option
           will be removed in the future, but it may be useful for
         debugging.</dd>
-      <dt id="QQ_NO_SNAPSHOT"><a class="permalink" href="#QQ_NO_SNAPSHOT"><code class="Dv">QQ_NO_SNAPSHOT</code></a></dt>
-      <dd>Don't send the initial snapshot of existing processes.</dd>
       <dt id="QQ_MIN_AGG"><a class="permalink" href="#QQ_MIN_AGG"><code class="Dv">QQ_MIN_AGG</code></a></dt>
       <dd>Don't aggregate
           <a class="permalink" href="#fork"><i class="Em" id="fork">fork</i></a>,
@@ -169,7 +164,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">December 1, 2024</td>
+    <td class="foot-date">February 11, 2025</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
