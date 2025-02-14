@@ -428,7 +428,7 @@ struct ebpf_dns_event2 {
 	u32 orig_len;
 	enum ebpf_net_packet_direction direction;
 	struct ebpf_varlen_fields_start vl_fields;
-};
+} __attribute__((packed));
 
 // Basic event statistics
 struct ebpf_event_stats {
