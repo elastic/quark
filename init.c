@@ -95,6 +95,8 @@ main(int argc, char *argv[])
 				errx(1, "couldn't mount tracefs or debugfs");
 			}
 		}
+		if (mount(NULL, "/sys/fs/cgroup", "cgroup2", 0, NULL) == -1)
+			err(1, "mount /sys/fs/cgroup");
 
 		display_banner(argv);
 
