@@ -833,6 +833,21 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_net(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+
+	qa->flags |= QQ_SOCK_CONN;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  */
@@ -849,6 +864,7 @@ const struct test all_tests[] = {
 	T(t_cache_grace),
 	T(t_min_agg),
 	T(t_stats),
+	T(t_net),
 	{ NULL,	NULL, 0 }
 };
 #undef S
