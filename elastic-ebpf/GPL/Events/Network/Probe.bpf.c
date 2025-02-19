@@ -419,18 +419,22 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 		}
 		if (ip.protocol != IPPROTO_UDP)
 			goto ignore;
-	} else if (sk->family == AF_INET6) {
-		int t_off;
-
-		t_off = skb_peel_nexthdr(skb, NEXTHDR_UDP);
-		if (t_off == -1)
-			goto ignore;
-
-		if (bpf_skb_load_bytes(skb, t_off, &udp, sizeof(udp))) {
-			bpf_printk("copy error 4");
-			goto ignore;
-		}
+	} else {
+		goto ignore;
 	}
+
+	/* else if (sk->family == AF_INET6) { */
+	/* 	int t_off; */
+
+	/* 	t_off = skb_peel_nexthdr(skb, NEXTHDR_UDP); */
+	/* 	if (t_off == -1) */
+	/* 		goto ignore; */
+
+	/* 	if (bpf_skb_load_bytes(skb, t_off, &udp, sizeof(udp))) { */
+	/* 		bpf_printk("copy error 4"); */
+	/* 		goto ignore; */
+	/* 	} */
+	/* } */
 
 	if (bpf_ntohs(udp.dest) != 53 && bpf_ntohs(udp.source) != 53)
 		goto ignore;
@@ -450,7 +454,7 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	 * verifier will complain, even with a skb->len
 	 * check at the beginning.
 	 */
-	if (cap_len == 0)
+	if (cap_len <= 0)
 		goto ignore;
 	else if (cap_len > MAX_DNS_PACKET)
 		cap_len = MAX_DNS_PACKET;
@@ -467,9 +471,12 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	event->orig_len = skb->len;
 	event->direction = ingress ? EBPF_NETWORK_DIR_INGRESS : EBPF_NETWORK_DIR_EGRESS;
 
+	/* if (bpf_skb_load_bytes(skb, 0, event, MAX_DNS_PACKET)) */
+	/* 	goto ignore; */
 	ebpf_vl_fields__init(&event->vl_fields);
 	field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_DNS_BODY);
-	if (bpf_skb_load_bytes(skb, 0, field->data, cap_len))
+	/* the verifier bitches if we use cap_len instead of a constant on 5.10 */
+	if (bpf_skb_load_bytes(skb, 0, field->data, MAX_DNS_PACKET))
 		goto ignore;
 	ebpf_vl_field__set_size(&event->vl_fields, field, cap_len);
 

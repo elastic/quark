@@ -259,6 +259,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		dns = (struct ebpf_dns_event2 *)ev;
 		printf("dns tgid=%d len=%d/%d direction=%d\n",
 		    dns->tgid, dns->cap_len, dns->orig_len, dns->direction);
+		fflush(stdout);
 		break;
 	}
 	default:
