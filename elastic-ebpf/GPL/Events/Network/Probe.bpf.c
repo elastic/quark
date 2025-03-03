@@ -401,8 +401,6 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 		goto ignore;
 	if ((sk = bpf_sk_fullsock(sk)) == NULL)
 		goto ignore;
-	if (sk->family != AF_INET && sk->family != AF_INET6)
-		goto ignore;
 	if (sk->protocol != IPPROTO_UDP)
 		goto ignore;
 
@@ -413,12 +411,12 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 			bpf_printk("copy error 1");
 			goto ignore;
 		}
+		if (ip.protocol != IPPROTO_UDP)
+			goto ignore;
 		if (bpf_skb_load_bytes(skb, ip.ihl << 2, &udp, sizeof(udp))) {
 			bpf_printk("copy error 2");
 			goto ignore;
 		}
-		if (ip.protocol != IPPROTO_UDP)
-			goto ignore;
 	} else {
 		goto ignore;
 	}
@@ -465,10 +463,10 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	 * (since iphlen is not constant due to options) fails. Do what we can
 	 * and filter the remaining bad packets in userland, same applies to
 	 * ipv6. Also be careful with `if cap_len > 0`, as clang will compile it
-	 * to a JNZ, which doesn't adjust umin, * causing the
-	 * bpf_skb_load_bytes() down below to think cap_len can be * zero.
+	 * to a JNZ, which doesn't adjust umin, causing the
+	 * bpf_skb_load_bytes() down below to think cap_len can be zero.
 	 */
-	if (cap_len > (sizeof(struct iphdr) + sizeof(udp) + 12)) {
+	if (cap_len >= (sizeof(struct iphdr) + sizeof(udp) + 12)) {
 		event = get_event_buffer();
 		if (event == NULL)
 			goto ignore;
