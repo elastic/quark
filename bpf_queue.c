@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "quark.h"
 #include "bpf_prog_skel.h"
@@ -252,6 +253,14 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_NETWORK_DNS_PKT: {
+		struct ebpf_dns_event2 *dns;
+
+		dns = (struct ebpf_dns_event2 *)ev;
+		printf("dns tgid=%d len=%d/%d direction=%d\n",
+		    dns->tgid, dns->cap_len, dns->orig_len, dns->direction);
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;
@@ -284,9 +293,10 @@ int
 bpf_queue_open(struct quark_queue *qq)
 {
 	struct bpf_queue	*bqq;
+	struct bpf_prog		*p;
 	struct ring_buffer_opts	 ringbuf_opts;
 	struct bpf_program	*bp;
-	int			 error;
+	int			 cgroup_fd;
 
 	libbpf_set_print(libbpf_print_fn);
 
@@ -297,62 +307,98 @@ bpf_queue_open(struct quark_queue *qq)
 		return (-1);
 
 	qq->queue_be = bqq;
+	cgroup_fd = -1;
 
 	bqq->prog = bpf_prog__open();
 	if (bqq->prog == NULL) {
 		qwarn("bpf_prog__open");
 		goto fail;
 	}
+	p = bqq->prog;
 
 	/*
 	 * Unload everything since it has way more than we want
 	 */
-	bpf_object__for_each_program(bp, bqq->prog->obj)
+	bpf_object__for_each_program(bp, p->obj)
 		bpf_program__set_autoload(bp, 0);
 	/*
 	 * Load just the bits we want
 	 */
-	bpf_program__set_autoload(bqq->prog->progs.sched_process_fork, 1);
-	bpf_program__set_autoload(bqq->prog->progs.sched_process_exec, 1);
-	bpf_program__set_autoload(bqq->prog->progs.sched_process_exit, 1);
-	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
+	bpf_program__set_autoload(p->progs.sched_process_fork, 1);
+	bpf_program__set_autoload(p->progs.sched_process_exec, 1);
+	bpf_program__set_autoload(p->progs.sched_process_exit, 1);
+	bpf_program__set_autoload(p->progs.kprobe__taskstats_exit, 1);
 
 	if (qq->flags & QQ_SOCK_CONN) {
-		bpf_program__set_autoload(bqq->prog->progs.kretprobe__inet_csk_accept, 1);
+		bpf_program__set_autoload(p->progs.kretprobe__inet_csk_accept, 1);
 
-		bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_v4_connect, 1);
-		bpf_program__set_autoload(bqq->prog->progs.kretprobe__tcp_v4_connect, 1);
+		bpf_program__set_autoload(p->progs.kprobe__tcp_v4_connect, 1);
+		bpf_program__set_autoload(p->progs.kretprobe__tcp_v4_connect, 1);
 
-		bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_v6_connect, 1);
-		bpf_program__set_autoload(bqq->prog->progs.kretprobe__tcp_v6_connect, 1);
+		bpf_program__set_autoload(p->progs.kprobe__tcp_v6_connect, 1);
+		bpf_program__set_autoload(p->progs.kretprobe__tcp_v6_connect, 1);
 
-		bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_close, 1);
+		bpf_program__set_autoload(p->progs.kprobe__tcp_close, 1);
 	}
 
-	error = bpf_map__set_max_entries(bqq->prog->maps.event_buffer_map,
-	    get_nprocs_conf());
-	if (error != 0) {
+	/* QQ_DNS or whatever */
+	if (1) {
+		cgroup_fd = open("/sys/fs/cgroup", O_RDONLY);
+		if (cgroup_fd == -1) {
+			qwarn("open cgroup");
+			goto fail;
+		}
+		bpf_program__set_autoload(p->progs.skb_egress, 1);
+		bpf_program__set_autoload(p->progs.skb_ingress, 1);
+		bpf_program__set_autoload(p->progs.sock_create, 1);
+		bpf_program__set_autoload(p->progs.sock_release, 1);
+		bpf_program__set_autoload(p->progs.sendmsg4, 1);
+		bpf_program__set_autoload(p->progs.connect4, 1);
+		bpf_program__set_autoload(p->progs.recvmsg4, 1);
+	}
+
+	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
+	    get_nprocs_conf()) != 0) {
 		qwarn("bpf_map__set_max_entries");
 		goto fail;
 	}
 
-	error = bpf_prog__load(bqq->prog);
-	if (error) {
+	if (bpf_prog__load(p) != 0) {
 		qwarn("bpf_prog__load");
 		goto fail;
 	}
 
-	error = bpf_prog__attach(bqq->prog);
-	if (error) {
+	if (bpf_prog__attach(p) != 0) {
 		qwarn("bpf_prog__attach");
 		goto fail;
 	}
+
+#define ATTACH_OR_FAIL(_program, _error)				\
+	if (bpf_program__attach_cgroup(p->progs._program,		\
+	    cgroup_fd) == NULL) {					\
+	    qwarn(_error);						\
+	    goto fail;							\
+	}
+
+	if (cgroup_fd != -1) {
+		ATTACH_OR_FAIL(skb_egress, "attach skb_egress");
+		ATTACH_OR_FAIL(skb_ingress, "attach skb_ingress");
+		ATTACH_OR_FAIL(sock_create, "attach sock_create");
+		ATTACH_OR_FAIL(sock_release, "attach sock_release");
+		ATTACH_OR_FAIL(sendmsg4, "attach sendmsg4");
+		ATTACH_OR_FAIL(connect4, "attach connect4");
+		ATTACH_OR_FAIL(recvmsg4, "attach recvmsg4");
+
+		close(cgroup_fd);
+		cgroup_fd = -1;
+	}
+#undef ATTACH_OR_FAIL
 
 	/*
 	 * There doesn't seem to be a watermark setting for ebpf!
 	 */
 	ringbuf_opts.sz = sizeof(ringbuf_opts);
-	bqq->ringbuf = ring_buffer__new(bpf_map__fd(bqq->prog->maps.ringbuf),
+	bqq->ringbuf = ring_buffer__new(bpf_map__fd(p->maps.ringbuf),
 	    bpf_ringbuf_cb, qq, &ringbuf_opts);
 	if (bqq->ringbuf == NULL) {
 		qwarn("ring_buffer__new");
@@ -368,6 +414,11 @@ bpf_queue_open(struct quark_queue *qq)
 
 	return (0);
 fail:
+	if (cgroup_fd != -1) {
+		close(cgroup_fd);
+		cgroup_fd = -1;
+	}
+
 	bpf_queue_close(qq);
 
 	return (-1);
