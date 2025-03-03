@@ -29,6 +29,13 @@ struct {
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } sk_to_tgid SEC(".maps");
 
+/* struct { */
+/* 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY); */
+/* 	__type(key, u32); */
+/* 	__type(value, char[MAX_DNS_PACKET]); */
+/* 	__uint(max_entries, 1); */
+/* } packet_scratch SEC(".maps"); */
+
 static int inet_csk_accept__exit(struct sock *sk)
 {
     if (!sk)
@@ -387,116 +394,262 @@ int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
 	}
 }
 
-int skb_in_or_egress(struct __sk_buff *skb, int ingress)
-{
-	struct udphdr udp;
-	struct bpf_sock *sk, *sk2;
-	u32 *tgid, cap_len;
-	struct ebpf_dns_event2 *event;
-	struct ebpf_varlen_field *field;
+/* __attribute__((always_inline)) static int skb_in_or_egress(struct __sk_buff *skb, int ingress) */
+/* { */
+/* 	struct udphdr udp; */
+/* 	struct bpf_sock *sk, *sk2; */
+/* 	u32 *tgid, cap_len; */
+/* 	struct ebpf_dns_event2 *event; */
+/* 	struct ebpf_varlen_field *field; */
+/* 	/\* char *pkt; *\/ */
 
-	if (skb->family != AF_INET && skb->family != AF_INET6)
-		goto ignore;
-	if ((sk = skb->sk) == NULL)
-		goto ignore;
-	if ((sk = bpf_sk_fullsock(sk)) == NULL)
-		goto ignore;
-	if (sk->family != AF_INET && sk->family != AF_INET6)
-		goto ignore;
-	if (sk->protocol != IPPROTO_UDP)
-		goto ignore;
+/* 	if (skb->family != AF_INET && skb->family != AF_INET6) */
+/* 		goto ignore; */
+/* 	if ((sk = skb->sk) == NULL) */
+/* 		goto ignore; */
+/* 	if ((sk = bpf_sk_fullsock(sk)) == NULL) */
+/* 		goto ignore; */
+/* 	if (sk->family != AF_INET && sk->family != AF_INET6) */
+/* 		goto ignore; */
+/* 	if (sk->protocol != IPPROTO_UDP) */
+/* 		goto ignore; */
 
-	if (sk->family == AF_INET) {
-		struct iphdr ip;
+/* 	if (sk->family == AF_INET) { */
+/* 		struct iphdr ip; */
 
-		if (bpf_skb_load_bytes(skb, 0, &ip, sizeof(ip))) {
-			bpf_printk("copy error 1");
-			goto ignore;
-		}
-		if (bpf_skb_load_bytes(skb, ip.ihl << 2, &udp, sizeof(udp))) {
-			bpf_printk("copy error 2");
-			goto ignore;
-		}
-		if (ip.protocol != IPPROTO_UDP)
-			goto ignore;
-	} else {
-		goto ignore;
-	}
+/* 		if (bpf_skb_load_bytes(skb, 0, &ip, sizeof(ip))) { */
+/* 			bpf_printk("copy error 1"); */
+/* 			goto ignore; */
+/* 		} */
+/* 		if (bpf_skb_load_bytes(skb, ip.ihl << 2, &udp, sizeof(udp))) { */
+/* 			bpf_printk("copy error 2"); */
+/* 			goto ignore; */
+/* 		} */
+/* 		if (ip.protocol != IPPROTO_UDP) */
+/* 			goto ignore; */
+/* 	} else { */
+/* 		goto ignore; */
+/* 	} */
 
-	/* else if (sk->family == AF_INET6) { */
-	/* 	int t_off; */
+/* 	/\* else if (sk->family == AF_INET6) { *\/ */
+/* 	/\* 	int t_off; *\/ */
 
-	/* 	t_off = skb_peel_nexthdr(skb, NEXTHDR_UDP); */
-	/* 	if (t_off == -1) */
-	/* 		goto ignore; */
+/* 	/\* 	t_off = skb_peel_nexthdr(skb, NEXTHDR_UDP); *\/ */
+/* 	/\* 	if (t_off == -1) *\/ */
+/* 	/\* 		goto ignore; *\/ */
 
-	/* 	if (bpf_skb_load_bytes(skb, t_off, &udp, sizeof(udp))) { */
-	/* 		bpf_printk("copy error 4"); */
-	/* 		goto ignore; */
-	/* 	} */
-	/* } */
+/* 	/\* 	if (bpf_skb_load_bytes(skb, t_off, &udp, sizeof(udp))) { *\/ */
+/* 	/\* 		bpf_printk("copy error 4"); *\/ */
+/* 	/\* 		goto ignore; *\/ */
+/* 	/\* 	} *\/ */
+/* 	/\* } *\/ */
 
-	if (bpf_ntohs(udp.dest) != 53 && bpf_ntohs(udp.source) != 53)
-		goto ignore;
+/* 	if (bpf_ntohs(udp.dest) != 53 && bpf_ntohs(udp.source) != 53) */
+/* 		goto ignore; */
 
-	sk2 = sk;
-	tgid = bpf_map_lookup_elem(&sk_to_tgid, &sk2);
-	if (tgid == NULL) {
-		bpf_printk("udp egress not found");
-		goto ignore;
-	}
-	bpf_printk("%d: udp src=%d dst=%d len=%d",
-	    tgid == NULL ? 0 : *tgid, bpf_ntohs(udp.source),
-	    bpf_ntohs(udp.dest), bpf_ntohs(udp.len));
+/* 	sk2 = sk; */
+/* 	tgid = bpf_map_lookup_elem(&sk_to_tgid, &sk2); */
+/* 	if (tgid == NULL) { */
+/* 		bpf_printk("udp egress not found"); */
+/* 		goto ignore; */
+/* 	} */
+/* 	bpf_printk("%d: udp src=%d dst=%d len=%d", */
+/* 	    tgid == NULL ? 0 : *tgid, bpf_ntohs(udp.source), */
+/* 	    bpf_ntohs(udp.dest), bpf_ntohs(udp.len)); */
 
-	cap_len = skb->len;
-	/*
-	 * verifier will complain, even with a skb->len
-	 * check at the beginning.
-	 */
-	if (cap_len <= 0)
-		goto ignore;
-	else if (cap_len > MAX_DNS_PACKET)
-		cap_len = MAX_DNS_PACKET;
+/* 	cap_len = skb->len; */
+/* 	/\* */
+/* 	 * verifier will complain, even with a skb->len */
+/* 	 * check at the beginning. */
+/* 	 *\/ */
+/* 	/\* if (cap_len <= 0) *\/ */
+/* 	/\* 	goto ignore; *\/ */
+/* 	/\* else if (cap_len > MAX_DNS_PACKET) *\/ */
+/* 	/\* 	cap_len = MAX_DNS_PACKET; *\/ */
 
-	event = get_event_buffer();
-	if (event == NULL)
-		goto ignore;
+/* 	event = get_event_buffer(); */
+/* 	if (event == NULL) */
+/* 		goto ignore; */
+/* 	u32 zero = 0; */
+/* 	/\* pkt = bpf_map_lookup_elem(&packet_scratch, &zero); *\/ */
+/* 	/\* if (pkt == NULL) *\/ */
+/* 	/\* 	goto ignore; *\/ */
 
-	event->hdr.type = EBPF_EVENT_NETWORK_DNS_PKT;
-	event->hdr.ts = bpf_ktime_get_ns();
-	event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
-	event->tgid = *tgid;
-	event->cap_len = cap_len;
-	event->orig_len = skb->len;
-	event->direction = ingress ? EBPF_NETWORK_DIR_INGRESS : EBPF_NETWORK_DIR_EGRESS;
+/* 	event->hdr.type = EBPF_EVENT_NETWORK_DNS_PKT; */
+/* 	event->hdr.ts = bpf_ktime_get_ns(); */
+/* 	event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper(); */
+/* 	event->tgid = *tgid; */
+/* 	event->cap_len = cap_len; */
+/* 	event->orig_len = skb->len; */
+/* 	event->direction = ingress ? EBPF_NETWORK_DIR_INGRESS : EBPF_NETWORK_DIR_EGRESS; */
 
-	/* if (bpf_skb_load_bytes(skb, 0, event, MAX_DNS_PACKET)) */
-	/* 	goto ignore; */
-	ebpf_vl_fields__init(&event->vl_fields);
-	field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_DNS_BODY);
-	/* the verifier bitches if we use cap_len instead of a constant on 5.10 */
-	if (bpf_skb_load_bytes(skb, 0, field->data, MAX_DNS_PACKET))
-		goto ignore;
-	ebpf_vl_field__set_size(&event->vl_fields, field, cap_len);
+/* 	/\* if (bpf_skb_load_bytes(skb, 0, event, MAX_DNS_PACKET)) *\/ */
+/* 	/\* 	goto ignore; *\/ */
+/* 	ebpf_vl_fields__init(&event->vl_fields); */
+/* 	field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_DNS_BODY); */
+/* 	if (field == NULL) */
+/* 		goto ignore; */
+/* 	/\* the verifier bitches if we use cap_len instead of a constant on 5.10 *\/ */
+/* 	u8 buf[4] = {0}; */
+/* 	/\* this one fails *\/ */
+/* 	/\* if (bpf_skb_load_bytes(skb, 0, field->data, cap_len)) *\/ */
+/* 	/\* 	goto ignore; *\/ */
 
-	ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+/* 	/\* THIS WORKS! *\/ */
+/* 	/\* if (bpf_skb_load_bytes(skb, 0, buf, sizeof(buf))) *\/ */
+/* 	/\* 	goto ignore; *\/ */
+/* 	/\* u16 small_len = cap_len & 0xff; *\/ */
+/* 	int copy_len = cap_len; */
 
-ignore:
-	return (1);
-}
+/* 	if (copy_len < 4) { */
+		
+/* 		if (copy_len > 0) { */
+/* 			if (bpf_skb_load_bytes(skb, 0, buf, copy_len)) */
+/* 				goto ignore; */
+/* 		} */
+/* 	} */
+
+/* 	/\* ebpf_vl_field__set_size(&event->vl_fields, field, cap_len); *\/ */
+
+/* 	ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0); */
+
+/* ignore: */
+/* 	return (1); */
+/* } */
+
+/* SEC("cgroup_skb/egress") */
+/* int skb_egress(struct __sk_buff *skb) */
+/* { */
+/* 	return skb_in_or_egress(skb, 0); */
+/* } */
+
+/* SEC("cgroup_skb/ingress") */
+/* int skb_ingress(struct __sk_buff *skb) */
+/* { */
+/* 	return skb_in_or_egress(skb, 1); */
+/* } */
 
 SEC("cgroup_skb/egress")
 int skb_egress(struct __sk_buff *skb)
 {
-	return skb_in_or_egress(skb, 0);
+	return 1;
 }
 
+/*
+ * DONT EVENT FUCKING TOUCH THIS!!!!
+ */
+/* SEC("cgroup_skb/ingress") */
+/* int skb_ingress(struct __sk_buff *skb) */
+/* { */
+/* 	struct iphdr ip; */
+/* 	char buf[256] = {0}; */
+/* 	u32 len; */
+/* 	struct udphdr udp; */
+
+/* 	if (bpf_skb_load_bytes(skb, 0, &ip, sizeof(ip))) */
+/* 		return (1); */
+/* 	if (bpf_skb_load_bytes(skb, ip.ihl << 2, &udp, sizeof(udp))) */
+/* 		return (1); */
+
+/* 	len = bpf_ntohs(udp.len); */
+/* 	if (len > sizeof(buf)) */
+/* 		len = sizeof(buf); */
+
+/* 	if (len > 1) */
+/* 		bpf_skb_load_bytes(skb, 0, buf, len); */
+
+/* 	return 1; */
+/* } */
+
+/* GOOD */
+/* SEC("cgroup_skb/ingress") */
+/* int skb_ingress(struct __sk_buff *skb) */
+/* { */
+/* 	char buf[256] = {0}; */
+/* 	u32 len; */
+
+/* 	len = skb->len; */
+/* 	if (len > sizeof(buf)) */
+/* 		len = sizeof(buf); */
+	
+/* 	if (len > 1) */
+/* 		bpf_skb_load_bytes(skb, 0, buf, len); */
+
+/* 	return (1); */
+/* } */
+
+/* this */
+/* SEC("cgroup_skb/ingress") */
+/* int skb_ingress(struct __sk_buff *skb) */
+/* { */
+/* 	char buf[256] = {0}; */
+/* 	u32 len; */
+
+/* 	/\* And this is what works, because. *\/ */
+/* 	len = skb->len; */
+/* 	if (len > sizeof(buf)) */
+/* 		len = sizeof(buf); */
+/* 	if (len > 0) { */
+/* 		bpf_skb_load_bytes(skb, 0, buf, len); */
+
+/* 		/\* if (len < sizeof(buf)) *\/ */
+/* 		/\* 	bpf_skb_load_bytes(NULL, 0, buf, len); *\/ */
+/* 	} */
+	
+
+/* 	return (1); */
+/* } */
+
+/*
+ * THIS SEEMS TO WORK!
+ */
 SEC("cgroup_skb/ingress")
 int skb_ingress(struct __sk_buff *skb)
 {
-	return skb_in_or_egress(skb, 1);
+	u32 len;
+
+	/* And this is what works, because. */
+	len = skb->len;
+	if (len > 512)
+		len = 512;
+	if (len > 1) {
+		/* will complain that len is not a constant */
+		/* char *p = bpf_ringbuf_reserve(&ringbuf, len, 0); */
+		/* if (p == NULL) */
+		/* 	return (1); */
+
+		struct ebpf_dns_event2 *event;
+		struct ebpf_varlen_field *field;
+
+		event = get_event_buffer();
+		if (event == NULL)
+			return (1);
+
+		event->hdr.type = EBPF_EVENT_NETWORK_DNS_PKT;
+		event->hdr.ts = bpf_ktime_get_ns();
+		event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+		event->tgid = 1805;
+		event->cap_len = len;
+		event->orig_len = skb->len;
+		event->direction = EBPF_NETWORK_DIR_INGRESS;
+		/* event->direction = ingress ? EBPF_NETWORK_DIR_INGRESS : EBPF_NETWORK_DIR_EGRESS; */
+
+		field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_DNS_BODY);
+		if (field == NULL)
+			return (1);
+
+		if (bpf_skb_load_bytes(skb, 0, field->data, len))
+			return (1);
+
+		ebpf_vl_field__set_size(&event->vl_fields, field, len);
+		ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+	}
+
+	
+
+	return (1);
 }
+
 
 int sk_maybe_save_tgid(struct bpf_sock *sk)
 {
