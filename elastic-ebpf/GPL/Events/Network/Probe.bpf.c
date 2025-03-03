@@ -454,33 +454,34 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	 * verifier will complain, even with a skb->len
 	 * check at the beginning.
 	 */
-	if (cap_len <= 0)
-		goto ignore;
-	else if (cap_len > MAX_DNS_PACKET)
+	if (cap_len > MAX_DNS_PACKET)
 		cap_len = MAX_DNS_PACKET;
-
-	event = get_event_buffer();
-	if (event == NULL)
+	if (cap_len < 1)
 		goto ignore;
 
-	event->hdr.type = EBPF_EVENT_NETWORK_DNS_PKT;
-	event->hdr.ts = bpf_ktime_get_ns();
-	event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
-	event->tgid = *tgid;
-	event->cap_len = cap_len;
-	event->orig_len = skb->len;
-	event->direction = ingress ? EBPF_NETWORK_DIR_INGRESS : EBPF_NETWORK_DIR_EGRESS;
+	if (cap_len > 1) {
+		event = get_event_buffer();
+		if (event == NULL)
+			goto ignore;
 
-	/* if (bpf_skb_load_bytes(skb, 0, event, MAX_DNS_PACKET)) */
-	/* 	goto ignore; */
-	ebpf_vl_fields__init(&event->vl_fields);
-	field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_DNS_BODY);
-	/* the verifier bitches if we use cap_len instead of a constant on 5.10 */
-	if (bpf_skb_load_bytes(skb, 0, field->data, MAX_DNS_PACKET))
-		goto ignore;
-	ebpf_vl_field__set_size(&event->vl_fields, field, cap_len);
+		event->hdr.type = EBPF_EVENT_NETWORK_DNS_PKT;
+		event->hdr.ts = bpf_ktime_get_ns();
+		event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+		event->tgid = *tgid;
+		event->cap_len = cap_len;
+		event->orig_len = skb->len;
+		event->direction = ingress ? EBPF_NETWORK_DIR_INGRESS : EBPF_NETWORK_DIR_EGRESS;
 
-	ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+		/* if (bpf_skb_load_bytes(skb, 0, event, MAX_DNS_PACKET)) */
+		/* 	goto ignore; */
+		ebpf_vl_fields__init(&event->vl_fields);
+		field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_DNS_BODY);
+		if (bpf_skb_load_bytes(skb, 0, field->data, cap_len))
+			goto ignore;
+		ebpf_vl_field__set_size(&event->vl_fields, field, cap_len);
+
+		ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+	}
 
 ignore:
 	return (1);
