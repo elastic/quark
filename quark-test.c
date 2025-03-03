@@ -1,10 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Copyright (c) 2024 Elastic NV */
 
+#include <sys/mman.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/unistd.h>
+#include <sys/wait.h>
+
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+
+#include <arpa/inet.h>
+
 #include <assert.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <limits.h>
 #include <sched.h>
 #include <stdio.h>
@@ -14,15 +28,13 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <sys/mman.h>
-#include <sys/select.h>
-#include <sys/unistd.h>
-#include <sys/wait.h>
-
 #include "quark.h"
 
 #define MAN_QUARK_TEST
 #include "manpages.h"
+
+#define PATTERN "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+//	"Nobody calls me Lebowski. You got the wrong guy. I'm the Dude, man."
 
 static int	bflag;	/* run bpf tests */
 static int	kflag;	/* run kprobe tests */
@@ -330,6 +342,62 @@ drain_for_pid(struct quark_queue *qq, pid_t pid)
 	return (qev);
 }
 
+static void
+assert_localhost(void)
+{
+	struct ifaddrs	*ifa;
+
+	if (getifaddrs(&ifa) == -1)
+		err(1, "getifaddrs");
+	if (ifa == NULL)
+		errx(1, "getifaddrs: no addresses");
+	assert(!strcmp(ifa->ifa_name, "lo"));
+	assert(ifa->ifa_addr != NULL);
+	printf("ifa->ifa_flags=0x%x\n", ifa->ifa_flags);
+
+	freeifaddrs(ifa);
+}
+
+static int
+local_listen(u16 port, int type)
+{
+	struct sockaddr_in	sin;
+	int			fd;
+
+	bzero(&sin, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = ntohs(port);
+	if (inet_aton("127.0.0.1", &sin.sin_addr) != 1)
+		errx(1, "inet_aton");
+	if ((fd = socket(sin.sin_family, type, 0)) == -1)
+		err(1, "socket");
+	if (bind(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
+		err(1, "bind");
+	if (type == SOCK_STREAM && listen(fd, 32) == -1)
+		err(1, "listen");
+
+	return (fd);
+}
+
+static int
+local_connect(u16 port, int type)
+{
+	struct sockaddr_in	sin;
+	int			fd;
+
+	bzero(&sin, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = ntohs(port);
+	if (inet_aton("127.0.0.1", &sin.sin_addr) != 1)
+		errx(1, "inet_aton");
+	if ((fd = socket(sin.sin_family, type, 0)) == -1)
+		err(1, "socket");
+	if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
+		err(1, "connect");
+
+	return (fd);
+}
+
 static int
 t_probe(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -628,14 +696,31 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_net(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue		 qq;
+	struct quark_queue	qq;
+	int			listen_fd, conn_fd;
+	ssize_t			n;
+
+	assert_localhost();
 
 	qa->flags |= QQ_SOCK_CONN;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
+	listen_fd = local_listen(53, SOCK_DGRAM);
+	conn_fd = local_connect(53, SOCK_DGRAM);
+	n = write(conn_fd, PATTERN, strlen(PATTERN));
+	if (n == -1)
+		err(1, "write");
+	else if (n != strlen(PATTERN))
+		errx(1, "short write");
+
+	printf("getpid=%d\n", getpid());
+	drain_for_pid(&qq, getpid());
+
 	quark_queue_close(&qq);
+	close(listen_fd);
+	close(conn_fd);
 
 	return (0);
 }
