@@ -42,6 +42,9 @@ struct udphdr {
 	u16 check;
 };
 
+static int	bflag;	/* run bpf tests */
+static int	kflag;	/* run kprobe tests */
+
 #define msleep(_x)	usleep((uint64_t)_x * 1000ULL)
 
 enum {
@@ -404,6 +407,7 @@ local_connect(u16 port, int type, u16 *bound_port)
 		err(1, "socket");
 	if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
 		err(1, "connect");
+
 	if (bound_port != NULL) {
 		socklen_t	socklen;
 
@@ -836,14 +840,31 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_net(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue		 qq;
+	struct quark_queue	qq;
+	int			listen_fd, conn_fd;
+	ssize_t			n;
+
+	assert_localhost();
 
 	qa->flags |= QQ_SOCK_CONN;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
+	listen_fd = local_listen(53, SOCK_DGRAM);
+	conn_fd = local_connect(53, SOCK_DGRAM);
+	n = write(conn_fd, PATTERN, strlen(PATTERN));
+	if (n == -1)
+		err(1, "write");
+	else if (n != strlen(PATTERN))
+		errx(1, "short write");
+
+	printf("getpid=%d\n", getpid());
+	drain_for_pid(&qq, getpid());
+
 	quark_queue_close(&qq);
+	close(listen_fd);
+	close(conn_fd);
 
 	return (0);
 }

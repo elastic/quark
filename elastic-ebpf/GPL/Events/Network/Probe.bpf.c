@@ -468,7 +468,7 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	 * to a JNZ, which doesn't adjust umin, * causing the
 	 * bpf_skb_load_bytes() down below to think cap_len can be * zero.
 	 */
-	if (cap_len > (sizeof(struct ip) + sizeof(udp) + 12)) {
+	if (cap_len > (sizeof(struct iphdr) + sizeof(udp) + 12)) {
 		event = get_event_buffer();
 		if (event == NULL)
 			goto ignore;
