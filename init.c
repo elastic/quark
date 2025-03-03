@@ -1,19 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Copyright (c) 2024 Elastic NV */
 
-#include <err.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <string.h>
-
 #include <linux/reboot.h>
 
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+
+#include <net/if.h>
+
+#include <netinet/in.h>
+#include <netinet/ip.h>
+
+#include <err.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 
 static void
 powerdown(void)
@@ -46,6 +53,25 @@ display_banner(char *argv[])
 		putchar('`');
 		printf(" on %s %s\n", uts.release, uts.machine);
 	}
+}
+
+static void
+net_up(void)
+{
+	struct ifreq	ifr;
+	int		fd;
+
+	if ((fd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+		err(1, "socket");
+
+	bzero(&ifr, sizeof(ifr));
+	strlcpy(ifr.ifr_name, "lo", sizeof(ifr.ifr_name));
+	if (ioctl(fd, SIOCGIFFLAGS, &ifr) == -1)
+		err(1, "SIOCGIFFLAGS");
+	ifr.ifr_flags |= IFF_UP;
+	if (ioctl(fd, SIOCSIFFLAGS, &ifr) == -1)
+		err(1, "SIOCSIFFLAGS");
+	close(fd);
 }
 
 int
@@ -95,6 +121,10 @@ main(int argc, char *argv[])
 				errx(1, "couldn't mount tracefs or debugfs");
 			}
 		}
+		if (mount(NULL, "/sys/fs/cgroup", "cgroup2", 0, NULL) == -1)
+			err(1, "mount /sys/fs/cgroup");
+
+		net_up();
 
 		display_banner(argv);
 
