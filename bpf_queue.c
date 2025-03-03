@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <ctype.h>
 
 #include "quark.h"
 #include "bpf_prog_skel.h"
@@ -30,6 +31,33 @@ struct quark_queue_ops queue_ops_bpf = {
 	.update_stats = bpf_queue_update_stats,
 	.close	      = bpf_queue_close,
 };
+
+static void
+sshbuf_dump_data(const void *s, size_t len, FILE *f)
+{
+	size_t i, j;
+	const u_char *p = (const u_char *)s;
+
+	for (i = 0; i < len; i += 16) {
+		fprintf(f, "%.4zu: ", i);
+		for (j = i; j < i + 16; j++) {
+			if (j < len)
+				fprintf(f, "%02x ", p[j]);
+			else
+				fprintf(f, "   ");
+		}
+		fprintf(f, " ");
+		for (j = i; j < i + 16; j++) {
+			if (j < len) {
+				if  (isascii(p[j]) && isprint(p[j]))
+					fprintf(f, "%c", p[j]);
+				else
+					fprintf(f, ".");
+			}
+		}
+		fprintf(f, "\n");
+	}
+}
 
 /*
  * Map libbpf logs into quark_verbose.
@@ -259,6 +287,17 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		dns = (struct ebpf_dns_event2 *)ev;
 		printf("dns tgid=%d len=%d/%d direction=%d\n",
 		    dns->tgid, dns->cap_len, dns->orig_len, dns->direction);
+		FOR_EACH_VARLEN_FIELD(dns->vl_fields, field) {
+			switch (field->type) {
+			case EBPF_VL_FIELD_DNS_BODY:
+				printf("field->size=%d\n", field->size);
+				sshbuf_dump_data(field->data, field->size, stdout);
+				break;
+			default:
+				printf("bad type!\n");
+			}
+		}
+
 		fflush(stdout);
 		break;
 	}
@@ -356,7 +395,10 @@ bpf_queue_open(struct quark_queue *qq)
 		bpf_program__set_autoload(p->progs.sendmsg4, 1);
 		bpf_program__set_autoload(p->progs.connect4, 1);
 		bpf_program__set_autoload(p->progs.recvmsg4, 1);
+
+		bpf_program__set_log_level(p->progs.skb_ingress, 1);
 	}
+
 
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {
