@@ -456,10 +456,19 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	 */
 	if (cap_len > MAX_DNS_PACKET)
 		cap_len = MAX_DNS_PACKET;
-	/* if (cap_len < 1) */
-	/* 	goto ignore; */
 
-	if (cap_len > 1) {
+	/*
+	 * Yes this code is weird, but it convinces old verifiers (5.10), don't
+	 * blame me, be sure to test 5.10 if you change it.  The minimal packet
+	 * should be iphlen + udphlen + 12(dns header size). Old verifiers
+	 * (5.10) are very sensitive here and a non constant right expression
+	 * (since iphlen is not constant due to options) fails. Do what we can
+	 * and filter the remaining bad packets in userland, same applies to
+	 * ipv6. Also be careful with `if cap_len > 0`, as clang will compile it
+	 * to a JNZ, which doesn't adjust umin, * causing the
+	 * bpf_skb_load_bytes() down below to think cap_len can be * zero.
+	 */
+	if (cap_len > (sizeof(struct ip) + sizeof(udp) + 12)) {
 		event = get_event_buffer();
 		if (event == NULL)
 			goto ignore;
@@ -472,8 +481,6 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 		event->orig_len = skb->len;
 		event->direction = ingress ? EBPF_NETWORK_DIR_INGRESS : EBPF_NETWORK_DIR_EGRESS;
 
-		/* if (bpf_skb_load_bytes(skb, 0, event, MAX_DNS_PACKET)) */
-		/* 	goto ignore; */
 		ebpf_vl_fields__init(&event->vl_fields);
 		field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_DNS_BODY);
 		if (bpf_skb_load_bytes(skb, 0, field->data, cap_len))
