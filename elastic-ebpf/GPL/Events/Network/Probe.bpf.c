@@ -456,8 +456,8 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	 */
 	if (cap_len > MAX_DNS_PACKET)
 		cap_len = MAX_DNS_PACKET;
-	if (cap_len < 1)
-		goto ignore;
+	/* if (cap_len < 1) */
+	/* 	goto ignore; */
 
 	if (cap_len > 1) {
 		event = get_event_buffer();
