@@ -143,6 +143,11 @@ void	 qlog_func(int, int, const char *, int, const char *, ...) __attribute__((f
 #endif /* MS_TO_NS */
 
 /*
+ * Generic exported constants
+ */
+#define QUARK_MAX_DNS	2048
+
+/*
  * Raw events
  */
 enum {
@@ -232,6 +237,22 @@ struct raw_sock_conn {
 	enum sock_conn		conn;
 };
 
+enum quark_packet_direction {
+	QUARK_PACKET_DIR_INVALID,
+	QUARK_PACKET_DIR_EGRESS,
+	QUARK_PACKET_DIR_INGRESS,
+};
+
+struct quark_dns {
+	char				packet[QUARK_MAX_DNS];
+	size_t				len;
+	enum quark_packet_direction	direction;
+};
+
+struct raw_packet {
+	struct quark_dns lala;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -249,6 +270,7 @@ struct raw_event {
 		struct raw_task			task;
 		struct raw_exec_connector	exec_connector;
 		struct raw_sock_conn		sock_conn;
+		struct raw_packet		dns;
 	};
 };
 
@@ -435,6 +457,7 @@ struct quark_queue_attr {
 #define QQ_MIN_AGG		(1 << 3)
 #define QQ_ENTRY_LEADER		(1 << 4)
 #define QQ_SOCK_CONN		(1 << 5)
+#define QQ_DNS			(1 << 6)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;
