@@ -2,6 +2,7 @@
 /* Copyright (c) 2024 Elastic NV */
 
 #include <sys/epoll.h>
+#include <sys/param.h>
 #include <sys/sysinfo.h>
 
 #include <ctype.h>
@@ -282,9 +283,37 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		break;
 	}
 	case EBPF_EVENT_NETWORK_DNS_PKT: {
-		struct ebpf_dns_event2 *dns;
+		struct ebpf_dns_event2	*dns;
+		size_t			 cap_len;
+		struct quark_packet	*packet;
 
 		dns = (struct ebpf_dns_event2 *)ev;
+		if ((raw = raw_event_alloc(RAW_PACKET)) == NULL)
+			goto bad;
+		raw->pid = dns->tgid;
+		raw->time = ev->ts;
+
+		cap_len = MIN(dns->cap_len, QUARK_MAX_PACKET);
+		raw->packet.quark_packet = calloc(1, sizeof(*raw->packet.quark_packet) + cap_len);
+		if (raw->packet.quark_packet == NULL)
+			goto bad;
+		packet = raw->packet.quark_packet;
+
+		switch (dns->direction) {
+		case EBPF_NETWORK_DIR_EGRESS:
+			packet->direction = QUARK_PACKET_DIR_EGRESS;
+			break;
+		case EBPF_NETWORK_DIR_INGRESS:
+			packet->direction = QUARK_PACKET_DIR_INGRESS;
+			break;
+		default:
+			goto bad;
+		}
+
+		packet->origin = QUARK_PACKET_ORIGIN_DNS;
+		packet->orig_len = dns->orig_len;
+		packet->cap_len = dns->cap_len;
+
 		printf("dns tgid=%d len=%d/%d direction=%d\n",
 		    dns->tgid, dns->cap_len, dns->orig_len, dns->direction);
 		FOR_EACH_VARLEN_FIELD(dns->vl_fields, field) {

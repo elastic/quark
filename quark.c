@@ -92,6 +92,7 @@ raw_event_alloc(int type)
 		break;
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
+	case RAW_PACKET:	/* caller allocates */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -123,6 +124,9 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
+	case RAW_PACKET:
+		free(raw->packet.quark_packet);
+		raw->packet.quark_packet = NULL;
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -371,6 +375,15 @@ event_copy_out(struct quark_process *dst, struct quark_process *src, u64 events)
 	event_copy_fields(dst, src);
 }
 #endif
+
+static void
+event_storage_clear(struct quark_queue *qq)
+{
+	qq->event_storage.process = NULL;
+	qq->event_storage.socket = NULL;
+	free(qq->event_storage.packet); /* deconstify */
+	qq->event_storage.packet = NULL;
+}
 
 static void
 gc_mark(struct quark_queue *qq, struct gc_link *gc, enum gc_type type)
@@ -2352,6 +2365,9 @@ quark_queue_close(struct quark_queue *qq)
 	struct quark_process	*qp;
 	struct quark_socket	*qsk;
 
+	/* Don't forget the storage for the last sent event */
+	//event_storage_clear(qq);
+
 	/* Clean up all allocated raw events */
 	while ((raw = RB_ROOT(&qq->raw_event_by_time)) != NULL) {
 		raw_event_remove(qq, raw);
@@ -2544,6 +2560,26 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
+static const struct quark_event *
+raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	if (raw->packet.quark_packet == NULL) {
+		qwarnx("quark_packet is null");
+
+		return (NULL);
+	}
+
+	qev = &qq->event_storage;
+
+	/* Steal the packet */
+	qev->packet = raw->packet.quark_packet;
+	raw->packet.quark_packet = NULL;
+
+	return (qev);
+}
+
 const struct quark_event *
 quark_queue_get_event(struct quark_queue *qq)
 {
@@ -2551,13 +2587,29 @@ quark_queue_get_event(struct quark_queue *qq)
 	const struct quark_event	*qev;
 
 	qev = NULL;
+	event_storage_clear(qq);
 
-	/* Get a quark_event out of raw_event */
+	/* Get a quark_event out of a raw_event */
 	if ((raw = quark_queue_pop_raw(qq)) != NULL) {
-		if (raw->type == RAW_SOCK_CONN)
-			qev = raw_event_sock(qq, raw);
-		else
+		switch (raw->type) {
+		case RAW_EXEC:			/* FALLTHROUGH */
+		case RAW_WAKE_UP_NEW_TASK:	/* FALLTHROUGH */
+		case RAW_EXIT_THREAD:		/* FALLTHROUGH */
+		case RAW_COMM:			/* FALLTHROUGH */
+		case RAW_EXEC_CONNECTOR:
 			qev = raw_event_process(qq, raw);
+			break;
+		case RAW_SOCK_CONN:
+			qev = raw_event_sock(qq, raw);
+			break;
+		case RAW_PACKET:
+			qev = raw_event_packet(qq, raw);
+			break;
+		default:
+			warnx("unhandled raw->type: %d", raw->type);
+			break;
+		}
+
 		raw_event_free(raw);
 	}
 
