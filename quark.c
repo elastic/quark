@@ -1009,14 +1009,14 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	if (qev->events & QUARK_EV_PACKET) {
 		void	sshbuf_dump_data(const void *, size_t, FILE *); /* XXX */
 
-		flagname = "PACKET";
+		flagname = "PKT";
 
 		if (packet == NULL)
 			return (-1);
 
-		P(" %.4s\t origin=dns, len=%zd/%zd", flagname,
+		P("  %.4s\torigin=%s, len=%zd/%zd\n", flagname,
+		    packet->origin == QUARK_PACKET_ORIGIN_DNS ? "dns" : "?",
 		    packet->cap_len, packet->orig_len);
-		P("\n");
 		sshbuf_dump_data(packet->data, packet->cap_len, f);
 	}
 
