@@ -1015,6 +1015,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 
 		P(" %.4s\t origin=dns, len=%zd/%zd", flagname,
 		    packet->cap_len, packet->orig_len);
+		P("\n");
 		sshbuf_dump_data(packet->data, packet->cap_len, f);
 	}
 
