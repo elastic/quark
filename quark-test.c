@@ -463,8 +463,7 @@ t_process_iterator(const struct test *t, struct quark_queue_attr *qa)
 	for (i = 0; i < n_children; i++) {
 		do {
 			qp = quark_process_iter_next(&qi);
-		} while ((pid_t)qp->pid != children[i]);
-		assert(qp != NULL);
+		} while (qp != NULL && (pid_t)qp->pid != children[i]);
 		assert(qp->flags & QUARK_F_EXIT);
 		assert(qp->flags & QUARK_F_COMM);
 		assert(qp->flags & QUARK_F_FILENAME);
