@@ -930,7 +930,6 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 	size_t		 child_buflen;
 	ssize_t		 n;
 
-	return(t->func(t, qa));
 	/*
 	 * Figure out if this is ebpf or kprobe
 	 */
