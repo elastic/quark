@@ -124,6 +124,7 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
+		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
 		raw->packet.quark_packet = NULL;
@@ -381,7 +382,7 @@ event_storage_clear(struct quark_queue *qq)
 {
 	qq->event_storage.process = NULL;
 	qq->event_storage.socket = NULL;
-	free(qq->event_storage.packet); /* deconstify */
+	free(qq->event_storage.packet);
 	qq->event_storage.packet = NULL;
 }
 
@@ -671,6 +672,8 @@ event_type_str(u64 event)
 		return "SOCK_CONN_ESTABLISHED";
 	case QUARK_EV_SOCK_CONN_CLOSED:
 		return "SOCK_CONN_CLOSED";
+	case QUARK_EV_PACKET:
+		return "PACKET";
 	default:
 		return "?";
 	}
@@ -968,16 +971,19 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	char				 events[1024];
 	const struct quark_process	*qp;
 	const struct quark_socket	*qsk;
+	const struct quark_packet	*packet;
 	int				 pid;
 
 	qp = qev->process;
 	qsk = qev->socket;
+	packet = qev->packet;
 
 	pid = qp != NULL ? qp->pid : 0;
 	events_type_str(qev->events, events, sizeof(events));
 	P("->%d", pid);
 	if (qev->events)
 		P(" (%s)", events);
+
 	P("\n");
 
 	if (qev->events & (QUARK_EV_SOCK_CONN_ESTABLISHED|QUARK_EV_SOCK_CONN_CLOSED)) {
@@ -998,6 +1004,19 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		P("  %.4s\tlocal=%s:%d remote=%s:%d\n", flagname,
 		    local, ntohs(qsk->local.port),
 		    remote, ntohs(qsk->remote.port));
+	}
+
+	if (qev->events & QUARK_EV_PACKET) {
+		void	sshbuf_dump_data(const void *, size_t, FILE *); /* XXX */
+
+		flagname = "PACKET";
+
+		if (packet == NULL)
+			return (-1);
+
+		P(" %.4s\t origin=dns, len=%zd/%zd", flagname,
+		    packet->cap_len, packet->orig_len);
+		sshbuf_dump_data(packet->data, packet->cap_len, f);
 	}
 
 	if (qp == NULL)
@@ -2380,7 +2399,7 @@ quark_queue_close(struct quark_queue *qq)
 	struct quark_socket	*qsk;
 
 	/* Don't forget the storage for the last sent event */
-	//event_storage_clear(qq);
+	event_storage_clear(qq);
 
 	/* Clean up all allocated raw events */
 	while ((raw = RB_ROOT(&qq->raw_event_by_time)) != NULL) {
@@ -2586,6 +2605,9 @@ raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 	}
 
 	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_PACKET;
+	qev->process = quark_process_lookup(qq, raw->pid);
 
 	/* Steal the packet */
 	qev->packet = raw->packet.quark_packet;
