@@ -353,7 +353,7 @@ assert_localhost(void)
 		errx(1, "getifaddrs: no addresses");
 	assert(!strcmp(ifa->ifa_name, "lo"));
 	assert(ifa->ifa_addr != NULL);
-	printf("ifa->ifa_flags=0x%x\n", ifa->ifa_flags);
+//	printf("ifa->ifa_flags=0x%x\n", ifa->ifa_flags);
 
 	freeifaddrs(ifa);
 }
@@ -396,6 +396,41 @@ local_connect(u16 port, int type)
 		err(1, "connect");
 
 	return (fd);
+}
+
+static pid_t
+fork_sock_write(u16 port, int type)
+{
+	pid_t	child;
+	int	status, listen_fd, conn_fd;
+	ssize_t	n;
+
+	assert_localhost();
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	else if (child == 0) {
+		/* child */
+		listen_fd = local_listen(port, type);
+		conn_fd = local_connect(port, type);
+		n = write(conn_fd, PATTERN, strlen(PATTERN));
+		if (n == -1)
+			err(1, "write");
+		else if (n != strlen(PATTERN))
+			errx(1, "short write");
+		close(listen_fd);
+		close(conn_fd);
+
+		exit(0);
+	}
+
+	/* parent */
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child didn't exit cleanly");
+
+	return (child);
 }
 
 static int
@@ -694,33 +729,22 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
-t_net(const struct test *t, struct quark_queue_attr *qa)
+t_dns(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue	qq;
-	int			listen_fd, conn_fd;
-	ssize_t			n;
+	pid_t			child;
 
 	assert_localhost();
 
-	qa->flags |= QQ_SOCK_CONN;
+	qa->flags |= QQ_DNS;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	listen_fd = local_listen(53, SOCK_DGRAM);
-	conn_fd = local_connect(53, SOCK_DGRAM);
-	n = write(conn_fd, PATTERN, strlen(PATTERN));
-	if (n == -1)
-		err(1, "write");
-	else if (n != strlen(PATTERN))
-		errx(1, "short write");
-
-	printf("getpid=%d\n", getpid());
-	drain_for_pid(&qq, getpid());
+	child = fork_sock_write(53, SOCK_DGRAM);
+	drain_for_pid(&qq, child);
 
 	quark_queue_close(&qq);
-	close(listen_fd);
-	close(conn_fd);
 
 	return (0);
 }
@@ -738,7 +762,7 @@ const struct test all_tests[] = {
 	T(t_cache_grace),
 	T(t_min_agg),
 	T(t_stats),
-	T(t_net),
+	T(t_dns),
 	{ NULL,	NULL }
 };
 #undef S
