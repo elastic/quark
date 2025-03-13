@@ -436,6 +436,101 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_process_iterator(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_process_iter	 qi;
+	const struct quark_process	*qp;
+	int				 n_children = 3;
+	pid_t				 children[n_children];
+	struct args			*args;
+	size_t				 expected_len;
+	int				 i;
+	int				 j;
+	char				 cwd[PATH_MAX];
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	quark_process_iter_init(&qi, &qq);
+
+	for (i = 0; i < n_children; i++)
+		children[i] = fork_exec_nop();
+
+	for (i = 0; i < n_children; i++) {
+		qp = quark_process_iter_next(&qi);
+		assert(qp != NULL);
+		assert(qp->flags & QUARK_F_EXIT);
+		assert(qp->flags & QUARK_F_COMM);
+		assert(qp->flags & QUARK_F_FILENAME);
+		assert(qp->flags & QUARK_F_CMDLINE);
+		assert(qp->flags & QUARK_F_CWD);
+		assert((pid_t)qp->pid == children[i]);
+		assert((pid_t)qp->proc_ppid == getpid());
+		assert(qp->proc_time_boot > 0); /* XXX: improve */
+		assert(qp->proc_uid == getuid());
+		assert(qp->proc_gid == getgid());
+		assert(qp->proc_suid == geteuid());
+		assert(qp->proc_sgid == getegid());
+		assert(qp->proc_euid == geteuid());
+		assert(qp->proc_egid == getegid());
+		assert((pid_t)qp->proc_pgid == getpgid(0));
+		assert((pid_t)qp->proc_sid == getsid(0));
+		/* check capabilities */
+		/* XXX assumes we're root */
+		assert(qp->proc_cap_inheritable == 0);
+		/*
+		* We don't know the exact set since it varies from kernel,
+		* improve this in the future.
+		*/
+		assert(qp->proc_cap_effective != 0);
+		assert(qp->proc_cap_permitted != 0);
+		/* check entry leader */
+		/*
+		* XXX TODO This depends how we're running the test, if we're over ssh
+		* it will show ssh, if not it will show init and whatnot, for now
+		* assert that it is not unknown at least.
+		*/
+		assert(qp->proc_entry_leader != 0);
+		assert(qp->proc_entry_leader_type != QUARK_ELT_UNKNOWN);
+		/* XXX TODO check tty_major and tty_minor for self in the future */
+#if 0
+		assert(qp->proc_tty_major != QUARK_TTY_UNKNOWN);
+		assert(qp->proc_tty_minor != 0);
+#endif
+		/* check strings */
+		assert(!strcmp(qp->comm, program_invocation_short_name));
+		assert(!strcmp(qp->filename, binpath()));
+		/* check args */
+		args = args_make(qp);
+		assert(args != NULL);
+		assert(args->argc == 5);
+		assert(!strcmp(args->argv[0], binpath()));
+		assert(!strcmp(args->argv[1], "-N"));
+		assert(!strcmp(args->argv[2], "this"));
+		assert(!strcmp(args->argv[3], "is"));
+		assert(!strcmp(args->argv[4], "nop!"));
+		/*
+		* Expected len is the length of the arguments summed up, plus one byte
+		* for each argument(the NUL after each argument, including the last
+		* one), so we just start at 'argc' bytes.
+		*/
+		for (expected_len = args->argc, j = 0; j < args->argc; j++)
+			expected_len += strlen(args->argv[j]);
+		args_free(args);
+		assert(qp->cmdline_len == expected_len);
+
+		if (getcwd(cwd, sizeof(cwd)) == NULL)
+			err(1, "getcwd");
+		assert(!strcmp(cwd, qp->cwd));
+
+	}
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /* Make sure an exit comes from tgid, not tid */
 static int
 t_exit_tgid(const struct test *t, struct quark_queue_attr *qa)
@@ -633,6 +728,7 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 const struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
+	T(t_process_iterator),
 	T(t_exit_tgid),
 	T(t_namespace),
 	T(t_cache_grace),
