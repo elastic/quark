@@ -33,7 +33,8 @@ struct quark_queue_ops queue_ops_bpf = {
 	.close	      = bpf_queue_close,
 };
 
-static void
+void	sshbuf_dump_data(const void *s, size_t len, FILE *f);
+void
 sshbuf_dump_data(const void *s, size_t len, FILE *f)
 {
 	size_t i, j;
@@ -312,15 +313,16 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		packet->origin = QUARK_PACKET_ORIGIN_DNS;
 		packet->orig_len = dns->orig_len;
-		packet->cap_len = dns->cap_len;
+		packet->cap_len = cap_len;
 
 		printf("dns tgid=%d len=%d/%d direction=%d\n",
 		    dns->tgid, dns->cap_len, dns->orig_len, dns->direction);
 		FOR_EACH_VARLEN_FIELD(dns->vl_fields, field) {
 			switch (field->type) {
 			case EBPF_VL_FIELD_DNS_BODY:
-				printf("field->size=%d\n", field->size);
-				sshbuf_dump_data(field->data, field->size, stdout);
+				/* printf("field->size=%d\n", field->size); */
+				/* sshbuf_dump_data(field->data, field->size, stdout); */
+				memcpy(packet->data, field->data, cap_len);
 				break;
 			default:
 				printf("bad type!\n");

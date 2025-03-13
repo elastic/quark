@@ -303,10 +303,11 @@ struct quark_event {
 #define QUARK_EV_SETPROCTITLE		(1 << 3)
 #define QUARK_EV_SOCK_CONN_ESTABLISHED	(1 << 4)
 #define QUARK_EV_SOCK_CONN_CLOSED	(1 << 5)
+#define QUARK_EV_PACKET			(1 << 6)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
-	struct quark_packet	*packet;
+	struct quark_packet		*packet;
 };
 
 /*
