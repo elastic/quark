@@ -455,18 +455,21 @@ t_process_iterator(const struct test *t, struct quark_queue_attr *qa)
 
 	quark_process_iter_init(&qi, &qq);
 
-	for (i = 0; i < n_children; i++)
+	for (i = 0; i < n_children; i++) {
 		children[i] = fork_exec_nop();
+		drain_for_pid(&qq, children[i]);
+	}
 
 	for (i = 0; i < n_children; i++) {
-		qp = quark_process_iter_next(&qi);
+		do {
+			qp = quark_process_iter_next(&qi);
+		} while ((pid_t)qp->pid != children[i]);
 		assert(qp != NULL);
 		assert(qp->flags & QUARK_F_EXIT);
 		assert(qp->flags & QUARK_F_COMM);
 		assert(qp->flags & QUARK_F_FILENAME);
 		assert(qp->flags & QUARK_F_CMDLINE);
 		assert(qp->flags & QUARK_F_CWD);
-		assert((pid_t)qp->pid == children[i]);
 		assert((pid_t)qp->proc_ppid == getpid());
 		assert(qp->proc_time_boot > 0); /* XXX: improve */
 		assert(qp->proc_uid == getuid());
