@@ -964,8 +964,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	events_type_str(qev->events, events, sizeof(events));
 	P("->%d", pid);
 	if (qev->events)
-		P(" (%s)\n", events);
-	putchar('\n');
+		P(" (%s)", events);
+	P("\n");
 
 	if (qev->events & (QUARK_EV_SOCK_CONN_ESTABLISHED|QUARK_EV_SOCK_CONN_CLOSED)) {
 		char local[INET6_ADDRSTRLEN], remote[INET6_ADDRSTRLEN];
