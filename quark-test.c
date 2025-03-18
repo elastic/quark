@@ -1,10 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Copyright (c) 2024 Elastic NV */
 
+#include <sys/mman.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/unistd.h>
+#include <sys/wait.h>
+
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+
+#include <arpa/inet.h>
+
 #include <assert.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <limits.h>
 #include <sched.h>
 #include <stdio.h>
@@ -14,18 +28,19 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <sys/mman.h>
-#include <sys/select.h>
-#include <sys/unistd.h>
-#include <sys/wait.h>
-
 #include "quark.h"
 
 #define MAN_QUARK_TEST
 #include "manpages.h"
 
-static int	bflag;	/* run bpf tests */
-static int	kflag;	/* run kprobe tests */
+#define PATTERN "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+
+struct udphdr {
+	u16 source;
+	u16 dest;
+	u16 len;
+	u16 check;
+};
 
 #define msleep(_x)	usleep((uint64_t)_x * 1000ULL)
 
@@ -34,6 +49,9 @@ enum {
 	RED,
 	GREEN
 };
+
+static int	bflag;	/* run bpf tests */
+static int	kflag;	/* run kprobe tests */
 
 static int
 fancy_tty(void)
@@ -329,7 +347,97 @@ drain_for_pid(struct quark_queue *qq, pid_t pid)
 
 	return (qev);
 }
+#ifdef notyet
+static void
+assert_localhost(void)
+{
+	struct ifaddrs	*ifa;
 
+	if (getifaddrs(&ifa) == -1)
+		err(1, "getifaddrs");
+	if (ifa == NULL)
+		errx(1, "getifaddrs: no addresses");
+	assert(!strcmp(ifa->ifa_name, "lo"));
+	assert(ifa->ifa_addr != NULL);
+
+	freeifaddrs(ifa);
+}
+
+static int
+local_listen(u16 port, int type)
+{
+	struct sockaddr_in	sin;
+	int			fd;
+
+	bzero(&sin, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = ntohs(port);
+	if (inet_aton("127.0.0.1", &sin.sin_addr) != 1)
+		errx(1, "inet_aton");
+	if ((fd = socket(sin.sin_family, type, 0)) == -1)
+		err(1, "socket");
+	if (bind(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
+		err(1, "bind");
+	if (type == SOCK_STREAM && listen(fd, 32) == -1)
+		err(1, "listen");
+
+	return (fd);
+}
+
+static int
+local_connect(u16 port, int type)
+{
+	struct sockaddr_in	sin;
+	int			fd;
+
+	bzero(&sin, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = ntohs(port);
+	if (inet_aton("127.0.0.1", &sin.sin_addr) != 1)
+		errx(1, "inet_aton");
+	if ((fd = socket(sin.sin_family, type, 0)) == -1)
+		err(1, "socket");
+	if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
+		err(1, "connect");
+
+	return (fd);
+}
+
+static pid_t
+fork_sock_write(u16 port, int type)
+{
+	pid_t	child;
+	int	status, listen_fd, conn_fd;
+	ssize_t	n;
+
+	assert_localhost();
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	else if (child == 0) {
+		/* child */
+		listen_fd = local_listen(port, type);
+		conn_fd = local_connect(port, type);
+		n = write(conn_fd, PATTERN, strlen(PATTERN));
+		if (n == -1)
+			err(1, "write");
+		else if (n != strlen(PATTERN))
+			errx(1, "short write");
+		close(listen_fd);
+		close(conn_fd);
+
+		exit(0);
+	}
+
+	/* parent */
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child didn't exit cleanly");
+
+	return (child);
+}
+#endif
 static int
 t_probe(const struct test *t, struct quark_queue_attr *qa)
 {
