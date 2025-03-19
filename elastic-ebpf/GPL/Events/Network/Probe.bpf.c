@@ -358,6 +358,7 @@ int BPF_KPROBE(kprobe__tcp_close, struct sock *sk, long timeout)
     return tcp_close__enter(sk);
 }
 
+#ifdef notyet
 /* XXX naive, only handles ROUTING and DEST, untested */
 int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
 {
@@ -386,6 +387,7 @@ int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
 		}
 	}
 }
+#endif
 
 int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 {
@@ -417,22 +419,21 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 			bpf_printk("copy error 2");
 			goto ignore;
 		}
-	} else {
+	} else if (sk->family == AF_INET6) {
+#ifdef notyet
+		int t_off;
+
+		t_off = skb_peel_nexthdr(skb, NEXTHDR_UDP);
+		if (t_off == -1)
+			goto ignore;
+
+		if (bpf_skb_load_bytes(skb, t_off, &udp, sizeof(udp))) {
+			bpf_printk("copy error 4");
+			goto ignore;
+		}
+#endif
 		goto ignore;
 	}
-
-	/* else if (sk->family == AF_INET6) { */
-	/* 	int t_off; */
-
-	/* 	t_off = skb_peel_nexthdr(skb, NEXTHDR_UDP); */
-	/* 	if (t_off == -1) */
-	/* 		goto ignore; */
-
-	/* 	if (bpf_skb_load_bytes(skb, t_off, &udp, sizeof(udp))) { */
-	/* 		bpf_printk("copy error 4"); */
-	/* 		goto ignore; */
-	/* 	} */
-	/* } */
 
 	if (bpf_ntohs(udp.dest) != 53 && bpf_ntohs(udp.source) != 53)
 		goto ignore;
