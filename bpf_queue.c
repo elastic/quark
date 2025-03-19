@@ -411,8 +411,7 @@ bpf_queue_open(struct quark_queue *qq)
 		bpf_program__set_autoload(p->progs.kprobe__tcp_close, 1);
 	}
 
-	/* QQ_DNS or whatever */
-	if (1) {
+	if (qq->flags & QQ_DNS) {
 		cgroup_fd = open("/sys/fs/cgroup", O_RDONLY);
 		if (cgroup_fd == -1) {
 			qwarn("open cgroup");
@@ -443,7 +442,7 @@ bpf_queue_open(struct quark_queue *qq)
 		goto fail;
 	}
 
-#define ATTACH_OR_FAIL(_program, _error)				\
+#define CG_ATTACH_OR_FAIL(_program, _error)				\
 	if (bpf_program__attach_cgroup(p->progs._program,		\
 	    cgroup_fd) == NULL) {					\
 	    qwarn(_error);						\
@@ -451,13 +450,13 @@ bpf_queue_open(struct quark_queue *qq)
 	}
 
 	if (cgroup_fd != -1) {
-		ATTACH_OR_FAIL(skb_egress, "attach skb_egress");
-		ATTACH_OR_FAIL(skb_ingress, "attach skb_ingress");
-		ATTACH_OR_FAIL(sock_create, "attach sock_create");
-		ATTACH_OR_FAIL(sock_release, "attach sock_release");
-		ATTACH_OR_FAIL(sendmsg4, "attach sendmsg4");
-		ATTACH_OR_FAIL(connect4, "attach connect4");
-		ATTACH_OR_FAIL(recvmsg4, "attach recvmsg4");
+		CG_ATTACH_OR_FAIL(skb_egress, "attach skb_egress");
+		CG_ATTACH_OR_FAIL(skb_ingress, "attach skb_ingress");
+		CG_ATTACH_OR_FAIL(sock_create, "attach sock_create");
+		CG_ATTACH_OR_FAIL(sock_release, "attach sock_release");
+		CG_ATTACH_OR_FAIL(sendmsg4, "attach sendmsg4");
+		CG_ATTACH_OR_FAIL(connect4, "attach connect4");
+		CG_ATTACH_OR_FAIL(recvmsg4, "attach recvmsg4");
 
 		close(cgroup_fd);
 		cgroup_fd = -1;
