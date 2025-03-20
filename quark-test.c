@@ -47,7 +47,8 @@ struct udphdr {
 enum {
 	SANE,
 	RED,
-	GREEN
+	GREEN,
+	YELLOW
 };
 
 static int	bflag;	/* run bpf tests */
@@ -84,6 +85,9 @@ color(int color)
 		break;
 	case GREEN:
 		printf("\033[32m");
+		break;
+	case YELLOW:
+		printf("\033[33m");
 		break;
 	default:
 		errx(1, "bad color %d", color);
@@ -187,6 +191,7 @@ sproc_self_namespace(const char *path)
 struct test {
 	char	 *name;
 	int	(*func)(const struct test *, struct quark_queue_attr *);
+	int	  backend;
 };
 
 static void
@@ -831,18 +836,20 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 /*
  * Try to order by increasing order of complexity
  */
-#define T(_x) { S(_x),	_x }
-#define S(_x) #_x
+#define T(_x)		{ S(_x), _x, QQ_ALL_BACKENDS }
+#define T_KPROBE(_x)	{ S(_x), _x, QQ_KPROBE }
+#define T_EBPF(_x)	{ S(_x), _x, QQ_EBPF }
+#define S(_x)		#_x
 const struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
 	T(t_exit_tgid),
-	T(t_sock_conn),
+	T_EBPF(t_sock_conn),
 	T(t_namespace),
 	T(t_cache_grace),
 	T(t_min_agg),
 	T(t_stats),
-	{ NULL,	NULL }
+	{ NULL,	NULL, 0 }
 };
 #undef S
 #undef T
@@ -879,7 +886,7 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 {
 	pid_t		 child;
 	int		 status, x, linepos;
-	const char	*be;
+	int		 be;
 	int		 child_stderr[2];
 	FILE		*child_stream;
 	char		*child_buf;
@@ -889,17 +896,25 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 	/*
 	 * Figure out if this is ebpf or kprobe
 	 */
-	if (backend_of_attr(qa) == QQ_EBPF)
-		be = "ebpf";
-	else if (backend_of_attr(qa) == QQ_KPROBE)
-		be = "kprobe";
-	else
+	be = backend_of_attr(qa);
+	if (be != QQ_EBPF && be != QQ_KPROBE)
 		errx(1, "bad backend");
 
-	linepos = printf("%s @ %s", t->name, be);
+	linepos = printf("%s @ %s", t->name,
+	    be == QQ_EBPF ? "ebpf" : "kprobe");
 	while (++linepos < 30)
 		putchar('.');
+
 	fflush(stdout);
+
+	if ((t->backend & be) == 0) {
+		x = color(YELLOW);
+		printf("n/a\n");
+		color(x);
+		fflush(stdout);
+
+		return (0);
+	}
 
 	/*
 	 * Create a pipe to save the child stderr, so we don't get crappy
