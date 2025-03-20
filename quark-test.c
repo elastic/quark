@@ -347,7 +347,7 @@ drain_for_pid(struct quark_queue *qq, pid_t pid)
 
 	return (qev);
 }
-#ifdef notyet
+
 static void
 assert_localhost(void)
 {
@@ -385,7 +385,7 @@ local_listen(u16 port, int type)
 }
 
 static int
-local_connect(u16 port, int type)
+local_connect(u16 port, int type, u16 *bound_port)
 {
 	struct sockaddr_in	sin;
 	int			fd;
@@ -399,32 +399,52 @@ local_connect(u16 port, int type)
 		err(1, "socket");
 	if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
 		err(1, "connect");
+	if (bound_port != NULL) {
+		socklen_t	socklen;
+
+		socklen = sizeof(sin);
+		if (getsockname(fd, &sin, &socklen) == -1)
+			err(1, "getsockname");
+		*bound_port = sin.sin_port;
+	}
 
 	return (fd);
 }
 
 static pid_t
-fork_sock_write(u16 port, int type)
+fork_sock_write(u16 port, int type, u16 *bound_port)
 {
 	pid_t	child;
 	int	status, listen_fd, conn_fd;
 	ssize_t	n;
+	int	pipefd[2];
 
 	assert_localhost();
 
-	if ((child = fork()) == -1)
+	/*
+	 * We do the connect in the child, we use a pipe to send the bound port
+	 * up to us.
+	 */
+	if (bound_port != NULL && pipe(pipefd) == -1)
+		err(1, "pipe");
+
+	if ((child = fork()) == -1) {
 		err(1, "fork");
-	else if (child == 0) {
-		/* child */
+	} else if (child == 0) { /* child */
 		listen_fd = local_listen(port, type);
-		conn_fd = local_connect(port, type);
-		n = write(conn_fd, PATTERN, strlen(PATTERN));
+		conn_fd = local_connect(port, type, bound_port);
+		n = qwrite(conn_fd, PATTERN, strlen(PATTERN));
 		if (n == -1)
-			err(1, "write");
-		else if (n != strlen(PATTERN))
-			errx(1, "short write");
+			err(1, "qwrite");
 		close(listen_fd);
 		close(conn_fd);
+		if (bound_port != NULL) {
+			close(pipefd[0]);
+			n = qwrite(pipefd[1], bound_port, sizeof(*bound_port));
+			if (n == -1)
+				err(1, "qwrite");
+			close(pipefd[1]);
+		}
 
 		exit(0);
 	}
@@ -434,10 +454,21 @@ fork_sock_write(u16 port, int type)
 		err(1, "waitpid");
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		errx(1, "child didn't exit cleanly");
+	if (bound_port != NULL) {
+		close(pipefd[1]);
+		n = qread(pipefd[0], bound_port, sizeof(*bound_port));
+		if (n == -1)
+			err(1, "qread");
+		else if (n == 0)
+			err(1, "qread unexpected eof");
+		else if (n != sizeof(*bound_port))
+			errx(1, "qread short buf");
+		close(pipefd[0]);
+	}
 
 	return (child);
 }
-#endif
+
 static int
 t_probe(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -569,6 +600,70 @@ t_exit_tgid(const struct test *t, struct quark_queue_attr *qa)
 		assert(qev->events & QUARK_EV_FORK);
 		assert(qev->events & QUARK_EV_EXIT);
 	}
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	pid_t				 child;
+	u16				 bound_port;
+
+	qa->flags |= QQ_SOCK_CONN;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	child = fork_sock_write(18888, SOCK_STREAM, &bound_port);
+
+	/* QUARK_EV_FORK */
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events == QUARK_EV_FORK);
+
+	/* SOCK_CONN_ESTABLISHED */
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events == QUARK_EV_SOCK_CONN_ESTABLISHED);
+	assert(qev->process != NULL);
+	assert((pid_t)qev->process->pid == child);
+	assert(qev->socket != NULL);
+	assert(qev->socket->established_time > 0);
+	assert(qev->socket->from_scrape == 0);
+	assert((pid_t)qev->socket->pid_origin == child);
+	assert((pid_t)qev->socket->pid_last_use == child);
+	assert(qev->socket->local.af == AF_INET);
+	assert(qev->socket->local.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->local.port == bound_port);
+	assert(qev->socket->remote.af == AF_INET);
+	assert(qev->socket->remote.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->remote.port == htons(18888));
+	assert(qev->socket->close_time == 0);
+
+	/* SOCK_CONN_CLOSED */
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+	assert(qev->process != NULL);
+	assert((pid_t)qev->process->pid == child);
+	assert(qev->socket != NULL);
+	assert(qev->socket->established_time > 0);
+	assert(qev->socket->from_scrape == 0);
+	assert((pid_t)qev->socket->pid_origin == child);
+	assert((pid_t)qev->socket->pid_last_use == child);
+	assert(qev->socket->local.af == AF_INET);
+	assert(qev->socket->local.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->local.port == bound_port);
+	assert(qev->socket->remote.af == AF_INET);
+	assert(qev->socket->remote.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->remote.port == htons(18888));
+	assert(qev->socket->close_time > 0);
+
+	/* QUARK_EV_EXIT */
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events == QUARK_EV_EXIT);
 
 	quark_queue_close(&qq);
 
@@ -742,6 +837,7 @@ const struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
 	T(t_exit_tgid),
+	T(t_sock_conn),
 	T(t_namespace),
 	T(t_cache_grace),
 	T(t_min_agg),
@@ -860,11 +956,8 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 		if (!FD_ISSET(child_stderr[0], &rfds))
 			errx(1, "rfds should be set");
 
-	read_again:
-		n = read(child_stderr[0], buf, sizeof(buf));
-		if (n == -1 && errno == EINTR)
-			goto read_again;
-		else if (n == -1)
+		n = qread(child_stderr[0], buf, sizeof(buf));
+		if (n == -1)
 			err(1, "read");
 		else if (n == 0) {
 			close(child_stderr[0]);
@@ -906,14 +999,9 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 	 * Children exited, close the stream and print it out.
 	 */
 	fclose(child_stream);
-write_again:
-	n = write(STDERR_FILENO, child_buf, child_buflen);
-	if (n == -1 && errno == EINTR)
-		goto write_again;
-	else if (n == -1)
-		err(1, "write");
-	else if (n != (ssize_t)child_buflen)
-		errx(1, "write shortcount");
+	n = qwrite(STDERR_FILENO, child_buf, child_buflen);
+	if (n == -1)
+		err(1, "qwrite");
 	free(child_buf);
 	child_buf = NULL;
 	child_buflen = 0;
