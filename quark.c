@@ -2272,8 +2272,22 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 int
 quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 {
-	struct quark_queue_attr		 qa_default;
-	struct timespec			 unused;
+	struct quark_queue_attr	 qa_default;
+	struct timespec		 unused;
+	char			*ver;
+
+	if ((ver = getenv("QUARK_VERBOSE")) != NULL) {
+		const char *errstr;
+
+		if (*ver == 0)
+			quark_verbose = 0;
+		else {
+			quark_verbose = strtonum(ver, 0, 1000, &errstr);
+			/* Just assume max */
+			if (errstr != NULL)
+				quark_verbose = 1000;
+		}
+	}
 
 	/* Test if clock_gettime() works */
 	if (clock_gettime(CLOCK_MONOTONIC, &unused) == -1)
