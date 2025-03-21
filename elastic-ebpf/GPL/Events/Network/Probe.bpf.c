@@ -261,19 +261,20 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	} else {
 		goto ignore;
 	}
+#ifdef notyet
+	else if (sk->family == AF_INET6) {
+		int t_off;
 
-	/* else if (sk->family == AF_INET6) { */
-	/* 	int t_off; */
+		t_off = skb_peel_nexthdr(skb, NEXTHDR_UDP);
+		if (t_off == -1)
+			goto ignore;
 
-	/* 	t_off = skb_peel_nexthdr(skb, NEXTHDR_UDP); */
-	/* 	if (t_off == -1) */
-	/* 		goto ignore; */
-
-	/* 	if (bpf_skb_load_bytes(skb, t_off, &udp, sizeof(udp))) { */
-	/* 		bpf_printk("copy error 4"); */
-	/* 		goto ignore; */
-	/* 	} */
-	/* } */
+		if (bpf_skb_load_bytes(skb, t_off, &udp, sizeof(udp))) {
+			bpf_printk("copy error 4");
+			goto ignore;
+		}
+	}
+#endif
 
 	if (bpf_ntohs(udp.dest) != 53 && bpf_ntohs(udp.source) != 53)
 		goto ignore;
