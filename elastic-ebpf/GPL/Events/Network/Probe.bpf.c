@@ -230,7 +230,8 @@ int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
 int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 {
 	struct udphdr udp;
-	struct bpf_sock *sk, *sk2;
+	struct bpf_sock *sk;
+	ulong sk_addr;
 	u32 *tgid, cap_len;
 	struct ebpf_dns_event2 *event;
 	struct ebpf_varlen_field *field;
@@ -277,8 +278,12 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	if (bpf_ntohs(udp.dest) != 53 && bpf_ntohs(udp.source) != 53)
 		goto ignore;
 
-	sk2 = sk;
-	tgid = bpf_map_lookup_elem(&sk_to_tgid, &sk2);
+	/*
+	 * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
+	 * bpf: Permits pointers on stack for helper calls
+	 */
+	sk_addr = (ulong)sk;
+	tgid = bpf_map_lookup_elem(&sk_to_tgid, &sk_addr);
 	if (tgid == NULL) {
 		bpf_printk("udp egress not found");
 		goto ignore;
