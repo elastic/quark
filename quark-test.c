@@ -404,7 +404,6 @@ local_connect(u16 port, int type, u16 *bound_port)
 		err(1, "socket");
 	if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
 		err(1, "connect");
-
 	if (bound_port != NULL) {
 		socklen_t	socklen;
 
@@ -417,6 +416,7 @@ local_connect(u16 port, int type, u16 *bound_port)
 	return (fd);
 }
 
+static pid_t
 fork_sock_write(u16 port, int type, u16 *bound_port)
 {
 	pid_t	child;
@@ -459,7 +459,6 @@ fork_sock_write(u16 port, int type, u16 *bound_port)
 		err(1, "waitpid");
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		errx(1, "child didn't exit cleanly");
-
 	if (bound_port != NULL) {
 		close(pipefd[1]);
 		n = qread(pipefd[0], bound_port, sizeof(*bound_port));
@@ -843,6 +842,7 @@ t_dns(const struct test *t, struct quark_queue_attr *qa)
 	pid_t				 child;
 	struct iphdr			 ip;
 	struct udphdr			 udp;
+	u16				 bound_port;
 
 	assert_localhost();
 
@@ -851,7 +851,7 @@ t_dns(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	child = fork_sock_write(53, SOCK_DGRAM);
+	child = fork_sock_write(53, SOCK_DGRAM, &bound_port);
 
 	/* first is the fork, no agg */
 	qev = drain_for_pid(&qq, child);
@@ -871,6 +871,7 @@ t_dns(const struct test *t, struct quark_queue_attr *qa)
 	/* udp */
 	memcpy(&udp, packet->data + sizeof(ip), sizeof(udp));
 	assert(udp.dest == htons(53));
+	assert(udp.source == bound_port);
 	/* dns  */
 	assert(!memcmp(packet->data + 28, PATTERN, packet->cap_len - 28));
 
@@ -888,6 +889,7 @@ t_dns(const struct test *t, struct quark_queue_attr *qa)
 	/* udp */
 	memcpy(&udp, packet->data + sizeof(ip), sizeof(udp));
 	assert(udp.dest == htons(53));
+	assert(udp.source == bound_port);
 	/* dns */
 	assert(!memcmp(packet->data + 28, PATTERN, packet->cap_len - 28));
 
@@ -908,11 +910,11 @@ const struct test all_tests[] = {
 	T(t_fork_exec_exit),
 	T(t_exit_tgid),
 	T_EBPF(t_sock_conn),
+	T_EBPF(t_dns),
 	T(t_namespace),
 	T(t_cache_grace),
 	T(t_min_agg),
 	T(t_stats),
-	T(t_dns),
 	{ NULL,	NULL, 0 }
 };
 #undef S

@@ -33,34 +33,6 @@ struct quark_queue_ops queue_ops_bpf = {
 	.close	      = bpf_queue_close,
 };
 
-void	sshbuf_dump_data(const void *s, size_t len, FILE *f);
-void
-sshbuf_dump_data(const void *s, size_t len, FILE *f)
-{
-	size_t i, j;
-	const u_char *p = (const u_char *)s;
-
-	for (i = 0; i < len; i += 16) {
-		fprintf(f, "%.4zu: ", i);
-		for (j = i; j < i + 16; j++) {
-			if (j < len)
-				fprintf(f, "%02x ", p[j]);
-			else
-				fprintf(f, "   ");
-		}
-		fprintf(f, " ");
-		for (j = i; j < i + 16; j++) {
-			if (j < len) {
-				if  (isascii(p[j]) && isprint(p[j]))
-					fprintf(f, "%c", p[j]);
-				else
-					fprintf(f, ".");
-			}
-		}
-		fprintf(f, "\n");
-	}
-}
-
 /*
  * Map libbpf logs into quark_verbose.
  * fmt has a newline, we have to prepend program_invocatin_short_name, so we
