@@ -238,7 +238,8 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 {
 	struct udphdr udp;
 	struct bpf_sock *sk;
-	u32 *tgid, cap_len;
+	u32 *tgid, cap_len, zero = 0;
+	u64 *sk_addr;
 	struct ebpf_dns_event2 *event;
 	struct ebpf_varlen_field *field;
 
@@ -289,31 +290,11 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	 * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
 	 * bpf: Permits pointers on stack for helper calls
 	 */
-	u32 zero = 0;
-	u64 *s64;
-	s64 = bpf_map_lookup_elem(&myscratch, &zero);
-	if (s64 == NULL) {
-		bpf_printk("CCCC");
+	sk_addr = bpf_map_lookup_elem(&myscratch, &zero);
+	if (sk_addr == NULL)
 		goto ignore;
-	}
-	*s64 = (u64)sk;
-	bpf_printk("lookup sk addr = %p", *s64);
-	tgid = bpf_map_lookup_elem(&sk_to_tgid, s64);
-	/* *s64 = (u64)&sk; */
-
-	/* struct ebpf_events_state state, *statelookup = {}; */
-	/* state.tcp_v4_connect.sk        = (struct sock *)&sk; */
-	/* ebpf_events_state__set(EBPF_EVENTS_STATE_TCP_V4_CONNECT, &state); */
-
-	/* struct ebpf_events_state *state; */
-	/* state = ebpf_events_state__get(EBPF_EVENTS_STATE_TCP_V4_CONNECT); */
-	/* if (state == NULL) */
-	/* 	goto ignore; */
-	/* state->tcp_v4_connect.sk = (struct sock *)&sk; */
-	/* state->tcp_v4_connect.sk = (struct sock *)sk; */
-	
-	/* tgid = bpf_map_lookup_elem(&sk_to_tgid, &state->tcp_v4_connect.sk); */
-	/* tgid = bpf_map_lookup_elem(&sk_to_tgid, NULL); */
+	*sk_addr = (u64)sk;
+	tgid = bpf_map_lookup_elem(&sk_to_tgid, sk_addr);
 	if (tgid == NULL) {
 		bpf_printk("udp egress not found");
 		goto ignore;
@@ -381,30 +362,24 @@ int skb_ingress(struct __sk_buff *skb)
 
 int sk_maybe_save_tgid(struct bpf_sock *sk)
 {
-	u32 tgid;
+	u32 tgid, zero = 0;
+	u64 *sk_addr;
 
 	if (sk->protocol != IPPROTO_UDP)
 		return (1);
 
 	tgid = bpf_get_current_pid_tgid() >> 32;
 
-	u32 zero = 0;
-	u64 *s64;
-	s64 = bpf_map_lookup_elem(&myscratch, &zero);
-	if (s64 == NULL) {
-		bpf_printk("AAAA");
+	/*
+	 * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
+	 * bpf: Permits pointers on stack for helper calls
+	 */
+	sk_addr = bpf_map_lookup_elem(&myscratch, &zero);
+	if (sk_addr == NULL)
 		return (1);
-	}
-	*s64 = (u64)sk;
-
-	bpf_printk("want to save sk addr %p", *s64);
-	/* tgidp = bpf_map_lookup_elem(&sk_to_tgid, s64); */
-	/* if (tgidp == NULL) { */
-	/* 	bpf_printk("BBBB"); */
-	/* 	return (1); */
-	/* } */
-
-	(void)bpf_map_update_elem(&sk_to_tgid, s64, &tgid, BPF_ANY);
+	*sk_addr = (u64)sk;
+	if (bpf_map_update_elem(&sk_to_tgid, sk_addr, &tgid, BPF_ANY) == 0)
+		bpf_printk("sk %p saved", sk);
 
 	return (1);
 }
@@ -436,9 +411,22 @@ int sock_create(struct bpf_sock *sk)
 SEC("cgroup/sock_release")
 int sock_release(struct bpf_sock *sk)
 {
+	u32 zero = 0;
+	u64 *sk_addr;
+
 	if (sk->protocol != IPPROTO_UDP)
 		return (1);
-//	(void)bpf_map_delete_elem(&sk_to_tgid, &sk);
+
+	/*
+	 * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
+	 * bpf: Permits pointers on stack for helper calls
+	 */
+	sk_addr = bpf_map_lookup_elem(&myscratch, &zero);
+	if (sk_addr == NULL)
+		return (1);
+	*sk_addr = (u64)sk;
+	if (bpf_map_delete_elem(&sk_to_tgid, sk_addr) == 0)
+		bpf_printk("%p deleted", sk);
 
 	return (1);
 }
