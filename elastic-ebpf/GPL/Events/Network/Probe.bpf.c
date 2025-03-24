@@ -290,14 +290,15 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	 * bpf: Permits pointers on stack for helper calls
 	 */
 	u32 zero = 0;
-	u64 zero64 = 0;
 	u64 *s64;
-	bpf_map_update_elem(&myscratch, &zero, &zero64, BPF_ANY);
 	s64 = bpf_map_lookup_elem(&myscratch, &zero);
-	if (s64 == NULL)
+	if (s64 == NULL) {
+		bpf_printk("CCCC");
 		goto ignore;
-	*s64 = (u64)&sk;
-	tgid = bpf_map_lookup_elem(&sk_to_tgid, &zero);
+	}
+	*s64 = (u64)sk;
+	bpf_printk("lookup sk addr = %p", *s64);
+	tgid = bpf_map_lookup_elem(&sk_to_tgid, s64);
 	/* *s64 = (u64)&sk; */
 
 	/* struct ebpf_events_state state, *statelookup = {}; */
@@ -380,7 +381,7 @@ int skb_ingress(struct __sk_buff *skb)
 
 int sk_maybe_save_tgid(struct bpf_sock *sk)
 {
-	u32 tgid, *tgidp;
+	u32 tgid;
 
 	if (sk->protocol != IPPROTO_UDP)
 		return (1);
@@ -388,20 +389,22 @@ int sk_maybe_save_tgid(struct bpf_sock *sk)
 	tgid = bpf_get_current_pid_tgid() >> 32;
 
 	u32 zero = 0;
-	u64 zero64 = 0;
 	u64 *s64;
-	bpf_map_update_elem(&myscratch, &zero, &zero64, BPF_ANY);
 	s64 = bpf_map_lookup_elem(&myscratch, &zero);
-	if (s64 == NULL)
+	if (s64 == NULL) {
+		bpf_printk("AAAA");
 		return (1);
-	*s64 = (u64)&sk;
+	}
+	*s64 = (u64)sk;
 
-	u32 zero2 = 0;
-	tgidp = bpf_map_lookup_elem(&sk_to_tgid, &zero2);
-	if (tgidp == NULL)
-		return (1);
+	bpf_printk("want to save sk addr %p", *s64);
+	/* tgidp = bpf_map_lookup_elem(&sk_to_tgid, s64); */
+	/* if (tgidp == NULL) { */
+	/* 	bpf_printk("BBBB"); */
+	/* 	return (1); */
+	/* } */
 
-	(void)bpf_map_update_elem(&sk_to_tgid, s64, tgidp, BPF_ANY);
+	(void)bpf_map_update_elem(&sk_to_tgid, s64, &tgid, BPF_ANY);
 
 	return (1);
 }
