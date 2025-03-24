@@ -29,6 +29,13 @@ struct {
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } sk_to_tgid SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, u32);
+	__type(value, u64);
+	__uint(max_entries, 1);
+} myscratch SEC(".maps");
+
 static int inet_csk_accept__exit(struct sock *sk)
 {
     if (!sk)
@@ -231,7 +238,6 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 {
 	struct udphdr udp;
 	struct bpf_sock *sk;
-	ulong sk_addr;
 	u32 *tgid, cap_len;
 	struct ebpf_dns_event2 *event;
 	struct ebpf_varlen_field *field;
@@ -283,8 +289,30 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	 * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
 	 * bpf: Permits pointers on stack for helper calls
 	 */
-	sk_addr = (ulong)sk;
-	tgid = bpf_map_lookup_elem(&sk_to_tgid, &sk_addr);
+	u32 zero = 0;
+	u64 zero64 = 0;
+	u64 *s64;
+	bpf_map_update_elem(&myscratch, &zero, &zero64, BPF_ANY);
+	s64 = bpf_map_lookup_elem(&myscratch, &zero);
+	if (s64 == NULL)
+		goto ignore;
+	*s64 = (u64)&sk;
+	tgid = bpf_map_lookup_elem(&sk_to_tgid, &zero);
+	/* *s64 = (u64)&sk; */
+
+	/* struct ebpf_events_state state, *statelookup = {}; */
+	/* state.tcp_v4_connect.sk        = (struct sock *)&sk; */
+	/* ebpf_events_state__set(EBPF_EVENTS_STATE_TCP_V4_CONNECT, &state); */
+
+	/* struct ebpf_events_state *state; */
+	/* state = ebpf_events_state__get(EBPF_EVENTS_STATE_TCP_V4_CONNECT); */
+	/* if (state == NULL) */
+	/* 	goto ignore; */
+	/* state->tcp_v4_connect.sk = (struct sock *)&sk; */
+	/* state->tcp_v4_connect.sk = (struct sock *)sk; */
+	
+	/* tgid = bpf_map_lookup_elem(&sk_to_tgid, &state->tcp_v4_connect.sk); */
+	/* tgid = bpf_map_lookup_elem(&sk_to_tgid, NULL); */
 	if (tgid == NULL) {
 		bpf_printk("udp egress not found");
 		goto ignore;
@@ -352,14 +380,28 @@ int skb_ingress(struct __sk_buff *skb)
 
 int sk_maybe_save_tgid(struct bpf_sock *sk)
 {
-	u32 tgid;
+	u32 tgid, *tgidp;
 
 	if (sk->protocol != IPPROTO_UDP)
 		return (1);
 
 	tgid = bpf_get_current_pid_tgid() >> 32;
 
-	(void)bpf_map_update_elem(&sk_to_tgid, &sk, &tgid, BPF_ANY);
+	u32 zero = 0;
+	u64 zero64 = 0;
+	u64 *s64;
+	bpf_map_update_elem(&myscratch, &zero, &zero64, BPF_ANY);
+	s64 = bpf_map_lookup_elem(&myscratch, &zero);
+	if (s64 == NULL)
+		return (1);
+	*s64 = (u64)&sk;
+
+	u32 zero2 = 0;
+	tgidp = bpf_map_lookup_elem(&sk_to_tgid, &zero2);
+	if (tgidp == NULL)
+		return (1);
+
+	(void)bpf_map_update_elem(&sk_to_tgid, s64, tgidp, BPF_ANY);
 
 	return (1);
 }
@@ -393,7 +435,7 @@ int sock_release(struct bpf_sock *sk)
 {
 	if (sk->protocol != IPPROTO_UDP)
 		return (1);
-	(void)bpf_map_delete_elem(&sk_to_tgid, &sk);
+//	(void)bpf_map_delete_elem(&sk_to_tgid, &sk);
 
 	return (1);
 }

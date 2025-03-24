@@ -232,6 +232,7 @@ main(int argc, char *argv[])
 
 	if ((qq = calloc(1, sizeof(*qq))) == NULL)
 		err(1, "calloc");
+	qa.flags |= QQ_DNS | QQ_SOCK_CONN;
 	if (quark_queue_open(qq, &qa) != 0)
 		err(1, "quark_queue_open");
 
