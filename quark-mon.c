@@ -115,7 +115,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-bDefkSstv] "
+	fprintf(stderr, "usage: %s [-bDefkNSstv] "
 	    "[-C filename ] [-l maxlength] [-m maxnodes] [-P ppid]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
@@ -143,7 +143,7 @@ main(int argc, char *argv[])
 	do_snap = 1;
 	graph_by_time = graph_by_pidtime = graph_cache = NULL;
 
-	while ((ch = getopt(argc, argv, "bC:Deghklm:P:tSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "bC:Deghklm:NP:tSsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -194,6 +194,9 @@ main(int argc, char *argv[])
 			graph_by_pidtime = fopen("quark_by_pidtime.dot", "w");
 			if (graph_by_pidtime == NULL)
 				err(1, "fopen");
+			break;
+		case 'N':
+			qa.flags |= QQ_DNS;
 			break;
 		case 'P':
 			if (optarg == NULL)
