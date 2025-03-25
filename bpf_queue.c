@@ -256,11 +256,11 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		break;
 	}
 	case EBPF_EVENT_NETWORK_DNS_PKT: {
-		struct ebpf_dns_event2	*dns;
+		struct ebpf_dns_event	*dns;
 		size_t			 cap_len;
 		struct quark_packet	*packet;
 
-		dns = (struct ebpf_dns_event2 *)ev;
+		dns = (struct ebpf_dns_event *)ev;
 		if ((raw = raw_event_alloc(RAW_PACKET)) == NULL)
 			goto bad;
 		raw->pid = dns->tgid;

@@ -34,7 +34,7 @@ struct {
 	__type(key, u32);
 	__type(value, u64);
 	__uint(max_entries, 1);
-} myscratch SEC(".maps");
+} scratch64 SEC(".maps");
 
 static int inet_csk_accept__exit(struct sock *sk)
 {
@@ -205,6 +205,7 @@ int BPF_KPROBE(kprobe__tcp_close, struct sock *sk, long timeout)
     return tcp_close__enter(sk);
 }
 
+#ifdef notyet
 /* XXX naive, only handles ROUTING and DEST, untested */
 int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
 {
@@ -233,14 +234,14 @@ int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
 		}
 	}
 }
-
+#endif
 int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 {
 	struct udphdr udp;
 	struct bpf_sock *sk;
 	u32 *tgid, cap_len, zero = 0;
 	u64 *sk_addr;
-	struct ebpf_dns_event2 *event;
+	struct ebpf_dns_event *event;
 	struct ebpf_varlen_field *field;
 
 	if (skb->family != AF_INET && skb->family != AF_INET6)
@@ -290,7 +291,7 @@ int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 	 * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
 	 * bpf: Permits pointers on stack for helper calls
 	 */
-	sk_addr = bpf_map_lookup_elem(&myscratch, &zero);
+	sk_addr = bpf_map_lookup_elem(&scratch64, &zero);
 	if (sk_addr == NULL)
 		goto ignore;
 	*sk_addr = (u64)sk;
@@ -374,7 +375,7 @@ int sk_maybe_save_tgid(struct bpf_sock *sk)
 	 * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
 	 * bpf: Permits pointers on stack for helper calls
 	 */
-	sk_addr = bpf_map_lookup_elem(&myscratch, &zero);
+	sk_addr = bpf_map_lookup_elem(&scratch64, &zero);
 	if (sk_addr == NULL)
 		return (1);
 	*sk_addr = (u64)sk;
@@ -421,7 +422,7 @@ int sock_release(struct bpf_sock *sk)
 	 * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
 	 * bpf: Permits pointers on stack for helper calls
 	 */
-	sk_addr = bpf_map_lookup_elem(&myscratch, &zero);
+	sk_addr = bpf_map_lookup_elem(&scratch64, &zero);
 	if (sk_addr == NULL)
 		return (1);
 	*sk_addr = (u64)sk;
