@@ -50,7 +50,6 @@ CDIAGFLAGS+= -Wcomment
 CDIAGFLAGS+= -Wformat
 CDIAGFLAGS+= -Wformat-security
 CDIAGFLAGS+= -Wimplicit
-CDIAGFLAGS+= -Wno-unused-function
 ifndef CENTOS7
 CDIAGFLAGS+= -Wimplicit-fallthrough
 endif
