@@ -528,8 +528,10 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	assert((pid_t)qp->proc_pgid == getpgid(0));
 	assert((pid_t)qp->proc_sid == getsid(0));
 	/* check capabilities */
-	/* XXX assumes we're root */
-	assert(qp->proc_cap_inheritable == 0);
+	/* XXX: assumes too much */
+	/* Newer kernels default to 0x800000000 */
+	assert(qp->proc_cap_inheritable == 0 ||
+	    qp->proc_cap_inheritable == 0x800000000);
 	/*
 	 * We don't know the exact set since it varies from kernel,
 	 * improve this in the future.
