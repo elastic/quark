@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 
 #include <assert.h>
+#include <dirent.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -186,6 +187,59 @@ sproc_self_namespace(const char *path)
 		errx(1, "strtonum %s: %s", start, errstr);
 
 	return (v);
+}
+
+static int
+num_open_fd(void)
+{
+	DIR		*dirp;
+	struct dirent	*d;
+	int		 n;
+
+	if ((dirp = opendir("/proc/self/fd")) == NULL)
+		err(1, "opendir");
+
+	for (n = 0; (d = readdir(dirp)) != NULL;) {
+		if (!strcmp(d->d_name, ".") || !strcmp(d->d_name, ".."))
+			continue;
+		n++;
+	}
+	/* Has to be at least one, since opendir does open */
+	assert(n >= 1);
+	closedir(dirp);
+
+	/* Discount the FD from dirp */
+	return (n - 1);
+}
+
+static void
+dump_open_fd(FILE *f)
+{
+	int		 dfd;
+	DIR		*dirp;
+	struct dirent	*d;
+	ssize_t		 n;
+	char		 self[512], buf[512];
+
+	if ((dfd = open("/proc/self/fd", O_DIRECTORY)) == -1)
+		err(1, "open /proc/self/fd");
+	if ((dirp = fdopendir(dfd)) == NULL)
+		err(1, "fdopendir");
+
+	snprintf(self, sizeof(self), "/proc/%d/fd", getpid());
+	for (n = 0; (d = readdir(dirp)) != NULL;) {
+		if (!strcmp(d->d_name, ".") || !strcmp(d->d_name, ".."))
+			continue;
+		n = qreadlinkat(dfd, d->d_name, buf, sizeof(buf));
+		if (n == -1)
+			err(1, "qreadlinkat");
+		if (!strcmp(buf, self))
+			continue;
+		fprintf(f, "%s -> %s\n", d->d_name, buf);
+	}
+
+	closedir(dirp);		/* closes dfd */
+	fflush(stderr);
 }
 
 struct test {
@@ -851,6 +905,7 @@ const struct test all_tests[] = {
 	T(t_cache_grace),
 	T(t_min_agg),
 	T(t_stats),
+	T(t_nada),
 	{ NULL,	NULL, 0 }
 };
 #undef S
@@ -887,8 +942,7 @@ static int
 run_test(const struct test *t, struct quark_queue_attr *qa)
 {
 	pid_t		 child;
-	int		 status, x, linepos;
-	int		 be;
+	int		 status, x, linepos, be, nfd, r;
 	int		 child_stderr[2];
 	FILE		*child_stream;
 	char		*child_buf;
@@ -934,7 +988,23 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 		dup2(child_stderr[1], STDERR_FILENO);
 		close(child_stderr[1]);
 		close(child_stderr[0]);
-		exit(t->func(t, qa));
+
+		/*
+		 * Check for FD leaks
+		 */
+		nfd = num_open_fd();
+		assert(nfd == 3);
+		r = t->func(t, qa);
+		nfd = num_open_fd();
+		if (nfd != 3) {
+			fprintf(stderr,
+			    "FDLEAK DETECTED! %d opened descriptors, expected 3\n",
+			    nfd);
+			dump_open_fd(stderr);
+			if (r == 0)
+				r = 1;
+		}
+		exit(r);
 	}
 	close(child_stderr[1]);
 
@@ -953,7 +1023,6 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 	for (;;) {
 		fd_set		rfds;
 		struct timeval	tv;
-		int		r;
 		char		buf[4096];
 
 		spin();
