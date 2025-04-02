@@ -905,7 +905,6 @@ const struct test all_tests[] = {
 	T(t_cache_grace),
 	T(t_min_agg),
 	T(t_stats),
-	T(t_nada),
 	{ NULL,	NULL, 0 }
 };
 #undef S
