@@ -239,7 +239,7 @@ dump_open_fd(FILE *f)
 	}
 
 	closedir(dirp);		/* closes dfd */
-	fflush(stderr);
+	fflush(f);
 }
 
 struct test {
