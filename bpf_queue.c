@@ -293,6 +293,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				memcpy(packet->data, field->data, cap_len);
 				break;
 			default:
+				qwarnx("unhandled field type %d", field->type);
 				goto bad;
 			}
 		}
