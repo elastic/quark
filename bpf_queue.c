@@ -327,8 +327,8 @@ bpf_ringbuf_cb(void *vqq, void *vdata, size_t len)
 	return (0);
 }
 
-int
-bpf_queue_open(struct quark_queue *qq)
+static int
+bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
 	struct bpf_queue		*bqq;
 	struct bpf_prog			*p;
@@ -368,17 +368,23 @@ bpf_queue_open(struct quark_queue *qq)
 	bpf_program__set_autoload(p->progs.sched_process_fork, 1);
 	bpf_program__set_autoload(p->progs.sched_process_exec, 1);
 	bpf_program__set_autoload(p->progs.sched_process_exit, 1);
-	bpf_program__set_autoload(p->progs.kprobe__taskstats_exit, 1);
 
-	if (qq->flags & QQ_SOCK_CONN) {
+	if (use_fentry)
+		bpf_program__set_autoload(p->progs.fentry__taskstats_exit, 1);
+	else
+		bpf_program__set_autoload(p->progs.kprobe__taskstats_exit, 1);
+
+	if ((qq->flags & QQ_SOCK_CONN) && use_fentry) {
+		bpf_program__set_autoload(p->progs.fexit__inet_csk_accept, 1);
+		bpf_program__set_autoload(p->progs.fexit__tcp_v4_connect, 1);
+		bpf_program__set_autoload(p->progs.fexit__tcp_v6_connect, 1);
+		bpf_program__set_autoload(p->progs.fentry__tcp_close, 1);
+	} else if (qq->flags & QQ_SOCK_CONN) {
 		bpf_program__set_autoload(p->progs.kretprobe__inet_csk_accept, 1);
-
 		bpf_program__set_autoload(p->progs.kprobe__tcp_v4_connect, 1);
 		bpf_program__set_autoload(p->progs.kretprobe__tcp_v4_connect, 1);
-
 		bpf_program__set_autoload(p->progs.kprobe__tcp_v6_connect, 1);
 		bpf_program__set_autoload(p->progs.kretprobe__tcp_v6_connect, 1);
-
 		bpf_program__set_autoload(p->progs.kprobe__tcp_close, 1);
 	}
 
@@ -470,6 +476,17 @@ fail:
 	bpf_queue_close(qq);
 
 	return (-1);
+}
+
+int
+bpf_queue_open(struct quark_queue *qq)
+{
+	if (bpf_queue_open1(qq, 1) == -1) {
+		qwarn("bpf_queue_open failed with fentry, trying kprobe");
+		return bpf_queue_open1(qq, 0);
+	}
+
+	return (0);
 }
 
 static int
