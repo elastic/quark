@@ -2,13 +2,16 @@
 /* Copyright (c) 2024 Elastic NV */
 
 #include <sys/epoll.h>
+#include <sys/param.h>
 #include <sys/sysinfo.h>
 
+#include <ctype.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "quark.h"
 #include "bpf_prog_skel.h"
@@ -252,6 +255,50 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_NETWORK_DNS_PKT: {
+		struct ebpf_dns_event	*dns;
+		size_t			 cap_len;
+		struct quark_packet	*packet;
+
+		dns = (struct ebpf_dns_event *)ev;
+		if ((raw = raw_event_alloc(RAW_PACKET)) == NULL)
+			goto bad;
+		raw->pid = dns->tgid;
+		raw->time = ev->ts;
+
+		cap_len = MIN(dns->cap_len, QUARK_MAX_PACKET);
+		raw->packet.quark_packet = calloc(1, sizeof(*raw->packet.quark_packet) + cap_len);
+		if (raw->packet.quark_packet == NULL)
+			goto bad;
+		packet = raw->packet.quark_packet;
+
+		switch (dns->direction) {
+		case EBPF_NETWORK_DIR_EGRESS:
+			packet->direction = QUARK_PACKET_DIR_EGRESS;
+			break;
+		case EBPF_NETWORK_DIR_INGRESS:
+			packet->direction = QUARK_PACKET_DIR_INGRESS;
+			break;
+		default:
+			goto bad;
+		}
+
+		packet->origin = QUARK_PACKET_ORIGIN_DNS;
+		packet->orig_len = dns->orig_len;
+		packet->cap_len = cap_len;
+
+		FOR_EACH_VARLEN_FIELD(dns->vl_fields, field) {
+			switch (field->type) {
+			case EBPF_VL_FIELD_DNS_BODY:
+				memcpy(packet->data, field->data, cap_len);
+				break;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				goto bad;
+			}
+		}
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;
@@ -283,10 +330,11 @@ bpf_ringbuf_cb(void *vqq, void *vdata, size_t len)
 int
 bpf_queue_open(struct quark_queue *qq)
 {
-	struct bpf_queue	*bqq;
-	struct ring_buffer_opts	 ringbuf_opts;
-	struct bpf_program	*bp;
-	int			 error;
+	struct bpf_queue		*bqq;
+	struct bpf_prog			*p;
+	struct ring_buffer_opts		 ringbuf_opts;
+	int				 cgroup_fd, i;
+	struct bpf_prog_skeleton	*ps;
 
 	libbpf_set_print(libbpf_print_fn);
 
@@ -297,53 +345,99 @@ bpf_queue_open(struct quark_queue *qq)
 		return (-1);
 
 	qq->queue_be = bqq;
+	cgroup_fd = -1;
 
 	bqq->prog = bpf_prog__open();
 	if (bqq->prog == NULL) {
 		qwarn("bpf_prog__open");
 		goto fail;
 	}
+	p = bqq->prog;
 
 	/*
 	 * Unload everything since it has way more than we want
 	 */
-	bpf_object__for_each_program(bp, bqq->prog->obj)
-		bpf_program__set_autoload(bp, 0);
+	for (i = 0; i < p->skeleton->prog_cnt; i++) {
+		ps = &p->skeleton->progs[i];
+		bpf_program__set_autoload(*ps->prog, 0);
+	}
+
 	/*
 	 * Load just the bits we want
 	 */
-	bpf_program__set_autoload(bqq->prog->progs.sched_process_fork, 1);
-	bpf_program__set_autoload(bqq->prog->progs.sched_process_exec, 1);
-	bpf_program__set_autoload(bqq->prog->progs.sched_process_exit, 1);
-	bpf_program__set_autoload(bqq->prog->progs.kprobe__taskstats_exit, 1);
+	bpf_program__set_autoload(p->progs.sched_process_fork, 1);
+	bpf_program__set_autoload(p->progs.sched_process_exec, 1);
+	bpf_program__set_autoload(p->progs.sched_process_exit, 1);
+	bpf_program__set_autoload(p->progs.kprobe__taskstats_exit, 1);
 
 	if (qq->flags & QQ_SOCK_CONN) {
-		bpf_program__set_autoload(bqq->prog->progs.kretprobe__inet_csk_accept, 1);
+		bpf_program__set_autoload(p->progs.kretprobe__inet_csk_accept, 1);
 
-		bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_v4_connect, 1);
-		bpf_program__set_autoload(bqq->prog->progs.kretprobe__tcp_v4_connect, 1);
+		bpf_program__set_autoload(p->progs.kprobe__tcp_v4_connect, 1);
+		bpf_program__set_autoload(p->progs.kretprobe__tcp_v4_connect, 1);
 
-		bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_v6_connect, 1);
-		bpf_program__set_autoload(bqq->prog->progs.kretprobe__tcp_v6_connect, 1);
+		bpf_program__set_autoload(p->progs.kprobe__tcp_v6_connect, 1);
+		bpf_program__set_autoload(p->progs.kretprobe__tcp_v6_connect, 1);
 
-		bpf_program__set_autoload(bqq->prog->progs.kprobe__tcp_close, 1);
+		bpf_program__set_autoload(p->progs.kprobe__tcp_close, 1);
 	}
 
-	error = bpf_map__set_max_entries(bqq->prog->maps.event_buffer_map,
-	    get_nprocs_conf());
-	if (error != 0) {
+	if (qq->flags & QQ_DNS) {
+		cgroup_fd = open("/sys/fs/cgroup", O_RDONLY);
+		if (cgroup_fd == -1) {
+			qwarn("open cgroup");
+			goto fail;
+		}
+		bpf_program__set_autoload(p->progs.skb_egress, 1);
+		bpf_program__set_autoload(p->progs.skb_ingress, 1);
+		bpf_program__set_autoload(p->progs.sock_create, 1);
+		bpf_program__set_autoload(p->progs.sock_release, 1);
+		bpf_program__set_autoload(p->progs.sendmsg4, 1);
+		bpf_program__set_autoload(p->progs.connect4, 1);
+		bpf_program__set_autoload(p->progs.recvmsg4, 1);
+	}
+
+	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
+	    get_nprocs_conf()) != 0) {
 		qwarn("bpf_map__set_max_entries");
 		goto fail;
 	}
 
-	error = bpf_prog__load(bqq->prog);
-	if (error) {
+	if (bpf_prog__load(p) != 0) {
 		qwarn("bpf_prog__load");
 		goto fail;
 	}
 
-	error = bpf_prog__attach(bqq->prog);
-	if (error) {
+	if (cgroup_fd != -1) {
+		for (i = 0; i < p->skeleton->prog_cnt; i++) {
+			ps = &p->skeleton->progs[i];
+
+			switch (bpf_program__get_type(*ps->prog)) {
+			case BPF_PROG_TYPE_CGROUP_DEVICE:	/* FALLTHROUGH */
+			case BPF_PROG_TYPE_CGROUP_SKB:		/* FALLTHROUGH */
+			case BPF_PROG_TYPE_CGROUP_SOCK:		/* FALLTHROUGH */
+			case BPF_PROG_TYPE_CGROUP_SOCKOPT:	/* FALLTHROUGH */
+			case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:	/* FALLTHROUGH */
+			case BPF_PROG_TYPE_CGROUP_SYSCTL:
+				break;
+			default:
+				continue;
+			}
+
+			*ps->link = bpf_program__attach_cgroup(*ps->prog,
+			    cgroup_fd);
+			if (*ps->link == NULL) {
+				qwarn("bpf_program__attach_cgroup %s",
+				    ps->name);
+				goto fail;
+			}
+		}
+
+		close(cgroup_fd);
+		cgroup_fd = -1;
+	}
+
+	if (bpf_prog__attach(p) != 0) {
 		qwarn("bpf_prog__attach");
 		goto fail;
 	}
@@ -352,7 +446,7 @@ bpf_queue_open(struct quark_queue *qq)
 	 * There doesn't seem to be a watermark setting for ebpf!
 	 */
 	ringbuf_opts.sz = sizeof(ringbuf_opts);
-	bqq->ringbuf = ring_buffer__new(bpf_map__fd(bqq->prog->maps.ringbuf),
+	bqq->ringbuf = ring_buffer__new(bpf_map__fd(p->maps.ringbuf),
 	    bpf_ringbuf_cb, qq, &ringbuf_opts);
 	if (bqq->ringbuf == NULL) {
 		qwarn("ring_buffer__new");
@@ -368,6 +462,11 @@ bpf_queue_open(struct quark_queue *qq)
 
 	return (0);
 fail:
+	if (cgroup_fd != -1) {
+		close(cgroup_fd);
+		cgroup_fd = -1;
+	}
+
 	bpf_queue_close(qq);
 
 	return (-1);

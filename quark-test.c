@@ -889,6 +889,71 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_dns(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_packet		*packet;
+	pid_t				 child;
+	struct iphdr			 ip;
+	struct udphdr			 udp;
+	u16				 bound_port;
+
+	assert_localhost();
+
+	qa->flags |= QQ_DNS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	child = fork_sock_write(53, SOCK_DGRAM, &bound_port);
+
+	/* first is the fork, no agg */
+	qev = drain_for_pid(&qq, child);
+	assert(qev->packet == NULL);
+
+	/* egress */
+	qev = drain_for_pid(&qq, child);
+	packet = qev->packet;
+	assert(packet != NULL);
+	assert(packet->cap_len == 90);
+	assert(packet->orig_len == 90);
+	/* ip */
+	memcpy(&ip, packet->data, sizeof(ip));
+	assert(ip.protocol == IPPROTO_UDP);
+	assert(ip.saddr == htonl(INADDR_LOOPBACK));
+	assert(ip.daddr == htonl(INADDR_LOOPBACK));
+	/* udp */
+	memcpy(&udp, packet->data + sizeof(ip), sizeof(udp));
+	assert(udp.dest == htons(53));
+	assert(udp.source == bound_port);
+	/* dns  */
+	assert(!memcmp(packet->data + 28, PATTERN, packet->cap_len - 28));
+
+	/* ingress */
+	qev = drain_for_pid(&qq, child);
+	packet = qev->packet;
+	assert(packet != NULL);
+	assert(packet->cap_len == 90);
+	assert(packet->orig_len == 90);
+	/* ip */
+	memcpy(&ip, packet->data, sizeof(ip));
+	assert(ip.protocol == IPPROTO_UDP);
+	assert(ip.saddr == htonl(INADDR_LOOPBACK));
+	assert(ip.daddr == htonl(INADDR_LOOPBACK));
+	/* udp */
+	memcpy(&udp, packet->data + sizeof(ip), sizeof(udp));
+	assert(udp.dest == htons(53));
+	assert(udp.source == bound_port);
+	/* dns */
+	assert(!memcmp(packet->data + 28, PATTERN, packet->cap_len - 28));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  */
@@ -901,6 +966,7 @@ const struct test all_tests[] = {
 	T(t_fork_exec_exit),
 	T(t_exit_tgid),
 	T_EBPF(t_sock_conn),
+	T_EBPF(t_dns),
 	T(t_namespace),
 	T(t_cache_grace),
 	T(t_min_agg),
