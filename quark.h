@@ -304,10 +304,12 @@ struct quark_event {
 #define QUARK_EV_SOCK_CONN_ESTABLISHED	(1 << 4)
 #define QUARK_EV_SOCK_CONN_CLOSED	(1 << 5)
 #define QUARK_EV_PACKET			(1 << 6)
+#define QUARK_EV_BYPASS			(1 << 7)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
 	struct quark_packet		*packet;
+	const void			*bypass;
 };
 
 /*
@@ -468,6 +470,7 @@ struct quark_queue_attr {
 #define QQ_ENTRY_LEADER		(1 << 4)
 #define QQ_SOCK_CONN		(1 << 5)
 #define QQ_DNS			(1 << 6)
+#define QQ_BYPASS		(1 << 7)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;
