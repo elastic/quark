@@ -115,7 +115,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-bDefkNSstv] "
+	fprintf(stderr, "usage: %s [-BbDefkNSstv] "
 	    "[-C filename ] [-l maxlength] [-m maxnodes] [-P ppid]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
@@ -127,8 +127,8 @@ int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes;
-	int				 do_priv_drop;
-	u32				 filter_ppid, do_snap;
+	int				 do_priv_drop, do_snap, lflag;
+	u32				 filter_ppid;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
 	const struct quark_event	*qev;
@@ -142,11 +142,15 @@ main(int argc, char *argv[])
 	filter_ppid = 0;
 	do_snap = 1;
 	graph_by_time = graph_by_pidtime = graph_cache = NULL;
+	lflag = 0;
 
-	while ((ch = getopt(argc, argv, "bC:Deghklm:NP:tSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:Deghkl:m:NP:tSsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
+		case 'B':
+			qa.flags |= QQ_BYPASS;
+			break;
 		case 'b':
 			qa.flags |= QQ_EBPF;
 			break;
@@ -180,6 +184,7 @@ main(int argc, char *argv[])
 			    &errstr);
 			if (errstr != NULL)
 				errx(1, "invalid max length: %s", errstr);
+			lflag = 1;
 			break;
 		case 'm':
 			if (optarg == NULL)
@@ -224,6 +229,19 @@ main(int argc, char *argv[])
 			usage();
 		}
 	}
+
+	if (qa.flags & QQ_BYPASS) {
+		if (qa.flags &
+		    (QQ_KPROBE|QQ_ENTRY_LEADER|QQ_MIN_AGG|QQ_THREAD_EVENTS) ||
+		    graph_cache != NULL ||
+		    maxnodes != -1 ||
+		    lflag ||
+		    filter_ppid ||
+		    !do_snap)
+			errx(1, "bypass(B) cannot be used with options: CegklmPs");
+		qa.flags |= QQ_EBPF;
+	}
+
 	if ((qa.flags & QQ_ALL_BACKENDS) == 0)
 		qa.flags |= QQ_ALL_BACKENDS;
 

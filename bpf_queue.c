@@ -318,11 +318,18 @@ bpf_ringbuf_cb(void *vqq, void *vdata, size_t len)
 {
 	struct quark_queue		*qq = vqq;
 	struct ebpf_event_header	*ev = vdata;
+	struct quark_event		*qev;
 	struct raw_event		*raw;
 
-	raw = ebpf_events_to_raw(ev);
-	if (raw != NULL && raw_event_insert(qq, raw) == -1)
-		raw_event_free(raw);
+	if (qq->flags & QQ_BYPASS) {
+		qev = &qq->event_storage;
+		qev->bypass = ev;
+		qev->events = QUARK_EV_BYPASS;
+	} else {
+		raw = ebpf_events_to_raw(ev);
+		if (raw != NULL && raw_event_insert(qq, raw) == -1)
+			raw_event_free(raw);
+	}
 
 	return (0);
 }
@@ -403,6 +410,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.recvmsg4, 1);
 	}
 
+	/* XXX missing relocations (file events) XXX */
+
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {
 		qwarn("bpf_map__set_max_entries");
@@ -448,9 +457,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		goto fail;
 	}
 
-	/*
-	 * There doesn't seem to be a watermark setting for ebpf!
-	 */
 	ringbuf_opts.sz = sizeof(ringbuf_opts);
 	bqq->ringbuf = ring_buffer__new(bpf_map__fd(p->maps.ringbuf),
 	    bpf_ringbuf_cb, qq, &ringbuf_opts);
@@ -495,8 +501,10 @@ bpf_queue_populate(struct quark_queue *qq)
 	struct bpf_queue	*bqq = qq->queue_be;
 	int			 npop, space_left;
 
-	space_left = qq->length >= qq->max_length ?
-	    0 : qq->max_length - qq->length;
+	space_left =
+	    qq->flags & QQ_BYPASS ? 1 :
+	    qq->length >= qq->max_length ? 0 :
+	    qq->max_length - qq->length;
 	if (space_left == 0)
 		return (0);
 

@@ -674,6 +674,8 @@ event_type_str(u64 event)
 		return "SOCK_CONN_CLOSED";
 	case QUARK_EV_PACKET:
 		return "PACKET";
+	case QUARK_EV_BYPASS:
+		return "BYPASS";
 	default:
 		return "?";
 	}
@@ -974,6 +976,13 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_packet	*packet;
 	int				 pid;
 
+	if (qev->events == QUARK_EV_BYPASS) {
+		P("*");
+		fflush(f);
+
+		return (0);
+	}
+
 	qp = qev->process;
 	qsk = qev->socket;
 	packet = qev->packet;
@@ -1006,8 +1015,6 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	}
 
 	if (qev->events & QUARK_EV_PACKET) {
-		void	sshbuf_dump_data(const void *, size_t, FILE *); /* XXX */
-
 		flagname = "PKT";
 
 		if (packet == NULL)
@@ -2330,6 +2337,22 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qa = &qa_default;
 	}
 
+	/*
+	 * QQ_BYPASS is EBPF only
+	 */
+	if (qa->flags & QQ_BYPASS) {
+		if ((qa->flags &
+		    (QQ_KPROBE|QQ_ENTRY_LEADER|QQ_MIN_AGG|QQ_THREAD_EVENTS)) ||
+		    !(qa->flags & QQ_EBPF))
+			return (errno = EINVAL, -1);
+
+		/*
+		 * No buffering, we just pop one element from the ring and
+		 * return
+		 */
+		qa->max_length = 1;
+	}
+
 	if ((qa->flags & QQ_ALL_BACKENDS) == 0 ||
 	    qa->max_length <= 0 ||
 	    qa->cache_grace_time < 0 ||
@@ -2362,22 +2385,24 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		goto fail;
 	}
 
-	/*
-	 * Now that the rings are opened, we can scrape proc. If we would scrape
-	 * before opening them, there would be a small window where we could
-	 * lose new processes.
-	 */
-	if (sproc_scrape(qq) == -1) {
-		qwarnx("can't scrape /proc");
-		goto fail;
-	}
+	if ((qq->flags & QQ_BYPASS) == 0) {
+		/*
+		 * Now that the rings are opened, we can scrape proc. If we would scrape
+		 * before opening them, there would be a small window where we could
+		 * lose new processes.
+		 */
+		if (sproc_scrape(qq) == -1) {
+			qwarnx("can't scrape /proc");
+			goto fail;
+		}
 
-	/*
-	 * Compute all entry leaders
-	 */
-	if (entry_leaders_build(qq) == -1) {
-		qwarnx("can't compute entry leaders");
-		return (-1);
+		/*
+		 * Compute all entry leaders
+		 */
+		if (entry_leaders_build(qq) == -1) {
+			qwarnx("can't compute entry leaders");
+			return (-1);
+		}
 	}
 
 	return (0);
@@ -2616,11 +2641,34 @@ raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
+static const struct quark_event *
+get_bypass_event(struct quark_queue *qq)
+{
+	struct quark_event	*qev;
+	int			 n;
+
+	qev = &qq->event_storage;
+
+	/*
+	 * Populate fills in qev
+	 */
+	qev->events = 0;
+	qev->bypass = NULL;
+	n = quark_queue_populate(qq);
+	if (n <= 0)
+		return (NULL);
+
+	return (qev);
+}
+
 const struct quark_event *
 quark_queue_get_event(struct quark_queue *qq)
 {
 	struct raw_event		*raw;
 	const struct quark_event	*qev;
+
+	if (qq->flags & QQ_BYPASS)
+		return (get_bypass_event(qq));
 
 	qev = NULL;
 	event_storage_clear(qq);

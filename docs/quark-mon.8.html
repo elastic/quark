@@ -25,7 +25,7 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-mon</code></td>
-    <td>[<code class="Fl">-bDekSstv</code>] [<code class="Fl">-C</code>
+    <td>[<code class="Fl">-BbDekNSstv</code>] [<code class="Fl">-C</code>
       <var class="Ar">filename</var>] [<code class="Fl">-l</code>
       <var class="Ar">maxlength</var>] [<code class="Fl">-m</code>
       <var class="Ar">maxnodes</var>] [<code class="Fl">-P</code>
@@ -57,6 +57,11 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
     until a SIGINT is received.</p>
 <p class="Pp">The options are as follows:</p>
 <dl class="Bl-tag">
+  <dt id="B"><a class="permalink" href="#B"><code class="Fl">-B</code></a></dt>
+  <dd>Test bypass mode, where EBPF events are passed up directly without any
+      processing. A
+      <a class="permalink" href="#*"><i class="Em" id="*">*</i></a> is printed
+      for each event.</dd>
   <dt id="b"><a class="permalink" href="#b"><code class="Fl">-b</code></a></dt>
   <dd>Attempt EBPF as the backend.</dd>
   <dt id="C"><a class="permalink" href="#C"><code class="Fl">-C</code></a>
@@ -96,6 +101,19 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
       to buffer, refer to
       <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a> for
       further details.</dd>
+  <dt id="m"><a class="permalink" href="#m"><code class="Fl">-m</code></a>
+    <var class="Ar">maxnodes</var></dt>
+  <dd>Don't really process events, just collect <var class="Ar">maxnodes</var>
+      in the sorting tree and output <span class="Pa">quark_by_time.dot</span>
+      and <span class="Pa">quark_by_pidtime.dot</span>. The first is events
+      sorted by time, and the second by pid plus time. Exits after
+      <var class="Ar">maxnodes</var> has been reached. This is used purely for
+      internal debugging.</dd>
+  <dt id="N"><a class="permalink" href="#N"><code class="Fl">-N</code></a></dt>
+  <dd>Enable DNS events (experimental).</dd>
+  <dt id="P"><a class="permalink" href="#P"><code class="Fl">-P</code></a>
+    <var class="Ar">ppid</var></dt>
+  <dd>Display only events where parent pid is <var class="Ar">ppid</var>.</dd>
   <dt id="S"><a class="permalink" href="#S"><code class="Fl">-S</code></a></dt>
   <dd>Enable socket events (experimental).</dd>
   <dt id="s"><a class="permalink" href="#s"><code class="Fl">-s</code></a></dt>
@@ -106,17 +124,6 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
   <dt id="v"><a class="permalink" href="#v"><code class="Fl">-v</code></a></dt>
   <dd>Increase verbosity, can be specified multiple times for more
     verbosity.</dd>
-  <dt id="m"><a class="permalink" href="#m"><code class="Fl">-m</code></a>
-    <var class="Ar">maxnodes</var></dt>
-  <dd>Don't really process events, just collect <var class="Ar">maxnodes</var>
-      in the sorting tree and output <span class="Pa">quark_by_time.dot</span>
-      and <span class="Pa">quark_by_pidtime.dot</span>. The first is events
-      sorted by time, and the second by pid plus time. Exits after
-      <var class="Ar">maxnodes</var> has been reached. This is used purely for
-      internal debugging.</dd>
-  <dt id="P"><a class="permalink" href="#P"><code class="Fl">-P</code></a>
-    <var class="Ar">ppid</var></dt>
-  <dd>Display only events where parent pid is <var class="Ar">ppid</var>.</dd>
   <dt id="V"><a class="permalink" href="#V"><code class="Fl">-V</code></a></dt>
   <dd>Print version and exit.</dd>
 </dl>
@@ -186,7 +193,7 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">February 5, 2025</td>
+    <td class="foot-date">April 4, 2025</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

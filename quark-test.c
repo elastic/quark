@@ -31,6 +31,9 @@
 
 #include "quark.h"
 
+/* For bypass tests */
+#include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
+
 #define MAN_QUARK_TEST
 #include "manpages.h"
 
@@ -397,6 +400,8 @@ drain_for_pid(struct quark_queue *qq, pid_t pid)
 			continue;
 		}
 
+		if (pid == -1)
+			break;
 		if (qev->process == NULL)
 			continue;
 		if (qev->process->pid != (u32)pid)
@@ -660,6 +665,46 @@ t_exit_tgid(const struct test *t, struct quark_queue_attr *qa)
 		assert(qev->process != NULL);
 		assert(qev->events & QUARK_EV_FORK);
 		assert(qev->events & QUARK_EV_EXIT);
+	}
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_bypass(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct timespec			 start, now;
+	u64				 wanted;
+	const struct ebpf_event_header	*eh;
+
+	qa->flags &= ~QQ_ENTRY_LEADER;
+	qa->flags |= QQ_BYPASS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	(void)fork_exec_nop();
+	wanted =
+	    EBPF_EVENT_PROCESS_FORK |
+	    EBPF_EVENT_PROCESS_EXEC |
+	    EBPF_EVENT_PROCESS_EXIT;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	for (now = start; wanted != 0; (void)clock_gettime(CLOCK_MONOTONIC, &now)) {
+		if ((now.tv_sec - start.tv_sec) >= 5) {
+			errno = ETIME;
+			err(1, "bypass");
+		}
+		qev = drain_for_pid(&qq, -1);
+		assert(qev->events == QUARK_EV_BYPASS);
+		assert(qev->bypass != NULL);
+		eh = qev->bypass;
+		wanted &= ~eh->type;
 	}
 
 	quark_queue_close(&qq);
@@ -965,6 +1010,7 @@ const struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
 	T(t_exit_tgid),
+	T_EBPF(t_bypass),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
 	T(t_namespace),

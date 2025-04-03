@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl bDekNSstv
+.Op Fl BbDekNSstv
 .Op Fl C Ar filename
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
@@ -29,6 +29,12 @@ runs until a SIGINT is received.
 .Pp
 The options are as follows:
 .Bl -tag -width Dtb
+.It Fl B
+Test bypass mode, where EBPF events are passed up directly without any
+processing.
+A
+.Em *
+is printed for each event.
 .It Fl b
 Attempt EBPF as the backend.
 .It Fl C Ar filename
