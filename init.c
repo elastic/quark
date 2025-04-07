@@ -65,7 +65,7 @@ net_up(void)
 		err(1, "socket");
 
 	bzero(&ifr, sizeof(ifr));
-	strlcpy(ifr.ifr_name, "lo", sizeof(ifr.ifr_name));
+	strncpy(ifr.ifr_name, "lo", sizeof(ifr.ifr_name));
 	if (ioctl(fd, SIOCGIFFLAGS, &ifr) == -1)
 		err(1, "SIOCGIFFLAGS");
 	ifr.ifr_flags |= IFF_UP;
