@@ -110,9 +110,9 @@ btf_offsetof(struct btf *btf, struct btf_type const *t, const char *mname)
 	const struct btf_member	*m;
 	const char		*mname1;
 
-	if (BTF_INFO_KIND(t->info) != BTF_KIND_STRUCT)
+	if (btf_kind(t) != BTF_KIND_STRUCT)
 		return (errno = EINVAL, NULL);
-	vlen = BTF_INFO_VLEN(t->info);
+	vlen = btf_vlen(t);
 	m = (const struct btf_member *)(t + 1);
 	if (!strcmp(mname, "(anon)"))
 		mname = "";
@@ -156,7 +156,7 @@ btf_root_offset2(struct btf *btf, const char *dotname)
 		m = btf_offsetof(btf, parent, child_name);
 		if (m == NULL)
 			return (-1);
-		if (BTF_INFO_KFLAG(parent->info)) {
+		if (btf_kflag(parent)) {
 			off += BTF_MEMBER_BIT_OFFSET(m->offset);
 			/* no bit_size things for now */
 			if (BTF_MEMBER_BITFIELD_SIZE(m->offset) != 0)
