@@ -348,9 +348,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	libbpf_set_print(libbpf_print_fn);
 
-	if ((qq->flags & QQ_EBPF) == 0)
-		return (errno = ENOTSUP, -1);
-
 	if ((bqq = calloc(1, sizeof(*bqq))) == NULL)
 		return (-1);
 
@@ -510,6 +507,9 @@ fail:
 int
 bpf_queue_open(struct quark_queue *qq)
 {
+	if ((qq->flags & QQ_EBPF) == 0)
+		return (errno = ENOTSUP, -1);
+
 	if (bpf_queue_open1(qq, 1) == -1) {
 		qwarn("bpf_queue_open failed with fentry, trying kprobe");
 		return bpf_queue_open1(qq, 0);
