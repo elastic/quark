@@ -74,6 +74,9 @@ struct quark_btf	*quark_btf_open_hub(const char *);
 void			 quark_btf_close(struct quark_btf *);
 ssize_t			 quark_btf_offset(struct quark_btf *, const char *);
 
+struct btf;
+s32		 	 btf_number_of_params(struct btf *, const char *);
+
 /* bpf_queue.c */
 int	bpf_queue_open(struct quark_queue *);
 

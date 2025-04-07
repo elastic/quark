@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <bpf/btf.h>
+
 #include "quark.h"
 #include "bpf_prog_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
@@ -342,6 +344,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	struct ring_buffer_opts		 ringbuf_opts;
 	int				 cgroup_fd, i;
 	struct bpf_prog_skeleton	*ps;
+	struct btf			*btf;
 
 	libbpf_set_print(libbpf_print_fn);
 
@@ -353,6 +356,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	qq->queue_be = bqq;
 	cgroup_fd = -1;
+	btf = NULL;
 
 	bqq->prog = bpf_prog__open();
 	if (bqq->prog == NULL) {
@@ -360,6 +364,15 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		goto fail;
 	}
 	p = bqq->prog;
+
+	/*
+	 * BTF used for relocations
+	 */
+	btf = btf__load_vmlinux_btf();
+	if (btf == NULL) {
+		qwarn("btf__load_vmlinux_btf");
+		goto fail;
+	}
 
 	/*
 	 * Unload everything since it has way more than we want
@@ -381,18 +394,26 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	else
 		bpf_program__set_autoload(p->progs.kprobe__taskstats_exit, 1);
 
-	if ((qq->flags & QQ_SOCK_CONN) && use_fentry) {
-		bpf_program__set_autoload(p->progs.fexit__inet_csk_accept, 1);
-		bpf_program__set_autoload(p->progs.fexit__tcp_v4_connect, 1);
-		bpf_program__set_autoload(p->progs.fexit__tcp_v6_connect, 1);
-		bpf_program__set_autoload(p->progs.fentry__tcp_close, 1);
-	} else if (qq->flags & QQ_SOCK_CONN) {
-		bpf_program__set_autoload(p->progs.kretprobe__inet_csk_accept, 1);
-		bpf_program__set_autoload(p->progs.kprobe__tcp_v4_connect, 1);
-		bpf_program__set_autoload(p->progs.kretprobe__tcp_v4_connect, 1);
-		bpf_program__set_autoload(p->progs.kprobe__tcp_v6_connect, 1);
-		bpf_program__set_autoload(p->progs.kretprobe__tcp_v6_connect, 1);
-		bpf_program__set_autoload(p->progs.kprobe__tcp_close, 1);
+	if (qq->flags & QQ_SOCK_CONN) {
+		p->rodata->ret__inet_csk_accept__ =
+		    btf_number_of_params(btf, "inet_csk_accept");
+		if (p->rodata->ret__inet_csk_accept__ == -1) {
+			qwarnx("can't relocate ret__inet_csk_accept__");
+			goto fail;
+		}
+		if (use_fentry) {
+			bpf_program__set_autoload(p->progs.fexit__inet_csk_accept, 1);
+			bpf_program__set_autoload(p->progs.fexit__tcp_v4_connect, 1);
+			bpf_program__set_autoload(p->progs.fexit__tcp_v6_connect, 1);
+			bpf_program__set_autoload(p->progs.fentry__tcp_close, 1);
+		} else {
+			bpf_program__set_autoload(p->progs.kretprobe__inet_csk_accept, 1);
+			bpf_program__set_autoload(p->progs.kprobe__tcp_v4_connect, 1);
+			bpf_program__set_autoload(p->progs.kretprobe__tcp_v4_connect, 1);
+			bpf_program__set_autoload(p->progs.kprobe__tcp_v6_connect, 1);
+			bpf_program__set_autoload(p->progs.kretprobe__tcp_v6_connect, 1);
+			bpf_program__set_autoload(p->progs.kprobe__tcp_close, 1);
+		}
 	}
 
 	if (qq->flags & QQ_DNS) {
@@ -409,8 +430,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.connect4, 1);
 		bpf_program__set_autoload(p->progs.recvmsg4, 1);
 	}
-
-	/* XXX missing relocations (file events) XXX */
 
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {
@@ -472,12 +491,16 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	qq->queue_ops = &queue_ops_bpf;
 	qq->stats.backend = QQ_EBPF;
 
+	btf__free(btf);
+
 	return (0);
 fail:
 	if (cgroup_fd != -1) {
 		close(cgroup_fd);
 		cgroup_fd = -1;
 	}
+	if (btf != NULL)
+		btf__free(btf);
 
 	bpf_queue_close(qq);
 

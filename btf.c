@@ -232,7 +232,26 @@ btf_enum_value(struct btf *btf, const char *dotname, ssize_t *uv)
 	return (-1);
 }
 
+s32
+btf_number_of_params(struct btf *btf, const char *func)
+{
+	s32 off;
+	const struct btf_type *t;
 
+	off = btf__find_by_name_kind(btf, func, BTF_KIND_FUNC);
+	if (off < 0)
+		return (-1);
+	t = btf__type_by_id(btf, off);
+	if (t == NULL)
+		return (-1);
+	t = btf__type_by_id(btf, t->type);
+	if (t == NULL)
+		return (-1);
+	if (!btf_is_func_proto(t))
+		return (-1);
+
+	return (btf_vlen(t));
+}
 
 static struct quark_btf *
 quark_btf_new(const char *new_name)
