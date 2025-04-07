@@ -169,7 +169,7 @@ btf_root_offset2(struct btf *btf, const char *dotname)
 	}
 
 	if ((off % 8) != 0)
-		err(1, "bit offset not multiple of 8");
+		return (-1);
 
 	return (off / 8);
 }
@@ -231,6 +231,8 @@ btf_enum_value(struct btf *btf, const char *dotname, ssize_t *uv)
 
 	return (-1);
 }
+
+
 
 static struct quark_btf *
 quark_btf_new(const char *new_name)
