@@ -3,6 +3,7 @@
 set -euo pipefail
 
 FEDORAVER="$1"
+shift
 
 function download {
 	buildkite-agent artifact download "$1" "$2"
@@ -32,6 +33,6 @@ sudo apt-get -qq install -y --no-install-recommends	\
 sudo kvm-ok
 
 # Run Forrest Run
-sudo ./krun-fedora.sh initramfs.gz $FEDORAVER quark-test
+sudo ./krun-fedora.sh initramfs.gz $FEDORAVER quark-test $@
 
 exit $?

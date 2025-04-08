@@ -38,6 +38,50 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
+  - label: "quark-test on fedora 28 (no bpf)"
+    key: test_fedora_28
+    command: "./.buildkite/runtest_fedora.sh 28 -k"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 29 (no bpf)"
+    key: test_fedora_29
+    command: "./.buildkite/runtest_fedora.sh 29 -k"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 30 (no bpf)"
+    key: test_fedora_30
+    command: "./.buildkite/runtest_fedora.sh 30 -k"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 31 (no bpf)"
+    key: test_fedora_31
+    command: "./.buildkite/runtest_fedora.sh 31 -k"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
   - label: "quark-test on fedora 32"
     key: test_fedora_32
     command: "./.buildkite/runtest_fedora.sh 32"
