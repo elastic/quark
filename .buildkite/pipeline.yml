@@ -191,3 +191,14 @@ steps:
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 42(beta)"
+    key: test_fedora_42
+    command: "./.buildkite/runtest_fedora.sh 42"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
