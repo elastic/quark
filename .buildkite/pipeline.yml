@@ -40,7 +40,7 @@ steps:
 
   - label: "quark-test on fedora 28 (no bpf)"
     key: test_fedora_28
-    command: "./.buildkite/runtest_fedora.sh 28 -k"
+    command: "./.buildkite/runtest_distro.sh fedora 28 -k"
     depends_on:
       - make_docker
     agents:
@@ -51,7 +51,7 @@ steps:
 
   - label: "quark-test on fedora 29 (no bpf)"
     key: test_fedora_29
-    command: "./.buildkite/runtest_fedora.sh 29 -k"
+    command: "./.buildkite/runtest_distro.sh fedora 29 -k"
     depends_on:
       - make_docker
     agents:
@@ -62,7 +62,7 @@ steps:
 
   - label: "quark-test on fedora 30 (no bpf)"
     key: test_fedora_30
-    command: "./.buildkite/runtest_fedora.sh 30 -k"
+    command: "./.buildkite/runtest_distro.sh fedora 30 -k"
     depends_on:
       - make_docker
     agents:
@@ -73,7 +73,7 @@ steps:
 
   - label: "quark-test on fedora 31 (no bpf)"
     key: test_fedora_31
-    command: "./.buildkite/runtest_fedora.sh 31 -k"
+    command: "./.buildkite/runtest_distro.sh fedora 31 -k"
     depends_on:
       - make_docker
     agents:
@@ -84,7 +84,7 @@ steps:
 
   - label: "quark-test on fedora 32"
     key: test_fedora_32
-    command: "./.buildkite/runtest_fedora.sh 32"
+    command: "./.buildkite/runtest_distro.sh fedora 32"
     depends_on:
       - make_docker
     agents:
@@ -95,7 +95,7 @@ steps:
 
   - label: "quark-test on fedora 33"
     key: test_fedora_33
-    command: "./.buildkite/runtest_fedora.sh 33"
+    command: "./.buildkite/runtest_distro.sh fedora 33"
     depends_on:
       - make_docker
     agents:
@@ -106,7 +106,7 @@ steps:
 
   - label: "quark-test on fedora 34"
     key: test_fedora_34
-    command: "./.buildkite/runtest_fedora.sh 34"
+    command: "./.buildkite/runtest_distro.sh fedora 34"
     depends_on:
       - make_docker
     agents:
@@ -117,7 +117,7 @@ steps:
 
   - label: "quark-test on fedora 35"
     key: test_fedora_35
-    command: "./.buildkite/runtest_fedora.sh 35"
+    command: "./.buildkite/runtest_distro.sh fedora 35"
     depends_on:
       - make_docker
     agents:
@@ -128,7 +128,7 @@ steps:
 
   - label: "quark-test on fedora 36"
     key: test_fedora_36
-    command: "./.buildkite/runtest_fedora.sh 36"
+    command: "./.buildkite/runtest_distro.sh fedora 36"
     depends_on:
       - make_docker
     agents:
@@ -139,7 +139,7 @@ steps:
 
   - label: "quark-test on fedora 37"
     key: test_fedora_37
-    command: "./.buildkite/runtest_fedora.sh 37"
+    command: "./.buildkite/runtest_distro.sh fedora 37"
     depends_on:
       - make_docker
     agents:
@@ -150,7 +150,7 @@ steps:
 
   - label: "quark-test on fedora 38"
     key: test_fedora_38
-    command: "./.buildkite/runtest_fedora.sh 38"
+    command: "./.buildkite/runtest_distro.sh fedora 38"
     depends_on:
       - make_docker
     agents:
@@ -161,7 +161,7 @@ steps:
 
   - label: "quark-test on fedora 39"
     key: test_fedora_39
-    command: "./.buildkite/runtest_fedora.sh 39"
+    command: "./.buildkite/runtest_distro.sh fedora 39"
     depends_on:
       - make_docker
     agents:
@@ -172,7 +172,7 @@ steps:
 
   - label: "quark-test on fedora 40"
     key: test_fedora_40
-    command: "./.buildkite/runtest_fedora.sh 40"
+    command: "./.buildkite/runtest_distro.sh fedora 40"
     depends_on:
       - make_docker
     agents:
@@ -183,7 +183,7 @@ steps:
 
   - label: "quark-test on fedora 41"
     key: test_fedora_41
-    command: "./.buildkite/runtest_fedora.sh 41"
+    command: "./.buildkite/runtest_distro.sh fedora 41"
     depends_on:
       - make_docker
     agents:
@@ -192,9 +192,174 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 42(beta)"
+  - label: "quark-test on fedora 42 (beta)"
     key: test_fedora_42
-    command: "./.buildkite/runtest_fedora.sh 42"
+    command: "./.buildkite/runtest_distro.sh fedora 42"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 8"
+    key: test_rhel_8
+    command: "./.buildkite/runtest_distro.sh rhel 8"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 8.3 (no bpf)"
+    key: test_rhel_8_3
+    command: "./.buildkite/runtest_distro.sh rhel 8.3 -k"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 8.4 (no bpf)"
+    key: test_rhel_8_4
+    command: "./.buildkite/runtest_distro.sh rhel 8.4 -k"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 8.5"
+    key: test_rhel_8_5
+    command: "./.buildkite/runtest_distro.sh rhel 8.5"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 8.6"
+    key: test_rhel_8_6
+    command: "./.buildkite/runtest_distro.sh rhel 8.6"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 8.7"
+    key: test_rhel_8_7
+    command: "./.buildkite/runtest_distro.sh rhel 8.7"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 8.8"
+    key: test_rhel_8_8
+    command: "./.buildkite/runtest_distro.sh rhel 8.8"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 8.9"
+    key: test_rhel_8_9
+    command: "./.buildkite/runtest_distro.sh rhel 8.9"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 9"
+    key: test_rhel_9
+    command: "./.buildkite/runtest_distro.sh rhel 9"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 9.0"
+    key: test_rhel_9_0
+    command: "./.buildkite/runtest_distro.sh rhel 9.0"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 9.1"
+    key: test_rhel_9_1
+    command: "./.buildkite/runtest_distro.sh rhel 9.1"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 9.2"
+    key: test_rhel_9_2
+    command: "./.buildkite/runtest_distro.sh rhel 9.2"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 9.3"
+    key: test_rhel_9_3
+    command: "./.buildkite/runtest_distro.sh rhel 9.3"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 9.4"
+    key: test_rhel_9_4
+    command: "./.buildkite/runtest_distro.sh rhel 9.4"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 9.5"
+    key: test_rhel_9_5
+    command: "./.buildkite/runtest_distro.sh rhel 9.5"
     depends_on:
       - make_docker
     agents:

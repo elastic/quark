@@ -6,7 +6,7 @@ SCRIPT=${0##*/}
 
 function usage
 {
-	echo "usage: $SCRIPT initramfs.gz FEDORAVERSION command" 1>&2
+	echo "usage: $SCRIPT initramfs.gz RHELVER command" 1>&2
 	exit 1
 }
 
@@ -15,14 +15,14 @@ if [ $# -lt 3 ]; then
 fi
 
 INITRAMFS="$1"
-FEDORAVER="$2"
+RHELVER="$2"
 shift 2
 
-case $FEDORAVER in
-2?|3?)		URL="https://archives.fedoraproject.org/pub/archive/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
-42|rawhide)	URL="https://ftp.fau.de/fedora/linux/development/$FEDORAVER/Everything/x86_64/os/Packages/k";;
-4?)		URL="https://ftp.fau.de/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
-*)		echo bad version "$FEDORAVER" 1>&2;;
+case $RHELVER in
+8|9)		URL="https://ftp.fau.de/rockylinux/$RHELVER/BaseOS/x86_64/os/Packages/k";;
+8.[34])		URL="https://dl.rockylinux.org/vault/rocky/$RHELVER/BaseOS/x86_64/os/Packages";;
+8.?|9.?)	URL="https://dl.rockylinux.org/vault/rocky/$RHELVER/BaseOS/x86_64/os/Packages/k";;
+*)		echo bad version "$RHELVER" 1>&2;;
 esac
 
 TMPDIR=$(mktemp -d "/tmp/$SCRIPT.XXXXXXXXXX")

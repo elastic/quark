@@ -2,8 +2,9 @@
 
 set -euo pipefail
 
-FEDORAVER="$1"
-shift
+DISTRO="$1"
+DISTROVER="$2"
+shift 2
 
 function download {
 	buildkite-agent artifact download "$1" "$2"
@@ -32,7 +33,8 @@ sudo apt-get -qq install -y --no-install-recommends	\
 # Make sure we can run things on KVM
 sudo kvm-ok
 
-# Run Forrest Run
-sudo ./krun-fedora.sh initramfs.gz $FEDORAVER quark-test $@
-
-exit $?
+case "$DISTRO" in
+fedora)	sudo ./krun-fedora.sh initramfs.gz "$DISTROVER" quark-test $@;;
+rhel)	sudo ./krun-rhel.sh initramfs.gz "$DISTROVER" quark-test $@;;
+*)	echo bad distribution "$DISTROVER" 1>&2;;
+esac
