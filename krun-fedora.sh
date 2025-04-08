@@ -19,9 +19,10 @@ FEDORAVER="$2"
 shift 2
 
 case $FEDORAVER in
-2?|3?)	URL="https://archives.fedoraproject.org/pub/archive/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
-4?)	URL="http://ftp.fau.de/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
-*)	echo bad version "$FEDORAVER" 1>&2
+2?|3?)		URL="https://archives.fedoraproject.org/pub/archive/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
+42|rawhide)	URL="http://ftp.fau.de/fedora/linux/development/$FEDORAVER/Everything/x86_64/os/Packages/k";;
+4?)		URL="http://ftp.fau.de/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
+*)		echo bad version "$FEDORAVER" 1>&2
 esac
 
 TMPDIR=$(mktemp -d "/tmp/$SCRIPT.XXXXXXXXXX")
