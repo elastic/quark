@@ -21,13 +21,17 @@ cmdline="$*"
 function qemu {
 	case "$(file -b "$kernel" | awk '{print $3}')" in
 	x86)
+		kvm=""
+		if grep -qw vmx /proc/cpuinfo && [ -e /dev/kvm ]; then
+			kvm="-enable-kvm"
+		fi
 		qemu-system-x86_64						\
 			-m 256M							\
-			-enable-kvm						\
 			-initrd "$initramfs"					\
 			-kernel "$kernel"					\
 			-nographic						\
-			--append "console=ttyS0 quiet TERM=dumb $cmdline"
+			--append "console=ttyS0 quiet TERM=dumb $cmdline"	\
+			$kvm
 		;;
 	ARM64)
 		qemu-system-aarch64						\
