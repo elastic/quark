@@ -2,6 +2,8 @@ steps:
   - label: "build amd64 in docker"
     key: make_docker
     command: "make docker"
+    artifact_paths:
+      - "initramfs.gz"
     agents:
       image: family/core-ubuntu-2204
       provider: gcp
@@ -34,3 +36,114 @@ steps:
       image: family/core-ubuntu-2204
       provider: gcp
       machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 32"
+    key: test_fedora_32
+    command: "./.buildkite/runtest_fedora.sh 32"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 33"
+    key: test_fedora_33
+    command: "./.buildkite/runtest_fedora.sh 33"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 34"
+    key: test_fedora_34
+    command: "./.buildkite/runtest_fedora.sh 34"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 35"
+    key: test_fedora_35
+    command: "./.buildkite/runtest_fedora.sh 35"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 36"
+    key: test_fedora_36
+    command: "./.buildkite/runtest_fedora.sh 36"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 37"
+    key: test_fedora_37
+    command: "./.buildkite/runtest_fedora.sh 37"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 38"
+    key: test_fedora_38
+    command: "./.buildkite/runtest_fedora.sh 38"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 39"
+    key: test_fedora_39
+    command: "./.buildkite/runtest_fedora.sh 39"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 40"
+    key: test_fedora_40
+    command: "./.buildkite/runtest_fedora.sh 40"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 41"
+    key: test_fedora_41
+    command: "./.buildkite/runtest_fedora.sh 41"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
