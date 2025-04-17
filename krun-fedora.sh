@@ -20,7 +20,7 @@ shift 2
 
 case $FEDORAVER in
 2?|3?)		URL="https://archives.fedoraproject.org/pub/archive/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
-42|rawhide)	URL="https://ftp.fau.de/fedora/linux/development/$FEDORAVER/Everything/x86_64/os/Packages/k";;
+43|rawhide)	URL="https://ftp.fau.de/fedora/linux/development/$FEDORAVER/Everything/x86_64/os/Packages/k";;
 4?)		URL="https://ftp.fau.de/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
 *)		echo bad version "$FEDORAVER" 1>&2;;
 esac

@@ -192,7 +192,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 42 (beta)"
+  - label: "quark-test on fedora 42"
     key: test_fedora_42
     command: "./.buildkite/runtest_distro.sh fedora 42"
     depends_on:
