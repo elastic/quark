@@ -5,7 +5,6 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/unistd.h>
 #include <sys/wait.h>
 
 #include <netinet/in.h>
