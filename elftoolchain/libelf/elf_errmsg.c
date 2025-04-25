@@ -24,7 +24,9 @@
  * SUCH DAMAGE.
  */
 
+#ifndef QUARK
 #include <sys/cdefs.h>
+#endif
 
 #include <libelf.h>
 #include <stdio.h>
