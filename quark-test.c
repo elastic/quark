@@ -248,6 +248,7 @@ struct test {
 	char	 *name;
 	int	(*func)(const struct test *, struct quark_queue_attr *);
 	int	  backend;
+	int	  excluded;
 };
 
 static void
@@ -265,7 +266,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-bkv] [tests ...]\n",
+	fprintf(stderr, "usage: %s [-bkv] [-x test] [tests ...]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -l\n",
 	    program_invocation_short_name);
@@ -711,6 +712,23 @@ t_bypass(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* XXX Only probe loading for now */
+static int
+t_file(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+
+	qa->flags &= ~QQ_ENTRY_LEADER;
+	qa->flags |= QQ_BYPASS | QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -1001,22 +1019,23 @@ t_dns(const struct test *t, struct quark_queue_attr *qa)
 /*
  * Try to order by increasing order of complexity
  */
-#define T(_x)		{ S(_x), _x, QQ_ALL_BACKENDS }
-#define T_KPROBE(_x)	{ S(_x), _x, QQ_KPROBE }
-#define T_EBPF(_x)	{ S(_x), _x, QQ_EBPF }
+#define T(_x)		{ S(_x), _x, QQ_ALL_BACKENDS, 0 }
+#define T_KPROBE(_x)	{ S(_x), _x, QQ_KPROBE, 0 }
+#define T_EBPF(_x)	{ S(_x), _x, QQ_EBPF, 0 }
 #define S(_x)		#_x
-const struct test all_tests[] = {
+struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
 	T(t_exit_tgid),
 	T_EBPF(t_bypass),
+	T_EBPF(t_file),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
 	T(t_namespace),
 	T(t_cache_grace),
 	T(t_min_agg),
 	T(t_stats),
-	{ NULL,	NULL, 0 }
+	{ NULL,	NULL, 0, 0 }
 };
 #undef S
 #undef T
@@ -1032,10 +1051,10 @@ display_tests(void)
 	exit(0);
 }
 
-static const struct test *
+static struct test *
 lookup_test(const char *name)
 {
-	const struct test	*t;
+	struct test	*t;
 
 	for (t = all_tests; t->name != NULL; t++) {
 		if (!strcmp(t->name, name))
@@ -1049,7 +1068,7 @@ lookup_test(const char *name)
  * A test runs as a subprocess to avoid contamination.
  */
 static int
-run_test(const struct test *t, struct quark_queue_attr *qa)
+run_test(struct test *t, struct quark_queue_attr *qa)
 {
 	pid_t		 child;
 	int		 status, x, linepos, be, nfd, r;
@@ -1073,7 +1092,7 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 
 	fflush(stdout);
 
-	if ((t->backend & be) == 0) {
+	if (((t->backend & be) == 0) || t->excluded) {
 		x = color(YELLOW);
 		printf("n/a\n");
 		color(x);
@@ -1211,7 +1230,7 @@ run_test(const struct test *t, struct quark_queue_attr *qa)
 static int
 run_tests(int argc, char *argv[])
 {
-	const struct test	*t;
+	struct test		*t;
 	int			 failed, i;
 	struct quark_queue_attr	 bpf_attr;
 	struct quark_queue_attr	 kprobe_attr;
@@ -1238,7 +1257,7 @@ run_tests(int argc, char *argv[])
 		for (i = 0; i < argc; i++) {
 			t = lookup_test(argv[i]);
 			if (t == NULL)
-				errx(1, "test %s not found", argv[i]);
+				errx(1, "test %s doesn't exist", argv[i]);
 			if (bflag && run_test(t, &bpf_attr) != 0)
 				failed++;
 			if (kflag && run_test(t, &kprobe_attr) != 0)
@@ -1252,9 +1271,10 @@ run_tests(int argc, char *argv[])
 int
 main(int argc, char *argv[])
 {
-	int	ch, x, failed;
+	int		  ch, failed, x;
+	struct test	 *t;
 
-	while ((ch = getopt(argc, argv, "bhklNvV")) != -1) {
+	while ((ch = getopt(argc, argv, "bhklNvVx:")) != -1) {
 		switch (ch) {
 		case 'b':
 			bflag = 1;
@@ -1280,6 +1300,11 @@ main(int argc, char *argv[])
 		case 'V':
 			display_version();
 			break;	/* NOTREACHED */
+		case 'x':
+			if ((t = lookup_test(optarg)) == NULL)
+				errx(1, "test %s doesn't exist", optarg);
+			t->excluded = 1;
+			break;
 		default:
 			usage();
 		}

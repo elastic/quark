@@ -13,8 +13,6 @@
 #include <bpf/btf.h>
 #include "libbpf/include/linux/err.h"		/* IS_ERR :( */
 
-s32	btf_root_offset(struct btf *, const char *);
-
 struct quark_btf_target base_targets[] = {
 	{ "cred.cap_ambient",		-1 },
 	{ "cred.cap_bset",		-1 },
@@ -175,13 +173,16 @@ btf_root_offset2(struct btf *btf, const char *dotname)
 }
 
 s32
-btf_root_offset(struct btf *btf, const char *dotname)
+btf_root_offset(struct btf *btf, const char *dotname, int alternatives)
 {
 	s32			 off;
 	struct btf_alternative	*alt;
 
 	off = btf_root_offset2(btf, dotname);
 	if (off != -1)
+		return (off);
+
+	if (!alternatives)
 		return (off);
 
 	for (alt = btf_alternatives; alt->new != NULL; alt++) {
@@ -232,7 +233,7 @@ btf_enum_value(struct btf *btf, const char *dotname, ssize_t *uv)
 	return (-1);
 }
 
-s32
+int
 btf_number_of_params(struct btf *btf, const char *func)
 {
 	s32 off;
@@ -251,6 +252,40 @@ btf_number_of_params(struct btf *btf, const char *func)
 		return (-1);
 
 	return (btf_vlen(t));
+}
+
+int
+btf_index_of_param(struct btf *btf, const char *func, const char *param)
+{
+	s32			 off;
+	struct btf_param	*bp;
+	const struct btf_type	*t;
+	const char		*cand;
+	int			 i;
+
+	off = btf__find_by_name_kind(btf, func, BTF_KIND_FUNC);
+	if (off < 0)
+		return (-1);
+	t = btf__type_by_id(btf, off);
+	if (t == NULL)
+		return (-1);
+	t = btf__type_by_id(btf, t->type);
+	if (t == NULL)
+		return (-1);
+
+	for (i = 0, bp = btf_params(t); i < btf_vlen(t); i++, bp++) {
+		cand = btf__name_by_offset(btf, bp->name_off);
+		if (cand == NULL) {
+			warnx("name for offset %d not found, "
+			    "this is likely a bug", bp->name_off);
+			continue;
+		}
+		/* found it */
+		if (!strcmp(cand, param))
+			return (i);
+	}
+
+	return (-1);
 }
 
 static struct quark_btf *
@@ -367,7 +402,7 @@ quark_btf_open2(const char *path, const char *kname)
 		return (NULL);
 
 	for (ta = qbtf->targets; ta->dotname != NULL; ta++) {
-		ta->offset = btf_root_offset(btf, ta->dotname);
+		ta->offset = btf_root_offset(btf, ta->dotname, 1);
 		/* Maybe this is an enum */
 		if (ta->offset == -1 &&
 		    btf_enum_value(btf, ta->dotname, &ta->offset) == -1) {

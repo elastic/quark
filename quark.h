@@ -75,7 +75,9 @@ void			 quark_btf_close(struct quark_btf *);
 ssize_t			 quark_btf_offset(struct quark_btf *, const char *);
 
 struct btf;
-s32		 	 btf_number_of_params(struct btf *, const char *);
+s32			btf_root_offset(struct btf *, const char *, int);
+int			btf_number_of_params(struct btf *, const char *);
+int			btf_index_of_param(struct btf *, const char *, const char *);
 
 /* bpf_queue.c */
 int	bpf_queue_open(struct quark_queue *);
@@ -474,6 +476,7 @@ struct quark_queue_attr {
 #define QQ_SOCK_CONN		(1 << 5)
 #define QQ_DNS			(1 << 6)
 #define QQ_BYPASS		(1 << 7)
+#define QQ_FILE			(1 << 8)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;

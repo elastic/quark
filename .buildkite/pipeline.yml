@@ -244,9 +244,9 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8.5"
+  - label: "quark-test on rhel 8.5 (no file)"
     key: test_rhel_8_5
-    command: "./.buildkite/runtest_distro.sh rhel 8.5"
+    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file"
     depends_on:
       - make_docker
     agents:
@@ -255,9 +255,9 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8.6"
+  - label: "quark-test on rhel 8.6 (no file)"
     key: test_rhel_8_6
-    command: "./.buildkite/runtest_distro.sh rhel 8.6"
+    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file"
     depends_on:
       - make_docker
     agents:
@@ -266,9 +266,9 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8.7"
+  - label: "quark-test on rhel 8.7 (no file)"
     key: test_rhel_8_7
-    command: "./.buildkite/runtest_distro.sh rhel 8.7"
+    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file"
     depends_on:
       - make_docker
     agents:
