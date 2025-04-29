@@ -7,6 +7,7 @@
 .Sh SYNOPSIS
 .Nm quark-test
 .Op Fl bkv
+.Op Fl x Ar test
 .Op Ar tests ...
 .Nm quark-test
 .Fl h
@@ -53,6 +54,10 @@ Increase
 can be issued multiple times.
 .It Fl V
 Print version and exit.
+.It Fl x Ar test
+Exclude
+.Ar test
+from the run, can be specified multiple times.
 .El
 .Sh EXIT STATUS
 .Nm
