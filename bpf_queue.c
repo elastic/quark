@@ -337,12 +337,52 @@ bpf_ringbuf_cb(void *vqq, void *vdata, size_t len)
 }
 
 static int
+relo_ret(struct btf *btf, int *loc, const char *func)
+{
+	*loc = btf_number_of_params(btf, func);
+	if (*loc == -1)
+		qwarnx("can't relocate return for %s", func);
+
+	return (*loc);
+}
+
+static int
+relo_param(struct btf *btf, int *loc, const char *func, const char *param)
+{
+	*loc = btf_index_of_param(btf, func, param);
+	if (*loc == -1)
+		warnx("can't relocate parameter %s on function %s",
+		    param, func);
+
+	return (*loc);
+}
+
+static int
+relo_member(struct btf *btf, int *loc, const char *struct_name,
+    const char *member)
+{
+	char dotname[512];
+
+	*loc = -1;
+
+	if (snprintf(dotname, sizeof(dotname), "%s.%s", struct_name, member)
+	    >= (int)sizeof(dotname)) {
+		qwarnx("buffer too small");
+		return (-1);
+	}
+
+	*loc = btf_root_offset(btf, dotname, 0);
+
+	return (*loc);
+}
+
+static int
 bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
 	struct bpf_queue		*bqq;
 	struct bpf_prog			*p;
 	struct ring_buffer_opts		 ringbuf_opts;
-	int				 cgroup_fd, i;
+	int				 cgroup_fd, i, off;
 	struct bpf_prog_skeleton	*ps;
 	struct btf			*btf;
 
@@ -390,14 +430,11 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.fentry__taskstats_exit, 1);
 	else
 		bpf_program__set_autoload(p->progs.kprobe__taskstats_exit, 1);
+	/* Used in process probes, so always on */
+	if (relo_member(btf, &off, "iov_iter", "__iov") != -1)
+		p->rodata->off__iov_iter____iov__ = off;
 
 	if (qq->flags & QQ_SOCK_CONN) {
-		p->rodata->ret__inet_csk_accept__ =
-		    btf_number_of_params(btf, "inet_csk_accept");
-		if (p->rodata->ret__inet_csk_accept__ == -1) {
-			qwarnx("can't relocate ret__inet_csk_accept__");
-			goto fail;
-		}
 		if (use_fentry) {
 			bpf_program__set_autoload(p->progs.fexit__inet_csk_accept, 1);
 			bpf_program__set_autoload(p->progs.fexit__tcp_v4_connect, 1);
@@ -411,6 +448,84 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.kretprobe__tcp_v6_connect, 1);
 			bpf_program__set_autoload(p->progs.kprobe__tcp_close, 1);
 		}
+
+		if (relo_ret(btf, &p->rodata->ret__inet_csk_accept__,
+		    "inet_csk_accept") == -1)
+			goto fail;
+	}
+
+	if (qq->flags & QQ_FILE) {
+		if (use_fentry) {
+			bpf_program__set_autoload(p->progs.fentry__do_renameat2, 1);
+			bpf_program__set_autoload(p->progs.fentry__do_unlinkat, 1);
+			bpf_program__set_autoload(p->progs.fentry__mnt_want_write, 1);
+			bpf_program__set_autoload(p->progs.fentry__vfs_rename, 1);
+			bpf_program__set_autoload(p->progs.fentry__vfs_unlink, 1);
+			bpf_program__set_autoload(p->progs.fexit__chmod_common, 1);
+			bpf_program__set_autoload(p->progs.fexit__chown_common, 1);
+			bpf_program__set_autoload(p->progs.fexit__do_filp_open, 1);
+			bpf_program__set_autoload(p->progs.fexit__do_truncate, 1);
+			bpf_program__set_autoload(p->progs.fexit__vfs_rename, 1);
+			bpf_program__set_autoload(p->progs.fexit__vfs_unlink, 1);
+			bpf_program__set_autoload(p->progs.fexit__vfs_write, 1);
+			bpf_program__set_autoload(p->progs.fexit__vfs_writev, 1);
+		} else {
+			bpf_program__set_autoload(p->progs.kprobe__chmod_common, 1);
+			bpf_program__set_autoload(p->progs.kretprobe__chmod_common, 1);
+			bpf_program__set_autoload(p->progs.kprobe__chown_common, 1);
+			bpf_program__set_autoload(p->progs.kretprobe__chown_common, 1);
+			bpf_program__set_autoload(p->progs.kprobe__do_truncate, 1);
+			bpf_program__set_autoload(p->progs.kretprobe__do_truncate, 1);
+			bpf_program__set_autoload(p->progs.kprobe__vfs_writev, 1);
+			bpf_program__set_autoload(p->progs.kretprobe__vfs_writev, 1);
+			bpf_program__set_autoload(p->progs.kprobe__vfs_rename, 1);
+			bpf_program__set_autoload(p->progs.kretprobe__vfs_rename, 1);
+			bpf_program__set_autoload(p->progs.kprobe__vfs_unlink, 1);
+			bpf_program__set_autoload(p->progs.kretprobe__vfs_unlink, 1);
+			bpf_program__set_autoload(p->progs.kprobe__vfs_write, 1);
+			bpf_program__set_autoload(p->progs.kretprobe__vfs_write, 1);
+			bpf_program__set_autoload(p->progs.kprobe__do_renameat2, 1);
+			bpf_program__set_autoload(p->progs.kprobe__do_unlinkat, 1);
+			bpf_program__set_autoload(p->progs.kprobe__mnt_want_write, 1);
+			bpf_program__set_autoload(p->progs.kretprobe__do_filp_open, 1);
+		}
+
+		/* vfs_unlink() */
+		if (relo_ret(btf, &p->rodata->ret__vfs_unlink__, "vfs_unlink") == -1)
+			goto fail;
+		if (relo_param(btf, &p->rodata->arg__vfs_unlink__dentry__,
+		    "vfs_unlink", "dentry") == -1)
+			goto fail;
+		/* vfs_rename() */
+		if (relo_ret(btf, &p->rodata->ret__vfs_rename__, "vfs_rename") == -1)
+			goto fail;
+		if (btf_index_of_param(btf, "vfs_rename", "rd") != -1) {
+			p->rodata->exists__vfs_rename__rd__ = 1;
+		} else {
+			if (relo_param(btf, &p->rodata->arg__vfs_rename__old_dentry__,
+			    "vfs_rename", "old_dentry") == -1)
+				goto fail;
+			if (relo_param(btf, &p->rodata->arg__vfs_rename__new_dentry__,
+			    "vfs_rename", "new_dentry") == -1)
+				goto fail;
+		}
+		/* do_truncate() */
+		if (relo_ret(btf, &p->rodata->ret__do_truncate__, "do_truncate") == -1)
+			goto fail;
+		if (relo_param(btf, &p->rodata->arg__do_truncate__filp__,
+		    "do_truncate", "filp") == -1)
+			goto fail;
+
+		/*
+		 * XXX We can likely get rid of all of those by using
+		 * bpf_core_field_exists inside the probe
+		 */
+		if (relo_member(btf, &off, "inode", "__i_atime") != -1)
+			p->rodata->off__inode____i_atime__ = off;
+		if (relo_member(btf, &off, "inode", "__i_mtime") != -1)
+			p->rodata->off__inode____i_mtime__ = off;
+		if (relo_member(btf, &off, "inode", "__i_ctime") != -1)
+			p->rodata->off__inode____i_ctime__ = off;
 	}
 
 	if (qq->flags & QQ_DNS) {
