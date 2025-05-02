@@ -102,7 +102,7 @@ ifndef SYSLIB
 LIBQUARK_TARGET=$(LIBQUARK_STATIC_BIG)
 else
 LIBQUARK_TARGET=$(LIBQUARK_STATIC)
-EXTRA_LDFLAGS:= -lbpf
+EXTRA_LDFLAGS+= -lbpf
 endif
 
 # ZLIB
@@ -222,7 +222,7 @@ DOCKER_RUN_ARGS=$(QDOCKER)				\
 
 docker: docker-image clean-all
 	$(call msg,DOCKER-RUN,Dockerfile)
-	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) /bin/bash -c "make -C $(PWD) all initramfs.gz"
+	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) $(SHELL) -c "make -C $(PWD) all initramfs.gz"
 
 docker-cross-arm64: clean-all docker-image manpages.h
 	$(call msg,DOCKER-RUN,Dockerfile)
@@ -232,7 +232,7 @@ docker-cross-arm64: clean-all docker-image manpages.h
 		-e LD=aarch64-linux-gnu-ld		\
 		-e AR=aarch64-linux-gnu-ar		\
 		$(DOCKER_RUN_ARGS)			\
-		/bin/bash -c "make -C $(PWD) all initramfs.gz"
+		$(SHELL) -c "make -C $(PWD) all initramfs.gz"
 
 docker-image: clean-all
 	$(call msg,DOCKER-IMAGE,Dockerfile)
@@ -243,7 +243,7 @@ docker-image: clean-all
 		.
 
 docker-shell:
-	$(DOCKER) run -it $(DOCKER_RUN_ARGS) /bin/bash
+	$(DOCKER) run -it $(DOCKER_RUN_ARGS) $(SHELL)
 
 
 CENTOS7_RUN_ARGS=$(QDOCKER)				\
@@ -258,12 +258,12 @@ centos7: clean-all docker-image centos7-image
 	# modern Ubuntu image, we can't make those on centos7
 	$(DOCKER) run					\
 		$(DOCKER_RUN_ARGS)			\
-		/bin/bash -c "make -C $(PWD) bpf_prog.o bpf_prog_skel.h"
+		$(SHELL) -c "make -C $(PWD) bpf_prog.o bpf_prog_skel.h"
 	# Now we build the rest of the suite as it won't try to rebuild
 	# bpf_prog.o and bpf_prog_skel.h
 	$(DOCKER) run					\
 		$(CENTOS7_RUN_ARGS)			\
-		/bin/bash -c "make -j1 -C $(PWD)"
+		$(SHELL) -c "make -j1 -C $(PWD)"
 
 centos7-image: clean-all
 	$(call msg,DOCKER-IMAGE,Dockerfile.centos7)
@@ -274,7 +274,7 @@ centos7-image: clean-all
 		.
 
 centos7-shell:
-	$(DOCKER) run -it $(CENTOS7_RUN_ARGS) /bin/bash
+	$(DOCKER) run -it $(CENTOS7_RUN_ARGS) $(SHELL)
 
 include: $(LIBBPF_DEPS)
 	$(Q)make -C $(LIBBPF_SRC)			\

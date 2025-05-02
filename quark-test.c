@@ -466,7 +466,7 @@ local_connect(u16 port, int type, u16 *bound_port)
 		socklen_t	socklen;
 
 		socklen = sizeof(sin);
-		if (getsockname(fd, &sin, &socklen) == -1)
+		if (getsockname(fd, (struct sockaddr *)&sin, &socklen) == -1)
 			err(1, "getsockname");
 		*bound_port = sin.sin_port;
 	}
