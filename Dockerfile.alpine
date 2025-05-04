@@ -1,0 +1,12 @@
+FROM alpine:3.21
+RUN apk add 						\
+	bash						\
+	clang						\
+        bpftool						\
+	gcc						\
+	libbsd						\
+	libbsd-dev					\
+	make						\
+	musl-fts					\
+	musl-fts-dev					\
+	m4

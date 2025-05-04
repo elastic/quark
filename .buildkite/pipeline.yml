@@ -27,6 +27,14 @@ steps:
       provider: gcp
       machineType: n2-standard-2
 
+  - label: "build amd64 in an alpine container"
+    key: make_alpine
+    command: "make alpine"
+    agents:
+      image: family/core-ubuntu-2204
+      provider: gcp
+      machineType: n2-standard-2
+
   - label: "quark-test"
     key: test
     command: "./.buildkite/runtest.sh"
