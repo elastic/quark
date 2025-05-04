@@ -276,6 +276,26 @@ centos7-image: clean-all
 centos7-shell:
 	$(DOCKER) run -it $(CENTOS7_RUN_ARGS) $(SHELL)
 
+ALPINE_RUN_ARGS=$(QDOCKER)				\
+		-v $(PWD):$(PWD)			\
+		-w $(PWD)				\
+		-u $(shell id -u):$(shell id -g)	\
+		alpine-quark-builder
+
+alpine: alpine-image clean-all
+	$(call msg,ALPINE-DOCKER-RUN,Dockerfile)
+	$(Q)$(DOCKER) run 				\
+		$(ALPINE_RUN_ARGS) $(SHELL)		\
+		-c "make -C $(PWD) all initramfs.gz EXTRA_LDFLAGS=-lfts"
+
+alpine-image: clean-all
+	$(call msg,ALPINE-IMAGE,Dockerfile.alpine)
+	$(Q)$(DOCKER) build				\
+		$(QDOCKER)				\
+		-f Dockerfile.alpine			\
+		-t alpine-quark-builder			\
+		.
+
 include: $(LIBBPF_DEPS)
 	$(Q)make -C $(LIBBPF_SRC)			\
 		NO_PKG_CONFIG=y				\
@@ -332,19 +352,19 @@ quark-mon-static: quark-mon.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(call assert_no_syslib)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DNO_PRIVDROP $(CDIAGFLAGS) \
-		-static -o $@ $< $(LIBQUARK_STATIC_BIG)
+		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
 quark-btf-static: quark-btf.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(call assert_no_syslib)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
-		-static -o $@ $< $(LIBQUARK_STATIC_BIG)
+		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
 quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(call assert_no_syslib)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
-		-static -o $@ $< $(LIBQUARK_STATIC_BIG)
+		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
 man-embedder: man-embedder.c
 	$(call msg,CC,$@)
