@@ -352,11 +352,11 @@ sample_data_body(struct perf_record_sample *sample, const struct sample_attr *sa
 	return (sample->data + sattr->data_offset);
 }
 
-static int
-build_path(struct path_ctx *ctx, struct qstr *dst)
+static char *
+build_path(struct path_ctx *ctx)
 {
 	int		 i, done;
-	char		*p, path[MAXPATHLEN];
+	char		*p, path[PATH_MAX];
 	const char	*pwd, *ppwd;
 	u64		 pwd_k;
 
@@ -377,7 +377,7 @@ build_path(struct path_ctx *ctx, struct qstr *dst)
 		/* +1 is the / */
 		/* XXX this is way too dangerous XXX */
 		if (((ppwd - pwd) + 1) > (p - path))
-			return (errno = ENAMETOOLONG, -1);
+			return (NULL);
 		while (ppwd != pwd)
 			*--p = *--ppwd;
 		*--p = '/';
@@ -385,8 +385,7 @@ build_path(struct path_ctx *ctx, struct qstr *dst)
 	if (*p == 0)
 		*--p = '/';
 
-	/* XXX double copy XXX */
-	return (qstr_strcpy(dst, p));
+	return (strdup(p));
 }
 
 static void
@@ -394,8 +393,8 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, const struct sample_attr *satt
     struct perf_record_sample *sample, struct raw_task *task)
 {
 	const struct task_sample	*w = sample_data_body(sample, sattr);
-	struct path_ctx		 pctx;
-	int			 i;
+	struct path_ctx			 pctx;
+	int				 i;
 
 	task->cap_inheritable = w->cap_inheritable;
 	task->cap_permitted = w->cap_permitted;
@@ -426,7 +425,7 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, const struct sample_attr *satt
 	if (sattr->kind == EXIT_THREAD_SAMPLE) {
 		task->exit_code = (w->exit_code >> 8) & 0xff;
 		task->exit_time_event = sample->sample_id.time;
-		qstr_strcpy(&task->cwd, "(exited)");
+		task->cwd = NULL;
 		/* No cwd on exit */
 		return;
 	}
@@ -447,7 +446,7 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, const struct sample_attr *satt
 		    &w->pwd_s[i]);
 		pctx.pwd[i].pwd_k = w->pwd_k[i];
 	}
-	if (build_path(&pctx, &task->cwd) == -1)
+	if ((task->cwd = build_path(&pctx)) == NULL)
 		qwarn("can't build path");
 }
 

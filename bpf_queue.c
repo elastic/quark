@@ -102,9 +102,7 @@ ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 	task->mnt_inonum = ebpf_ctx->ns->mnt_inonum;
 	task->net_inonum = ebpf_ctx->ns->net_inonum;
 	if (ebpf_ctx->cwd != NULL)
-		qstr_strcpy(&task->cwd, ebpf_ctx->cwd);
-	else
-		qstr_strcpy(&task->cwd, "(invalid)");
+		task->cwd = strdup(ebpf_ctx->cwd);
 	strlcpy(task->comm, ebpf_ctx->comm, sizeof(task->comm));
 }
 

@@ -79,15 +79,12 @@ raw_event_alloc(int type)
 	case RAW_WAKE_UP_NEW_TASK: /* FALLTHROUGH */
 	case RAW_EXIT_THREAD:
 		raw->task.exit_code = -1;
-		qstr_init(&raw->task.cwd);
 		break;
 	case RAW_EXEC:
 		qstr_init(&raw->exec.ext.args);
-		qstr_init(&raw->exec.ext.task.cwd);
 		break;
 	case RAW_EXEC_CONNECTOR:
 		qstr_init(&raw->exec_connector.args);
-		qstr_init(&raw->exec_connector.task.cwd);
 		break;
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
@@ -110,17 +107,20 @@ raw_event_free(struct raw_event *raw)
 	switch (raw->type) {
 	case RAW_WAKE_UP_NEW_TASK:
 	case RAW_EXIT_THREAD:
-		qstr_free(&raw->task.cwd);
+		free(raw->task.cwd);
+		raw->task.cwd = NULL;
 		break;
 	case RAW_EXEC:
 		free(raw->exec.filename);
 		raw->exec.filename = NULL;
-		qstr_free(&raw->exec.ext.task.cwd);
+		free(raw->exec.ext.task.cwd);
+		raw->exec.ext.task.cwd = NULL;
 		qstr_free(&raw->exec.ext.args);
 		break;
 	case RAW_EXEC_CONNECTOR:
 		qstr_free(&raw->exec_connector.args);
-		qstr_free(&raw->exec_connector.task.cwd);
+		free(raw->exec_connector.task.cwd);
+		raw->exec_connector.task.cwd = NULL;
 		break;
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
@@ -359,6 +359,7 @@ static void
 process_free(struct quark_process *qp)
 {
 	free(qp->filename);
+	free(qp->cwd);
 	free(qp);
 }
 
@@ -1146,7 +1147,9 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 	if (raw_fork != NULL) {
 		process_cache_inherit(qq, qp, raw_fork->ppid);
 		raw_task = raw_fork;
-		cwd = raw_task->cwd.p;
+		free(cwd);
+		cwd = raw_task->cwd;
+		raw_task->cwd = NULL;
 	}
 	if (raw_exit != NULL) {
 		qp->flags |= QUARK_F_EXIT;
@@ -1168,14 +1171,18 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 			args = raw_exec->ext.args.p;
 			args_len = raw_exec->ext.args_len;
 			raw_task = &raw_exec->ext.task;
-			cwd = raw_task->cwd.p;
+			free(cwd);
+			cwd = raw_task->cwd;
+			raw_task->cwd = NULL;
 		}
 	}
 	if (raw_exec_connector != NULL) {
 		args = raw_exec_connector->args.p;
 		args_len = raw_exec_connector->args_len;
 		raw_task = &raw_exec_connector->task;
-		cwd = raw_task->cwd.p;
+		free(cwd);
+		cwd = raw_task->cwd;
+		raw_task->cwd = NULL;
 	}
 	if (raw_task != NULL) {
 		qp->flags |= QUARK_F_PROC;
@@ -1241,7 +1248,8 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 	if (cwd != NULL) {
 		qp->flags |= QUARK_F_CWD;
 
-		strlcpy(qp->cwd, cwd, sizeof(qp->cwd));
+		free(qp->cwd);
+		qp->cwd = cwd;
 	}
 
 	if (qp->flags == 0)
@@ -1640,8 +1648,10 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	if (sproc_cmdline(qp, dfd) == 0)
 		qp->flags |= QUARK_F_CMDLINE;
 	/* QUARK_F_CWD */
-	if (qreadlinkat(dfd, "cwd", qp->cwd, sizeof(qp->cwd)) > 0)
-		qp->flags |= QUARK_F_CWD;
+	if (qreadlinkat(dfd, "cwd", path, sizeof(path)) > 0) {
+		if ((qp->cwd = strdup(path)) != NULL)
+			qp->flags |= QUARK_F_CWD;
+	}
 	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */
 	if (by_inode != NULL)
 		return (sproc_pid_sockets(qq, by_inode, pid, dfd));

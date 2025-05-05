@@ -170,31 +170,31 @@ struct raw_comm {
 };
 
 struct raw_task {
-	u64		cap_inheritable;
-	u64		cap_permitted;
-	u64		cap_effective;
-	u64		cap_bset;
-	u64		cap_ambient;
-	u64		start_boottime;
-	u32		uid;
-	u32		gid;
-	u32		suid;
-	u32		sgid;
-	u32		euid;
-	u32		egid;
-	u32		pgid;
-	u32		sid;
-	u32		ppid;
-	s32		exit_code;		/* only available at exit */
-	u64		exit_time_event;	/* only available at exit */
-	u32		tty_major;
-	u32		tty_minor;
-	u32		uts_inonum;
-	u32		ipc_inonum;
-	u32		mnt_inonum;
-	u32		net_inonum;
-	struct qstr	cwd;
-	char		comm[16];
+	u64	 cap_inheritable;
+	u64	 cap_permitted;
+	u64	 cap_effective;
+	u64	 cap_bset;
+	u64	 cap_ambient;
+	u64	 start_boottime;
+	u32	 uid;
+	u32	 gid;
+	u32	 suid;
+	u32	 sgid;
+	u32	 euid;
+	u32	 egid;
+	u32	 pgid;
+	u32	 sid;
+	u32	 ppid;
+	s32	 exit_code;	/* only available at exit */
+	u64	 exit_time_event;	/* only available at exit */
+	u32	 tty_major;
+	u32	 tty_minor;
+	u32	 uts_inonum;
+	u32	 ipc_inonum;
+	u32	 mnt_inonum;
+	u32	 net_inonum;
+	char	*cwd;
+	char	 comm[16];
 };
 
 struct raw_exec {
@@ -422,7 +422,7 @@ struct quark_process {
 	size_t	cmdline_len;
 	char	cmdline[1024];
 	/* QUARK_F_CWD */
-	char	cwd[1024];
+	char	*cwd;
 };
 
 struct quark_process_iter {
