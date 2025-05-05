@@ -30,6 +30,7 @@ struct raw_event;
 struct quark_event;
 struct quark_process;
 struct quark_process_iter;
+struct quark_cmdline_iter;
 struct quark_socket;
 struct quark_socket_iter;
 struct quark_sockaddr;
@@ -53,6 +54,8 @@ int	 quark_event_dump(const struct quark_event *, FILE *);
 void	 quark_process_iter_init(struct quark_process_iter *, struct quark_queue *);
 const struct quark_process *quark_process_iter_next(struct quark_process_iter *);
 const struct quark_process *quark_process_lookup(struct quark_queue *, int);
+void	 quark_cmdline_iter_init(struct quark_cmdline_iter *, const char *, size_t);
+const char *quark_cmdline_iter_next(struct quark_cmdline_iter *);
 void	 quark_socket_iter_init(struct quark_socket_iter *, struct quark_queue *);
 const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
 const struct quark_socket *quark_socket_lookup(struct quark_queue *,
@@ -102,19 +105,12 @@ struct qstr {
 ssize_t	 qread(int, void *, size_t);
 int	 qwrite(int, const void *, size_t);
 ssize_t	 qreadlinkat(int, const char *, char *, size_t);
-void	 qstr_init(struct qstr *);
-int	 qstr_ensure(struct qstr *, size_t);
-int	 qstr_memcpy(struct qstr *, const void *, size_t);
-int	 qstr_strcpy(struct qstr *, const char *);
-void	 qstr_free(struct qstr *);
 int	 isnumber(const char *);
 ssize_t	 readlineat(int, const char *, char *, size_t);
 int	 strtou64(u64 *, const char *, int);
 char 	*find_line(FILE *, const char *);
 char	*find_line_p(const char *, const char *);
 char	*load_file_nostat(int, size_t *);
-struct args *args_make(const struct quark_process *);
-void	 args_free(struct args *);
 
 enum quark_verbosity_levels {
 	QUARK_VL_SILENT,
@@ -172,50 +168,50 @@ struct raw_comm {
 };
 
 struct raw_task {
-	u64		cap_inheritable;
-	u64		cap_permitted;
-	u64		cap_effective;
-	u64		cap_bset;
-	u64		cap_ambient;
-	u64		start_boottime;
-	u32		uid;
-	u32		gid;
-	u32		suid;
-	u32		sgid;
-	u32		euid;
-	u32		egid;
-	u32		pgid;
-	u32		sid;
-	u32		ppid;
-	s32		exit_code;		/* only available at exit */
-	u64		exit_time_event;	/* only available at exit */
-	u32		tty_major;
-	u32		tty_minor;
-	u32		uts_inonum;
-	u32		ipc_inonum;
-	u32		mnt_inonum;
-	u32		net_inonum;
-	struct qstr	cwd;
-	char		comm[16];
+	u64	 cap_inheritable;
+	u64	 cap_permitted;
+	u64	 cap_effective;
+	u64	 cap_bset;
+	u64	 cap_ambient;
+	u64	 start_boottime;
+	u32	 uid;
+	u32	 gid;
+	u32	 suid;
+	u32	 sgid;
+	u32	 euid;
+	u32	 egid;
+	u32	 pgid;
+	u32	 sid;
+	u32	 ppid;
+	s32	 exit_code;		/* only available at exit */
+	u64	 exit_time_event;	/* only available at exit */
+	u32	 tty_major;
+	u32	 tty_minor;
+	u32	 uts_inonum;
+	u32	 ipc_inonum;
+	u32	 mnt_inonum;
+	u32	 net_inonum;
+	char	*cwd;
+	char	 comm[16];
 };
 
 struct raw_exec {
 #define RAW_EXEC_F_EXT	(1 << 0)
-	int		flags;
-	struct qstr	filename;
+	int		 flags;
+	char		*filename;
 
 	/* available if RAW_EXEC_F_EXT */
 	struct {
-		struct qstr	args;
-		size_t		args_len;
-		struct raw_task task;
+		char		*args;
+		size_t		 args_len;
+		struct raw_task	 task;
 	} ext;
 };
 
 struct raw_exec_connector {
-	struct qstr	args;
-	size_t		args_len;
-	struct raw_task	task;
+	char		*args;
+	size_t		 args_len;
+	struct raw_task	 task;
 };
 
 /* not like sockaddr{}, we won't use this on sockets anyway */
@@ -374,12 +370,10 @@ TAILQ_HEAD(gc_queue, gc_link);
  */
 
 struct quark_process {
-#define quark_process_zero_start gc
 	struct gc_link			gc;		/* must be first */
 	RB_ENTRY(quark_process)		entry_by_pid;
-#define quark_process_zero_end pid
 	/* Always present */
-	u32	pid;
+	u32	 pid;
 
 #define QUARK_F_PROC		(1 << 0)
 #define QUARK_F_EXIT		(1 << 1)
@@ -387,49 +381,55 @@ struct quark_process {
 #define QUARK_F_FILENAME	(1 << 3)
 #define QUARK_F_CMDLINE		(1 << 4)
 #define QUARK_F_CWD		(1 << 5)
-	u64	flags;
+	u64	 flags;
 
 	/* QUARK_F_PROC */
-	u64	proc_cap_inheritable;
-	u64	proc_cap_permitted;
-	u64	proc_cap_effective;
-	u64	proc_cap_bset;
-	u64	proc_cap_ambient;
-	u64	proc_time_boot;
-	u32	proc_ppid;
-	u32	proc_uid;
-	u32	proc_gid;
-	u32	proc_suid;
-	u32	proc_sgid;
-	u32	proc_euid;
-	u32	proc_egid;
-	u32	proc_pgid;
-	u32	proc_sid;
-	u32	proc_tty_major;
-	u32	proc_tty_minor;
-	u32	proc_entry_leader_type;
-	u32	proc_entry_leader;
-	u32	proc_uts_inonum;
-	u32	proc_ipc_inonum;
-	u32	proc_mnt_inonum;
-	u32	proc_net_inonum;
+	u64	 proc_cap_inheritable;
+	u64	 proc_cap_permitted;
+	u64	 proc_cap_effective;
+	u64	 proc_cap_bset;
+	u64	 proc_cap_ambient;
+	u64	 proc_time_boot;
+	u32	 proc_ppid;
+	u32	 proc_uid;
+	u32	 proc_gid;
+	u32	 proc_suid;
+	u32	 proc_sgid;
+	u32	 proc_euid;
+	u32	 proc_egid;
+	u32	 proc_pgid;
+	u32	 proc_sid;
+	u32	 proc_tty_major;
+	u32	 proc_tty_minor;
+	u32	 proc_entry_leader_type;
+	u32	 proc_entry_leader;
+	u32	 proc_uts_inonum;
+	u32	 proc_ipc_inonum;
+	u32	 proc_mnt_inonum;
+	u32	 proc_net_inonum;
 	/* QUARK_F_EXIT */
-	s32	exit_code;
-	u64	exit_time_event;
+	s32	 exit_code;
+	u64	 exit_time_event;
 	/* QUARK_F_COMM */
-	char	comm[16];
+	char	 comm[16];
 	/* QUARK_F_FILENAME */
-	char	filename[1024];
+	char	*filename;
 	/* QUARK_F_CMDLINE */
-	size_t	cmdline_len;
-	char	cmdline[1024];
+	size_t	 cmdline_len;
+	char	*cmdline;
 	/* QUARK_F_CWD */
-	char	cwd[1024];
+	char	*cwd;
 };
 
 struct quark_process_iter {
 	struct quark_queue	*qq;
 	struct quark_process	*qp;
+};
+
+struct quark_cmdline_iter {
+	const char	*cmdline;
+	size_t		 cmdline_len;
+	size_t		 off;
 };
 
 struct quark_socket {

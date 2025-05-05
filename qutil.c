@@ -68,49 +68,6 @@ qreadlinkat(int dfd, const char *pathname, char *buf, size_t bufsiz)
 	return (strlen(pathname));
 }
 
-void
-qstr_init(struct qstr *qstr)
-{
-	qstr->p = qstr->small;
-}
-
-int
-qstr_ensure(struct qstr *qstr, size_t n)
-{
-	if (n > sizeof(qstr->small)) {
-		qstr->p = malloc(n);
-		if (qstr->p == NULL)
-			return (-1);
-	}
-
-	return (0);
-}
-
-int
-qstr_memcpy(struct qstr *qstr, const void *src, size_t len)
-{
-	if (qstr_ensure(qstr, len) == -1)
-		return (-1);
-	memcpy(qstr->p, src, len);
-
-	return (0);
-}
-
-int
-qstr_strcpy(struct qstr *qstr, const char *src)
-{
-	return (qstr_memcpy(qstr, src, strlen(src) + 1));
-}
-
-void
-qstr_free(struct qstr *qstr)
-{
-	if (qstr->p == qstr->small)
-		return;
-
-	free(qstr->p);
-}
-
 int
 isnumber(const char *s)
 {
@@ -251,65 +208,6 @@ load_file_nostat(int fd, size_t *total)
 		*total = copied;
 
 	return (buf);
-}
-
-/* buf_len includes the terminating NUL */
-struct args *
-args_make(const struct quark_process *qev)
-{
-	struct args	*args;
-	const char	*p, *end;
-	int		 i, argc;
-	const char 	*buf;
-	size_t		 buf_len;
-
-	buf = qev->cmdline;
-	buf_len = qev->cmdline_len;
-
-	if (buf_len == 0 || buf[buf_len - 1] != 0)
-		return (NULL);
-	/* Walk source and count how many arguments */
-	argc = 0;
-	end = buf + buf_len;
-	for (p = buf; p < end; p += strlen(p) + 1)
-		argc++;
-
-	/*
-	 * Allocate with variadic end
-	 */
-	if ((args = calloc(1, sizeof(*args) + (argc * sizeof(char *)))) == NULL)
-		goto fail;
-	if ((args->buf = malloc(buf_len)) == NULL)
-		goto fail;
-	memcpy(args->buf, buf, buf_len);
-	args->buf_len = buf_len;
-
-	/*
-	 * This is a bit paranoic, we recheck what we already know.
-	 */
-	i = 0;
-	end = args->buf + args->buf_len;
-	for (p = args->buf;
-	     p < end && i < argc && *p != 0;
-	     p += strlen(p) + 1) {
-		args->argv[i++] = p;
-	}
-	args->argc = i;
-
-	return (args);
-
-fail:
-	if (args != NULL)
-		free(args->buf);
-	free(args);
-
-	return (NULL);
-}
-
-void
-args_free(struct args *args) {
-	free(args->buf);
-	free(args);
 }
 
 void

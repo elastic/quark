@@ -102,9 +102,7 @@ ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 	task->mnt_inonum = ebpf_ctx->ns->mnt_inonum;
 	task->net_inonum = ebpf_ctx->ns->net_inonum;
 	if (ebpf_ctx->cwd != NULL)
-		qstr_strcpy(&task->cwd, ebpf_ctx->cwd);
-	else
-		qstr_strcpy(&task->cwd, "(invalid)");
+		task->cwd = strdup(ebpf_ctx->cwd);
 	strlcpy(task->comm, ebpf_ctx->comm, sizeof(task->comm));
 }
 
@@ -189,17 +187,22 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				ebpf_ctx.cwd = field->data;
 				break;
 			case EBPF_VL_FIELD_FILENAME:
-				qstr_strcpy(&raw->exec.filename, field->data);
+				raw->exec.filename = strdup(field->data);
+				/* filename might still be NULL */
 				break;
 			case EBPF_VL_FIELD_ARGV:
-				if (field->size == 0)
-					raw->exec.ext.args.p[0] = 0;
-				else {
-					qstr_memcpy(&raw->exec.ext.args, field->data,
-					    field->size);
-					raw->exec.ext.args.p[field->size - 1] = 0;
-					raw->exec.ext.args_len = field->size;
+				raw->exec.ext.args_len = field->size;
+				if (raw->exec.ext.args_len == 0) {
+					raw->exec.ext.args = NULL;
+					break;
 				}
+
+				raw->exec.ext.args = malloc(field->size);
+				if (raw->exec.ext.args == NULL)
+					break;
+				memcpy(raw->exec.ext.args, field->data,
+				    field->size);
+				raw->exec.ext.args[field->size - 1] = 0;
 				break;
 			default:
 				break;
