@@ -666,7 +666,7 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 	tty = tty_type(qp->proc_tty_major, qp->proc_tty_minor);
 
 	basename = NULL;
-	if (qp->filename != NULL)
+	if (qp->flags & QUARK_F_FILENAME)
 		basename = strrchr(qp->filename, '/');
 	if (basename == NULL)
 		basename = "";
@@ -722,9 +722,8 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 		return (0);
 
 	p_basename = NULL;
-	if (parent->filename != NULL)
+	if (parent->flags & QUARK_F_FILENAME)
 		p_basename = strrchr(parent->filename, '/');
-
 	if (p_basename == NULL)
 		p_basename = "";
 	else
