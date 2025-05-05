@@ -189,7 +189,9 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				ebpf_ctx.cwd = field->data;
 				break;
 			case EBPF_VL_FIELD_FILENAME:
-				qstr_strcpy(&raw->exec.filename, field->data);
+				raw->exec.filename = strdup(field->data);
+				if (raw->exec.filename == NULL)
+					goto bad;
 				break;
 			case EBPF_VL_FIELD_ARGV:
 				if (field->size == 0)

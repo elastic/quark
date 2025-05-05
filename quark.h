@@ -199,8 +199,8 @@ struct raw_task {
 
 struct raw_exec {
 #define RAW_EXEC_F_EXT	(1 << 0)
-	int		flags;
-	struct qstr	filename;
+	int		 flags;
+	char		*filename;
 
 	/* available if RAW_EXEC_F_EXT */
 	struct {
@@ -417,7 +417,7 @@ struct quark_process {
 	/* QUARK_F_COMM */
 	char	comm[16];
 	/* QUARK_F_FILENAME */
-	char	filename[1024];
+	char	*filename;
 	/* QUARK_F_CMDLINE */
 	size_t	cmdline_len;
 	char	cmdline[1024];

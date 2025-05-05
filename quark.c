@@ -82,7 +82,6 @@ raw_event_alloc(int type)
 		qstr_init(&raw->task.cwd);
 		break;
 	case RAW_EXEC:
-		qstr_init(&raw->exec.filename);
 		qstr_init(&raw->exec.ext.args);
 		qstr_init(&raw->exec.ext.task.cwd);
 		break;
@@ -114,7 +113,8 @@ raw_event_free(struct raw_event *raw)
 		qstr_free(&raw->task.cwd);
 		break;
 	case RAW_EXEC:
-		qstr_free(&raw->exec.filename);
+		free(raw->exec.filename);
+		raw->exec.filename = NULL;
 		qstr_free(&raw->exec.ext.task.cwd);
 		qstr_free(&raw->exec.ext.args);
 		break;
@@ -438,6 +438,13 @@ gc_collect(struct quark_queue *qq)
 	return (n);
 }
 
+static void
+process_free(struct quark_process *qp)
+{
+	free(qp->filename);
+	free(qp);
+}
+
 static struct quark_process *
 process_cache_get(struct quark_queue *qq, int pid, int alloc)
 {
@@ -460,7 +467,7 @@ process_cache_get(struct quark_queue *qq, int pid, int alloc)
 	qp->pid = pid;
 	if (RB_INSERT(process_by_pid, &qq->process_by_pid, qp) != NULL) {
 		qwarnx("collision, this is a bug");
-		free(qp);
+		process_free(qp);
 		return (NULL);
 	}
 
@@ -482,8 +489,9 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 		strlcpy(qp->comm, parent->comm, sizeof(qp->comm));
 	}
 	if (parent->flags & QUARK_F_FILENAME) {
-		qp->flags |= QUARK_F_FILENAME;
-		strlcpy(qp->filename, parent->filename, sizeof(qp->filename));
+		qp->filename = strdup(parent->filename);
+		if (qp->filename != NULL)
+			qp->flags |= QUARK_F_FILENAME;
 	}
 	/* Do we really want CMDLINE? */
 	if (parent->flags & QUARK_F_CMDLINE) {
@@ -501,7 +509,7 @@ process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 	gc = &qp->gc;
 	RB_REMOVE(process_by_pid, &qq->process_by_pid, qp);
 	gc_unlink(qq, gc);
-	free(qp);
+	process_free(qp);
 }
 
 static int
@@ -740,7 +748,9 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 
 	tty = tty_type(qp->proc_tty_major, qp->proc_tty_minor);
 
-	basename = strrchr(qp->filename, '/');
+	basename = NULL;
+	if (qp->filename != NULL)
+		basename = strrchr(qp->filename, '/');
 	if (basename == NULL)
 		basename = "";
 	else
@@ -794,7 +804,10 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 	    STARTS_WITH(basename, "conmon"))
 		return (0);
 
-	p_basename = strrchr(parent->filename, '/');
+	p_basename = NULL;
+	if (parent->filename != NULL)
+		p_basename = strrchr(parent->filename, '/');
+
 	if (p_basename == NULL)
 		p_basename = "";
 	else
@@ -838,7 +851,7 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 
 	if (qp->proc_entry_leader == QUARK_ELT_UNKNOWN)
 		qwarnx("%d (%s) is UNKNOWN (tty=%d)",
-		    qp->pid, qp->filename, tty);
+		    qp->pid, qp->filename ? qp->filename : "null", tty);
 
 	return (0);
 }
@@ -1232,7 +1245,9 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 	if (raw_exec != NULL) {
 		qp->flags |= QUARK_F_FILENAME;
 
-		strlcpy(qp->filename, raw_exec->filename.p, sizeof(qp->filename));
+		free(qp->filename);
+		qp->filename = raw_exec->filename;
+		raw_exec->filename = NULL;
 		if (raw_exec->flags & RAW_EXEC_F_EXT) {
 			args = raw_exec->ext.args.p;
 			args_len = raw_exec->ext.args_len;
@@ -1678,6 +1693,7 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
     int pid, int dfd)
 {
 	struct quark_process	*qp;
+	char			 path[PATH_MAX];
 
 	/*
 	 * This allocates and inserts it into the cache in case it's not already
@@ -1700,8 +1716,10 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	if (readlineat(dfd, "comm", qp->comm, sizeof(qp->comm)) > 0)
 		qp->flags |= QUARK_F_COMM;
 	/* QUARK_F_FILENAME */
-	if (qreadlinkat(dfd, "exe", qp->filename, sizeof(qp->filename)) > 0)
-		qp->flags |= QUARK_F_FILENAME;
+	if (qreadlinkat(dfd, "exe", path, sizeof(path)) > 0) {
+		if ((qp->filename = strdup(path)) != NULL)
+			qp->flags |= QUARK_F_FILENAME;
+	}
 	/* QUARK_F_CMDLINE */
 	if (sproc_cmdline(qp, dfd) == 0)
 		qp->flags |= QUARK_F_CMDLINE;
@@ -2082,7 +2100,7 @@ write_raw_node_attr(FILE *f, struct raw_event *raw, char *key)
 	case RAW_EXEC:
 		color = "lightslateblue";
 		if (snprintf(label, sizeof(label), "EXEC %s",
-		    raw->exec.filename.p) >= (int)sizeof(label))
+		    raw->exec.filename) >= (int)sizeof(label))
 			qwarnx("exec filename truncated");
 		break;
 	case RAW_WAKE_UP_NEW_TASK: {

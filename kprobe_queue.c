@@ -389,19 +389,6 @@ build_path(struct path_ctx *ctx, struct qstr *dst)
 	return (qstr_strcpy(dst, p));
 }
 
-static int
-qstr_copy_data_loc(struct qstr *qstr,
-    struct perf_record_sample *sample,
-    const struct perf_sample_data_loc *data_loc)
-{
-	/* size includes NUL */
-	if (qstr_ensure(qstr, data_loc->size) == -1)
-		return (-1);
-	memcpy(qstr->p, sample->data + data_loc->offset, data_loc->size);
-
-	return (data_loc->size);
-}
-
 static void
 task_sample_to_raw_task(struct kprobe_queue *kqq, const struct sample_attr *sattr,
     struct perf_record_sample *sample, struct raw_task *task)
@@ -470,7 +457,6 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	struct kprobe_queue		*kqq = qq->queue_be;
 	const struct sample_attr	*sattr;
 	int				 id, kind;
-	ssize_t				 n;
 	struct raw_event		*raw = NULL;
 
 	id = sample_data_id(sample);
@@ -485,9 +471,21 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		const struct exec_sample *exec = sample_data_body(sample, sattr);
 		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
 			return (NULL);
-		n = qstr_copy_data_loc(&raw->exec.filename, sample, &exec->filename);
-		if (n == -1)
-			qwarnx("can't copy exec filename");
+		if (exec->filename.size == 0) {
+			raw_event_free(raw);
+			return (NULL);
+		}
+		/* size includes NUL */
+		raw->exec.filename = malloc(exec->filename.size);
+		if (raw->exec.filename == NULL) {
+			raw_event_free(raw);
+			return (NULL);
+		}
+		memcpy(raw->exec.filename,
+		    sample->data + exec->filename.offset,
+		    exec->filename.size);
+		/* don't trust the kernel that much */
+		raw->exec.filename[exec->filename.size - 1] = 0;
 		break;
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
