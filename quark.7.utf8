@@ -1,0 +1,314 @@
+QUARK(7)               Miscellaneous Information Manual               QUARK(7)
+
+NNAAMMEE
+     qquuaarrkk – unified system process telemetry library
+
+DDEESSCCRRIIPPTTIIOONN
+     qquuaarrkk is a library that provides a way to retrieve and listen to process
+     events in linux systems.  Its main purpose is to abstract different
+     backends and to provide a common API for listening to system-wide events
+     like fork(2), exec(3), exit(3) and others.
+
+     qquuaarrkk not only provides an API for listening to events, but also handles
+     ordering, buffering and aggregation of said events.  In its most basic
+     form, a short lived process consisting of fork(2) + exec(3) + exit(3)
+     will be aggregated into one _q_u_a_r_k___e_v_e_n_t.  An internal process cache is
+     also kept that can be looked up via quark_process_lookup(3).
+
+QQUUIICCKKSSTTAARRTT
+     Clone the repository, compile and run quark's test utility quark-mon(8):
+
+     $ git clone --recursive https://github.com/elastic/quark
+     $ cd quark
+     $ make
+     $ sudo ./quark-mon
+
+     On another shell, create any process like:
+     $ ls -1 /tmp | wc -l
+
+     See _B_U_I_L_D_I_N_G for a list of dependencies if you're having trouble
+     building.  Also see _I_N_C_L_U_D_E_D _B_I_N_A_R_I_E_S and quark-mon(8).
+
+FFEEAATTUURREESS
+     _O_R_D_E_R_I_N_G
+     qquuaarrkk tries to guarantee event ordering as much as possible.  Ordering
+     must be done in userland for some backends, notably anything that uses
+     perf-rings.  qquuaarrkk uses two _R_a_n_k _B_a_l_a_n_c_e_d _T_r_e_e_s for ordering and
+     aggregation.
+
+     The first tree is basically a priority queue, ordered by the time of the
+     event.  The second tree is ordered by time of the event + pid and it's
+     used for event aggregation.
+
+     _A_G_G_R_E_G_A_T_I_O_N
+     qquuaarrkk buffers and aggregates related events that happened close enough.
+     The common case is generating a single event for the triple: fork(2),
+     exec(3), exit(3).  There are rules on what can be aggregated, and only
+     events of the same pid are aggregated.  For example: qquuaarrkk won't
+     aggregate two exec(3) events, otherwise we would lose the effects of the
+     first one.  These rules will be exposed and configurable in the future.
+
+     _B_U_F_F_E_R_I_N_G
+     For aggregation and ordering to work, qquuaarrkk needs to be able to buffer
+     events, this means holding them before presenting them to the user.
+     qquuaarrkk employs an ageing timeout that is a stepped function of the number
+     of currently buffered events, the more events you have, the shorter the
+     timeout will be, so memory can be bound.  A _q_u_a_r_k___e_v_e_n_t is only given to
+     the user when it has a certain age.  From quark.c:
+
+           /*
+            * Target age is the duration in ns of how long should we hold the event in the
+            * tree before processing it. It's a function of the number of items in the tree
+            * and its maximum capacity:
+            * from [0; 10%]    -> 1000ms
+            * from [90%; 100%] -> 0ms
+            * from (10%; 90%)  -> linear from 1000ms -> 100ms
+            */
+
+     _E_N_R_I_C_H_M_E_N_T
+     The library tries to give as much context for an event as possible.
+     Depending on the backend, the events we read from the kernel can be
+     limited in context.  qquuaarrkk maintains an internal process table with what
+     has been learned about the process so far, this context is then included
+     in each event given to the user.  The process table can also be queried,
+     see below.
+
+     _P_R_O_C_E_S_S _C_A_C_H_E
+     An internal cache of processes is kept that can be looked up via
+     quark_process_lookup(3).  This cache keeps soon-to-be-purged elements for
+     a little while so that you can still lookup a process that just exited.
+     The table is initialized by scraping _/_p_r_o_c.
+
+     _T_R_A_N_S_P_A_R_E_N_C_Y
+     qquuaarrkk tries to be as transparent as possible about what it knows, there
+     are counters for lost events, and each piece of information of a
+     _q_u_a_r_k___e_v_e_n_t is guarded by a flag, meaning the user might get incomplete
+     events in the case of lost events, it's the user responsability to decide
+     what to do with it.
+
+     Depending on load, the user might see an event as the aggregation of
+     multiple events, or as independent events.  The content remains the same.
+
+     _L_A_N_G_U_A_G_E _B_I_N_D_I_N_G_S
+     qquuaarrkk is written in C, but Go bindings are also provided.  Ideally we
+     will be able to provide bindings for other languages in the future.
+
+     _M_U_L_T_I_P_L_E _B_A_C_K_E_N_D_S
+     Currently, EBPF and a kprobe-based backend are provided, but we would
+     like to add AUDIT support as well.  The backend in use is transparent to
+     the user and unless specified, qquuaarrkk will try to use the EBPF, falling
+     back to KPROBE if it failed.
+
+BBUUIILLDDIINNGG
+     qquuaarrkk can be built natively or via a container, native is preferred and
+     depends on:
+
+     ••   bpftool
+
+     ••   clang
+
+     ••   gnumake
+
+     ••   gcc
+
+     ••   mandoc (for docs).
+
+     ••   m4
+
+     Make sure to clone the repository recursively: _g_i_t _c_l_o_n_e _-_-_r_e_c_u_r_s_i_v_e.
+
+     _m_a_k_e builds the repository, including _q_u_a_r_k_-_m_o_n, _l_i_b_q_u_a_r_k___b_i_g_._a and a
+     _l_i_b_q_u_a_r_k_._a.
+
+     _l_i_b_q_u_a_r_k___b_i_g_._a includes all needed dependencies in one big archive.  This
+     includes a _l_i_b_b_p_f_._a, _l_i_b_e_l_f___p_i_c_._a (from the elftoolchain project, BSD
+     license), and a _l_i_b_z_._a (see zlib/LICENSE).  See _L_I_N_K_I_N_G to learn how to
+     link either.
+
+     While qquuaarrkk doesn't build _e_l_a_s_t_i_c_/_e_b_p_f, it does use the EBPF programs
+     from that repository, only the files needed are included in qquuaarrkk, as
+     _e_l_a_s_t_i_c_/_e_b_p_f is quite big.
+
+     Other useful build targets include:
+
+     _c_l_e_a_n               Clean object files from qquuaarrkk.
+
+     _d_o_c_k_e_r              Builds qquuaarrkk inside a docker container, so you don't
+                         have to worry about having build dependencies.
+
+     _d_o_c_k_e_r_-_c_r_o_s_s_-_a_r_m_6_4  Builds qquuaarrkk for arm64 inside a docker container.
+
+     _c_e_n_t_o_s_7             Builds qquuaarrkk inside a centos7 docker container,
+                         useful for linking against ancient glibc-2.17.
+
+     _a_l_p_i_n_e              Builds qquuaarrkk inside an alpine docker container, so we
+                         can track musl builds.
+
+     _t_e_s_t                Builds and runs quark-test(8).
+
+     _t_e_s_t_-_k_e_r_n_e_l         Runs quark-test(8) over all kernels in
+                         _k_e_r_n_e_l___i_m_a_g_e_s_/.
+
+     _t_e_s_t_-_a_l_l            Shortcut for test + test-kernels.
+
+     _b_t_f_h_u_b              Regenerates _b_t_f_h_u_b_._c.  Usage:
+
+                         $ make btfhub BTFHUB_ARCHIVE_PATH=/my/path/to/btfhub-archive
+
+     _c_l_e_a_n_-_a_l_l           Clean all object files, including the ones from
+                         _l_i_b_b_p_f, _l_i_b_z and _l_i_b_e_l_f.
+
+     _d_o_c_s                Lints and generates all the documentation from
+                         manpages in _d_o_c_s_/.
+
+     _s_v_g                 Builds an SVG out of the DOT files produced by
+                         quark-mon(8).
+
+     _R_E_A_D_M_E_._m_d           Generates _R_E_A_D_M_E_._m_d out of _q_u_a_r_k_._7.
+
+     _e_e_b_p_f_-_s_y_n_c          Copies the files from EEBPF_PATH used by qquuaarrkk.
+                         Usage:
+
+                         $ make eebpf-sync EEBPF_PATH=/my/path/to/elastic/ebpf
+
+     _i_n_i_t_r_a_m_f_s_._g_z        Builds an initramfs file containing all quark
+                         binaries so that it can be run as the init process on
+                         boot, useful for testing any kernel under qemu.  See
+                         _T_E_S_T_I_N_G.
+
+     All the targets above can generate debug output by specifying _V_=_1, as in:
+
+     $ make V=1
+
+LLIINNKKIINNGG
+     $ cc -o myprogram myprogram.c libquark_big.a
+     OR
+     $ cc -o myprogram myprogram.c libquark.a libbpf/src/libbpf.a elftoolchain/libelf/libelf_pic.a zlib/libz.a
+
+TTEESSTTIINNGG
+     quark-test(8) is the main test utility ran by the CI, can be invoked via
+     _m_a_k_e _t_e_s_t.  All tests are self-contained in this binary.
+
+     Some included kernels can be tested in qemu via _m_a_k_e _t_e_s_t_-_k_e_r_n_e_l.  Any
+     qquuaarrkk utility can be run on a custom kernel via the _k_r_u_n_._s_h script, as
+     in:
+
+     $ make initramfs.gz
+     $ ./krun.sh initramfs.gz kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 quark-test -vvv
+
+     Note that you can pass arguments to the utility and you have to make
+     _i_n_i_t_r_a_m_f_s_._g_z first.
+
+IINNCCLLUUDDEEDD BBIINNAARRIIEESS
+     quark-mon(8) is a program that dumps _q_u_a_r_k___e_v_e_n_t_s to stdout and can be
+     used for demo and debugging.  It has a neat feature: can be run without
+     priviledges, while useless in this small program, it aims to demonstrate
+     how a user could implement the same.
+
+     quark-btf(8) is a program for dumping BTF information used by qquuaarrkk.
+
+     quark-test(8) is a program for running tests during development.
+
+CCOONNVVEENNTTIIOONNSS
+     ••   Library calls fail with -1 unless otherwise stated, and _e_r_r_n_o is set.
+
+     ••   Quark returns pointers to internal state, which must not be modified
+         and/or stored.  In the case of multithreading, these pointers should
+         not be accessed if another thread is driving qquuaarrkk through
+         quark_queue_get_event(3).
+
+     ••   No threads are created, the library is driven solely through
+         quark_queue_get_event(3).
+
+     ••   Access to a _q_u_a_r_k___q_u_e_u_e must be synchronized by the user in the case
+         of multithreading.
+
+BBAASSIICC UUSSAAGGEE
+     The ball starts with quark_queue_open(3).
+
+     quark_queue_open(3) initializes a _q_u_a_r_k___q_u_e_u_e which holds the majority of
+     runtime state used by library, this includes perf-rings, file
+     descriptors, EBPF programs buffering data-structures and the like.  It
+     must be paired with a quark_queue_close(3) on exit.
+
+     quark_queue_get_event(3) is the main driver of the library, it does the
+     buffering, per-ring scanning, aggregation and event cache garbage
+     collection.  In case there are no events it returns NULL and the user is
+     expected to call quark_queue_block(3) or equivalent.
+
+EEXXAAMMPPLLEESS
+     #include <err.h>
+     #include <quark.h>
+     #include <stdio.h>
+
+     int
+     main(void)
+     {
+             struct quark_queue               qq;
+             const struct quark_event        *qev;
+
+             if (quark_queue_open(&qq, NULL) == -1)
+                     err(1, "quark_queue_open");
+
+             for (; ;) {
+                     qev = quark_queue_get_event(&qq);
+
+                     /* No events, just block */
+                     if (qev == NULL) {
+                             quark_queue_block(qq);
+                             continue;
+                     }
+
+                     quark_event_dump(qev, stdout);
+             }
+
+             quark_queue_close(&qq);
+
+             return (1);
+     }
+
+AAPPII
+     quark_queue_open(3)          open a queue to receive events, initial
+                                  library call.
+
+     quark_queue_default_attr(3)  get default attributes of
+                                  quark_queue_open(3).
+
+     quark_queue_get_event(3)     get event, main library call.
+
+     quark_process_lookup(3)      lookup a process in quark's internal cache
+
+     quark_event_dump(3)          dump event, mainly a debugging utility.
+
+     quark_process_iter(3)        iterate over existing processes.
+
+     quark_queue_get_epollfd(3)   get a descriptor suitable for blocking.
+
+     quark_queue_block(3)         block for an unspecified amount of time.
+
+     quark_queue_get_stats(3)     basic queue statistics.
+
+     quark_queue_close(3)         close a queue.
+
+FFUURRTTHHEERR RREEAADDIINNGG
+     quark_queue_get_event(3) is the meat of the library and contains further
+     useful documentation.
+
+     quark-mon(8) is the easiest way to get started with qquuaarrkk.
+
+     quark_queue_open(3) describes initialization options that can be useful.
+
+SSEEEE AALLSSOO
+     quark_event_dump(3), quark_process_iter(3), quark_process_lookup(3),
+     quark_queue_block(3), quark_queue_close(3), quark_queue_get_epollfd(3),
+     quark_queue_get_event(3), quark_queue_get_stats(3), quark_queue_open(3),
+     quark-btf(8), quark-mon(8), quark-test(8)
+
+LLIICCEENNSSEE
+     qquuaarrkk is released under the Apache-2.0 license and contains code under
+     BSD-2, BSD-3, ISC, and zlib Licenses.
+
+HHIISSTTOORRYY
+     qquuaarrkk started in April 2024.
+
+Linux 6.13.8-200.fc41.x86_64      May 6, 2025     Linux 6.13.8-200.fc41.x86_64
