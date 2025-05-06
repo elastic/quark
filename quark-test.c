@@ -21,6 +21,7 @@
 #include <ifaddrs.h>
 #include <limits.h>
 #include <sched.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -192,6 +193,50 @@ sproc_self_namespace(const char *path)
 		errx(1, "strtonum %s: %s", start, errstr);
 
 	return (v);
+}
+
+static int
+openfmt(int flags, const char *fmt, ...)
+{
+	va_list	ap;
+	int	fd;
+	char	path[PATH_MAX];
+	int	r;
+
+	va_start(ap, fmt);
+	r = vsnprintf(path, sizeof(path), fmt, ap);
+	if (r < 0 || r >= (int)sizeof(path)) {
+		va_end(ap);
+		return(-1);
+	}
+	fd = open(path, flags);
+	va_end(ap);
+
+	return (fd);
+}
+
+static void
+sproc_cgroup_of_pid(u32 pid, char *buf, size_t len)
+{
+	int	 fd;
+	char	*load_buf;
+	size_t	 load_len;
+
+	if ((fd = openfmt(O_RDONLY, "/proc/%d/cgroup", pid)) == -1)
+		err(1, "can't open /proc/%d/cgroup", pid);
+	if ((load_buf = load_file_nostat(fd, &load_len)) == NULL)
+		err(1, "can't load /proc/%d/cgroup", pid);
+	close(fd);
+	if (load_buf[load_len - 1] != '\n')
+		errx(1, "/proc/%d/cgroup expected newline", pid);
+	load_buf[load_len - 1] = 0; /* chomp \n */
+	if (load_len < 4)
+		errx(1, "/proc/%d/cgroup is too short", pid);
+	if (strncmp(load_buf, "0::", 3))
+		errx(1, "no 0:: in /proc/%d/cgroup, likely not cgroup v2", pid);
+	if (strlcpy(buf, load_buf + 3, len) >= len)
+		errx(1, "cgroup truncated");
+	free(load_buf);
 }
 
 static int
@@ -559,7 +604,7 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	const char			*arg;
 	size_t				 expected_args_len;
 	int				 argc;
-	char				 cwd[PATH_MAX];
+	char				 path[PATH_MAX];
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
@@ -579,6 +624,8 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp->flags & QUARK_F_FILENAME);
 	assert(qp->flags & QUARK_F_CMDLINE);
 	assert(qp->flags & QUARK_F_CWD);
+	if (qa->flags & QQ_EBPF)
+		assert(qp->flags & QUARK_F_CGROUP);
 	assert((pid_t)qp->pid == child);
 	assert((pid_t)qp->proc_ppid == getpid());
 	assert(qp->proc_time_boot > 0); /* XXX: improve */
@@ -653,9 +700,18 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	assert(argc == 5);
 	assert(qp->cmdline_len == expected_args_len);
 
-	if (getcwd(cwd, sizeof(cwd)) == NULL)
+	if (getcwd(path, sizeof(path)) == NULL)
 		err(1, "getcwd");
-	assert(!strcmp(cwd, qp->cwd));
+	assert(!strcmp(path, qp->cwd));
+
+	/*
+	 * We haven't changed the cgroup, so the child cgroup should be the same
+	 * as getpid()
+	 */
+	if (qa->flags & QQ_EBPF) {
+		sproc_cgroup_of_pid(getpid(), path, sizeof(path));
+		assert(!strcmp(path, qp->cgroup));
+	}
 
 	quark_queue_close(&qq);
 

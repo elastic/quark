@@ -74,6 +74,7 @@ struct ebpf_ctx {
 	char				*comm;
 	struct ebpf_namespace_info	*ns;
 	char				*cwd;
+	char				*cgroup;
 };
 
 static void
@@ -103,6 +104,8 @@ ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 	task->net_inonum = ebpf_ctx->ns->net_inonum;
 	if (ebpf_ctx->cwd != NULL)
 		task->cwd = strdup(ebpf_ctx->cwd);
+	if (ebpf_ctx->cgroup != NULL)
+		task->cgroup = strdup(ebpf_ctx->cgroup);
 	strlcpy(task->comm, ebpf_ctx->comm, sizeof(task->comm));
 }
 
@@ -131,11 +134,16 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.comm = fork->comm;
 		ebpf_ctx.ns = &fork->ns;
 		ebpf_ctx.cwd = NULL;
+		ebpf_ctx.cgroup = NULL;
 		/* the macro doesn't take a pointer so we can't pass down :) */
 		FOR_EACH_VARLEN_FIELD(fork->vl_fields, field) {
 			switch (field->type) {
 			case EBPF_VL_FIELD_CWD:
 				ebpf_ctx.cwd = field->data;
+				break;
+			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH:
+				if (field->size > 0 && *field->data != 0)
+					ebpf_ctx.cgroup = field->data;
 				break;
 			default:
 				break;
@@ -159,6 +167,19 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.comm = exit->comm;
 		ebpf_ctx.ns = &exit->ns;
 		ebpf_ctx.cwd = NULL;
+		ebpf_ctx.cgroup = NULL;
+
+		FOR_EACH_VARLEN_FIELD(exit->vl_fields, field) {
+			switch (field->type) {
+			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH:
+				if (field->size > 0 && *field->data != 0)
+					ebpf_ctx.cgroup = field->data;
+				break;
+			default:
+				break;
+			}
+		}
+
 		raw->task.exit_code = exit->exit_code;
 		raw->task.exit_time_event = raw->time;
 		ebpf_ctx_to_task(&ebpf_ctx, &raw->task);
@@ -180,11 +201,16 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.comm = exec->comm;
 		ebpf_ctx.ns = &exec->ns;
 		ebpf_ctx.cwd = NULL;
+		ebpf_ctx.cgroup = NULL;
 
 		FOR_EACH_VARLEN_FIELD(exec->vl_fields, field) {
 			switch (field->type) {
 			case EBPF_VL_FIELD_CWD:
 				ebpf_ctx.cwd = field->data;
+				break;
+			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH:
+				if (field->size > 0 && *field->data != 0)
+					ebpf_ctx.cgroup = field->data;
 				break;
 			case EBPF_VL_FIELD_FILENAME:
 				raw->exec.filename = strdup(field->data);
