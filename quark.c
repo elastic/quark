@@ -105,12 +105,16 @@ raw_event_free(struct raw_event *raw)
 	case RAW_EXIT_THREAD:
 		free(raw->task.cwd);
 		raw->task.cwd = NULL;
+		free(raw->task.cgroup);
+		raw->task.cgroup = NULL;
 		break;
 	case RAW_EXEC:
 		free(raw->exec.filename);
 		raw->exec.filename = NULL;
 		free(raw->exec.ext.task.cwd);
 		raw->exec.ext.task.cwd = NULL;
+		free(raw->exec.ext.task.cgroup);
+		raw->exec.ext.task.cgroup = NULL;
 		free(raw->exec.ext.args);
 		raw->exec.ext.args = NULL;
 		break;
@@ -119,6 +123,8 @@ raw_event_free(struct raw_event *raw)
 		raw->exec_connector.args = NULL;
 		free(raw->exec_connector.task.cwd);
 		raw->exec_connector.task.cwd = NULL;
+		free(raw->exec_connector.task.cgroup);
+		raw->exec_connector.task.cgroup = NULL;
 		break;
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
@@ -359,6 +365,7 @@ process_free(struct quark_process *qp)
 	free(qp->filename);
 	free(qp->cwd);
 	free(qp->cmdline);
+	free(qp->cgroup);
 	free(qp);
 }
 
@@ -582,6 +589,8 @@ event_flag_str(u64 flag)
 		return "CMDLINE";
 	case QUARK_F_CWD:
 		return "CWD";
+	case QUARK_F_CGROUP:
+		return "CGRP";
 	default:
 		return "?";
 	}
@@ -1022,6 +1031,10 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		flagname = event_flag_str(QUARK_F_FILENAME);
 		P("  %.4s\tfilename=%s\n", flagname, qp->filename);
 	}
+	if (qp->flags & QUARK_F_CGROUP) {
+		flagname = event_flag_str(QUARK_F_CGROUP);
+		P("  %.4s\tcgroup=%s\n", flagname, qp->cgroup);
+	}
 	if (qp->flags & QUARK_F_EXIT) {
 		flagname = event_flag_str(QUARK_F_EXIT);
 		P("  %.4s\texit_code=%d exit_time=%llu\n", flagname,
@@ -1260,6 +1273,12 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 
 		/* Don't set cwd as it's not valid on exit */
 		comm = raw_task->comm;
+
+		if (raw_task->cgroup != NULL) {
+			qp->flags |= QUARK_F_CGROUP;
+			qp->cgroup = raw_task->cgroup;
+			raw_task->cgroup = NULL;
+		}
 	}
 	if (raw_comm != NULL)
 		comm = raw_comm->comm; /* raw_comm always overrides */
@@ -1521,7 +1540,6 @@ sproc_cmdline(struct quark_process *qp, int dfd)
 		qwarn("open cmdline");
 		return (-1);
 	}
-	free(qp->cmdline);
 	qp->cmdline_len = 0;
 	qp->cmdline = load_file_nostat(fd, &qp->cmdline_len);
 	close(fd);
@@ -1529,6 +1547,25 @@ sproc_cmdline(struct quark_process *qp, int dfd)
 		return (-1);
 	/* if cmdline != NULL, cmdline_len > 0 */
 	qp->cmdline[qp->cmdline_len - 1] = 0;
+
+	return (0);
+}
+
+static int
+sproc_cgroup(struct quark_process *qp, int dfd)
+{
+	int	fd;
+	size_t	len;
+
+	if ((fd = openat(dfd, "cgroup", O_RDONLY)) == -1) {
+		qwarn("open cgroup");
+		return (-1);
+	}
+	qp->cgroup = load_file_nostat(fd, &len);
+	close(fd);
+	if (qp->cgroup == NULL)
+		return (-1);
+	qp->cgroup[len - 1] = 0; /* chomp \n, len guaranteed > 0 */
 
 	return (0);
 }
@@ -1684,6 +1721,9 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 		if ((qp->cwd = strdup(path)) != NULL)
 			qp->flags |= QUARK_F_CWD;
 	}
+	/* QUARK_F_CGROUP */
+	if (sproc_cgroup(qp, dfd) == 0)
+		qp->flags |= QUARK_F_CGROUP;
 	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */
 	if (by_inode != NULL)
 		return (sproc_pid_sockets(qq, by_inode, pid, dfd));
