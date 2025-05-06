@@ -167,6 +167,11 @@ find_line_p(const char *path, const char *needle)
 	return (line);
 }
 
+/*
+ * Returns file content with a NUL appended, doesn't do stat so it works on
+ * /proc, if total is non-null, size of read bytes is filled, not including the
+ * appended NUL.
+ */
 char *
 load_file_nostat(int fd, size_t *total)
 {

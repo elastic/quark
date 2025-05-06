@@ -118,6 +118,8 @@ struct quark_process {
 	char	*cmdline;
 	/* QUARK_F_CWD */
 	char	*cwd;
+	/* QUARK_F_CGROUP */
+	char	*cgroup;
 };
 .Ed
 .Pp
@@ -147,6 +149,9 @@ and
 are valid.
 .It Dv QUARK_F_CWD
 .Em cwd
+is valid.
+.It Dv QUARK_F_CGROUP
+.Em cgroup
 is valid.
 .El
 .El

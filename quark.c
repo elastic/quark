@@ -127,8 +127,10 @@ raw_event_free(struct raw_event *raw)
 		break;
 	}
 
-	if (task != NULL)
+	if (task != NULL) {
 		free(task->cwd);
+		free(task->cgroup);
+	}
 
 	while ((aux = TAILQ_FIRST(&raw->agg_queue)) != NULL) {
 		TAILQ_REMOVE(&raw->agg_queue, aux, agg_entry);
@@ -357,6 +359,7 @@ process_free(struct quark_process *qp)
 	free(qp->filename);
 	free(qp->cwd);
 	free(qp->cmdline);
+	free(qp->cgroup);
 	free(qp);
 }
 
@@ -580,6 +583,8 @@ event_flag_str(u64 flag)
 		return "CMDLINE";
 	case QUARK_F_CWD:
 		return "CWD";
+	case QUARK_F_CGROUP:
+		return "CGRP";
 	default:
 		return "?";
 	}
@@ -1020,6 +1025,10 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		flagname = event_flag_str(QUARK_F_FILENAME);
 		P("  %.4s\tfilename=%s\n", flagname, qp->filename);
 	}
+	if (qp->flags & QUARK_F_CGROUP) {
+		flagname = event_flag_str(QUARK_F_CGROUP);
+		P("  %.4s\tcgroup=%s\n", flagname, qp->cgroup);
+	}
 	if (qp->flags & QUARK_F_EXIT) {
 		flagname = event_flag_str(QUARK_F_EXIT);
 		P("  %.4s\texit_code=%d exit_time=%llu\n", flagname,
@@ -1258,6 +1267,13 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 
 		/* Don't set cwd as it's not valid on exit */
 		comm = raw_task->comm;
+
+		if (raw_task->cgroup != NULL) {
+			qp->flags |= QUARK_F_CGROUP;
+			free(qp->cgroup);
+			qp->cgroup = raw_task->cgroup;
+			raw_task->cgroup = NULL;
+		}
 	}
 	if (raw_comm != NULL)
 		comm = raw_comm->comm; /* raw_comm always overrides */
@@ -1533,6 +1549,55 @@ sproc_cmdline(struct quark_process *qp, int dfd)
 	return (0);
 }
 
+static int
+sproc_cgroup(struct quark_process *qp, int dfd)
+{
+	int	 fd;
+	size_t	 len;
+	char	*cgroup, *p;
+
+	cgroup = NULL;
+	if ((fd = openat(dfd, "cgroup", O_RDONLY)) == -1) {
+		qwarn("open cgroup");
+		return (-1);
+	}
+	cgroup = load_file_nostat(fd, &len);
+	close(fd);
+	if (cgroup == NULL)
+		return (-1);
+	/*
+	 * Chomp newline
+	 */
+	/* if cgroup != NULL, len > 0 */
+	cgroup[len - 1] = 0;
+	/*
+	 * Min string is "0::/"
+	 */
+	if (strlen(cgroup) < 4)
+		goto bad;
+	/*
+	 * Only expect cgroup v2
+	 */
+	if ((p = strchr(cgroup, ':')) == NULL)
+		goto bad;
+	p++;
+	if ((p = strchr(p, ':')) == NULL)
+		goto bad;
+	p++;
+	if (*p == 0)
+		goto bad;
+
+	qp->cgroup = strdup(p);
+	free(cgroup);
+
+	return (0);
+
+bad:
+	free(cgroup);
+
+	return (-1);
+}
+
 /*
  * Note that defunct processes can return ENOENT on the actual link
  */
@@ -1684,6 +1749,9 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 		if ((qp->cwd = strdup(path)) != NULL)
 			qp->flags |= QUARK_F_CWD;
 	}
+	/* QUARK_F_CGROUP */
+	if (sproc_cgroup(qp, dfd) == 0)
+		qp->flags |= QUARK_F_CGROUP;
 	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */
 	if (by_inode != NULL)
 		return (sproc_pid_sockets(qq, by_inode, pid, dfd));

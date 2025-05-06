@@ -193,6 +193,7 @@ struct raw_task {
 	u32	 mnt_inonum;
 	u32	 net_inonum;
 	char	*cwd;
+	char	*cgroup;
 	char	 comm[16];
 };
 
@@ -382,6 +383,7 @@ struct quark_process {
 #define QUARK_F_FILENAME	(1 << 3)
 #define QUARK_F_CMDLINE		(1 << 4)
 #define QUARK_F_CWD		(1 << 5)
+#define QUARK_F_CGROUP		(1 << 6)
 	u64	 flags;
 
 	/* QUARK_F_PROC */
@@ -420,6 +422,8 @@ struct quark_process {
 	char	*cmdline;
 	/* QUARK_F_CWD */
 	char	*cwd;
+	/* QUARK_F_CGROUP */
+	char	*cgroup;
 };
 
 struct quark_process_iter {
