@@ -968,25 +968,25 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		flagname = event_flag_str(QUARK_F_COMM);
 		P("  %.4s\tcomm=%s\n", flagname, qp->comm);
 	}
+
 	if (qp->flags & QUARK_F_CMDLINE) {
-		int		 i;
-		struct args	*args;
+		struct quark_cmdline_iter	 qcmdi;
+		const char			*arg;
+		int				 first = 1;
 
 		flagname = event_flag_str(QUARK_F_CMDLINE);
 
 		P("  %.4s\tcmdline=", flagname);
 		P("[ ");
-		args = args_make(qp);
-		if (args == NULL)
-			P("(%s)", strerror(errno));
-		else {
-			for (i = 0; i < args->argc; i++) {
-				if (i > 0)
-					P(", ");
-				P("%s", args->argv[i]);
-			}
-			args_free(args);
+
+		quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
+		while ((arg = quark_cmdline_iter_next(&qcmdi)) != NULL) {
+			if (!first)
+				P(", ");
+			P("%s", arg);
+			first = 0;
 		}
+
 		P(" ]\n");
 	}
 	if (qp->flags & QUARK_F_PROC) {
@@ -1058,6 +1058,37 @@ quark_process_iter_next(struct quark_process_iter *qi)
 		qi->qp = RB_NEXT(process_by_pid, &qq->process_by_pid, qi->qp);
 
 	return (qp);
+}
+
+void
+quark_cmdline_iter_init(struct quark_cmdline_iter *qcmdi,
+    const char *cmdline, size_t cmdline_len)
+{
+	qcmdi->cmdline = cmdline;
+	qcmdi->cmdline_len = cmdline_len;
+	qcmdi->off = 0;
+}
+
+const char *
+quark_cmdline_iter_next(struct quark_cmdline_iter *qcmdi)
+{
+	char *p;
+	const char *arg;
+
+	if (qcmdi->off >= qcmdi->cmdline_len)
+		return (NULL);
+
+	p = memchr(qcmdi->cmdline + qcmdi->off, 0,
+	    qcmdi->cmdline_len - qcmdi->off);
+	/* Technically impossible, but be paranoid */
+	if (p == NULL)
+		return (NULL);
+	arg = qcmdi->cmdline + qcmdi->off;
+
+	/* Point past NUL */
+	qcmdi->off = p - qcmdi->cmdline + 1;
+
+	return (arg);
 }
 
 static struct quark_event *
@@ -2151,10 +2182,6 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 		if (color_index >= nitems(color_table)) /* paranoia */
 			color_index = 0;
 
-#ifdef notyet
-		struct args	*args;
-		int		 i;
-#endif
 		if (qp->flags & QUARK_F_FILENAME)
 			name = qp->filename;
 		else if (qp->flags & QUARK_F_COMM)
@@ -2166,21 +2193,6 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 			P(f, "comm %s\\n", qp->comm);
 		if (qp->flags & QUARK_F_CWD)
 			P(f, "cwd %s\\n", qp->cwd);
-#ifdef notyet
-		P(f, "args [");
-		args = args_make(qp);
-		if (args == NULL)
-			P(f, "(%s)", strerror(errno));
-		else {
-			for (i = 0; i < args->argc; i++) {
-				if (i > 0)
-					P(f, " ");
-				P(f, "%s", args->argv[i]);
-			}
-			args_free(args);
-		}
-		P(f, " ]\\n");
-#endif
 		if (qp->flags & QUARK_F_PROC) {
 			P(f, "cap_inh 0x%llx\\n", qp->proc_cap_inheritable);
 			P(f, "cap_per 0x%llx\\n", qp->proc_cap_permitted);

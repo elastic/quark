@@ -30,6 +30,7 @@ struct raw_event;
 struct quark_event;
 struct quark_process;
 struct quark_process_iter;
+struct quark_cmdline_iter;
 struct quark_socket;
 struct quark_socket_iter;
 struct quark_sockaddr;
@@ -53,6 +54,8 @@ int	 quark_event_dump(const struct quark_event *, FILE *);
 void	 quark_process_iter_init(struct quark_process_iter *, struct quark_queue *);
 const struct quark_process *quark_process_iter_next(struct quark_process_iter *);
 const struct quark_process *quark_process_lookup(struct quark_queue *, int);
+void	 quark_cmdline_iter_init(struct quark_cmdline_iter *, const char *, size_t);
+const char *quark_cmdline_iter_next(struct quark_cmdline_iter *);
 void	 quark_socket_iter_init(struct quark_socket_iter *, struct quark_queue *);
 const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
 const struct quark_socket *quark_socket_lookup(struct quark_queue *,
@@ -111,8 +114,6 @@ int	 strtou64(u64 *, const char *, int);
 char 	*find_line(FILE *, const char *);
 char	*find_line_p(const char *, const char *);
 char	*load_file_nostat(int, size_t *);
-struct args *args_make(const struct quark_process *);
-void	 args_free(struct args *);
 
 enum quark_verbosity_levels {
 	QUARK_VL_SILENT,
@@ -428,6 +429,12 @@ struct quark_process {
 struct quark_process_iter {
 	struct quark_queue	*qq;
 	struct quark_process	*qp;
+};
+
+struct quark_cmdline_iter {
+	const char	*cmdline;
+	size_t		 cmdline_len;
+	size_t		 off;
 };
 
 struct quark_socket {
