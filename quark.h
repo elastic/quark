@@ -204,16 +204,16 @@ struct raw_exec {
 
 	/* available if RAW_EXEC_F_EXT */
 	struct {
-		struct qstr	args;
-		size_t		args_len;
-		struct raw_task task;
+		char		*args;
+		size_t		 args_len;
+		struct raw_task	 task;
 	} ext;
 };
 
 struct raw_exec_connector {
-	struct qstr	args;
-	size_t		args_len;
-	struct raw_task	task;
+	char		*args;
+	size_t		 args_len;
+	struct raw_task	 task;
 };
 
 /* not like sockaddr{}, we won't use this on sockets anyway */
@@ -420,7 +420,7 @@ struct quark_process {
 	char	*filename;
 	/* QUARK_F_CMDLINE */
 	size_t	cmdline_len;
-	char	cmdline[1024];
+	char	*cmdline;
 	/* QUARK_F_CWD */
 	char	*cwd;
 };

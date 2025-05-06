@@ -254,6 +254,7 @@ load_file_nostat(int fd, size_t *total)
 }
 
 /* buf_len includes the terminating NUL */
+#if 0
 struct args *
 args_make(const struct quark_process *qev)
 {
@@ -266,7 +267,8 @@ args_make(const struct quark_process *qev)
 	buf = qev->cmdline;
 	buf_len = qev->cmdline_len;
 
-	if (buf_len == 0 || buf[buf_len - 1] != 0)
+	if ((qev->flags & QUARK_F_CMDLINE) == 0 ||
+	    buf == NULL || buf_len == 0 || buf[buf_len - 1] != 0)
 		return (NULL);
 	/* Walk source and count how many arguments */
 	argc = 0;
@@ -293,6 +295,66 @@ args_make(const struct quark_process *qev)
 	     p < end && i < argc && *p != 0;
 	     p += strlen(p) + 1) {
 		args->argv[i++] = p;
+	}
+	args->argc = i;
+
+	return (args);
+
+fail:
+	if (args != NULL)
+		free(args->buf);
+	free(args);
+
+	return (NULL);
+}
+#endif
+#include <assert.h>
+struct args *
+args_make(const struct quark_process *qev)
+{
+	struct args	*args;
+	const char	*p;
+	int		 i, argc;
+	const char 	*buf;
+	size_t		 buf_len, off;
+
+	buf = qev->cmdline;
+	buf_len = qev->cmdline_len;
+
+	if ((qev->flags & QUARK_F_CMDLINE) == 0 ||
+	    buf == NULL || buf_len == 0 || buf[buf_len - 1] != 0)
+		return (NULL);
+
+	off = 0;
+	argc = 0;
+	while (off < buf_len) {
+		p = memchr(buf + off, 0, buf_len - off);
+		assert(p != NULL);
+		argc++;
+		off += p - buf + 1;
+	}
+
+	/*
+	 * Allocate with variadic end
+	 */
+	assert(argc > 0);
+	if ((args = calloc(1, sizeof(*args) + (argc * sizeof(char *)))) == NULL)
+		goto fail;
+	if ((args->buf = malloc(buf_len)) == NULL)
+		goto fail;
+	memcpy(args->buf, buf, buf_len);
+	args->buf_len = buf_len;
+
+	/*
+	 * This is a bit paranoic, we recheck what we already know.
+	 */
+	off = 0;
+	i = 0;
+	while (off < args->buf_len) {
+		p = memchr(args->buf + off, 0, buf_len - off);
+		assert(p != NULL);
+		args->argv[i++] = args->buf + off;
+		off += p - args->buf + 1;
 	}
 	args->argc = i;
 

@@ -534,11 +534,14 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			p = end;
 		exec->args_len = p - start;
 		if (exec->args_len == 0)
-			exec->args.p[0] = 0;
+			exec->args = NULL;
 		else {
-			if (qstr_memcpy(&exec->args, start, exec->args_len) == -1)
-				qwarnx("can't copy args");
-			exec->args.p[exec->args_len - 1] = 0;
+			if ((exec->args = malloc(exec->args_len)) == NULL) {
+				raw_event_free(raw);
+				return (NULL);
+			}
+			memcpy(exec->args, start, exec->args_len);
+			exec->args[exec->args_len - 1] = 0;
 		}
 		task_sample_to_raw_task(kqq, sattr, sample, &exec->task);
 		break;
