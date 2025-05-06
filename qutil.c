@@ -68,49 +68,6 @@ qreadlinkat(int dfd, const char *pathname, char *buf, size_t bufsiz)
 	return (strlen(pathname));
 }
 
-void
-qstr_init(struct qstr *qstr)
-{
-	qstr->p = qstr->small;
-}
-
-int
-qstr_ensure(struct qstr *qstr, size_t n)
-{
-	if (n > sizeof(qstr->small)) {
-		qstr->p = malloc(n);
-		if (qstr->p == NULL)
-			return (-1);
-	}
-
-	return (0);
-}
-
-int
-qstr_memcpy(struct qstr *qstr, const void *src, size_t len)
-{
-	if (qstr_ensure(qstr, len) == -1)
-		return (-1);
-	memcpy(qstr->p, src, len);
-
-	return (0);
-}
-
-int
-qstr_strcpy(struct qstr *qstr, const char *src)
-{
-	return (qstr_memcpy(qstr, src, strlen(src) + 1));
-}
-
-void
-qstr_free(struct qstr *qstr)
-{
-	if (qstr->p == qstr->small)
-		return;
-
-	free(qstr->p);
-}
-
 int
 isnumber(const char *s)
 {

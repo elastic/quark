@@ -103,11 +103,6 @@ struct qstr {
 ssize_t	 qread(int, void *, size_t);
 int	 qwrite(int, const void *, size_t);
 ssize_t	 qreadlinkat(int, const char *, char *, size_t);
-void	 qstr_init(struct qstr *);
-int	 qstr_ensure(struct qstr *, size_t);
-int	 qstr_memcpy(struct qstr *, const void *, size_t);
-int	 qstr_strcpy(struct qstr *, const char *);
-void	 qstr_free(struct qstr *);
 int	 isnumber(const char *);
 ssize_t	 readlineat(int, const char *, char *, size_t);
 int	 strtou64(u64 *, const char *, int);
