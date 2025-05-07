@@ -86,44 +86,46 @@
       <var class="Vt">struct quark_process</var> is defined as:
     <div class="Bd Pp Li">
     <pre>struct quark_process {
-	u32	pid;
-	u64	flags;
+	/* Always present */
+	u32	 pid;
+	u64	 flags;
+
 	/* QUARK_F_PROC */
-	u64	proc_cap_inheritable;
-	u64	proc_cap_permitted;
-	u64	proc_cap_effective;
-	u64	proc_cap_bset;
-	u64	proc_cap_ambient;
-	u64	proc_time_boot;
-	u32	proc_ppid;
-	u32	proc_uid;
-	u32	proc_gid;
-	u32	proc_suid;
-	u32	proc_sgid;
-	u32	proc_euid;
-	u32	proc_egid;
-	u32	proc_pgid;
-	u32	proc_sid;
-	u32	proc_tty_major;
-	u32	proc_tty_minor;
-	u32	proc_entry_leader_type;
-	u32	proc_entry_leader;
-	u32	proc_uts_inonum;
-	u32	proc_ipc_inonum;
-	u32	proc_mnt_inonum;
-	u32	proc_net_inonum;
+	u64	 proc_cap_inheritable;
+	u64	 proc_cap_permitted;
+	u64	 proc_cap_effective;
+	u64	 proc_cap_bset;
+	u64	 proc_cap_ambient;
+	u64	 proc_time_boot;
+	u32	 proc_ppid;
+	u32	 proc_uid;
+	u32	 proc_gid;
+	u32	 proc_suid;
+	u32	 proc_sgid;
+	u32	 proc_euid;
+	u32	 proc_egid;
+	u32	 proc_pgid;
+	u32	 proc_sid;
+	u32	 proc_tty_major;
+	u32	 proc_tty_minor;
+	u32	 proc_entry_leader_type;
+	u32	 proc_entry_leader;
+	u32	 proc_uts_inonum;
+	u32	 proc_ipc_inonum;
+	u32	 proc_mnt_inonum;
+	u32	 proc_net_inonum;
 	/* QUARK_F_EXIT */
-	s32	exit_code;
-	u64	exit_time_event;
+	s32	 exit_code;
+	u64	 exit_time_event;
 	/* QUARK_F_COMM */
-	char	comm[16];
+	char	 comm[16];
 	/* QUARK_F_FILENAME */
-	char	filename[1024];
+	char	*filename;
 	/* QUARK_F_CMDLINE */
-	size_t	cmdline_len;
-	char	cmdline[1024];
+	size_t	 cmdline_len;
+	char	*cmdline;
 	/* QUARK_F_CWD */
-	char	cwd[1024];
+	char	*cwd;
 };</pre>
     </div>
     <p class="Pp" id="flags"><a class="permalink" href="#flags"><i class="Em">flags</i></a>
@@ -194,7 +196,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">December 1, 2024</td>
+    <td class="foot-date">May 7, 2025</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
