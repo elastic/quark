@@ -552,9 +552,10 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_event	*qev;
 	const struct quark_process	*qp;
 	pid_t				 child;
-	struct args			*args;
-	size_t				 expected_len;
-	int				 i;
+	struct quark_cmdline_iter	 qcmdi;
+	const char			*arg;
+	size_t				 expected_args_len;
+	int				 argc;
 	char				 cwd[PATH_MAX];
 
 	if (quark_queue_open(&qq, qa) != 0)
@@ -614,23 +615,40 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qp->comm, program_invocation_short_name));
 	assert(!strcmp(qp->filename, binpath()));
 	/* check args */
-	args = args_make(qp);
-	assert(args != NULL);
-	assert(args->argc == 5);
-	assert(!strcmp(args->argv[0], binpath()));
-	assert(!strcmp(args->argv[1], "-N"));
-	assert(!strcmp(args->argv[2], "this"));
-	assert(!strcmp(args->argv[3], "is"));
-	assert(!strcmp(args->argv[4], "nop!"));
-	/*
-	 * Expected len is the length of the arguments summed up, plus one byte
-	 * for each argument(the NUL after each argument, including the last
-	 * one), so we just start at 'argc' bytes.
-	 */
-	for (expected_len = args->argc, i = 0; i < args->argc; i++)
-		expected_len += strlen(args->argv[i]);
-	args_free(args);
-	assert(qp->cmdline_len == expected_len);
+	quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
+	argc = 0;
+	expected_args_len = 0;
+	while ((arg = quark_cmdline_iter_next(&qcmdi)) != NULL) {
+		/*
+		 * Expected len is the length of the arguments summed up, plus one byte
+		 * for each argument(the NUL after each argument, including the last
+		 * one), so we just start at 'argc' bytes.
+		 */
+		expected_args_len += strlen(arg) + 1;
+
+		switch (argc) {
+		case 0:
+			assert(!strcmp(arg, binpath()));
+			break;
+		case 1:
+			assert(!strcmp(arg, "-N"));
+			break;
+		case 2:
+			assert(!strcmp(arg, "this"));
+			break;
+		case 3:
+			assert(!strcmp(arg, "is"));
+			break;
+		case 4:
+			assert(!strcmp(arg, "nop!"));
+			break;
+		default:
+			errx(1, "unexpected argc");
+		}
+		argc++;
+	}
+	assert(argc == 5);
+	assert(qp->cmdline_len == expected_args_len);
 
 	if (getcwd(cwd, sizeof(cwd)) == NULL)
 		err(1, "getcwd");

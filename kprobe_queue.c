@@ -352,11 +352,11 @@ sample_data_body(struct perf_record_sample *sample, const struct sample_attr *sa
 	return (sample->data + sattr->data_offset);
 }
 
-static int
-build_path(struct path_ctx *ctx, struct qstr *dst)
+static char *
+build_path(struct path_ctx *ctx)
 {
 	int		 i, done;
-	char		*p, path[MAXPATHLEN];
+	char		*p, path[PATH_MAX];
 	const char	*pwd, *ppwd;
 	u64		 pwd_k;
 
@@ -377,7 +377,7 @@ build_path(struct path_ctx *ctx, struct qstr *dst)
 		/* +1 is the / */
 		/* XXX this is way too dangerous XXX */
 		if (((ppwd - pwd) + 1) > (p - path))
-			return (errno = ENAMETOOLONG, -1);
+			return (NULL);
 		while (ppwd != pwd)
 			*--p = *--ppwd;
 		*--p = '/';
@@ -385,21 +385,7 @@ build_path(struct path_ctx *ctx, struct qstr *dst)
 	if (*p == 0)
 		*--p = '/';
 
-	/* XXX double copy XXX */
-	return (qstr_strcpy(dst, p));
-}
-
-static int
-qstr_copy_data_loc(struct qstr *qstr,
-    struct perf_record_sample *sample,
-    const struct perf_sample_data_loc *data_loc)
-{
-	/* size includes NUL */
-	if (qstr_ensure(qstr, data_loc->size) == -1)
-		return (-1);
-	memcpy(qstr->p, sample->data + data_loc->offset, data_loc->size);
-
-	return (data_loc->size);
+	return (strdup(p));
 }
 
 static void
@@ -407,8 +393,8 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, const struct sample_attr *satt
     struct perf_record_sample *sample, struct raw_task *task)
 {
 	const struct task_sample	*w = sample_data_body(sample, sattr);
-	struct path_ctx		 pctx;
-	int			 i;
+	struct path_ctx			 pctx;
+	int				 i;
 
 	task->cap_inheritable = w->cap_inheritable;
 	task->cap_permitted = w->cap_permitted;
@@ -439,7 +425,7 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, const struct sample_attr *satt
 	if (sattr->kind == EXIT_THREAD_SAMPLE) {
 		task->exit_code = (w->exit_code >> 8) & 0xff;
 		task->exit_time_event = sample->sample_id.time;
-		qstr_strcpy(&task->cwd, "(exited)");
+		task->cwd = NULL;
 		/* No cwd on exit */
 		return;
 	}
@@ -460,7 +446,7 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, const struct sample_attr *satt
 		    &w->pwd_s[i]);
 		pctx.pwd[i].pwd_k = w->pwd_k[i];
 	}
-	if (build_path(&pctx, &task->cwd) == -1)
+	if ((task->cwd = build_path(&pctx)) == NULL)
 		qwarn("can't build path");
 }
 
@@ -470,7 +456,6 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	struct kprobe_queue		*kqq = qq->queue_be;
 	const struct sample_attr	*sattr;
 	int				 id, kind;
-	ssize_t				 n;
 	struct raw_event		*raw = NULL;
 
 	id = sample_data_id(sample);
@@ -485,9 +470,21 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 		const struct exec_sample *exec = sample_data_body(sample, sattr);
 		if ((raw = raw_event_alloc(RAW_EXEC)) == NULL)
 			return (NULL);
-		n = qstr_copy_data_loc(&raw->exec.filename, sample, &exec->filename);
-		if (n == -1)
-			qwarnx("can't copy exec filename");
+		if (exec->filename.size == 0) {
+			raw_event_free(raw);
+			return (NULL);
+		}
+		/* size includes NUL */
+		raw->exec.filename = malloc(exec->filename.size);
+		if (raw->exec.filename == NULL) {
+			raw_event_free(raw);
+			return (NULL);
+		}
+		memcpy(raw->exec.filename,
+		    sample->data + exec->filename.offset,
+		    exec->filename.size);
+		/* don't trust the kernel that much */
+		raw->exec.filename[exec->filename.size - 1] = 0;
 		break;
 	}
 	case WAKE_UP_NEW_TASK_SAMPLE: /* FALLTHROUGH */
@@ -537,11 +534,14 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 			p = end;
 		exec->args_len = p - start;
 		if (exec->args_len == 0)
-			exec->args.p[0] = 0;
+			exec->args = NULL;
 		else {
-			if (qstr_memcpy(&exec->args, start, exec->args_len) == -1)
-				qwarnx("can't copy args");
-			exec->args.p[exec->args_len - 1] = 0;
+			if ((exec->args = malloc(exec->args_len)) == NULL) {
+				raw_event_free(raw);
+				return (NULL);
+			}
+			memcpy(exec->args, start, exec->args_len);
+			exec->args[exec->args_len - 1] = 0;
 		}
 		task_sample_to_raw_task(kqq, sattr, sample, &exec->task);
 		break;
