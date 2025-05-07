@@ -1,5 +1,6 @@
 SHELL= /bin/bash
 PWD= $(shell pwd)
+HTML2MARKDOWN?= html2markdown
 
 # Normalize ARCH
 ifeq ($(shell uname -m), x86_64)
@@ -396,7 +397,24 @@ docs/%.html: %
 	$(Q)sed -i 's/exec\.3\.html/https:\/\/linux.die.net\/man\/3\/exec/g' $@
 	$(Q)sed -i 's/exit\.3\.html/https:\/\/linux.die.net\/man\/3\/exit/g' $@
 
-docs: $(DOCS_HTML) docs/index.html
+README.md: docs/quark.7.html
+	$(if $(shell which $(HTML2MARKDOWN) 2>/dev/null),,		\
+		$(error cant find $(HTML2MARKDOWN), available at	\
+		https://github.com/JohannesKaufmann/html-to-markdown/releases))
+	$(call msg,MARKDOWN,$<)
+	$(Q)$(HTML2MARKDOWN) < $< > $@
+	$(call msg,MASSAGE,$@)
+	$(Q)$(foreach m,$(DOCS),					\
+		sed -i 's/$(m).html/https:\/\/elastic.github.io\/quark\/$(m).html/g' $@;)
+	$(Q)sed -i '1,4d' $@
+	$(Q)sed -i '1s/^/# /' $@
+	$(Q)sed -i '/^# TABLE OF CONTENTS/{N;d}' $@
+	$(Q)sed -i 's/`quark`/quark/g' $@
+	$(Q)sed -i '$$ d' $@
+	$(Q)sed -i '$$ d' $@
+
+
+docs: $(DOCS_HTML) docs/index.html README.md
 
 btfhub:
 	$(Q)test $(BTFHUB_ARCHIVE_PATH) || \
