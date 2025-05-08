@@ -16,11 +16,11 @@
 #include <bpf/btf.h>
 
 #include "quark.h"
-#include "bpf_prog_skel.h"
+#include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
 struct bpf_queue {
-	struct bpf_prog		*prog;
+	struct bpf_probes	*probes;
 	struct ring_buffer	*ringbuf;
 };
 
@@ -383,7 +383,7 @@ static int
 bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
 	struct bpf_queue		*bqq;
-	struct bpf_prog			*p;
+	struct bpf_probes		*p;
 	struct ring_buffer_opts		 ringbuf_opts;
 	int				 cgroup_fd, i, off;
 	struct bpf_prog_skeleton	*ps;
@@ -398,12 +398,12 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	cgroup_fd = -1;
 	btf = NULL;
 
-	bqq->prog = bpf_prog__open();
-	if (bqq->prog == NULL) {
-		qwarn("bpf_prog__open");
+	bqq->probes = bpf_probes__open();
+	if (bqq->probes == NULL) {
+		qwarn("bpf_probes__open");
 		goto fail;
 	}
-	p = bqq->prog;
+	p = bqq->probes;
 
 	/*
 	 * BTF used for relocations
@@ -552,8 +552,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		goto fail;
 	}
 
-	if (bpf_prog__load(p) != 0) {
-		qwarn("bpf_prog__load");
+	if (bpf_probes__load(p) != 0) {
+		qwarn("bpf_probes__load");
 		goto fail;
 	}
 
@@ -586,8 +586,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		cgroup_fd = -1;
 	}
 
-	if (bpf_prog__attach(p) != 0) {
-		qwarn("bpf_prog__attach");
+	if (bpf_probes__attach(p) != 0) {
+		qwarn("bpf_probes__attach");
 		goto fail;
 	}
 
@@ -665,7 +665,7 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	/* valgrind doesn't track that this will be updated below */
 	bzero(pcpu_ees, sizeof(pcpu_ees));
 
-	if (bpf_map__lookup_elem(bqq->prog->maps.ringbuf_stats, &zero,
+	if (bpf_map__lookup_elem(bqq->probes->maps.ringbuf_stats, &zero,
 	    sizeof(zero), pcpu_ees, sizeof(pcpu_ees), 0) != 0)
 		return (-1);
 
@@ -681,9 +681,9 @@ bpf_queue_close(struct quark_queue *qq)
 	struct bpf_queue	*bqq = qq->queue_be;
 
 	if (bqq != NULL) {
-		if (bqq->prog != NULL) {
-			bpf_prog__destroy(bqq->prog);
-			bqq->prog = NULL;
+		if (bqq->probes != NULL) {
+			bpf_probes__destroy(bqq->probes);
+			bqq->probes = NULL;
 		}
 		if (bqq->ringbuf != NULL) {
 			ring_buffer__free(bqq->ringbuf);
