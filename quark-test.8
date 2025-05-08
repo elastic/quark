@@ -6,7 +6,7 @@
 .Nd quark's test utility
 .Sh SYNOPSIS
 .Nm quark-test
-.Op Fl bkv
+.Op Fl 1bkv
 .Op Fl x Ar test
 .Op Ar tests ...
 .Nm quark-test
@@ -33,6 +33,9 @@ The number of failed tests is the return value of
 .Pp
 The options are as follows:
 .Bl -tag -width Dtb
+.It Fl 1
+Don't run tests in a child process, useful for debugging with gdb, strace and
+whatnot.
 .It Fl b
 Run only EBPF tests.
 .It Fl h

@@ -54,8 +54,9 @@ enum {
 	YELLOW
 };
 
-static int	bflag;	/* run bpf tests */
-static int	kflag;	/* run kprobe tests */
+static int	noforkflag;	/* don't fork on each test */
+static int	bflag;		/* run bpf tests */
+static int	kflag;		/* run kprobe tests */
 
 static int
 fancy_tty(void)
@@ -266,7 +267,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-bkv] [-x test] [tests ...]\n",
+	fprintf(stderr, "usage: %s [-1bkv] [-x test] [tests ...]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -l\n",
 	    program_invocation_short_name);
@@ -1082,6 +1083,31 @@ lookup_test(const char *name)
 	return (NULL);
 }
 
+static int
+run_test_doit(struct test *t, struct quark_queue_attr *qa)
+{
+	int			nfd, r;
+	struct quark_queue_attr qa_copy;
+
+	/*
+	 * Check for FD leaks
+	 */
+	nfd = num_open_fd();
+	assert(nfd == 3);
+	qa_copy = *qa;
+	r = t->func(t, &qa_copy);
+	nfd = num_open_fd();
+	if (nfd != 3) {
+		fprintf(stderr,
+		    "FDLEAK DETECTED! %d opened descriptors, expected 3\n",
+		    nfd);
+		dump_open_fd(stderr);
+		if (r == 0)
+			r = 1;
+	}
+
+	return (r);
+}
 /*
  * A test runs as a subprocess to avoid contamination.
  */
@@ -1089,7 +1115,7 @@ static int
 run_test(struct test *t, struct quark_queue_attr *qa)
 {
 	pid_t		 child;
-	int		 status, x, linepos, be, nfd, r;
+	int		 status, x, linepos, be, r;
 	int		 child_stderr[2];
 	FILE		*child_stream;
 	char		*child_buf;
@@ -1119,6 +1145,22 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 		return (0);
 	}
 
+	if (noforkflag) {
+		r = run_test_doit(t, qa);
+		if (r == 0) {
+			x = color(GREEN);
+			printf("ok\n");
+			color(x);
+		} else {
+			x = color(RED);
+			printf("failed\n");
+			color(x);
+		}
+		fflush(stdout);
+
+		return (r);
+	}
+
 	/*
 	 * Create a pipe to save the child stderr, so we don't get crappy
 	 * interleaved output with the parent.
@@ -1136,22 +1178,7 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 		close(child_stderr[1]);
 		close(child_stderr[0]);
 
-		/*
-		 * Check for FD leaks
-		 */
-		nfd = num_open_fd();
-		assert(nfd == 3);
-		r = t->func(t, qa);
-		nfd = num_open_fd();
-		if (nfd != 3) {
-			fprintf(stderr,
-			    "FDLEAK DETECTED! %d opened descriptors, expected 3\n",
-			    nfd);
-			dump_open_fd(stderr);
-			if (r == 0)
-				r = 1;
-		}
-		exit(r);
+		exit(run_test_doit(t, qa));
 	}
 	close(child_stderr[1]);
 
@@ -1292,8 +1319,11 @@ main(int argc, char *argv[])
 	int		  ch, failed, x;
 	struct test	 *t;
 
-	while ((ch = getopt(argc, argv, "bhklNvVx:")) != -1) {
+	while ((ch = getopt(argc, argv, "1bhklNvVx:")) != -1) {
 		switch (ch) {
+		case '1':
+			noforkflag = 1;
+			break;
 		case 'b':
 			bflag = 1;
 			break;
