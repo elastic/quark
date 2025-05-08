@@ -81,7 +81,7 @@ EEBPF_FILES:= $(shell find elastic-ebpf)
 EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)
 
 # LIBQUARK
-LIBQUARK_DEPS:= $(wildcard *.h) bpf_prog_skel.h
+LIBQUARK_DEPS:= $(wildcard *.h) bpf_probes_skel.h
 ifndef SYSLIB
 LIBQUARK_DEPS+= $(EEBPF_FILES) include
 endif
@@ -141,8 +141,8 @@ LIBBPF_EXTRA_CFLAGS+= -Wno-address
 endif
 
 # BPFPROG (kernel side)
-BPFPROG_OBJ:= bpf_prog.o
-BPFPROG_DEPS:= bpf_prog.c
+BPFPROG_OBJ:= bpf_probes.o
+BPFPROG_DEPS:= bpf_probes.c
 ifndef SYSLIB
 BPFPROG_DEPS+= $(LIBBPF_DEPS) $(EEBPF_FILES) include
 endif
@@ -196,12 +196,12 @@ $(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
 	$(call msg,CC,$@)
 	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
 
-bpf_prog_skel.h: $(BPFPROG_OBJ)
-	$(call msg,BPFTOOL,bpf_prog_skel.h)
-	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_prog_skel.h
+bpf_probes_skel.h: $(BPFPROG_OBJ)
+	$(call msg,BPFTOOL,bpf_probes_skel.h)
+	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_probes_skel.h
 
 $(BPFPROG_OBJ): $(BPFPROG_DEPS)
-	$(call msg,CLANG,bpf_prog.tmp.o)
+	$(call msg,CLANG,bpf_probes.tmp.o)
 	$(Q)$(CLANG)								\
 		-g -O2								\
 		-target bpf							\
@@ -209,11 +209,11 @@ $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 		-D__TARGET_ARCH_$(ARCH_BPF_TARGET)				\
 		$(CPPFLAGS)							\
 		$(EEBPF_INCLUDES)						\
-		-c bpf_prog.c							\
-		-o bpf_prog.tmp.o
+		-c bpf_probes.c							\
+		-o bpf_probes.tmp.o
 	$(call msg,BPFTOOL,$@)
-	$(Q)$(BPFTOOL) gen object $@ bpf_prog.tmp.o
-	$(Q)rm bpf_prog.tmp.o
+	$(Q)$(BPFTOOL) gen object $@ bpf_probes.tmp.o
+	$(Q)rm bpf_probes.tmp.o
 
 DOCKER_RUN_ARGS=$(QDOCKER)				\
 		-v $(PWD):$(PWD)			\
@@ -255,13 +255,13 @@ CENTOS7_RUN_ARGS=$(QDOCKER)				\
 		centos7-quark-builder
 
 centos7: clean-all docker-image centos7-image
-	# We first make only bpf_prog.o and bpf_prog_skel.h in the
+	# We first make only bpf_probes.o and bpf_probes_skel.h in the
 	# modern Ubuntu image, we can't make those on centos7
 	$(DOCKER) run					\
 		$(DOCKER_RUN_ARGS)			\
-		$(SHELL) -c "make -C $(PWD) bpf_prog.o bpf_prog_skel.h"
+		$(SHELL) -c "make -C $(PWD) bpf_probes.o bpf_probes_skel.h"
 	# Now we build the rest of the suite as it won't try to rebuild
-	# bpf_prog.o and bpf_prog_skel.h
+	# bpf_probes.o and bpf_probes_skel.h
 	$(DOCKER) run					\
 		$(CENTOS7_RUN_ARGS)			\
 		$(SHELL) -c "make -j1 -C $(PWD)"
