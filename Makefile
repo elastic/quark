@@ -93,7 +93,8 @@ LIBQUARK_SRCS:=			\
 	compat.c		\
 	kprobe_queue.c		\
 	quark.c			\
-	qutil.c
+	qutil.c			\
+	sha256.c
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 LIBQUARK_STATIC_BIG:= libquark_big.a
@@ -105,6 +106,9 @@ else
 LIBQUARK_TARGET=$(LIBQUARK_STATIC)
 EXTRA_LDFLAGS+= -lbpf
 endif
+
+# for b64_ntop()
+EXTRA_LDFLAGS+= -lresolv
 
 # ZLIB
 ZLIB_SRC:= zlib
