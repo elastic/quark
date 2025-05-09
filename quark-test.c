@@ -658,6 +658,7 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	 */
 	assert(qp->proc_entry_leader != 0);
 	assert(qp->proc_entry_leader_type != QUARK_ELT_UNKNOWN);
+	assert(strlen(qp->proc_entity_id) == 16);
 	/* XXX TODO check tty_major and tty_minor for self in the future */
 #if 0
 	assert(qp->proc_tty_major != QUARK_TTY_UNKNOWN);
