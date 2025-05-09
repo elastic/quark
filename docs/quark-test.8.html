@@ -25,7 +25,7 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-test</code></td>
-    <td>[<code class="Fl">-bkv</code>] [<code class="Fl">-x</code>
+    <td>[<code class="Fl">-1bkv</code>] [<code class="Fl">-x</code>
       <var class="Ar">test</var>] [<var class="Ar">tests ...</var>]</td>
   </tr>
 </table>
@@ -70,6 +70,9 @@ The <code class="Nm">quark-test</code> program runs tests for
     return value of <code class="Nm">quark-test</code>.</p>
 <p class="Pp">The options are as follows:</p>
 <dl class="Bl-tag">
+  <dt id="1"><a class="permalink" href="#1"><code class="Fl">-1</code></a></dt>
+  <dd>Don't run tests in a child process, useful for debugging with gdb, strace
+      and whatnot.</dd>
   <dt id="b"><a class="permalink" href="#b"><code class="Fl">-b</code></a></dt>
   <dd>Run only EBPF tests.</dd>
   <dt id="h"><a class="permalink" href="#h"><code class="Fl">-h</code></a></dt>
@@ -134,7 +137,7 @@ failed tests 0</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">May 4, 2025</td>
+    <td class="foot-date">May 8, 2025</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
