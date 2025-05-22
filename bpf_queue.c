@@ -546,6 +546,21 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.recvmsg4, 1);
 	}
 
+	if (qq->flags & QQ_MEMFD) {
+		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_memfd_create, 1);
+		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_shmget, 1);
+		bpf_program__set_autoload(p->progs.module_load, 1);
+		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
+	}
+
+	/*
+	 * These are probes that are not attached to a feature and not currently
+	 * used in quark, but we need to maintain compatibility in BYPASS.
+	 */
+	if (qq->flags & QQ_BYPASS) {
+		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_setsid, 1);
+	}
+
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {
 		qwarn("bpf_map__set_max_entries");
