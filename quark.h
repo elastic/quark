@@ -477,6 +477,7 @@ struct quark_queue_attr {
 #define QQ_DNS			(1 << 6)
 #define QQ_BYPASS		(1 << 7)
 #define QQ_FILE			(1 << 8)
+#define QQ_MEMFD		(1 << 9)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;

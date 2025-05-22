@@ -2310,9 +2310,10 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qa->max_length = 1;
 	}
 	/*
-	 * QQ_FILE needs QQ_BYPASS for now
+	 * QQ_{FILE,MEMFD} needs QQ_BYPASS for now
 	 */
-	if ((qa->flags & QQ_FILE) && !(qa->flags & QQ_BYPASS))
+	if ((qa->flags & (QQ_FILE|QQ_MEMFD))
+	    && !(qa->flags & QQ_BYPASS))
 		return (errno = EINVAL, -1);
 
 	if ((qa->flags & QQ_ALL_BACKENDS) == 0 ||
