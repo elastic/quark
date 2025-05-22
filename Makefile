@@ -74,6 +74,8 @@ endif
 
 CLANG?= clang
 BPFTOOL?= bpftool
+BPF_CC?= $(CLANG)
+BPF_ARCH?= bpf # Zig cc calls this bpfel
 DOCKER?= docker
 
 # All EEBPF files we track for dependency
@@ -201,19 +203,16 @@ bpf_probes_skel.h: $(BPFPROG_OBJ)
 	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_probes_skel.h
 
 $(BPFPROG_OBJ): $(BPFPROG_DEPS)
-	$(call msg,CLANG,bpf_probes.tmp.o)
-	$(Q)$(CLANG)								\
+	$(call msg,BPF_CC,$@)
+	$(Q)$(BPF_CC)								\
 		-g -O2								\
-		-target bpf							\
+		-target $(BPF_ARCH)						\
 		-D__KERNEL__							\
 		-D__TARGET_ARCH_$(ARCH_BPF_TARGET)				\
 		$(CPPFLAGS)							\
 		$(EEBPF_INCLUDES)						\
 		-c bpf_probes.c							\
-		-o bpf_probes.tmp.o
-	$(call msg,BPFTOOL,$@)
-	$(Q)$(BPFTOOL) gen object $@ bpf_probes.tmp.o
-	$(Q)rm bpf_probes.tmp.o
+		-o $@
 
 DOCKER_RUN_ARGS=$(QDOCKER)				\
 		-v $(PWD):$(PWD)			\
