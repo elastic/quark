@@ -57,13 +57,13 @@ typedef uintptr_t	__uintptr_t;	/* for freebsd_tree.h */
 #include "freebsd_queue.h"
 #include "freebsd_tree.h"
 
-size_t		strlcat(char *, const char *, size_t);
-size_t		strlcpy(char *, const char *, size_t);
-long long	strtonum(const char *, long long, long long, const char **);
+__attribute__((weak)) size_t	strlcat(char *, const char *, size_t);
+__attribute__((weak)) size_t	strlcpy(char *, const char *, size_t);
+long long			strtonum(const char *, long long, long long, const char **);
 
 /*
  * Misc
  */
-void		sshbuf_dump_data(const void *, size_t, FILE *);
+void				sshbuf_dump_data(const void *, size_t, FILE *);
 
 #endif	/* _COMPAT_H */
