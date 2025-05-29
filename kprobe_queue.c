@@ -1382,7 +1382,7 @@ kprobe_queue_open(struct quark_queue *qq)
 	kqq->qid = qid;
 	qq->queue_be = kqq;
 
-	for (i = 0; i < get_nprocs_conf(); i++) {
+	for (i = 0; i < get_nprocs(); i++) {
 		pgl = perf_open_group_leader(kqq, i);
 		if (pgl == NULL)
 			goto fail;
