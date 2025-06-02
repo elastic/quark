@@ -35,6 +35,10 @@ typedef uintptr_t	__uintptr_t;	/* for freebsd_tree.h */
 #define __aligned(x)	__attribute__((aligned(x)))
 #endif	/* __aligned */
 
+#ifndef __weak
+#define __weak		__attribute__((weak))
+#endif	/* __weak */
+
 #ifndef likely
 #define likely(x)	__builtin_expect(!!(x), 1)
 #endif	/* likely */
