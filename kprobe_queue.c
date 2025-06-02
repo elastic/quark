@@ -1382,10 +1382,22 @@ kprobe_queue_open(struct quark_queue *qq)
 	kqq->qid = qid;
 	qq->queue_be = kqq;
 
-	for (i = 0; i < get_nprocs(); i++) {
+	for (i = 0; i < get_nprocs_conf(); i++) {
+		errno = 0;
 		pgl = perf_open_group_leader(kqq, i);
-		if (pgl == NULL)
+		/*
+		 * If a cpu is offline we get ENODEV, also VMware fusion seems
+		 * to expose more configured cpus than what is actually
+		 * discovered via apicid, /proc/cpuinfo will show the correct
+		 * count while get_nprocs_conf() exposes a maximum.
+		 */
+		if (pgl == NULL) {
+			if (errno == ENODEV) {
+				qwarn("cpu %d", i);
+				continue;
+			}
 			goto fail;
+		}
 		TAILQ_INSERT_TAIL(&kqq->perf_group_leaders, pgl, entry);
 		kqq->num_perf_group_leaders++;
 	}
