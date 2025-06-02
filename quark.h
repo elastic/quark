@@ -61,6 +61,18 @@ const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
 const struct quark_socket *quark_socket_lookup(struct quark_queue *,
     struct quark_sockaddr *, struct quark_sockaddr *);
 
+/* quark.c - internal, not to be used by users */
+struct quark {
+	unsigned int	hz;
+	u64		boottime;
+};
+extern struct quark quark;
+struct quark_process *process_cache_get(struct quark_queue *, int, int);
+struct quark_socket *socket_cache_lookup(struct quark_queue *,
+    struct quark_sockaddr *, struct quark_sockaddr *);
+struct quark_socket *socket_alloc_and_insert (struct quark_queue *,
+    struct quark_sockaddr *, struct quark_sockaddr *, u32, u64);
+
 /* btf.c */
 struct quark_btf_target {
 	const char	*dotname;
@@ -88,13 +100,9 @@ int	bpf_queue_open(struct quark_queue *);
 /* kprobe_queue.c */
 int	kprobe_queue_open(struct quark_queue *);
 
-/* XXX terrible name XXX */
-struct args {
-	char		*buf;
-	size_t		 buf_len;
-	int		 argc;
-	const char	*argv[];
-};
+/* sproc.c */
+int	sproc_scrape(struct quark_queue *);
+u64	sproc_fetch_boottime(void);
 
 /* qutil.c */
 struct qstr {
@@ -102,6 +110,8 @@ struct qstr {
 	char	 small[64];
 };
 
+u64	 qnow64(void);
+ssize_t	 qread(int, void *, size_t);
 ssize_t	 qread(int, void *, size_t);
 int	 qwrite(int, const void *, size_t);
 ssize_t	 qreadlinkat(int, const char *, char *, size_t);

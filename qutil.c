@@ -9,9 +9,21 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "quark.h"
+
+u64
+qnow64(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
+		return (0);
+
+	return ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
+}
 
 ssize_t
 qread(int fd, void *buf, size_t count)

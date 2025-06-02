@@ -95,7 +95,8 @@ LIBQUARK_SRCS:=			\
 	compat.c		\
 	kprobe_queue.c		\
 	quark.c			\
-	qutil.c
+	qutil.c			\
+	sproc.c
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 LIBQUARK_STATIC_BIG:= libquark_big.a

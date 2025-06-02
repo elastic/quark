@@ -14,7 +14,6 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <fts.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -37,7 +36,10 @@ static void	process_cache_delete(struct quark_queue *, struct quark_process *);
 static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
 
 /* For debugging */
-int	quark_verbose;
+int		quark_verbose;
+
+/* Harmless global state */
+struct quark	quark;
 
 RB_PROTOTYPE(process_by_pid, quark_process,
     entry_by_pid, process_by_pid_cmp);
@@ -58,11 +60,6 @@ RB_PROTOTYPE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
 RB_GENERATE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
-
-struct quark {
-	unsigned int	hz;
-	u64		boottime;
-} quark;
 
 struct raw_event *
 raw_event_alloc(int type)
@@ -159,17 +156,6 @@ raw_event_by_pidtime_cmp(struct raw_event *a, struct raw_event *b)
 		return (-1);
 	else
 		return (a->time > b->time);
-}
-
-static inline u64
-now64(void)
-{
-	struct timespec ts;
-
-	if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
-		return (0);
-
-	return ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
 }
 
 static inline u64
@@ -306,7 +292,7 @@ gc_mark(struct quark_queue *qq, struct gc_link *gc, enum gc_type type)
 	if (gc->gc_time)
 		return;
 
-	gc->gc_time = now64();
+	gc->gc_time = qnow64();
 	gc->gc_type = type;
 	TAILQ_INSERT_TAIL(&qq->event_gc, gc, gc_entry);
 }
@@ -327,7 +313,7 @@ gc_collect(struct quark_queue *qq)
 	u64		 now;
 	int		 n;
 
-	now = now64();
+	now = qnow64();
 	n = 0;
 	while ((gc = TAILQ_FIRST(&qq->event_gc)) != NULL) {
 		if (AGE(gc->gc_time, now) < qq->cache_grace_time)
@@ -360,7 +346,7 @@ process_free(struct quark_process *qp)
 	free(qp);
 }
 
-static struct quark_process *
+struct quark_process *
 process_cache_get(struct quark_queue *qq, int pid, int alloc)
 {
 	struct quark_process	 key;
@@ -448,7 +434,7 @@ process_by_pid_cmp(struct quark_process *a, struct quark_process *b)
  * Socket stuff
  */
 
-static struct quark_socket *
+struct quark_socket *
 socket_cache_lookup(struct quark_queue *qq,
     struct quark_sockaddr *local, struct quark_sockaddr *remote)
 {
@@ -469,7 +455,7 @@ socket_cache_lookup(struct quark_queue *qq,
 	return (qsk);
 }
 
-static struct quark_socket *
+struct quark_socket *
 socket_alloc_and_insert(struct quark_queue *qq, struct quark_sockaddr *local,
     struct quark_sockaddr *remote, u32 pid_origin, u64 est_time)
 {
@@ -1312,663 +1298,6 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 }
 
 /*
- * /proc parsing
- */
-
-struct sproc_socket {
-	RB_ENTRY(sproc_socket)	entry_by_inode;
-	uint64_t		inode;
-	struct quark_socket	socket;
-};
-
-static int
-sproc_socket_by_inode_cmp(struct sproc_socket *a, struct sproc_socket *b)
-{
-	if (a->inode < b->inode)
-		return (-1);
-	else if (a->inode > b->inode)
-		return (1);
-
-	return (0);
-}
-
-RB_HEAD(sproc_socket_by_inode, sproc_socket);
-
-RB_PROTOTYPE(sproc_socket_by_inode, sproc_socket,
-    entry_by_inode, sproc_socket_by_inode_cmp);
-RB_GENERATE(sproc_socket_by_inode, sproc_socket,
-    entry_by_inode, sproc_socket_by_inode_cmp);
-
-static int
-sproc_status_line(struct quark_process *qp, const char *k, const char *v)
-{
-	const char		*errstr;
-
-	if (*v == 0)
-		return (0);
-
-	if (!strcmp(k, "Pid")) {
-		qp->pid = strtonum(v, 0, UINT32_MAX, &errstr);
-		if (errstr != NULL)
-			return (-1);
-	} else if (!strcmp(k, "PPid")) {
-		qp->proc_ppid = strtonum(v, 0, UINT32_MAX, &errstr);
-		if (errstr != NULL)
-			return (-1);
-	} else if (!strcmp(k, "Uid")) {
-		if (sscanf(v, "%d %d %d\n",
-		    &qp->proc_uid, &qp->proc_euid, &qp->proc_suid) != 3)
-			return (-1);
-	} else if (!strcmp(k, "Gid")) {
-		if (sscanf(v, "%d %d %d\n",
-		    &qp->proc_gid, &qp->proc_egid, &qp->proc_sgid) != 3)
-			return (-1);
-	} else if (!strcmp(k, "CapInh")) {
-		if (strtou64(&qp->proc_cap_inheritable, v, 16) == -1)
-			return (-1);
-	} else if (!strcmp(k, "CapPrm")) {
-		if (strtou64(&qp->proc_cap_permitted, v, 16) == -1)
-			return (-1);
-	} else if (!strcmp(k, "CapEff")) {
-		if (strtou64(&qp->proc_cap_effective, v, 16) == -1)
-			return (-1);
-	} else if (!strcmp(k, "CapBnd")) {
-		if (strtou64(&qp->proc_cap_bset, v, 16) == -1)
-			return (-1);
-	} else if (!strcmp(k, "CapAmb")) {
-		if (strtou64(&qp->proc_cap_ambient, v, 16) == -1)
-			return (-1);
-	}
-
-	return (0);
-}
-
-static int
-sproc_stat(struct quark_process *qp, int dfd)
-{
-	int			 fd, r, ret;
-	char			*buf, *p;
-	u32			 pgid, sid, tty;
-	unsigned long long	 starttime;
-
-	buf = NULL;
-	ret = -1;
-
-	if ((fd = openat(dfd, "stat", O_RDONLY)) == -1) {
-		qwarn("open stat");
-		return (-1);
-	}
-	buf = load_file_nostat(fd, NULL);
-	if (buf == NULL)
-		goto cleanup;
-
-	/*
-	 * comm might have spaces, newlines and whatnot, procfs is nice enough
-	 * to put parenthesis around them.
-	 */
-	p = strrchr(buf, ')');
-	if (p == NULL)
-		goto cleanup;
-	p++;			/* Skip over ") " */
-	while (isspace(*p))
-		p++;
-	starttime = 0;
-	r = sscanf(p,
-	    "%*s "		/* (3) state */
-	    "%*s "		/* (4) ppid */
-	    "%d "		/* (5) pgrp */
-	    "%d "		/* (6) session */
-	    "%d "		/* (7) tty_nr */
-	    "%*s "		/* (8) tpgid */
-	    "%*s "		/* (9) flags */
-	    "%*s "		/* (10) minflt */
-	    "%*s "		/* (11) cminflt */
-	    "%*s "		/* (12) majflt */
-	    "%*s "		/* (13) cmajflt */
-	    "%*s "		/* (14) utime */
-	    "%*s "		/* (15) stime */
-	    "%*s "		/* (16) cutime */
-	    "%*s "		/* (17) cstime */
-	    "%*s "		/* (18) priority */
-	    "%*s "		/* (19) nice */
-	    "%*s "		/* (20) num_threads */
-	    "%*s "		/* (21) itrealvalue */
-	    "%llu ",		/* (22) starttime */
-				/* ... */
-	    &pgid,
-	    &sid,
-	    &tty,
-	    &starttime);
-
-	if (r == 4) {
-		qp->proc_pgid = pgid;
-		qp->proc_sid = sid;
-		/* See proc(5) */
-		qp->proc_tty_major = (tty >> 8) & 0xff;
-		qp->proc_tty_minor = ((tty >> 12) & 0xfff00) | (tty & 0xff);
-		qp->proc_time_boot =
-		    quark.boottime +
-		    ((starttime / (u64)quark.hz) * NS_PER_S) +
-		    (((starttime % (u64)quark.hz) * NS_PER_S) / 100);
-
-		ret = 0;
-	}
-
-cleanup:
-	free(buf);
-	close(fd);
-
-	return (ret);
-}
-
-static int
-sproc_status(struct quark_process *qp, int dfd)
-{
-	int			 fd, ret;
-	FILE			*f;
-	ssize_t			 n;
-	size_t			 line_len;
-	char			*line, *k, *v;
-
-	if ((fd = openat(dfd, "status", O_RDONLY)) == -1) {
-		qwarn("open status");
-		return (-1);
-	}
-	f = fdopen(fd, "r");
-	if (f == NULL) {
-		close(fd);
-		return (-1);
-	}
-
-	ret = 0;
-	line_len = 0;
-	line = NULL;
-	while ((n = getline(&line, &line_len, f)) != -1) {
-		/* k:\tv\n = 5 */
-		if (n < 5 || line[n - 1] != '\n') {
-			qwarnx("bad line");
-			ret = -1;
-			break;
-		}
-		line[n - 1] = 0;
-		k = line;
-		v = strstr(line, ":\t");
-		if (v == NULL) {
-			qwarnx("no `:\\t` found");
-			ret = -1;
-			break;
-		}
-		*v = 0;
-		v += 2;
-		if (sproc_status_line(qp, k, v) == -1) {
-			qwarnx("can't handle %s", k);
-			ret = -1;
-			break;
-		}
-	}
-	free(line);
-	fclose(f);
-
-	return (ret);
-
-}
-
-static int
-sproc_cmdline(struct quark_process *qp, int dfd)
-{
-	int	 fd;
-
-	if ((fd = openat(dfd, "cmdline", O_RDONLY)) == -1) {
-		qwarn("open cmdline");
-		return (-1);
-	}
-	qp->cmdline_len = 0;
-	qp->cmdline = load_file_nostat(fd, &qp->cmdline_len);
-	close(fd);
-	if (qp->cmdline == NULL)
-		return (-1);
-	/* if cmdline != NULL, cmdline_len > 0 */
-	qp->cmdline[qp->cmdline_len - 1] = 0;
-
-	return (0);
-}
-
-/*
- * Note that defunct processes can return ENOENT on the actual link
- */
-static int
-sproc_namespace(struct quark_process *qp, const char *path, u32 *dst, int dfd)
-{
-	const char	*errstr;
-	char		 buf[512], *start, *end;
-	ssize_t		 n;
-	u32		 v;
-
-	/* 0 is an invalid inode, so good enough for the error case */
-	*dst = 0;
-	n = qreadlinkat(dfd, path, buf, sizeof(buf));
-	if (n == -1)
-		return (-1);
-	else if (n >= (ssize_t)sizeof(buf))
-		return (errno = ENAMETOOLONG, -1);
-	if ((start = strchr(buf, '[')) == NULL)
-		return (errno = EINVAL, -1);
-	if ((end = strchr(buf, ']')) == NULL)
-		return (errno = EINVAL, -1);
-	start++;
-	*end = 0;
-
-	v = strtonum(start, 0, UINT32_MAX, &errstr);
-	if (errstr != NULL)
-		return (errno = EINVAL, -1);
-	*dst = v;
-
-	return (0);
-}
-
-static int
-sproc_pid_sockets(struct quark_queue *qq,
-    struct sproc_socket_by_inode *by_inode, int pid, int dfd)
-{
-	DIR		*dir;
-	struct dirent	*d;
-	int		 fdfd;
-
-	if ((fdfd = openat(dfd, "fd", O_RDONLY)) == -1) {
-		qwarn("open fd");
-		return (-1);
-	}
-	dir = fdopendir(fdfd);
-	if (dir == NULL) {
-		close(fdfd);
-		qwarn("fdopendir fdfd");
-		return (-1);
-	}
-
-	while ((d = readdir(dir)) != NULL) {
-		char			 buf[256];
-		ssize_t			 n;
-		u_long			 inode	= 0;
-		const char		*needle = "socket:[";
-		struct sproc_socket	*ss, ss_key;
-		struct quark_socket	*qsk;
-
-		if (d->d_type != DT_LNK)
-			continue;
-		n = qreadlinkat(fdfd, d->d_name, buf, sizeof(buf));
-		if (n == -1)
-			qwarn("qreadlinkat %s", d->d_name);
-		if (n <= 0)
-			continue;
-		if (strncmp(buf, needle, strlen(needle)))
-			continue;
-		if (sscanf(buf, "socket:[%lu]", &inode) != 1) {
-			qwarnx("sscanf can't get inode");
-			continue;
-		}
-
-		bzero(&ss_key, sizeof(ss_key));
-		ss_key.inode = inode;
-		ss = RB_FIND(sproc_socket_by_inode, by_inode, &ss_key);
-		/*
-		 * We're only interested in TCP sockets, we end up finding
-		 * AF_UNIX and SOCK_DGRAM here as well, so it's normal to have
-		 * many misses.
-		 */
-		if (ss == NULL)
-			continue;
-
-		/*
-		 * Another process already references the same socket. Maybe it
-		 * accept(2)ed and forked.
-		 */
-		qsk = socket_cache_lookup(qq, &ss->socket.local, &ss->socket.remote);
-		if (qsk != NULL)
-			continue;
-
-		qsk = socket_alloc_and_insert(qq, &ss->socket.local,
-		    &ss->socket.remote,  pid, now64());
-		if (qsk == NULL) {
-			qwarn("socket_alloc");
-			continue;
-		}
-		qsk->from_scrape = 1;
-
-		qdebugx("pid %d fd %s -> %s (inode=%lu, ss=%p)", pid,
-		    d->d_name, buf, inode, ss);
-	}
-
-	/* closedir() closes the backing `fdfd` */
-	closedir(dir);
-
-	return (0);
-}
-
-static int
-sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
-    int pid, int dfd)
-{
-	struct quark_process	*qp;
-	char			 path[PATH_MAX];
-
-	/*
-	 * This allocates and inserts it into the cache in case it's not already
-	 * there, if say, sproc_status() fails, process will be largely empty,
-	 * still we know there was a process there somewhere.
-	 */
-	qp = process_cache_get(qq, pid, 1);
-	if (qp == NULL)
-		return (-1);
-
-	if (sproc_status(qp, dfd) == 0 && sproc_stat(qp, dfd) == 0)
-		qp->flags |= QUARK_F_PROC;
-	/* Fail silently, inonum is set to zero */
-	sproc_namespace(qp, "ns/uts", &qp->proc_uts_inonum, dfd);
-	sproc_namespace(qp, "ns/ipc", &qp->proc_ipc_inonum, dfd);
-	sproc_namespace(qp, "ns/mnt", &qp->proc_mnt_inonum, dfd);
-	sproc_namespace(qp, "ns/net", &qp->proc_net_inonum, dfd);
-
-	/* QUARK_F_COMM */
-	if (readlineat(dfd, "comm", qp->comm, sizeof(qp->comm)) > 0)
-		qp->flags |= QUARK_F_COMM;
-	/* QUARK_F_FILENAME */
-	if (qreadlinkat(dfd, "exe", path, sizeof(path)) > 0) {
-		if ((qp->filename = strdup(path)) != NULL)
-			qp->flags |= QUARK_F_FILENAME;
-	}
-	/* QUARK_F_CMDLINE */
-	if (sproc_cmdline(qp, dfd) == 0)
-		qp->flags |= QUARK_F_CMDLINE;
-	/* QUARK_F_CWD */
-	if (qreadlinkat(dfd, "cwd", path, sizeof(path)) > 0) {
-		if ((qp->cwd = strdup(path)) != NULL)
-			qp->flags |= QUARK_F_CWD;
-	}
-	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */
-	if (by_inode != NULL)
-		return (sproc_pid_sockets(qq, by_inode, pid, dfd));
-
-	return (0);
-}
-
-static int
-sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
-    struct sproc_socket_by_inode *by_inode)
-{
-	u_int	local_addr4, remote_addr4;
-	u_int	local_addr6[4], remote_addr6[4];
-	u_int	local_port, remote_port;
-	u_long	inode;
-	u_int	state;
-	int	r;
-
-	if (af != AF_INET && af != AF_INET6)
-		return (-1);
-
-	if (af == AF_INET) {
-		r = sscanf(line,
-		    "%*s "	/* sl */
-		    "%x:%x "	/* local_address */
-		    "%x:%x "	/* remote_address */
-		    "%x "	/* st */
-		    "%*s "	/* tx_queue+rx_queue */
-		    "%*s "	/* tr+tm->when */
-		    "%*s "	/* retnsmt */
-		    "%*s "	/* uid */
-		    "%*s "	/* timeout */
-		    "%lu "	/* inode */
-		    "%*s ",	/* ignored */
-		    &local_addr4, &local_port,
-		    &remote_addr4, &remote_port,
-		    &state,
-		    &inode);
-
-		if (r != 6) {
-			qwarnx("unexpected sscanf %d", r);
-			return (-1);
-		}
-	}
-
-	if (af == AF_INET6) {
-		r = sscanf(line,
-		    "%*s "			/* sl */
-		    "%08x%08x%08x%08x:%x"	/* local_address */
-		    "%08x%08x%08x%08x:%x"	/* remote_address */
-		    "%x "			/* st */
-		    "%*s "			/* tx_queue+rx_queue */
-		    "%*s "			/* tr+tm->when */
-		    "%*s "			/* retnsmt */
-		    "%*s "			/* uid */
-		    "%*s "			/* timeout */
-		    "%lu "			/* inode */
-		    "%*s ",			/* ignored */
-		    &local_addr6[0], &local_addr6[1],
-		    &local_addr6[2], &local_addr6[3], &local_port,
-		    &remote_addr6[0], &remote_addr6[1],
-		    &remote_addr6[2], &remote_addr6[3], &remote_port,
-		    &state,
-		    &inode);
-
-		if (r != 12) {
-			qwarnx("unexpected sscanf %d", r);
-			return (-1);
-		}
-	}
-
-	/*
-	 * We're tracking the active side, the stack goes to ESTABLISHED when it
-	 * receives the SYN/ACK. We go to TCP_CLOSE_WAIT when we get the FIN but
-	 * didn't close().
-	 */
-	if (state != TCP_ESTABLISHED && state != TCP_CLOSE_WAIT)
-		return (0);
-
-	/*
-	 * Inodes might be zero, in this case this is deemed an unnamed socket,
-	 * in kernel, a named socket is one where sock->socket != NULL. An
-	 * unnamed socket doesn't have a process attached to it anymore/yet.
-	 */
-	if (inode > 0) {
-		struct sproc_socket	*ss, *col;
-
-		if ((ss = calloc(1, sizeof(*ss))) == NULL)
-			return (-1);
-		ss->inode = (u64)inode;
-
-		ss->socket.local.port = htons(local_port);
-		ss->socket.remote.port = htons(remote_port);
-
-		if (af == AF_INET) {
-			ss->socket.local.af = AF_INET;
-			ss->socket.local.addr4 = local_addr4;
-
-			ss->socket.remote.af = AF_INET;
-			ss->socket.remote.addr4 = remote_addr4;
-		}
-
-		if (af == AF_INET6) {
-			ss->socket.local.af = AF_INET6;
-			memcpy(ss->socket.local.addr6, local_addr6, 16);
-
-			ss->socket.remote.af = AF_INET6;
-			memcpy(ss->socket.remote.addr6, remote_addr6, 16);
-		}
-
-		col = RB_INSERT(sproc_socket_by_inode, by_inode, ss);
-		if (col != NULL) {
-			free(ss);
-			qwarnx("socket collision");
-			return (-1);
-		}
-	}
-
-	return (0);
-}
-
-static int
-sproc_net_tcp(struct quark_queue *qq, int af, struct sproc_socket_by_inode *by_inode)
-{
-	int		 ret, fd, linenum;
-	FILE		*f;
-	ssize_t		 n;
-	size_t		 line_len;
-	char		*line;
-	const char	*path;
-
-	if (af != AF_INET && af != AF_INET6)
-		return (-1);
-
-	if (af == AF_INET)
-		path = "/proc/net/tcp";
-	else
-		path = "/proc/net/tcp6";
-
-	if ((fd = open(path, O_RDONLY)) == -1) {
-		qwarn("open %s", path);
-		return (-1);
-	}
-	f = fdopen(fd, "r");
-	if (f == NULL) {
-		close(fd);
-		return (-1);
-	}
-
-	ret = 0;
-	line_len = 0;
-	line = NULL;
-	for (linenum = 0; (n = getline(&line, &line_len, f)) != -1; linenum++) {
-		if (n < 1 || line[n - 1] != '\n') {
-			qwarnx("bad line");
-			ret = -1;
-			break;
-		}
-		line[n - 1] = 0;
-		/* Skip header */
-		if (linenum == 0)
-			continue;
-
-		ret = sproc_net_tcp_line(qq, line, af, by_inode);
-		if (ret == -1)
-			break;
-	}
-	free(line);
-	fclose(f);
-
-	return (ret);
-}
-
-static int
-sproc_scrape_processes(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode)
-{
-	FTS	*tree;
-	FTSENT	*f, *p;
-	int	 dfd, rootfd;
-	char	*argv[] = { "/proc", NULL };
-
-	if ((tree = fts_open(argv, FTS_NOCHDIR, NULL)) == NULL)
-		return (-1);
-	if ((rootfd = open(argv[0], O_PATH)) == -1) {
-		fts_close(tree);
-		return (-1);
-	}
-
-	while ((f = fts_read(tree)) != NULL) {
-		if (f->fts_info == FTS_ERR || f->fts_info == FTS_NS)
-			qwarnx("%s: %s", f->fts_name, strerror(f->fts_errno));
-		if (f->fts_info != FTS_D)
-			continue;
-		fts_set(tree, f, FTS_SKIP);
-
-		if ((p = fts_children(tree, 0)) == NULL) {
-			qwarn("fts_children");
-			continue;
-		}
-		for (; p != NULL; p = p->fts_link) {
-			int		 pid;
-			const char	*errstr;
-
-			if (p->fts_info == FTS_ERR || p->fts_info == FTS_NS) {
-				qwarnx("%s: %s",
-				    p->fts_name, strerror(p->fts_errno));
-				continue;
-			}
-			if (p->fts_info != FTS_D || !isnumber(p->fts_name))
-				continue;
-
-			if ((dfd = openat(rootfd, p->fts_name, O_PATH)) == -1) {
-				qwarn("openat %s", p->fts_name);
-				continue;
-			}
-			pid = strtonum(p->fts_name, 1, UINT32_MAX, &errstr);
-			if (errstr != NULL) {
-				qwarnx("bad pid %s: %s", p->fts_name, errstr);
-				goto next;
-			}
-			if (sproc_pid(qq, by_inode, pid, dfd) == -1)
-				qwarnx("can't scrape %s", p->fts_name);
-next:
-			close(dfd);
-		}
-	}
-
-	close(rootfd);
-	fts_close(tree);
-
-	return (0);
-}
-
-static int
-sproc_scrape(struct quark_queue *qq)
-{
-	int				 r;
-	struct sproc_socket_by_inode	 socket_tmp_tree, *by_inode;
-	struct sproc_socket		*ss;
-
-	RB_INIT(&socket_tmp_tree);
-	by_inode = NULL;
-
-	if (qq->flags & QQ_SOCK_CONN) {
-		r = sproc_net_tcp(qq, AF_INET, &socket_tmp_tree);
-		if (r == -1)
-			goto done;
-		r = sproc_net_tcp(qq, AF_INET6, &socket_tmp_tree);
-		if (r == -1)
-			goto done;
-
-		by_inode = &socket_tmp_tree;
-	}
-
-	r = sproc_scrape_processes(qq, by_inode);
-
-done:
-	while ((ss = RB_ROOT(&socket_tmp_tree)) != NULL) {
-		RB_REMOVE(sproc_socket_by_inode, &socket_tmp_tree, ss);
-		free(ss);
-	}
-
-	return (r);
-}
-
-static u64
-fetch_boottime(void)
-{
-	char		*line;
-	const char	*errstr, *needle;
-	u64		 btime;
-
-	needle = "btime ";
-	line = find_line_p("/proc/stat", needle);
-	if (line == NULL)
-		return (0);
-	btime = strtonum(line + strlen(needle), 1, LLONG_MAX, &errstr);
-	free(line);
-	if (errstr != NULL)
-		qwarnx("can't parse btime: %s", errstr);
-
-	return (btime * NS_PER_S);
-}
-
-/*
  * Aggregation is a relationship between a parent event and a child event. In a
  * fork+exec cenario, fork is the parent, exec is the child.
  * Aggregation can be confiured as AGG_SINGLE or AGG_MULTI.
@@ -2024,7 +1353,7 @@ quark_init(void)
 		qwarn("sysconf(_SC_CLK_TCK)");
 		return (-1);
 	}
-	if ((boottime = fetch_boottime()) == 0) {
+	if ((boottime = sproc_fetch_boottime()) == 0) {
 		qwarn("can't fetch btime");
 		return (-1);
 	}
@@ -2487,7 +1816,7 @@ quark_queue_pop_raw(struct quark_queue *qq)
 	 */
 	(void)quark_queue_populate(qq);
 
-	now = now64();
+	now = qnow64();
 	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
 	if (min == NULL || !raw_event_expired(qq, min, now)) {
 		/* qq->idle++; */
