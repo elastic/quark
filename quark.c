@@ -85,6 +85,7 @@ raw_event_alloc(int type)
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
 	case RAW_PACKET:	/* caller allocates */
+	case RAW_FILE:		/* caller allocates */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -121,6 +122,9 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
+		break;
+	case RAW_FILE:
+		free(raw->file.quark_file);
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -299,6 +303,8 @@ event_storage_clear(struct quark_queue *qq)
 	qq->event_storage.socket = NULL;
 	free(qq->event_storage.packet);
 	qq->event_storage.packet = NULL;
+	free(qq->event_storage.file);
+	qq->event_storage.file = NULL;
 }
 
 static void
@@ -578,7 +584,7 @@ event_flag_str(u64 flag)
 	case QUARK_F_COMM:
 		return "COMM";
 	case QUARK_F_FILENAME:
-		return "FILENAME";
+		return "FNAME";
 	case QUARK_F_CMDLINE:
 		return "CMDLINE";
 	case QUARK_F_CWD:
@@ -610,6 +616,8 @@ event_type_str(u64 event)
 		return "PACKET";
 	case QUARK_EV_BYPASS:
 		return "BYPASS";
+	case QUARK_EV_FILE:
+		return "FILE";
 	default:
 		return "?";
 	}
@@ -899,6 +907,41 @@ entry_leader_type_str(u32 entry_leader_type)
 	}
 }
 
+static void
+file_op_mask_str(u32 op_mask, char *buf, size_t len)
+{
+	int		 op, first;
+	const char	*s;
+
+	*buf = 0;
+	first = 1;
+	while ((op = ffs(op_mask)) != 0) {
+		op = (1 << (op - 1));
+		switch (op) {
+		case QUARK_FILE_OP_CREATE:
+			s = "CREATE";
+			break;
+		case QUARK_FILE_OP_REMOVE:
+			s = "REMOVE";
+			break;
+		case QUARK_FILE_OP_MOVE:
+			s = "MOVE";
+			break;
+		case QUARK_FILE_OP_MODIFY:
+			s = "MODIFY";
+			break;
+		default:
+			s = "INVALID";
+			break;
+		}
+		if (!first)
+			(void)strlcat(buf, "|", len);
+		first = 0;
+		(void)strlcat(buf, s, len);
+		op_mask &= ~op;
+	}
+}
+
 #define P(...)						\
 	do {						\
 		if (fprintf(f, __VA_ARGS__) < 0)	\
@@ -908,10 +951,11 @@ int
 quark_event_dump(const struct quark_event *qev, FILE *f)
 {
 	const char			*flagname;
-	char				 events[1024];
+	char				 buf[1024];
 	const struct quark_process	*qp;
 	const struct quark_socket	*qsk;
 	const struct quark_packet	*packet;
+	const struct quark_file		*file;
 	int				 pid;
 
 	if (qev->events == QUARK_EV_BYPASS) {
@@ -924,12 +968,13 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	qp = qev->process;
 	qsk = qev->socket;
 	packet = qev->packet;
+	file = qev->file;
 
 	pid = qp != NULL ? qp->pid : 0;
-	events_type_str(qev->events, events, sizeof(events));
+	events_type_str(qev->events, buf, sizeof(buf));
 	P("->%d", pid);
 	if (qev->events)
-		P(" (%s)", events);
+		P(" (%s)", buf);
 	P("\n");
 
 	if (qev->events & (QUARK_EV_SOCK_CONN_ESTABLISHED|QUARK_EV_SOCK_CONN_CLOSED)) {
@@ -962,6 +1007,27 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    packet->origin == QUARK_PACKET_ORIGIN_DNS ? "dns" : "?",
 		    packet->cap_len, packet->orig_len);
 		sshbuf_dump_data(packet->data, packet->cap_len, f);
+	}
+
+	if (qev->events & QUARK_EV_FILE) {
+		flagname = "FILE";
+
+		if (file == NULL)
+			return (-1);
+
+		file_op_mask_str(file->op_mask, buf, sizeof(buf));
+		P("  %.4s\top=%s\n", flagname, buf);
+		if (file->path != NULL)
+			P("  %.4s\tpath=%s\n", flagname, file->path);
+		if (file->old_path != NULL)
+			P("  %.4s\told_path=%s\n", flagname, file->old_path);
+		if (file->sym_target != NULL)
+			P("  %.4s\tsym_target=%s\n", flagname,
+			    file->sym_target);
+		P("  %.4s\tmode=0%o uid=%d gid=%d size=%llu inode=%llu\n",
+		    flagname, file->mode, file->uid, file->gid, file->size, file->inode);
+		P("  %.4s\tatime=%llu mtime=%llu ctime=%llu\n", flagname,
+		    file->atime, file->mtime, file->ctime);
 	}
 
 	if (qp == NULL)
@@ -2051,7 +2117,8 @@ fetch_boottime(void)
 enum agg_kind {
 	AGG_NONE,		/* Can't aggregate, must be zero */
 	AGG_SINGLE,		/* Can aggregate only one value */
-	AGG_MULTI		/* Can aggregate multiple values */
+	AGG_MULTI,		/* Can aggregate multiple values */
+	AGG_CUSTOM,		/* Can aggregate depending on data */
 };
 		     /* parent */   /* child */
 const u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
@@ -2066,6 +2133,8 @@ const u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
 
 	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
 	[RAW_COMM][RAW_EXIT_THREAD]			= AGG_SINGLE,
+
+	[RAW_FILE][RAW_FILE]				= AGG_CUSTOM,
 };
 
 /* used if qq->flags & QQ_MIN_AGG */
@@ -2378,10 +2447,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qa->max_length = 1;
 	}
 	/*
-	 * QQ_{FILE,MEMFD,TTY} needs QQ_BYPASS for now
+	 * QQ_{MEMFD,TTY} needs QQ_BYPASS for now
 	 */
-	if ((qa->flags & (QQ_FILE|QQ_MEMFD|QQ_TTY))
-	    && !(qa->flags & QQ_BYPASS))
+	if ((qa->flags & (QQ_MEMFD|QQ_TTY)) && !(qa->flags & QQ_BYPASS))
 		return (errno = EINVAL, -1);
 
 	if ((qa->flags & QQ_ALL_BACKENDS) == 0 ||
@@ -2476,6 +2544,28 @@ quark_queue_close(struct quark_queue *qq)
 }
 
 static int
+can_aggregate_file(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
+{
+	struct quark_file	*pf, *cf;
+
+	pf = p->file.quark_file;
+	cf = c->file.quark_file;
+
+	if (pf->inode != cf->inode)
+		return (0);
+	/*
+	 * Maybe we should escape uid/gid/mode, makes it possible to hide stuff
+	 */
+	if (pf->op_mask & (QUARK_FILE_OP_REMOVE|QUARK_FILE_OP_MOVE))
+		return (0);
+	if ((pf->op_mask & (QUARK_FILE_OP_CREATE|QUARK_FILE_OP_MODIFY)) &&
+	    (cf->op_mask & (QUARK_FILE_OP_MODIFY|QUARK_FILE_OP_REMOVE)))
+		return (1);
+
+	return (0);
+}
+
+static int
 can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 {
 	int			 kind;
@@ -2504,6 +2594,10 @@ can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 				return (0);
 		}
 		return (1);
+	case AGG_CUSTOM:
+		if (p->type == RAW_FILE && c->type == RAW_FILE)
+			return (can_aggregate_file(qq, p, c));
+		return (0);
 	default:
 		qwarnx("unhandle agg kind %d", kind);
 		return (0);
@@ -2673,6 +2767,42 @@ raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static const struct quark_event *
+raw_event_file(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+	struct raw_event	*agg;
+	u32			 op_mask;
+
+	if (raw->file.quark_file == NULL) {
+		qwarnx("quark_file is null");
+
+		return (NULL);
+	}
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_FILE;
+	qev->process = quark_process_lookup(qq, raw->pid);
+
+	/*
+	 * File aggregation is basically joining op_mask and then using the last
+	 * raw_event.
+	 */
+	op_mask = raw->file.quark_file->op_mask;
+	TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
+		op_mask |= agg->file.quark_file->op_mask;
+		raw = agg;
+	}
+
+	/* Steal the file */
+	raw->file.quark_file->op_mask = op_mask;
+	qev->file = raw->file.quark_file;
+	raw->file.quark_file = NULL;
+
+	return (qev);
+}
+
+static const struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
@@ -2719,6 +2849,9 @@ quark_queue_get_event(struct quark_queue *qq)
 			break;
 		case RAW_PACKET:
 			qev = raw_event_packet(qq, raw);
+			break;
+		case RAW_FILE:
+			qev = raw_event_file(qq, raw);
 			break;
 		default:
 			qwarnx("unhandled raw->type: %d", raw->type);

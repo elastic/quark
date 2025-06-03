@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <sys/wait.h>
@@ -115,7 +116,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDefkNSstv] "
+	fprintf(stderr, "usage: %s [-BbDeFkMNSstv] "
 	    "[-C filename ] [-l maxlength] [-m maxnodes] [-P ppid]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
@@ -127,13 +128,14 @@ int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes;
-	int				 do_priv_drop, do_snap, lflag;
+	int				 do_priv_drop, do_snap, benchmark, lflag;
 	u32				 filter_ppid;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
 	const struct quark_event	*qev;
 	struct sigaction		 sigact;
 	FILE				*graph_by_time, *graph_by_pidtime, *graph_cache;
+	struct timespec			 bench_stamp, now;
 
 	quark_queue_default_attr(&qa);
 	qa.flags &= ~QQ_ALL_BACKENDS;
@@ -143,8 +145,9 @@ main(int argc, char *argv[])
 	do_snap = 1;
 	graph_by_time = graph_by_pidtime = graph_cache = NULL;
 	lflag = 0;
+	benchmark = 0;
 
-	while ((ch = getopt(argc, argv, "BbC:Deghkl:m:NP:tSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DeFghkl:Mm:NP:tSsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -164,6 +167,9 @@ main(int argc, char *argv[])
 			break;
 		case 'e':
 			qa.flags |= QQ_ENTRY_LEADER;
+			break;
+		case 'F':
+			qa.flags |= QQ_FILE;
 			break;
 		case 'g':
 			qa.flags |= QQ_MIN_AGG;
@@ -200,6 +206,9 @@ main(int argc, char *argv[])
 			if (graph_by_pidtime == NULL)
 				err(1, "fopen");
 			break;
+		case 'M':
+			benchmark = 1;
+			break;
 		case 'N':
 			qa.flags |= QQ_DNS;
 			break;
@@ -230,6 +239,12 @@ main(int argc, char *argv[])
 		}
 	}
 
+	if (benchmark) {
+		if (clock_gettime(CLOCK_MONOTONIC, &bench_stamp) == -1)
+			err(1, "clock_gettime");
+		do_snap = 0;
+	}
+
 	if (qa.flags & QQ_BYPASS) {
 		if (qa.flags &
 		    (QQ_KPROBE|QQ_ENTRY_LEADER|QQ_MIN_AGG|QQ_THREAD_EVENTS) ||
@@ -257,7 +272,7 @@ main(int argc, char *argv[])
 		err(1, "quark_queue_open");
 
 	if (quark_verbose)
-		printf("using %s for backend\n", fetch_backend(qq));
+		fprintf(stderr, "using %s for backend\n", fetch_backend(qq));
 
 	/* From now on we will be nobody */
 	if (do_priv_drop)
@@ -300,7 +315,21 @@ main(int argc, char *argv[])
 		}
 
 		/*
-		 * Filter out processes by parent pid if set.
+		 * Benchmark mode, don't dump to stdout, just print stats every second
+		 */
+		if (benchmark) {
+			if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
+				err(1, "clock_gettime");
+
+			if ((now.tv_sec - bench_stamp.tv_sec) >= 1) {
+				dump_stats(qq);
+				bench_stamp = now;
+			}
+			continue;
+		}
+
+		/*
+		 * Filter out processes by parent pid if set
 		 */
 		if (filter_ppid &&
 		    qev->process != NULL &&

@@ -161,6 +161,7 @@ enum raw_types {
 	RAW_EXEC_CONNECTOR,
 	RAW_SOCK_CONN,
 	RAW_PACKET,
+	RAW_FILE,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -264,6 +265,31 @@ struct raw_packet {
 	struct quark_packet	*quark_packet;
 };
 
+#define QUARK_FILE_OP_CREATE	(1 << 0)
+#define QUARK_FILE_OP_MODIFY	(1 << 1)
+#define QUARK_FILE_OP_REMOVE	(1 << 2)
+#define QUARK_FILE_OP_MOVE	(1 << 3)
+
+struct quark_file {
+	const char	*path;		/* points to storage + 0 */
+	const char	*old_path;	/* NULL or points to storage + strlen(path) */
+	const char	*sym_target;	/* NULL or points to storage + strlen(path) + strlen(old_path) */
+	u64		 inode;		/* as stat.st_inode */
+	u64		 atime;
+	u64		 mtime;
+	u64		 ctime;
+	u64		 size;
+	u32		 mode;		/* as stat.st_mode */
+	u32		 uid;
+	u32		 gid;
+	u32		 op_mask;	/* mask of QUARK_FILE_OP_* */
+	char		 storage[];	/* paths point here */
+};
+
+struct raw_file {
+	struct quark_file	*quark_file;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -282,6 +308,7 @@ struct raw_event {
 		struct raw_exec_connector	exec_connector;
 		struct raw_sock_conn		sock_conn;
 		struct raw_packet		packet;
+		struct raw_file			file;
 	};
 };
 
@@ -308,11 +335,13 @@ struct quark_event {
 #define QUARK_EV_SOCK_CONN_CLOSED	(1 << 5)
 #define QUARK_EV_PACKET			(1 << 6)
 #define QUARK_EV_BYPASS			(1 << 7)
+#define QUARK_EV_FILE			(1 << 8)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
 	struct quark_packet		*packet;
 	const void			*bypass;
+	struct quark_file		*file;
 };
 
 /*
