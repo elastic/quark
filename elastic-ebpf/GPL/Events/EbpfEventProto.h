@@ -83,6 +83,12 @@ enum ebpf_varlen_field_type {
                                                sizeof(struct ebpf_varlen_field)),            \
                   __i++)
 
+#define FOR_EACH_VARLEN_FIELD_PTR(_vl, _c, _i)				\
+	for (_i = 0, (_c) = (struct ebpf_varlen_field *)(_vl)->data;	\
+	     _i < (_vl)->nfields;					\
+	     (_c) = (struct ebpf_varlen_field *)((char *)(_c) + (_c)->size + sizeof(struct ebpf_varlen_field)), \
+		 _i++)
+
 struct ebpf_varlen_fields_start {
     uint32_t nfields;
     size_t size;

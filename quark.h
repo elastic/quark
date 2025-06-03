@@ -161,6 +161,7 @@ enum raw_types {
 	RAW_EXEC_CONNECTOR,
 	RAW_SOCK_CONN,
 	RAW_PACKET,
+	RAW_FILE,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -263,6 +264,22 @@ struct raw_packet {
 	struct quark_packet	*quark_packet;
 };
 
+struct quark_file {
+	u64		inode;
+	u64		atime;
+	u64		mtime;
+	u64		ctime;
+	u64		size;
+	u32		mode;	/* why does ebpf use 16bit here? */
+	u32		uid;
+	u32		gid;
+	char		path[];
+};
+
+struct raw_file {
+	struct quark_file	*quark_file;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -281,6 +298,7 @@ struct raw_event {
 		struct raw_exec_connector	exec_connector;
 		struct raw_sock_conn		sock_conn;
 		struct raw_packet		packet;
+		struct raw_file			file;
 	};
 };
 

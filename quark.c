@@ -85,6 +85,7 @@ raw_event_alloc(int type)
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
 	case RAW_PACKET:	/* caller allocates */
+	case RAW_FILE:		/* caller allocates */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -121,6 +122,9 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
+		break;
+	case RAW_FILE:
+		free(raw->file.quark_file);
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -2310,10 +2314,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qa->max_length = 1;
 	}
 	/*
-	 * QQ_{FILE,MEMFD} needs QQ_BYPASS for now
+	 * QQ_MEMFD needs QQ_BYPASS for now
 	 */
-	if ((qa->flags & (QQ_FILE|QQ_MEMFD))
-	    && !(qa->flags & QQ_BYPASS))
+	if ((qa->flags & QQ_MEMFD) && !(qa->flags & QQ_BYPASS))
 		return (errno = EINVAL, -1);
 
 	if ((qa->flags & QQ_ALL_BACKENDS) == 0 ||
