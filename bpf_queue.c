@@ -711,3 +711,14 @@ bpf_queue_close(struct quark_queue *qq)
 	/* Closed in ring_buffer__free() */
 	qq->epollfd = -1;
 }
+
+struct bpf_probes *
+quark_get_bpf_probes(struct quark_queue *qq)
+{
+	struct bpf_queue *bqq = qq->queue_be;
+
+	if (!(qq->flags & QQ_EBPF) || !(qq->flags & QQ_BYPASS))
+		return (errno = EINVAL, NULL);
+
+	return (bqq->probes);
+}

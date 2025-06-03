@@ -83,7 +83,8 @@ int			btf_number_of_params(struct btf *, const char *);
 int			btf_index_of_param(struct btf *, const char *, const char *);
 
 /* bpf_queue.c */
-int	bpf_queue_open(struct quark_queue *);
+int			 bpf_queue_open(struct quark_queue *);
+struct bpf_probes	*quark_get_bpf_probes(struct quark_queue *);
 
 /* kprobe_queue.c */
 int	kprobe_queue_open(struct quark_queue *);
