@@ -730,48 +730,48 @@ again:
 }
 
 static int
-open_tracing(int flags, const char *fmt, ...)
+open_tracing(int flags, const char *tail)
 {
-	va_list  ap;
-	int	 dfd, fd, i, r, saved_errno;
-	char	 tail[MAXPATHLEN];
-	char	*paths[] = {
-		"/sys/kernel/tracing",
-		"/sys/kernel/debug/tracing",
-	};
+	int		 fd, head1_errno, head2_errno;
+	const char	*head1 = "/sys/kernel/debug/tracing";
+	const char	*head2 = "/sys/kernel/tracing";
+	char		 path[MAXPATHLEN];
 
-	va_start(ap, fmt);
-	r = vsnprintf(tail, sizeof(tail), fmt, ap);
-	va_end(ap);
-	if (r == -1 || r >= (int)sizeof(tail))
-		return (-1);
-	if (tail[0] == '/')
+	if (tail == NULL || tail[0] == '/')
 		return (errno = EINVAL, -1);
 
-	saved_errno = 0;
-	for (i = 0; i < (int)nitems(paths); i++) {
-		if ((dfd = open(paths[i], O_PATH)) == -1) {
-			if (!saved_errno && errno != ENOENT)
-				saved_errno = errno;
-			qwarn("open: %s", paths[i]);
-			continue;
-		}
-		fd = openat(dfd, tail, flags);
-		close(dfd);
-		if (fd == -1) {
-			if (!saved_errno && errno != ENOENT)
-				saved_errno = errno;
-			qwarn("open: %s", tail);
-			continue;
-		}
+	/*
+	 * NOTE: We don't use openat(2) + open(2) here deliberately, if you do
+	 * an dfd = open(/sysr/kernel/tracing, O_PATH) + openat(dfd, "kprobe_events"),
+	 * The kernel does _not_ automount tracefs, so we have to issue an open
+	 * with the full path. See https://github.com/elastic/quark/issues/179.
+	 */
 
-		return (fd);
+	/* try head1 */
+	if (snprintf(path, sizeof(path),
+	    "%s/%s", head1, tail) >= (int)sizeof(path))
+		return (errno = ENAMETOOLONG, -1);
+	fd = open(path, flags);
+
+	/* try head2 */
+	if (fd == -1) {
+		head1_errno = errno;
+		if (snprintf(path, sizeof(path),
+		    "%s/%s", head2, tail) >= (int)sizeof(path))
+			return (errno = ENAMETOOLONG, -1);
+		fd = open(path, flags);
+		if (fd == -1)
+			head2_errno = errno;
 	}
 
-	if (saved_errno)
-		errno = saved_errno;
+	if (fd == -1) {
+		errno = head1_errno;
+		qwarn("open: %s/%s", head1, tail);
+		errno = head2_errno;
+		qwarn("open: %s/%s", head2, tail);
+	}
 
-	return (-1);
+	return (fd);
 }
 
 static int
@@ -782,7 +782,7 @@ fetch_tracing_id(const char *tail)
 	const char	*errstr;
 	ssize_t		 n;
 
-	fd = open_tracing(O_RDONLY, "%s", tail);
+	fd = open_tracing(O_RDONLY, tail);
 	if (fd == -1)
 		return (-1);
 
@@ -1128,7 +1128,7 @@ kprobe_build_string(struct kprobe *k, char *name, struct quark_btf *qbtf)
 static int
 kprobe_uninstall(struct kprobe *k, u64 qid)
 {
-	char	buf[4096];
+	char	buf[MAXPATHLEN];
 	ssize_t n;
 	int	fd;
 	char	fsname[MAXPATHLEN];
