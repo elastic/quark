@@ -415,6 +415,11 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	}
 
 	/*
+	 * Maps and other state
+	 */
+	p->rodata->consumer_pid = getpid();
+
+	/*
 	 * Unload everything since it has way more than we want
 	 */
 	for (i = 0; i < p->skeleton->prog_cnt; i++) {
