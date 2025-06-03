@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDekNSstv
+.Op Fl BbDeFkMNSstv
 .Op Fl C Ar filename
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
@@ -61,6 +61,8 @@ in
 .Em quark_events .
 Entry leader is how the process entered the system, it is disabled by default as
 it is Elastic/ECS specific.
+.It Fl F
+Enable file events (experimental).
 .It Fl g
 Use minimal aggregation, fork, exec and exit will
 .Em not
@@ -87,6 +89,8 @@ Exits after
 .Ar maxnodes
 has been reached.
 This is used purely for internal debugging.
+.It Fl M
+Run in a simple benchmark form that only counts and display stats.
 .It Fl N
 Enable DNS events (experimental).
 .It Fl P Ar ppid

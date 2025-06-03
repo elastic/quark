@@ -102,11 +102,15 @@ main(int argc, char *argv[])
 
 	/* child */
 	if (pid == 0) {
+		if (mkdir("/tmp", 0777) != 0)
+			err(1, "mkdir /tmp");
 		if (mkdir("/proc", 0666) != 0)
 			err(1, "mkdir /proc");
 		if (mkdir("/sys", 0666) != 0)
 			err(1, "mkdir /sys");
 
+		if (mount(NULL, "/tmp", "tmpfs", 0, NULL) == -1)
+			err(1, "mount /tmp");
 		if (mount("proc", "/proc", "proc", 0, NULL) == -1)
 			err(1, "mount /proc");
 		if (mount(NULL, "/sys", "sysfs", 0, NULL) == -1)

@@ -4,6 +4,7 @@
 #include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -47,6 +48,7 @@ struct udphdr {
 };
 
 #define msleep(_x)	usleep((uint64_t)_x * 1000ULL)
+#define TS_TO_NS(_ts)	(((_ts)->tv_sec * NS_PER_S) + (_ts)->tv_nsec)
 
 enum {
 	SANE,
@@ -750,6 +752,62 @@ t_exit_tgid(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_file(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_file		*qf;
+	struct stat			 st;
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	int				 fd;
+
+	qa->flags |= QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	assert(write(fd, "1", 1) == 1);
+	assert(write(fd, "2", 1) == 1);
+	assert(write(fd, "3", 1) == 1);
+	assert(write(fd, "4", 1) == 1);
+	assert(write(fd, "5", 1) == 1);
+
+	if (fstat(fd, &st) == -1)
+		err(1, "stat");
+
+	close(fd);
+	if (unlink(path) != 0)
+		err(1, "unlink");
+
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->op_mask & QUARK_FILE_OP_CREATE);
+	assert(qf->op_mask & QUARK_FILE_OP_MODIFY);
+	assert(qf->op_mask & QUARK_FILE_OP_REMOVE);
+	assert(qf->inode == st.st_ino);
+	assert(qf->atime == TS_TO_NS(&st.st_atim));
+	/*
+	 * ctime is normalized, see
+	 * inode_set_ctime_to_ts()->set_normalized_timespec64()
+	 * TODO: Figure out how to make it match at some point.
+	 */
+	/* assert(qf->ctime == TS_TO_NS(&st.st_ctim)); */
+	assert(qf->ctime > 0);
+	assert(qf->mtime == TS_TO_NS(&st.st_mtim));
+	assert(qf->mode == st.st_mode);
+	assert(qf->uid == getuid());
+	assert(qf->gid == getgid());
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
 t_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
@@ -789,9 +847,8 @@ t_bypass(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
-/* XXX Only probe loading for now */
 static int
-t_file(const struct test *t, struct quark_queue_attr *qa)
+t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
 
@@ -1138,8 +1195,9 @@ struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
 	T(t_exit_tgid),
-	T_EBPF(t_bypass),
 	T_EBPF(t_file),
+	T_EBPF(t_bypass),
+	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),

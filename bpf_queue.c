@@ -67,6 +67,9 @@ libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list ap)
 	return (0);
 }
 
+/*
+ * This structure exists to work around the bad layout of ebpf events
+ */
 struct ebpf_ctx {
 	struct ebpf_pid_info		*pids;
 	struct ebpf_cred_info		*creds;
@@ -330,6 +333,163 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		}
 		break;
 	}
+	case EBPF_EVENT_FILE_SHMEM_OPEN:
+		goto drop;
+		break;
+	case EBPF_EVENT_FILE_CREATE: /* FALLTHROUGH */
+	case EBPF_EVENT_FILE_DELETE: /* FALLTHROUGH */
+	case EBPF_EVENT_FILE_MODIFY: /* FALLTHROUGH */
+	case EBPF_EVENT_FILE_RENAME: {
+		struct ebpf_file_info		*info;
+		const char			*path, *old_path, *sym_target;
+		struct ebpf_varlen_fields_start *vl;
+		size_t				 path_len, sym_target_len, old_path_len;
+		size_t				 alloc_len, tmp_len;
+		struct quark_file		*file;
+		u32				 op_mask, dummy;
+
+		if ((raw = raw_event_alloc(RAW_FILE)) == NULL)
+			goto bad;
+
+		raw->time = ev->ts;
+
+		/*
+		 * Cope with the weird ebpf layout structures
+		 */
+		info = NULL;
+		vl = NULL;
+		op_mask = 0;
+		switch (ev->type) {
+		case EBPF_EVENT_FILE_CREATE: {
+			struct ebpf_file_create_event *create =
+			    (struct ebpf_file_create_event *)ev;
+			info = &create->finfo;
+			vl = &create->vl_fields;
+			raw->pid = create->pids.tgid;
+			op_mask = QUARK_FILE_OP_CREATE;
+			break;
+		}
+		case EBPF_EVENT_FILE_DELETE: {
+			struct ebpf_file_delete_event *delete =
+			    (struct ebpf_file_delete_event *)ev;
+			info = &delete->finfo;
+			vl = &delete->vl_fields;
+			raw->pid = delete->pids.tgid;
+			op_mask = QUARK_FILE_OP_REMOVE;
+			break;
+		}
+		case EBPF_EVENT_FILE_MODIFY: {
+			struct ebpf_file_modify_event *modify =
+			    (struct ebpf_file_modify_event *)ev;
+			info = &modify->finfo;
+			vl = &modify->vl_fields;
+			raw->pid = modify->pids.tgid;
+			op_mask = QUARK_FILE_OP_MODIFY;
+			break;
+		}
+		case EBPF_EVENT_FILE_RENAME: {
+			struct ebpf_file_rename_event *rename =
+			    (struct ebpf_file_rename_event *)ev;
+			info = &rename->finfo;
+			vl = &rename->vl_fields;
+			raw->pid = rename->pids.tgid;
+			op_mask = QUARK_FILE_OP_MOVE;
+			break;
+		}
+		default:
+			qwarnx("unhandled file event type %lu", ev->type);
+			goto bad;
+		}
+
+		if (info == NULL) {
+			qwarnx("no info");
+			goto bad;
+		}
+
+		path = old_path = sym_target = NULL;
+		path_len = old_path_len = sym_target_len = tmp_len = 0;
+
+		FOR_EACH_VARLEN_FIELD_PTR(vl, field, dummy) {
+			switch (field->type) {
+			case EBPF_VL_FIELD_PATH:	/* FALLTHROUGH */
+			case EBPF_VL_FIELD_NEW_PATH:
+				tmp_len = strlen(field->data);
+				if (tmp_len > 0) {
+					path = field->data;
+					path_len = tmp_len + 1; /* with NUL */
+				}
+				break;
+			case EBPF_VL_FIELD_SYMLINK_TARGET_PATH:
+				tmp_len = strlen(field->data);
+				if (tmp_len > 0) {
+					sym_target = field->data;
+					sym_target_len = tmp_len + 1; /* with NUL */
+				}
+				break;
+			case EBPF_VL_FIELD_OLD_PATH:
+				tmp_len = strlen(field->data);
+				if (tmp_len > 0) {
+					old_path = field->data;
+					old_path_len = tmp_len + 1; /* with NUL */
+				}
+				continue;
+			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH: /* ignored */
+				break;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				goto bad;
+			}
+		}
+
+		if (path == NULL) {
+			qwarnx("no path");
+			goto bad;
+		}
+
+		/*
+		 * Calculate allocation length, it is the size of the structure
+		 * plus enough storage for all the 3 paths, path + old_path +
+		 * sym_target. The paths all reside in storage and we point to
+		 * their offsets, this way we have just one block allocation
+		 * from ring_buffer all the way up to the user, and we don't
+		 * have to manage memory for it.
+		 */
+		alloc_len = sizeof(*raw->file.quark_file);
+		alloc_len += path_len;
+		if (old_path != NULL)
+			alloc_len += old_path_len; /* NUL already in old_path_len */
+		if (sym_target != NULL)
+			alloc_len += sym_target_len; /* NUL already in sym_target_len */
+		alloc_len++;			     /* extra NUL for paranoia */
+
+		raw->file.quark_file = calloc(1, alloc_len);
+		if (raw->file.quark_file == NULL)
+			goto bad;
+		file = raw->file.quark_file;
+		file->path = file->storage;
+		memcpy((char *)file->path, path, path_len);
+		if (old_path && old_path_len > 0) {
+			file->old_path = file->storage + path_len;
+			memcpy((char *)file->old_path, old_path, old_path_len);
+		}
+		if (sym_target && sym_target_len > 0) {
+			file->sym_target = file->storage + path_len +
+			    old_path_len;
+			memcpy((char *)file->sym_target, sym_target, sym_target_len);
+		}
+
+		file->inode = info->inode;
+		file->atime = info->atime;
+		file->mtime = info->mtime;
+		file->ctime = info->ctime;
+		file->size = info->size;
+		file->mode = info->mode;
+		file->uid = info->uid;
+		file->gid = info->gid;
+		file->op_mask = op_mask;
+
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;
@@ -337,6 +497,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 	return (raw);
 
+drop:
 bad:
 	if (raw != NULL)
 		raw_event_free(raw);
