@@ -369,7 +369,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				path = field->data;
 				break;
 			default:
-				qwarnx("unhandled field type %d", field->type);
+				//qwarnx("unhandled field type %d", field->type);
 				/* goto bad; */
 				continue;
 			}
@@ -391,7 +391,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		memcpy(file->path, path, pathlen);
 		file->path[pathlen] = 0; /* paranoia */
 
-		fprintf(stderr, "(%ld) %s\n", ev->type, file->path);
+		fprintf(stderr, "%d: (%ld) %s\n", raw->pid, ev->type, file->path);
 
 		break;
 	}
