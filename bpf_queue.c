@@ -67,6 +67,9 @@ libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list ap)
 	return (0);
 }
 
+/*
+ * This structure exists to work around the bad layout of ebpf events
+ */
 struct ebpf_ctx {
 	struct ebpf_pid_info		*pids;
 	struct ebpf_cred_info		*creds;
@@ -302,6 +305,97 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				goto bad;
 			}
 		}
+		break;
+	}
+	case EBPF_EVENT_FILE_CREATE: /* FALLTHROUGH */
+	case EBPF_EVENT_FILE_DELETE: /* FALLTHROUGH */
+	case EBPF_EVENT_FILE_MODIFY: /* FALLTHROUGH */
+	case EBPF_EVENT_FILE_RENAME: {
+		struct ebpf_file_create_event	*create = NULL;
+		struct ebpf_file_delete_event	*delete = NULL;
+		struct ebpf_file_modify_event	*modify = NULL;
+		struct ebpf_file_rename_event	*rename = NULL;
+		struct ebpf_file_info		*info	= NULL;
+		const char			*path	= NULL;
+		struct ebpf_varlen_fields_start *vl	= NULL;
+		struct quark_file		*file;
+		size_t				 pathlen;
+		u32 dummy;
+
+		if ((raw = raw_event_alloc(RAW_FILE)) == NULL)
+			goto bad;
+		
+		raw->time = ev->ts;
+
+		/* Cope with the weird ebpf layout structures */
+		switch (ev->type) {
+		case EBPF_EVENT_FILE_CREATE:
+			create = (struct ebpf_file_create_event *)ev;
+			info = &create->finfo;
+			vl = &create->vl_fields;
+			raw->pid = create->pids.tgid;
+			break;
+		case EBPF_EVENT_FILE_DELETE:
+			delete = (struct ebpf_file_delete_event *)ev;
+			info = &delete->finfo;
+			vl = &delete->vl_fields;
+			raw->pid = delete->pids.tgid;
+			break;
+		case EBPF_EVENT_FILE_MODIFY:
+			modify = (struct ebpf_file_modify_event *)ev;
+			info = &modify->finfo;
+			vl = &modify->vl_fields;
+			raw->pid = modify->pids.tgid;
+			break;
+		case EBPF_EVENT_FILE_RENAME:
+			rename = (struct ebpf_file_rename_event *)ev;
+			info = &rename->finfo;
+			vl = &rename->vl_fields;
+			raw->pid = rename->pids.tgid;
+			break;
+		default:
+			qwarnx("unhandled file event type %lu", ev->type);
+			goto bad;
+		}
+
+		if (info == NULL) {
+			qwarnx("no info");
+			goto bad;
+		}
+		FOR_EACH_VARLEN_FIELD_PTR(vl, field, dummy) {
+			switch (field->type) {
+			case EBPF_VL_FIELD_PATH:
+				path = field->data;
+				break;
+			case EBPF_VL_FIELD_SYMLINK_TARGET_PATH: /* FALLTHROUGH */
+			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH: /* FALLTHROUGH */
+			case EBPF_VL_FIELD_OLD_PATH:		/* FALLTHROUGH */
+			case EBPF_VL_FIELD_NEW_PATH:
+				continue;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				goto bad;
+			}
+		}
+
+		if (path == NULL) {
+			qwarnx("no path");
+			goto bad;
+		}
+		if ((pathlen = strlen(path)) == 0) {
+			qwarnx("empty path");
+			goto bad;
+		}
+		raw->file.quark_file = calloc(1,
+		    sizeof(*raw->file.quark_file) + pathlen + 1); /* for NUL */
+		if (raw->file.quark_file == NULL)
+			goto bad;
+		file = raw->file.quark_file;
+		memcpy(file->path, path, pathlen);
+		file->path[pathlen] = 0; /* paranoia */
+
+		//fprintf(stderr, "%d: (%ld) %s\n", raw->pid, ev->type, file->path);
+
 		break;
 	}
 	default:
