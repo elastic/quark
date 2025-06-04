@@ -217,13 +217,15 @@ inside an alpine docker container, so we can track musl builds.
 .It Em test
 Builds and runs
 .Xr quark-test 8 .
+.It Em test-valgrind
+Builds and runs
+.Xr quark-test 8
+under valgrind.
 .It Em test-kernel
 Runs
 .Xr quark-test 8
 over all kernels in
 .Pa kernel_images/ .
-.It Em test-all
-Shortcut for test + test-kernels.
 .It Em btfhub
 Regenerates
 .Pa btfhub.c .
