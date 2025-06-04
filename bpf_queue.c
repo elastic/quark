@@ -354,7 +354,7 @@ relo_param(struct btf *btf, int *loc, const char *func, const char *param)
 {
 	*loc = btf_index_of_param(btf, func, param);
 	if (*loc == -1)
-		warnx("can't relocate parameter %s on function %s",
+		qwarnx("can't relocate parameter %s on function %s",
 		    param, func);
 
 	return (*loc);

@@ -276,7 +276,7 @@ btf_index_of_param(struct btf *btf, const char *func, const char *param)
 	for (i = 0, bp = btf_params(t); i < btf_vlen(t); i++, bp++) {
 		cand = btf__name_by_offset(btf, bp->name_off);
 		if (cand == NULL) {
-			warnx("name for offset %d not found, "
+			qwarnx("name for offset %d not found, "
 			    "this is likely a bug", bp->name_off);
 			continue;
 		}
