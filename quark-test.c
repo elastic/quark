@@ -108,7 +108,7 @@ binpath(const char *bin)
 	static char	name[PATH_MAX];
 
 	if (bin != NULL && realpath(bin, name) == NULL)
-		err(1, "can' initialize binpath");
+		err(1, "can't initialize binpath");
 	else if (bin == NULL && name[0] == 0)
 		err(1, "binpath not initialized");
 
