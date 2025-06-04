@@ -5,7 +5,7 @@ steps:
     artifact_paths:
       - "initramfs.gz"
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
 
@@ -15,7 +15,7 @@ steps:
     artifact_paths:
       - "quark-test"
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
 
@@ -23,7 +23,7 @@ steps:
     key: make_docker_cross_arm64
     command: "make docker-cross-arm64"
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
 
@@ -31,7 +31,7 @@ steps:
     key: make_alpine
     command: "make alpine"
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
 
@@ -41,9 +41,18 @@ steps:
     depends_on:
       - make_centos7
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "build and run quark-test under valgrind amd64"
+    key: valgrind_amd64
+    command: "./.buildkite/runvalgrind.sh"
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-highcpu-8
       enableNestedVirtualization: true
 
   - label: "quark-test on fedora 28 (no bpf)"
@@ -52,7 +61,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -63,7 +72,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -74,7 +83,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -85,7 +94,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -96,7 +105,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -107,7 +116,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -118,7 +127,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -129,7 +138,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -140,7 +149,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -151,7 +160,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -162,7 +171,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -173,7 +182,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -184,7 +193,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -195,7 +204,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -206,7 +215,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -217,7 +226,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -228,7 +237,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -239,7 +248,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -250,7 +259,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -261,7 +270,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -272,7 +281,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -283,7 +292,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -294,7 +303,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -305,7 +314,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -316,7 +325,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -327,7 +336,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -338,7 +347,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -349,7 +358,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -360,7 +369,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
@@ -371,7 +380,7 @@ steps:
     depends_on:
       - make_docker
     agents:
-      image: family/core-ubuntu-2204
+      image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
