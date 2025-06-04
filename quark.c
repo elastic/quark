@@ -2653,7 +2653,7 @@ quark_queue_get_event(struct quark_queue *qq)
 			qev = raw_event_packet(qq, raw);
 			break;
 		default:
-			warnx("unhandled raw->type: %d", raw->type);
+			qwarnx("unhandled raw->type: %d", raw->type);
 			break;
 		}
 
