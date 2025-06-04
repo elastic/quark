@@ -132,13 +132,13 @@ Builds quark inside an alpine docker container, so we can track musl builds.
 
 Builds and runs [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html).
 
+[*test-valgrind*](#test-valgrind)
+
+Builds and runs [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html) under valgrind.
+
 [*test-kernel*](#test-kernel)
 
 Runs [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html) over all kernels in kernel\_images/.
-
-[*test-all*](#test-all)
-
-Shortcut for test + test-kernels.
 
 [*btfhub*](#btfhub)
 
