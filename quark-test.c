@@ -103,14 +103,16 @@ color(int color)
 }
 
 static char *
-binpath(void)
+binpath(const char *bin)
 {
 	static char	name[PATH_MAX];
 
-	if (readlink("/proc/self/exe", name, sizeof(name)) == -1)
-		err(1, "readlink");
+	if (bin != NULL && realpath(bin, name) == NULL)
+		err(1, "can't initialize binpath");
+	else if (bin == NULL && name[0] == 0)
+		err(1, "binpath not initialized");
 
-	return name;
+	return (name);
 }
 
 static int
@@ -285,7 +287,7 @@ fork_exec_nop(void)
 	pid_t		child;
 	int		status;
 	char *const	argv[] = {
-		binpath(),
+		binpath(NULL),
 		"-N",
 		"this",
 		"is",
@@ -297,7 +299,7 @@ fork_exec_nop(void)
 		err(1, "fork");
 	else if (child == 0) {
 		/* child */
-		return (execv(binpath(), argv));
+		return (execv(binpath(NULL), argv));
 	}
 
 	/* parent */
@@ -614,7 +616,7 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 #endif
 	/* check strings */
 	assert(!strcmp(qp->comm, program_invocation_short_name));
-	assert(!strcmp(qp->filename, binpath()));
+	assert(!strcmp(qp->filename, binpath(NULL)));
 	/* check args */
 	quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
 	argc = 0;
@@ -629,7 +631,7 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 
 		switch (argc) {
 		case 0:
-			assert(!strcmp(arg, binpath()));
+			assert(!strcmp(arg, binpath(NULL)));
 			break;
 		case 1:
 			assert(!strcmp(arg, "-N"));
@@ -1104,21 +1106,20 @@ lookup_test(const char *name)
 static int
 run_test_doit(struct test *t, struct quark_queue_attr *qa)
 {
-	int			nfd, r;
+	int			r, before_nfd, after_nfd;;
 	struct quark_queue_attr qa_copy;
 
 	/*
 	 * Check for FD leaks
 	 */
-	nfd = num_open_fd();
-	assert(nfd == 3);
+	before_nfd = num_open_fd();
 	qa_copy = *qa;
 	r = t->func(t, &qa_copy);
-	nfd = num_open_fd();
-	if (nfd != 3) {
+	after_nfd = num_open_fd();
+	if (before_nfd != after_nfd) {
 		fprintf(stderr,
-		    "FDLEAK DETECTED! %d opened descriptors, expected 3\n",
-		    nfd);
+		    "FDLEAK DETECTED! %d opened descriptors, expected %d\n",
+		    after_nfd, before_nfd);
 		dump_open_fd(stderr);
 		if (r == 0)
 			r = 1;
@@ -1336,6 +1337,8 @@ main(int argc, char *argv[])
 {
 	int		  ch, failed, x;
 	struct test	 *t;
+
+	binpath(argv[0]);
 
 	while ((ch = getopt(argc, argv, "1bhklNvVx:")) != -1) {
 		switch (ch) {
