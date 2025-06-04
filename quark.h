@@ -325,11 +325,13 @@ struct quark_event {
 #define QUARK_EV_SOCK_CONN_CLOSED	(1 << 5)
 #define QUARK_EV_PACKET			(1 << 6)
 #define QUARK_EV_BYPASS			(1 << 7)
+#define QUARK_EV_FILE			(1 << 8)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
 	struct quark_packet		*packet;
 	const void			*bypass;
+	struct quark_file		*file;
 };
 
 /*

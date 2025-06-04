@@ -301,6 +301,8 @@ event_storage_clear(struct quark_queue *qq)
 	qq->event_storage.socket = NULL;
 	free(qq->event_storage.packet);
 	qq->event_storage.packet = NULL;
+	free(qq->event_storage.file);
+	qq->event_storage.file = NULL;
 }
 
 static void
@@ -579,7 +581,7 @@ event_flag_str(u64 flag)
 	case QUARK_F_COMM:
 		return "COMM";
 	case QUARK_F_FILENAME:
-		return "FILENAME";
+		return "FNAME";
 	case QUARK_F_CMDLINE:
 		return "CMDLINE";
 	case QUARK_F_CWD:
@@ -609,6 +611,8 @@ event_type_str(u64 event)
 		return "PACKET";
 	case QUARK_EV_BYPASS:
 		return "BYPASS";
+	case QUARK_EV_FILE:
+		return "FILE";
 	default:
 		return "?";
 	}
@@ -911,6 +915,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_process	*qp;
 	const struct quark_socket	*qsk;
 	const struct quark_packet	*packet;
+	const struct quark_file		*file;
 	int				 pid;
 
 	if (qev->events == QUARK_EV_BYPASS) {
@@ -923,6 +928,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	qp = qev->process;
 	qsk = qev->socket;
 	packet = qev->packet;
+	file = qev->file;
 
 	pid = qp != NULL ? qp->pid : 0;
 	events_type_str(qev->events, events, sizeof(events));
@@ -961,6 +967,15 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    packet->origin == QUARK_PACKET_ORIGIN_DNS ? "dns" : "?",
 		    packet->cap_len, packet->orig_len);
 		sshbuf_dump_data(packet->data, packet->cap_len, f);
+	}
+
+	if (qev->events & QUARK_EV_FILE) {
+		flagname = "FILE";
+
+		if (file == NULL)
+			return (-1);
+
+		P("  %.4s\tpath=%s\n", flagname, file->path);
 	}
 
 	if (qp == NULL)
@@ -2608,6 +2623,29 @@ raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static const struct quark_event *
+raw_event_file(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	if (raw->file.quark_file == NULL) {
+		qwarnx("quark_file is null");
+
+		return (NULL);
+	}
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_FILE;
+	qev->process = quark_process_lookup(qq, raw->pid);
+
+	/* Steal the file */
+	qev->file = raw->file.quark_file;
+	raw->file.quark_file = NULL;
+
+	return (qev);
+}
+
+static const struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
@@ -2654,6 +2692,9 @@ quark_queue_get_event(struct quark_queue *qq)
 			break;
 		case RAW_PACKET:
 			qev = raw_event_packet(qq, raw);
+			break;
+		case RAW_FILE:
+			qev = raw_event_file(qq, raw);
 			break;
 		default:
 			qwarnx("unhandled raw->type: %d", raw->type);
