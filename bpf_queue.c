@@ -363,15 +363,18 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 			goto bad;
 		}
 		FOR_EACH_VARLEN_FIELD_PTR(vl, field, dummy) {
-//			fprintf(stderr, "type=%d\n", field->type);
 			switch (field->type) {
 			case EBPF_VL_FIELD_PATH:
 				path = field->data;
 				break;
-			default:
-				//qwarnx("unhandled field type %d", field->type);
-				/* goto bad; */
+			case EBPF_VL_FIELD_SYMLINK_TARGET_PATH: /* FALLTHROUGH */
+			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH: /* FALLTHROUGH */
+			case EBPF_VL_FIELD_OLD_PATH:		/* FALLTHROUGH */
+			case EBPF_VL_FIELD_NEW_PATH:
 				continue;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				goto bad;
 			}
 		}
 
@@ -391,7 +394,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		memcpy(file->path, path, pathlen);
 		file->path[pathlen] = 0; /* paranoia */
 
-		fprintf(stderr, "%d: (%ld) %s\n", raw->pid, ev->type, file->path);
+		//fprintf(stderr, "%d: (%ld) %s\n", raw->pid, ev->type, file->path);
 
 		break;
 	}
