@@ -1,11 +1,10 @@
-# aka 24.04
-FROM ubuntu:noble
-ENV BPFTOOL="/usr/lib/linux-tools-6.8.0-41/bpftool"
+FROM ubuntu:24.04
+ENV BPFTOOL="/usr/lib/linux-tools/6.11.0-26-generic/bpftool"
 RUN apt-get update && apt-get install -y		\
 	clang						\
 	cpio						\
 	gcc						\
 	gcc-aarch64-linux-gnu				\
-	linux-tools-6.8.0-41-generic			\
+	linux-tools-6.11.0-26-generic			\
 	make						\
 	m4
