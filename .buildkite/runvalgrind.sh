@@ -22,11 +22,5 @@ sudo apt-get install -y 				\
 	m4						\
 	valgrind
 
-make BPFTOOL="/usr/lib/linux-tools/6.11.0-26-generic/bpftool"
-
-sudo valgrind				\
-     --trace-children=no		\
-     --child-silent-after-fork=yes	\
-     ./quark-test -1			\
-     2>&1 | grep -v "^--.*WARNING: unhandled eBPF command"
+make test-valgrind BPFTOOL="/usr/lib/linux-tools/6.11.0-26-generic/bpftool"
 exit $?
