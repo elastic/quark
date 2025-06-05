@@ -564,6 +564,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 */
 	if (qq->flags & QQ_BYPASS) {
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_setsid, 1);
+		if (use_fentry)
+			bpf_program__set_autoload(p->progs.fentry__tty_write, 1);
+		else
+			bpf_program__set_autoload(p->progs.kprobe__tty_write, 1);
 	}
 
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
