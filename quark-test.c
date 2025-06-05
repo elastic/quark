@@ -767,6 +767,23 @@ t_memfd(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* XXX Only probe loading for now */
+static int
+t_tty(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+
+	qa->flags &= ~QQ_ENTRY_LEADER;
+	qa->flags |= QQ_BYPASS | QQ_TTY;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -1068,6 +1085,7 @@ struct test all_tests[] = {
 	T_EBPF(t_bypass),
 	T_EBPF(t_file),
 	T_EBPF(t_memfd),
+	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
 	T(t_namespace),
