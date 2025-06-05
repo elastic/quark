@@ -1,6 +1,7 @@
 SHELL= /bin/bash
 PWD= $(shell pwd)
 HTML2MARKDOWN?= html2markdown
+SUDO?= sudo
 
 # Normalize ARCH
 ifeq ($(shell uname -m), x86_64)
@@ -311,12 +312,17 @@ include: $(LIBBPF_DEPS)
 svg: $(SVGS)
 
 test: quark-test
-	sudo ./quark-test
+	$(SUDO) ./quark-test
 
 test-kernel: initramfs.gz
 	./ktest-all.sh
 
-test-all: test test-kernel
+test-valgrind: quark-test
+	$(SUDO) valgrind			\
+		--trace-children=no		\
+		--child-silent-after-fork=yes	\
+		./quark-test -1			\
+		2>&1 | grep -v "^--.*WARNING: unhandled eBPF command"
 
 initramfs:
 	mkdir initramfs
@@ -476,8 +482,8 @@ clean-docs:
 	docker-shell		\
 	eebpf-sync		\
 	test			\
-	test-all		\
-	test-kernel
+	test-kernel		\
+	test-valgrind
 
 .NOTPARALLEL:			\
 	clean			\
@@ -491,7 +497,7 @@ clean-docs:
 	docker-shell		\
 	initramfs.gz		\
 	test			\
-	test-all		\
-	test-kernel
+	test-kernel		\
+	test-valgrind
 
 .SUFFIXES:
