@@ -558,6 +558,13 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
 	}
 
+	if (qq->flags & QQ_TTY) {
+		if (use_fentry)
+			bpf_program__set_autoload(p->progs.fentry__tty_write, 1);
+		else
+			bpf_program__set_autoload(p->progs.kprobe__tty_write, 1);
+	}
+
 	/*
 	 * These are probes that are not attached to a feature and not currently
 	 * used in quark, but we need to maintain compatibility in BYPASS.

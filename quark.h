@@ -479,6 +479,7 @@ struct quark_queue_attr {
 #define QQ_BYPASS		(1 << 7)
 #define QQ_FILE			(1 << 8)
 #define QQ_MEMFD		(1 << 9)
+#define QQ_TTY			(1 << 10)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;
