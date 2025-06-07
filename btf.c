@@ -31,7 +31,7 @@ struct quark_btf_target base_targets[] = {
 	{ "fs_struct.pwd.mnt",		-1 },
 	{ "fs_struct.root.dentry",	-1 },
 	{ "ipc_namespace.proc_inum",	-1 },  /* or ipc_namespace.ns.inum */
-	{ "mm_struct.(anon).start_stack",-1 }, /* or mm_struct.start_stack */
+	{ "mm_struct.start_stack",	-1 },
 	{ "mount.mnt",			-1 },
 	{ "mount.mnt_mountpoint",	-1 },
 	{ "mnt_namespace.proc_inum",	-1 },  /* or mnt_namespace.ns.inum */
@@ -73,7 +73,6 @@ struct btf_alternative {
 	const char *old;
 } btf_alternatives[] = {
 	{ "task_struct.start_boottime",		"task_struct.real_start_time"	},
-	{ "mm_struct.(anon).start_stack",	"mm_struct.start_stack"		},
 	{ "uts_namespace.proc_inum",		"uts_namespace.ns.inum"		},
 	{ "ipc_namespace.proc_inum",		"ipc_namespace.ns.inum"		},
 	{ "mnt_namespace.proc_inum",		"mnt_namespace.ns.inum"		},
@@ -101,77 +100,139 @@ btf_type_by_name_kind(struct btf *btf, s32 *off, const char *name, int kind)
 	return (t);
 }
 
-static const struct btf_member *
-btf_offsetof(struct btf *btf, struct btf_type const *t, const char *mname)
+/*
+ * Given the structure or union type in t, find the offset of member_name.
+ * In foo.bar, t would be the type of foo.
+ */
+static s32
+btf_offsetof_rec(struct btf *btf, struct btf_type const *t, const char *member_name,
+    struct btf_member **ret_member, s32 cur_off)
 {
-	int			 i, vlen;
-	const struct btf_member	*m;
-	const char		*mname1;
+	int			 i;
+	s32			 off;
+	struct btf_member	*m;
+	const char		*name;
 
-	if (btf_kind(t) != BTF_KIND_STRUCT)
-		return (errno = EINVAL, NULL);
-	vlen = btf_vlen(t);
-	m = (const struct btf_member *)(t + 1);
-	if (!strcmp(mname, "(anon)"))
-		mname = "";
+	if (!btf_is_struct(t) && !btf_is_union(t)) {
+		errno = EINVAL;
+		goto fail;
+	}
+	m = btf_members(t);
 
-	for (i = 0; i < vlen; i++, m++) {
-		mname1 = btf__name_by_offset(btf, m->name_off);
-		if (IS_ERR_OR_NULL(mname1)) {
-			qwarnx("btf__name_by_offset(%d)", m->name_off);
+	for (i = 0; i < btf_vlen(t); i++, m++) {
+		name = btf__name_by_offset(btf, m->name_off);
+		if (IS_ERR_OR_NULL(name))
 			continue;
+
+		/*
+		 * Found it, make sure this is a multiple of 8.
+		 */
+		if (!strcmp(member_name, name)) {
+			if (btf_kflag(t)) {
+				off = BTF_MEMBER_BIT_OFFSET(m->offset);
+				/* no bit_size things for now */
+				if (BTF_MEMBER_BITFIELD_SIZE(m->offset) != 0)
+					goto fail;
+			} else
+				off = m->offset;
+
+			off += cur_off;
+			if ((off % 8) != 0)
+				goto fail;
+			off /= 8;
+			if (ret_member != NULL)
+				*ret_member = m;
+
+			return (off);
 		}
-		if (strcmp(mname, mname1))
-			continue;
 
-		return (m);
+		/*
+		 * If this is an anonymous structure or union, recurse into it
+		 * and see if we match member name.
+		 */
+		if (!strlen(name)) {
+			struct btf_type const	*t1;
+
+			t1 = btf__type_by_id(btf, m->type);
+			if (IS_ERR_OR_NULL(t1))
+				continue;
+			off = btf_offsetof_rec(btf, t1, member_name, ret_member,
+			    cur_off + m->offset);
+			if (off != -1)
+				return (off);
+		}
 	}
 
-	return (NULL);
+fail:
+	if (ret_member != NULL)
+		*ret_member = NULL;
+
+	return (-1);
+}
+
+/*
+ * Given a struct or union parent_name, find member_name, return the offset
+ * within that structure and, if ret_member is not NULL, return the btf_member
+ * of member_name.
+ */
+static s32
+btf_offsetof(struct btf *btf, const char *parent_name, const char *member_name,
+    struct btf_member **ret_member)
+{
+	struct btf_type const	*parent_t;
+
+	/*
+	 * Parent must be a struct or a union
+	 */
+	parent_t = btf_type_by_name_kind(btf, NULL, parent_name, BTF_KIND_STRUCT);
+	if (parent_t == NULL)
+		parent_t = btf_type_by_name_kind(btf, NULL, parent_name,
+		    BTF_KIND_UNION);
+	if (parent_t == NULL)
+		return (-1);
+
+	return (btf_offsetof_rec(btf, parent_t, member_name, ret_member, 0));
+
 }
 
 static s32
 btf_root_offset2(struct btf *btf, const char *dotname)
 {
-	const struct btf_type *parent;
-	const char *root_name, *child_name;
-	const struct btf_member *m;
+	const char *parent_name, *child_name;
+	struct btf_member *m;
+	const struct btf_type *t;
 	char *last, buf[1024];
-	s32 off;
+	s32 off, off1;
 
 	if (strlcpy(buf, dotname, sizeof(buf)) >= sizeof(buf))
 		return (-1);
-	root_name = strtok_r(buf, ".", &last);
-	if (root_name == NULL)
-		return (-1);
-	/* root must be a struct */
-	parent = btf_type_by_name_kind(btf, NULL, root_name, BTF_KIND_STRUCT);
-	if (parent == NULL)
+	parent_name = strtok_r(buf, ".", &last);
+	if (parent_name == NULL)
 		return (-1);
 
 	off = 0;
 	while ((child_name = strtok_r(NULL, ".", &last)) != NULL) {
-		m = btf_offsetof(btf, parent, child_name);
-		if (m == NULL)
+		m = NULL;
+		off1 = btf_offsetof(btf, parent_name, child_name, &m);
+		if (off1 == -1 || m == NULL)
 			return (-1);
-		if (btf_kflag(parent)) {
-			off += BTF_MEMBER_BIT_OFFSET(m->offset);
-			/* no bit_size things for now */
-			if (BTF_MEMBER_BITFIELD_SIZE(m->offset) != 0)
-				return (-1);
-		} else
-			off += m->offset;
-		parent = btf__type_by_id(btf, m->type);
-		if (IS_ERR_OR_NULL(parent))
+		off += off1;
+
+		t = btf__type_by_id(btf, m->type);
+		if (IS_ERR_OR_NULL(t))
+			return (-1);
+		parent_name = btf__name_by_offset(btf, t->name_off);
+		if (parent_name == NULL)
 			return (-1);
 	}
 
-	if ((off % 8) != 0)
-		return (-1);
-
-	return (off / 8);
+	return (off);
 }
 
+/*
+ * Given a dotname notation, find the offset within, dotname can be
+ * sock.foo.bar.x, it will try to find the offset of x relative to sock.
+ */
 s32
 btf_root_offset(struct btf *btf, const char *dotname, int alternatives)
 {
