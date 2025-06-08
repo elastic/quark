@@ -11,7 +11,6 @@
 #include "quark.h"
 
 #include <bpf/btf.h>
-#include "libbpf/include/linux/err.h"		/* IS_ERR :( */
 
 struct quark_btf_target base_targets[] = {
 	{ "cred.cap_ambient",		-1 },
@@ -91,8 +90,7 @@ btf_type_by_name_kind(struct btf *btf, s32 *off, const char *name, int kind)
 	if (off1 < 0)
 		return (NULL);
 	t = btf__type_by_id(btf, off1);
-	/* libbpf doesn't respect its own convention :( */
-	if (IS_ERR_OR_NULL(t))
+	if (t == NULL)
 		return (NULL);
 	if (off)
 		*off = off1;
@@ -121,7 +119,7 @@ btf_offsetof_rec(struct btf *btf, struct btf_type const *t, const char *member_n
 
 	for (i = 0; i < btf_vlen(t); i++, m++) {
 		name = btf__name_by_offset(btf, m->name_off);
-		if (IS_ERR_OR_NULL(name))
+		if (name == NULL)
 			continue;
 
 		/*
@@ -154,7 +152,7 @@ btf_offsetof_rec(struct btf *btf, struct btf_type const *t, const char *member_n
 			struct btf_type const	*t1;
 
 			t1 = btf__type_by_id(btf, m->type);
-			if (IS_ERR_OR_NULL(t1))
+			if (t1 == NULL)
 				continue;
 			off = btf_offsetof_rec(btf, t1, member_name, ret_member,
 			    cur_off + m->offset);
@@ -219,7 +217,7 @@ btf_root_offset2(struct btf *btf, const char *dotname)
 		off += off1;
 
 		t = btf__type_by_id(btf, m->type);
-		if (IS_ERR_OR_NULL(t))
+		if (t == NULL)
 			return (-1);
 		parent_name = btf__name_by_offset(btf, t->name_off);
 		if (parent_name == NULL)
@@ -451,7 +449,7 @@ quark_btf_open2(const char *path, const char *kname)
 		btf = btf__load_vmlinux_btf();
 	else
 		btf = btf__parse(path, NULL);
-	if (IS_ERR_OR_NULL(btf)) {
+	if (btf == NULL) {
 		if (errno == 0)
 			errno = ENOTSUP;
 		return (NULL);
