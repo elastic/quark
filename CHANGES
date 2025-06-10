@@ -20,4 +20,16 @@ Changes from 0.3 to 0.4
     QUARK_EV_SOCK_CONN_{ESTABLISHED,CLOSED}. The probes still have
     some issues so it's mostly experimental.
   o Initial snapshot of process events is not sent anymore. User is
-    expected to retrieve them via quark_process_iter(3) if desired.
+    expected to retrieve them via quark_process_iter(3) if
+    desired. QUARK_EV_SNAPHOT and QQ_NO_SNAPSHOT
+  o QUARK_EV_SNAPSHOT and QQ_NO_SNAPSHOT are gone.
+  o quark_event{} got a cgroup field guarded by QUARK_F_CGROUP.
+  o cmdline arguments are now handled via quark_cmdline_iter{} and friends.
+  o DNS events were added via QQ_DNS and expressed via quark_packet{}
+    in the packet member of quark_event{}.
+  o quark-mon(8) got options for socket and dns events: -S and -N.
+  o QQ_BYPASS was added for ebpf, with this a client can choose to use
+    quark just as bpf loader and access the ring directly. The ring
+    event is in quark_event.bypass.
+  o Quark can now be linked against system libraries instead of
+    embedding its own libbpf and zlib, via make SYSLIB=y.
