@@ -235,6 +235,11 @@ static size_t ebpf_resolve_kernfs_node_to_string(char *buf, struct kernfs_node *
 
         cur += name_len & PATH_MAX_INDEX_MASK;
     }
+    if (cur == 0) {
+        buf[0] = '/';
+        buf[1] = '\0';
+        cur++;
+    }
 
     return cur + 1; // cur does not include the \0
 
