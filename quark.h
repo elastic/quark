@@ -17,6 +17,9 @@
 /* Compat, tree.h, queue.h */
 #include "compat.h"
 
+/* sha256 since we can't link against openssl */
+#include "sha256.h"
+
 /* Misc */
 #ifndef ALIGN_UP
 #define ALIGN_UP(_p, _b) (((u64)(_p) + ((_b) - 1)) & ~((_b) - 1))
@@ -382,6 +385,7 @@ struct quark_process {
 #define QUARK_F_FILENAME	(1 << 3)
 #define QUARK_F_CMDLINE		(1 << 4)
 #define QUARK_F_CWD		(1 << 5)
+#define QUARK_F_ENTITYID	(1 << 6)
 	u64	 flags;
 
 	/* QUARK_F_PROC */
@@ -420,6 +424,8 @@ struct quark_process {
 	char	*cmdline;
 	/* QUARK_F_CWD */
 	char	*cwd;
+	/* QUARK_F_ENTITY_ID */
+	char	 entity_id[13];
 };
 
 struct quark_process_iter {
