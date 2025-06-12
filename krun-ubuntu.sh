@@ -30,8 +30,8 @@ usage() {
 	echo "  command...      Command to run in guest"
 	echo
 	echo "Examples:"
-	echo "  $SCRIPT initramfs.gz 40 /bin/bash"
-	echo "  $SCRIPT -v initramfs.gz rawhide quark-test -vvv"
+	echo "  $SCRIPT initramfs.gz 22.04 /bin/bash"
+	echo "  $SCRIPT -v initramfs.gz 24.04 quark-test -vvv"
 	exit 1
 }
 
@@ -51,7 +51,7 @@ while getopts "vh" opt; do
 done
 shift $((OPTIND - 1))
 
-[[ $# -lt 2 ]] && usage
+[[ $# -lt 3 ]] && usage
 [[ $ARCH =~ ^(amd64|arm64)$ ]] || die "Invalid architecture: $ARCH"
 
 INITRAMFS="$1"; shift

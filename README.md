@@ -95,8 +95,13 @@ quark can be built natively or via a container, native is preferred and depends 
 - clang
 - gnumake
 - gcc
-- mandoc (for docs).
+- mandoc (for docs)
+- html2markdown utility  
+  (for docs, pre-built binaries are available at  
+  https://github.com/JohannesKaufmann/html-to-markdown/releases)
 - m4
+- qemu (for testing)
+- zstd
 
 Make sure to clone the repository recursively: [*git clone --recursive*](#git).
 
@@ -116,6 +121,10 @@ Clean object files from quark.
 
 Builds quark inside a docker container, so you don't have to worry about having build dependencies.
 
+[*docker-shell*](#docker-shell)
+
+Spawns an interactive shell inside the same builder container created by ‘make docker’. Handy for debugging failed builds, inspecting artifacts etc.
+
 [*docker-cross-arm64*](#docker-cross-arm64)
 
 Builds quark for arm64 inside a docker container.
@@ -124,9 +133,17 @@ Builds quark for arm64 inside a docker container.
 
 Builds quark inside a centos7 docker container, useful for linking against ancient glibc-2.17.
 
+[*centos7-shell*](#centos7-shell)
+
+Opens an interactive shell in the centos7 builder container.
+
 [*alpine*](#alpine)
 
-Builds quark inside an alpine docker container, so we can track musl builds.
+Builds quark inside an Alpine Linux docker container, so we can track musl builds.
+
+[*alpine-shell*](#alpine-shell)
+
+Interactive shell inside the Alpine builder image.
 
 [*test*](#test)
 
@@ -201,7 +218,24 @@ $ make initramfs.gz
 $ ./krun.sh initramfs.gz kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 quark-test -vvv
 ```
 
-Note that you can pass arguments to the utility and you have to make initramfs.gz first.
+Convenience wrappers for Fedora, RHEL, and Ubuntu, automate the above by fetching the appropriate kernel packages, extracting vmlinuz and boot-strapping qemu-system-x86\_64:
+
+```
+$ make initramfs.gz
+$ ./krun-fedora.sh initramfs.gz 40 quark-test -vvv
+$ ./krun-rhel.sh -v initramfs.gz 9 quark-test
+$ ./krun-ubuntu.sh initramfs.gz 24.04 quark-test -b t_dns
+```
+
+The version number after ‘initramfs.gz’ selects the Fedora, RHEL, or Ubuntu version. All remaining arguments are passed verbatim to [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html), enabling targeted runs such as:
+
+```
+$ ./krun-fedora.sh initramfs.gz 41 quark-test -b t_fork_exec_exit
+```
+
+These scripts require KVM access and therefore must be executed on a host kernel as root. They are unsuitable for container environments; the docker targets only build quark and do not attempt to run the test suite.
+
+*make test-valgrind* runs the same suite under valgrind and is useful for catching memory errors, while *make test-kernel* cycles through a set of kernel images in kernel\_images folder to ensure probe compatibility.
 
 # [INCLUDED BINARIES](#INCLUDED_BINARIES)
 
