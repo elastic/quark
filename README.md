@@ -95,7 +95,12 @@ quark can be built natively or via a container, native is preferred and depends 
 - clang
 - gnumake
 - gcc
-- mandoc (for docs).
+- mandoc (for docs)
+- html2markdown utility  
+  (required only by the  
+  .Li docs  
+  target, pre-built binaries are available at  
+  https://github.com/JohannesKaufmann/html-to-markdown)
 - m4
 
 Make sure to clone the repository recursively: [*git clone --recursive*](#git).
@@ -198,10 +203,26 @@ Some included kernels can be tested in qemu via *make test-kernel*. Any quark ut
 
 ```
 $ make initramfs.gz
-$ ./krun.sh initramfs.gz kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 quark-test -vvv
+$ ./krun.sh initramfs.gz     kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64     quark-test -vvv
 ```
 
-Note that you can pass arguments to the utility and you have to make initramfs.gz first.
+Two convenience wrappers, one for Fedora and one for RHEL, automate the two steps above by fetching the appropriate kernel-core RPM, extracting vmlinuz and boot-strapping [qemu-system-x86\_64(1)](qemu-system-x86_64.1.html):
+
+```
+$ make initramfs.gz
+$ ./krun-fedora.sh initramfs.gz 40 quark-test -vvv
+$ ./krun-rhel.sh  initramfs.gz 9  quark-test
+```
+
+The integer after ‘initramfs.gz’ selects the Fedora or RHEL version (e.g. 40, 41, 9). All remaining arguments are passed verbatim to [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html), enabling targeted runs such as:
+
+```
+$ ./krun-fedora.sh initramfs.gz 41     quark-test -b t_fork_exec_exit
+```
+
+These scripts require KVM access and therefore must be executed on a host kernel as [**root**](#root). They are unsuitable for container environments; the docker targets only [*build*](#build) quark and do not attempt to run the test suite.
+
+*make test-valgrind* runs the same suite under [valgrind(1)](valgrind.1.html) and is useful for catching memory errors, while *make test-kernel* cycles through a curated set of kernel images to ensure probe compatibility across glibc versions (for example glibc 2.17 on CentOS/RHEL 7).
 
 # [INCLUDED BINARIES](#INCLUDED_BINARIES)
 
