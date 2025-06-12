@@ -5,7 +5,7 @@
 #define _QUARK_H_
 
 /* Version is shared between library and utilities */
-#define QUARK_VERSION "0.4"
+#define QUARK_VERSION "0.5a"
 
 /* Misc types */
 #include <sys/socket.h>
