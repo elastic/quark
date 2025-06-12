@@ -155,10 +155,8 @@ gcc
 mandoc (for docs)
 .It
 html2markdown utility
-     (required only by the
-     .Li docs
-     target, pre-built binaries are available at
-     https://github.com/JohannesKaufmann/html-to-markdown)
+     (for docs, pre-built binaries are available at
+     https://github.com/JohannesKaufmann/html-to-markdown/releases)
 .It
 m4
 .El
@@ -207,6 +205,10 @@ Builds
 .Nm quark
 inside a docker container, so you don't have to worry about
 having build dependencies.
+.It Em docker-shell
+Spawns an interactive shell inside the same builder container created by
+.Sq make docker .
+Handy for debugging failed builds, inspecting artifacts etc.
 .It Em docker-cross-arm64
 Builds
 .Nm quark
@@ -216,10 +218,14 @@ Builds
 .Nm quark
 inside a centos7 docker container, useful for linking against
 ancient glibc-2.17.
+.It Em centos7-shell
+Opens an interactive shell in the centos7 builder container.
 .It Em alpine
 Builds
 .Nm quark
-inside an alpine docker container, so we can track musl builds.
+inside an Alpine Linux docker container, so we can track musl builds.
+.It Em alpine-shell
+Interactive shell inside the Alpine builder image.
 .It Em test
 Builds and runs
 .Xr quark-test 8 .
@@ -297,18 +303,16 @@ utility can be run on a custom kernel via the
 script, as in:
 .Bd -literal
 $ make initramfs.gz
-$ ./krun.sh initramfs.gz \
-    kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 \
-    quark-test -vvv
+$ ./krun.sh initramfs.gz kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 quark-test -vvv
 .Ed
 .Pp
-Two convenience wrappers, one for Fedora and one for RHEL, automate the two
-steps above by fetching the appropriate
+Two convenience wrappers, one for Fedora and one for RHEL, automate the
+above by fetching the appropriate
 .Pa kernel-core
 RPM, extracting
 .Pa vmlinuz
 and boot-strapping
-.Xr qemu-system-x86_64 1 :
+.Pa qemu-system-x86_64 :
 .Bd -literal
 $ make initramfs.gz
 $ ./krun-fedora.sh initramfs.gz 40 quark-test -vvv
@@ -316,31 +320,27 @@ $ ./krun-rhel.sh  initramfs.gz 9  quark-test
 .Ed
 The integer after
 .Sq initramfs.gz
-selects the Fedora or RHEL version (e.g.\& 40, 41, 9).
+selects the Fedora or RHEL version.
 All remaining arguments are passed verbatim to
 .Xr quark-test 8 ,
 enabling targeted runs such as:
 .Bd -literal
-$ ./krun-fedora.sh initramfs.gz 41 \
-    quark-test -b t_fork_exec_exit
+$ ./krun-fedora.sh initramfs.gz 41 quark-test -b t_fork_exec_exit
 .Ed
 These scripts require KVM access and therefore must be executed on a host
-kernel as
-.Sy root .
+kernel as root.
 They are unsuitable for container environments; the
 .Pa docker
-targets only
-.Em build
+targets only build
 .Nm
 and do not attempt to run the test suite.
 .Pp
 .Em make test-valgrind
-runs the same suite under
-.Xr valgrind 1
+runs the same suite under valgrind
 and is useful for catching memory errors, while
 .Em make test-kernel
-cycles through a curated set of kernel images to ensure probe compatibility
-across glibc versions (for example glibc 2.17 on CentOS/RHEL 7).
+cycles through a set of kernel images in kernel_images
+folder to ensure probe compatibility.
 .Sh INCLUDED BINARIES
 .Xr quark-mon 8
 is a program that dumps
