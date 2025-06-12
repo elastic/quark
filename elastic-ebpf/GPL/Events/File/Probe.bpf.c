@@ -607,6 +607,10 @@ int BPF_KPROBE(kprobe__chmod_common, const struct path *path, umode_t mode)
     struct ebpf_events_state state = {};
     state.chmod.path               = (struct path *)path;
     state.chmod.mode               = mode;
+
+    if (ebpf_events_is_trusted_pid())
+        return 0;
+
     ebpf_events_state__set(EBPF_EVENTS_STATE_CHMOD, &state);
     return 0;
 }
@@ -649,6 +653,9 @@ SEC("kprobe/do_truncate")
 int BPF_KPROBE(kprobe__do_truncate)
 {
     struct ebpf_events_state state = {};
+
+    if (ebpf_events_is_trusted_pid())
+        goto out;
 
     struct file *filp;
     if (FUNC_ARG_READ_PTREGS(filp, do_truncate, filp)) {
@@ -703,6 +710,8 @@ SEC("kprobe/vfs_write")
 int BPF_KPROBE(kprobe__vfs_write, struct file *file)
 {
     struct ebpf_events_state state = {};
+    if (ebpf_events_is_trusted_pid())
+        return 0;
 
     state.write.path = path_from_file(file);
     ebpf_events_state__set(EBPF_EVENTS_STATE_WRITE, &state);
@@ -714,6 +723,8 @@ SEC("kprobe/vfs_writev")
 int BPF_KPROBE(kprobe__vfs_writev, struct file *file)
 {
     struct ebpf_events_state state = {};
+    if (ebpf_events_is_trusted_pid())
+        return 0;
 
     state.writev.path = path_from_file(file);
     ebpf_events_state__set(EBPF_EVENTS_STATE_WRITEV, &state);
@@ -786,6 +797,8 @@ SEC("kprobe/chown_common")
 int BPF_KPROBE(kprobe__chown_common, struct path *path, uid_t user, gid_t group)
 {
     struct ebpf_events_state state = {};
+    if (ebpf_events_is_trusted_pid())
+        return 0;
     state.chown.path               = path;
     ebpf_events_state__set(EBPF_EVENTS_STATE_CHOWN, &state);
     return 0;

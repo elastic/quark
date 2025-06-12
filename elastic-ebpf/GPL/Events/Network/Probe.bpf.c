@@ -359,6 +359,9 @@ int sk_maybe_save_tgid(struct bpf_sock *sk)
     if (sk->protocol != IPPROTO_UDP)
         return (1);
 
+    if (ebpf_events_is_trusted_pid())
+        return (1);
+
     tgid = bpf_get_current_pid_tgid() >> 32;
 
     /*
