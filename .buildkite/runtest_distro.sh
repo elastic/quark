@@ -36,5 +36,6 @@ sudo kvm-ok
 case "$DISTRO" in
 fedora)	sudo ./krun-fedora.sh initramfs.gz "$DISTROVER" quark-test $@;;
 rhel)	sudo ./krun-rhel.sh initramfs.gz "$DISTROVER" quark-test $@;;
+ubuntu)	sudo ./krun-ubuntu.sh initramfs.gz "$DISTROVER" quark-test $@;;
 *)	echo bad distribution "$DISTROVER" 1>&2;;
 esac
