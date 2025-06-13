@@ -6,7 +6,7 @@
 # (amd64 | arm64), unpack vmlinuz, and hand it off to ./krun.sh.
 #
 # Usage:
-#   ./krun-ubuntu.sh <ubuntu_version> [arch] <initramfs> [command...]
+#	./krun-ubuntu.sh [-a arch] [-v] <ubuntu_version> <initramfs> [command...]
 #
 # ---------------------------------------------------------------------
 
@@ -14,40 +14,54 @@ set -Eeuo pipefail
 
 # ---------- helpers --------------------------------------------------
 
-log()        { printf '%s\n' "INFO:  $*" >&2; }
-log_error()  { printf '%s\n' "ERROR: $*" >&2; }
-die()        { log_error "$*"; exit 1; }
+log()		{ [[ ${VERBOSE:-0} -eq 1 ]] && printf '%s\n' "INFO: $*" >&2 || true; }
+log_error()	{ printf '%s\n' "ERROR:	$*" >&2; }
+die()		{ log_error "$*"; exit 1; }
 
 usage() {
-  cat <<EOF
-Usage: ${0##*/} <ubuntu_version> [arch] <initramfs_file> [command...]
+	cat <<EOF
+usage: ${0##*/} [-a arch] [-v] <ubuntu_version> <initramfs_file> [command...]
 
-  ubuntu_version   Ubuntu release (e.g. 24.04, 22.04)
-  arch             amd64 | arm64   (default: amd64)
-  initramfs_file   Path to initramfs image
-  command...       Optional command for the guest kernel
+        -a arch          Architecture: amd64 | arm64 (default: amd64)
+        -v               Verbose output
+        ubuntu_version   Ubuntu release (e.g. 24.04, 22.04)
+        initramfs_file   Path to initramfs image
+        command...       Optional command for the guest kernel
 
 Example:
-  ${0##*/} 22.04 ./initrd.gz /bin/bash
+        ${0##*/} -a arm64 -v 22.04 initramfs.gz quark-test -vvv
 EOF
-  exit 1
+	exit 1
 }
 
-need_bins() { for b; do command -v "$b" >/dev/null || die "Missing $b"; done; }
+need_bins()	{ for b; do command -v "$b" >/dev/null || die "Missing $b"; done; }
 
-cleanup() { [[ -d ${TMPDIR:-} ]] && rm -rf "$TMPDIR"; }
+cleanup()	{ [[ -d ${TMPDIR:-} ]] && rm -rf "$TMPDIR"; }
 trap cleanup EXIT INT TERM
 
 # ---------- parse args -----------------------------------------------
 
+ARCH=amd64
+VERBOSE=0
+
+while getopts "a:vh" opt; do
+	case $opt in
+		a) ARCH="$OPTARG" ;;
+		v) VERBOSE=1 ;;
+		h) usage ;;
+		*) usage ;;
+	esac
+done
+shift $((OPTIND - 1))
+
 [[ $# -lt 2 ]] && usage
+[[ $ARCH =~ ^(amd64|arm64)$ ]] || die "Invalid architecture: $ARCH"
 
 UBUNTU_VERSION="$1"; shift
-case "${1:-}" in amd64|arm64) ARCH="$1"; shift ;; *) ARCH=amd64 ;; esac
-INITRAMFS_FILE="$1"; shift || die "Missing initramfs_file"
+INITRAMFS_FILE="$1"; shift
 
 [[ -f $INITRAMFS_FILE ]] || die "Initramfs not found: $INITRAMFS_FILE"
-[[ -f ./krun.sh ]]      || die "Required launcher ./krun.sh is missing"
+[[ -f ./krun.sh ]] || die "Required launcher ./krun.sh is missing"
 
 readonly UBUNTU_VERSION ARCH INITRAMFS_FILE
 
@@ -61,18 +75,18 @@ CURL_OPTS=(--fail --silent --show-error --location --proto '=https' --tlsv1.2)
 # ---------- version → codename ---------------------------------------
 
 case "$UBUNTU_VERSION" in
-  18.04) CODENAME=bionic ;;
-  20.04) CODENAME=focal ;;
-  22.04) CODENAME=jammy ;;
-  24.04) CODENAME=noble ;;
-  25.04) CODENAME=oracular ;;
-  *) die "Unsupported Ubuntu version: $UBUNTU_VERSION" ;;
+	18.04) CODENAME=bionic ;;
+	20.04) CODENAME=focal ;;
+	22.04) CODENAME=jammy ;;
+	24.04) CODENAME=noble ;;
+	25.04) CODENAME=oracular ;;
+	*) die "Unsupported Ubuntu version: $UBUNTU_VERSION" ;;
 esac
 
 if [[ $ARCH == amd64 ]]; then
-  BASE_URL="https://archive.ubuntu.com/ubuntu"
+	BASE_URL="https://archive.ubuntu.com/ubuntu"
 else
-  BASE_URL="https://ports.ubuntu.com/ubuntu-ports"
+	BASE_URL="https://ports.ubuntu.com/ubuntu-ports"
 fi
 
 # ---------- main -----------------------------------------------------
@@ -87,46 +101,49 @@ log "Searching latest *generic* kernel for Ubuntu $UBUNTU_VERSION ($ARCH)…"
 LATEST_PATH=""
 
 for repo in "${REPOS[@]}"; do
-  PKG_PATH="dists/$repo/main/binary-$ARCH/Packages.gz"
-  REL_URL="$BASE_URL/dists/$repo/Release"
-  log "Checking $REL_URL"
+	# Full path for the download …
+	PKG_PATH="dists/$repo/main/binary-$ARCH/Packages.gz"
+	# … and relative path as it appears inside the Release file
+	PKG_PATH_REL="main/binary-$ARCH/Packages.gz"
+	REL_URL="$BASE_URL/dists/$repo/Release"
+	log "Checking $REL_URL"
 
-  EXPECTED_HASH=""
-  if curl "${CURL_OPTS[@]}" "$REL_URL" -o "$TMPDIR/Release"; then
-    EXPECTED_HASH=$(awk -v pk="$PKG_PATH" '
-      $1=="SHA256:" {tbl=1;next}
-      tbl && $NF==pk {print $1;exit}' "$TMPDIR/Release") || true
-  fi
+	EXPECTED_HASH=""
+	if curl "${CURL_OPTS[@]}" "$REL_URL" -o "$TMPDIR/Release"; then
+		EXPECTED_HASH=$(awk -v pk="$PKG_PATH_REL" '
+			$1=="SHA256:" {tbl=1;next}
+			tbl && $NF==pk {print $1;exit}' "$TMPDIR/Release") || true
+	fi
 
-  curl "${CURL_OPTS[@]}" "$BASE_URL/$PKG_PATH" -o "$TMPDIR/Packages.gz" ||
-       { log "No Packages.gz for $repo (arch not built?)"; continue; }
+	curl "${CURL_OPTS[@]}" "$BASE_URL/$PKG_PATH" -o "$TMPDIR/Packages.gz" ||
+		{ log "No Packages.gz for $repo (arch not built?)"; continue; }
 
-  if [[ -n $EXPECTED_HASH ]]; then
-    [[ $(sha256sum "$TMPDIR/Packages.gz" | awk '{print $1}') == "$EXPECTED_HASH" ]] ||
-        die "Checksum mismatch for Packages.gz (possible MITM)"
-  else
-    log "Release digest unavailable; skipping checksum validation (less secure)"
-  fi
+	if [[ -n $EXPECTED_HASH ]]; then
+		[[ $(sha256sum "$TMPDIR/Packages.gz" | awk '{print $1}') == "$EXPECTED_HASH" ]] ||
+			die "Checksum mismatch for Packages.gz (possible MITM)"
+	else
+		log "Release digest unavailable; skipping checksum validation (less secure)"
+	fi
 
-  if ! gunzip -c "$TMPDIR/Packages.gz" >"$TMPDIR/Packages" 2>/dev/null; then
-    die "gunzip failed – archive not gzip? (unexpected for Ubuntu mirrors)"
-  fi
+	if ! gunzip -c "$TMPDIR/Packages.gz" >"$TMPDIR/Packages" 2>/dev/null; then
+		die "gunzip failed – archive not gzip? (unexpected for Ubuntu mirrors)"
+	fi
 
-  awk -v RS='' '
-    /(^|\n)Package: linux-image-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-generic($|\n)/ {
-      ver=""; file=""
-      for (i=1;i<=NF;i++){
-        if ($i=="Version:")  ver=$(i+1)
-        if ($i=="Filename:") file=$(i+1)
-      }
-      if (ver && file) print ver, file
-    }' "$TMPDIR/Packages" > "$TMPDIR/candidates"
+	awk -v RS='' '
+	    /(^|\n)Package: linux-image-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-generic($|\n)/ {
+	      ver=""; file=""
+	      for (i=1;i<=NF;i++){
+		if ($i=="Version:")  ver=$(i+1)
+		if ($i=="Filename:") file=$(i+1)
+	      }
+	      if (ver && file) print ver, file
+	    }' "$TMPDIR/Packages" > "$TMPDIR/candidates"
 
-  if [[ -s $TMPDIR/candidates ]]; then
-    LATEST_PATH=$(sort -V -k1,1 "$TMPDIR/candidates" | tail -1 | awk '{print $2}')
-    log "Found candidate in $repo: ${LATEST_PATH##*/}"
-    break
-  fi
+	if [[ -s $TMPDIR/candidates ]]; then
+		LATEST_PATH=$(sort -V -k1,1 "$TMPDIR/candidates" | tail -1 | awk '{print $2}')
+		log "Found candidate in $repo: ${LATEST_PATH##*/}"
+		break
+	fi
 done
 
 [[ -n $LATEST_PATH ]] || die "No linux-image-generic package found for $UBUNTU_VERSION/$ARCH"
@@ -139,31 +156,31 @@ curl "${CURL_OPTS[@]}" "$DEB_URL" -o "$DEB_FILE"
 
 log "Extracting .deb"
 (
-  cd "$TMPDIR"
-  ar x "${DEB_FILE##*/}"
-  if   [[ -f data.tar.xz ]];  then tar -xf data.tar.xz
-  elif [[ -f data.tar.zst ]]; then
-       [[ $HAVE_ZSTD -eq 1 ]] || die "zstd archive but zstd binary missing"
-       tar --use-compress-program=zstd -xf data.tar.zst
-  elif [[ -f data.tar.gz ]];  then tar -xf data.tar.gz
-  else die "Unknown data archive inside .deb"
-  fi
+	cd "$TMPDIR"
+	ar x "${DEB_FILE##*/}"
+	if [[ -f data.tar.xz ]]; then tar -xf data.tar.xz
+	elif [[ -f data.tar.zst ]]; then
+		[[ $HAVE_ZSTD -eq 1 ]] || die "zstd archive but zstd binary missing"
+		tar --use-compress-program=zstd -xf data.tar.zst
+	elif [[ -f data.tar.gz ]]; then tar -xf data.tar.gz
+	else die "Unknown data archive inside .deb"
+	fi
 )
 
 KERNEL_VER=$(sed -nE 's/linux-image-([0-9]+\.[0-9]+\.[0-9]+-[0-9]+-generic)_.*/\1/p' \
-             <<< "${DEB_FILE##*/}")
+		<<< "${DEB_FILE##*/}")
 VMLINUZ="$TMPDIR/boot/vmlinuz-$KERNEL_VER"
 [[ -f $VMLINUZ ]] || die "vmlinuz not found: $VMLINUZ"
 
 if file -b "$VMLINUZ" | grep -qi '^gzip compressed'; then
-  log "Kernel is gzip-compressed; decompressing…"
-  DECOMPRESSED="$TMPDIR/Image-$KERNEL_VER"
-  gunzip -c "$VMLINUZ" > "$DECOMPRESSED" \
-    || die "Failed to gunzip kernel"
-  VMLINUZ="$DECOMPRESSED"
+	log "Kernel is gzip-compressed; decompressing…"
+	DECOMPRESSED="$TMPDIR/Image-$KERNEL_VER"
+	gunzip -c "$VMLINUZ" > "$DECOMPRESSED" \
+		|| die "Failed to gunzip kernel"
+	VMLINUZ="$DECOMPRESSED"
 fi
 
 log "Kernel ready: $VMLINUZ"
 log "Handing off to ./krun.sh"
 
-exec ./krun.sh "$INITRAMFS_FILE" "$VMLINUZ" "$@"
+./krun.sh "$INITRAMFS_FILE" "$VMLINUZ" "$@"
