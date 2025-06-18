@@ -62,6 +62,7 @@ RB_GENERATE(raw_event_by_pidtime, raw_event,
 struct quark {
 	unsigned int	hz;
 	u64		boottime;
+	char		machine_id[1024];
 } quark;
 
 struct raw_event *
@@ -447,6 +448,49 @@ process_by_pid_cmp(struct quark_process *a, struct quark_process *b)
 	return (0);
 }
 
+static void
+process_entity_id(struct quark_queue *qq, struct quark_process *qp)
+{
+	sha256_context	ctx;
+	u64		pid64_le, start_le, ns;
+	u8		digest[SHA256_SIZE_BYTES];
+	char		digest_p[45];
+	size_t		machine_len;
+
+	/* No proc_time_boot, bail */
+	if ((qp->flags & QUARK_F_PROC) == 0)
+		return;
+	/* Already known, bail */
+	if (qp->flags & QUARK_F_ENTITYID)
+		return;
+	/* No machine_id, bail */
+	if ((machine_len = strlen(quark.machine_id)) == 0)
+		return;
+
+	/*
+	 * Kill precision
+	 */
+	ns = qp->proc_time_boot;
+	ns -= ns % ((NS_PER_S) / quark.hz);
+
+	/* Historically little endian */
+	pid64_le = htole64(qp->pid);
+	start_le = htole64(ns);
+
+	sha256_init(&ctx);
+	sha256_hash(&ctx, quark.machine_id, machine_len);
+	sha256_hash(&ctx, &pid64_le, sizeof(pid64_le));
+	sha256_hash(&ctx, &start_le, sizeof(start_le));
+	sha256_done(&ctx, digest);
+
+	b64_ntop(digest, sizeof(digest), digest_p, sizeof(digest_p));
+	digest_p[sizeof(digest_p) - 1] = 0;
+
+	/* Let it truncate, entity_id is only 12 bytes */
+	(void)strlcpy(qp->entity_id, digest_p, sizeof(qp->entity_id));
+	qp->flags |= QUARK_F_ENTITYID;
+}
+
 /*
  * Socket stuff
  */
@@ -585,6 +629,8 @@ event_flag_str(u64 flag)
 		return "CWD";
 	case QUARK_F_CGROUP:
 		return "CGRP";
+	case QUARK_F_ENTITYID:
+		return "EID";
 	default:
 		return "?";
 	}
@@ -1017,6 +1063,10 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    entry_leader_type_str(qp->proc_entry_leader_type),
 		    qp->proc_entry_leader);
 	}
+	if (qp->flags & QUARK_F_ENTITYID) {
+		flagname = event_flag_str(QUARK_F_ENTITYID);
+		P("  %.4s\tentity_id=%s\n", flagname, qp->entity_id);
+	}
 	if (qp->flags & QUARK_F_CWD) {
 		flagname = event_flag_str(QUARK_F_CWD);
 		P("  %.4s\tcwd=%s\n", flagname, qp->cwd);
@@ -1268,12 +1318,16 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 		/* Don't set cwd as it's not valid on exit */
 		comm = raw_task->comm;
 
+
 		if (raw_task->cgroup != NULL) {
 			qp->flags |= QUARK_F_CGROUP;
 			free(qp->cgroup);
 			qp->cgroup = raw_task->cgroup;
 			raw_task->cgroup = NULL;
 		}
+
+		/* Depends on QUARK_F_PROC, idempotent */
+		process_entity_id(qq, qp);
 	}
 	if (raw_comm != NULL)
 		comm = raw_comm->comm; /* raw_comm always overrides */
@@ -2036,6 +2090,39 @@ fetch_boottime(void)
 	return (btime * NS_PER_S);
 }
 
+static int
+fetch_machine_id(char *buf, size_t len)
+{
+	int		  fd;
+	char		 *id;
+	const char 	**path, *all_paths[] = {
+		"/etc/machine-id",
+		"/var/lib/dbus/machine-id",
+		"/var/db/dbus/machine-id",
+		NULL
+	};
+
+	for (fd = -1, path = all_paths; *path != NULL; path++) {
+		fd = open("/etc/machine-id", O_RDONLY);
+		if (fd != -1)
+			break;
+	}
+	if (fd == -1)
+		return (-1);
+	/* Historically the final newline is included, so keep it. */
+	if ((id = load_file_nostat(fd, NULL)) == NULL) {
+		close(fd);
+		warnx("can't load machine_id");
+		return (-1);
+	}
+	close(fd);
+	
+	if (strlcpy(buf, id, len) >= len)
+		warnx("machine_id truncated, ignoring");
+
+	return (0);
+}
+
 /*
  * Aggregation is a relationship between a parent event and a child event. In a
  * fork+exec cenario, fork is the parent, exec is the child.
@@ -2096,6 +2183,12 @@ quark_init(void)
 		qwarn("can't fetch btime");
 		return (-1);
 	}
+	if (fetch_machine_id(quark.machine_id,
+	    sizeof(quark.machine_id)) == -1) {
+		qwarn("can't fetch machine id, ignoring");
+		quark.machine_id[0] = 0;
+	}
+
 	quark.hz = hz;
 	quark.boottime = boottime;
 

@@ -70,4 +70,21 @@ long long	strtonum(const char *, long long, long long, const char **);
  */
 void		sshbuf_dump_data(const void *, size_t, FILE *);
 
+/*
+ * Musl
+ */
+#ifdef NO_B64
+int b64_ntop(u_char const *src, size_t srclength, char *target,
+    size_t targsize);
+int b64_pton(char const *src, u_char *target, size_t targsize);
+#else
+#include <resolv.h>
+#endif /* NO_B64 */
+
+/*
+ * Linkining with the one billion versions of openssl is a pain, we need sha256
+ * for a dozen bytes only.
+ */
+#include "sha256.h"
+
 #endif	/* _COMPAT_H */
