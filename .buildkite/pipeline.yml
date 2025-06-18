@@ -385,6 +385,28 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
+  - label: "quark-test on rhel 10"
+    key: test_rhel_10
+    command: "./.buildkite/runtest_distro.sh rhel 10"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 10.0"
+    key: test_rhel_10_0
+    command: "./.buildkite/runtest_distro.sh rhel 10.0"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
   - label: "quark-test on ubuntu 18.04 (no bpf)"
     key: test_ubuntu_18_04
     command: "./.buildkite/runtest_distro.sh ubuntu 18.04 -k"
