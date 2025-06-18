@@ -48,6 +48,7 @@ case $RHELVER in
 8|9)		URL="https://ftp.fau.de/rockylinux/$RHELVER/BaseOS/x86_64/os/Packages/k";;
 8.[34])		URL="https://dl.rockylinux.org/vault/rocky/$RHELVER/BaseOS/x86_64/os/Packages";;
 8.?|9.?)	URL="https://dl.rockylinux.org/vault/rocky/$RHELVER/BaseOS/x86_64/os/Packages/k";;
+10|10.?)	URL="https://ftp.fau.de/rockylinux/$RHELVER/BaseOS/x86_64/os/Packages/k";;
 *)		die "Unsupported RHEL version: $RHELVER";;
 esac
 
