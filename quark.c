@@ -452,7 +452,7 @@ static void
 process_entity_id(struct quark_queue *qq, struct quark_process *qp)
 {
 	sha256_context	ctx;
-	u64		pid64_le, start_le;
+	u64		pid64_le, start_le, ns;
 	u8		digest[SHA256_SIZE_BYTES];
 	char		digest_p[45];
 	size_t		machine_len;
@@ -467,9 +467,15 @@ process_entity_id(struct quark_queue *qq, struct quark_process *qp)
 	if ((machine_len = strlen(quark.machine_id)) == 0)
 		return;
 
+	/*
+	 * Kill precision
+	 */
+	ns = qp->proc_time_boot;
+	ns -= ns % ((NS_PER_S) / quark.hz);
+
 	/* Historically little endian */
 	pid64_le = htole64(qp->pid);
-	start_le = htole64(qp->proc_time_boot);
+	start_le = htole64(ns);
 
 	sha256_init(&ctx);
 	sha256_hash(&ctx, quark.machine_id, machine_len);
