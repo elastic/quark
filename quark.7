@@ -152,9 +152,17 @@ gnumake
 .It
 gcc
 .It
-mandoc (for docs).
+mandoc (for docs)
+.It
+html2markdown utility
+     (for docs, pre-built binaries are available at
+     https://github.com/JohannesKaufmann/html-to-markdown/releases)
 .It
 m4
+.It
+qemu (for testing)
+.It
+zstd
 .El
 .Pp
 Make sure to clone the repository recursively:
@@ -201,6 +209,10 @@ Builds
 .Nm quark
 inside a docker container, so you don't have to worry about
 having build dependencies.
+.It Em docker-shell
+Spawns an interactive shell inside the same builder container created by
+.Sq make docker .
+Handy for debugging failed builds, inspecting artifacts etc.
 .It Em docker-cross-arm64
 Builds
 .Nm quark
@@ -210,10 +222,14 @@ Builds
 .Nm quark
 inside a centos7 docker container, useful for linking against
 ancient glibc-2.17.
+.It Em centos7-shell
+Opens an interactive shell in the centos7 builder container.
 .It Em alpine
 Builds
 .Nm quark
-inside an alpine docker container, so we can track musl builds.
+inside an Alpine Linux docker container, so we can track musl builds.
+.It Em alpine-shell
+Interactive shell inside the Alpine builder image.
 .It Em test
 Builds and runs
 .Xr quark-test 8 .
@@ -294,9 +310,40 @@ $ make initramfs.gz
 $ ./krun.sh initramfs.gz kernel-images/amd64/linux-4.18.0-553.el8_10.x86_64 quark-test -vvv
 .Ed
 .Pp
-Note that you can pass arguments to the utility and you have to make
-.Pa initramfs.gz
-first.
+Convenience wrappers for Fedora, RHEL, and Ubuntu, automate the
+above by fetching the appropriate kernel packages, extracting
+.Pa vmlinuz
+and boot-strapping
+.Pa qemu-system-x86_64 :
+.Bd -literal
+$ make initramfs.gz
+$ ./krun-fedora.sh initramfs.gz 40 quark-test -vvv
+$ ./krun-rhel.sh -v initramfs.gz 9 quark-test
+$ ./krun-ubuntu.sh initramfs.gz 24.04 quark-test -b t_dns
+.Ed
+The version number after
+.Sq initramfs.gz
+selects the Fedora, RHEL, or Ubuntu version.
+All remaining arguments are passed verbatim to
+.Xr quark-test 8 ,
+enabling targeted runs such as:
+.Bd -literal
+$ ./krun-fedora.sh initramfs.gz 41 quark-test -b t_fork_exec_exit
+.Ed
+These scripts require KVM access and therefore must be executed on a host
+kernel as root.
+They are unsuitable for container environments; the
+.Pa docker
+targets only build
+.Nm
+and do not attempt to run the test suite.
+.Pp
+.Em make test-valgrind
+runs the same suite under valgrind
+and is useful for catching memory errors, while
+.Em make test-kernel
+cycles through a set of kernel images in kernel_images
+folder to ensure probe compatibility.
 .Sh INCLUDED BINARIES
 .Xr quark-mon 8
 is a program that dumps
