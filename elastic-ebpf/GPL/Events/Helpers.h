@@ -132,8 +132,8 @@ const volatile int consumer_pid = 0;
 #define MAX_ERRNO 4095
 
 // From include/linux/tty_driver.h
-#define TTY_DRIVER_TYPE_PTY 0x0004
-#define PTY_TYPE_MASTER 0x0001
+#define OLD_TTY_DRIVER_TYPE_PTY 0x0004
+#define OLD_PTY_TYPE_MASTER 0x0001
 
 // From include/uapi/asm-generic/termbits.h
 #define ECHO 0x00008
