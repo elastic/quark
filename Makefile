@@ -321,7 +321,7 @@ test-valgrind: quark-test
 	$(SUDO) valgrind			\
 		--trace-children=no		\
 		--child-silent-after-fork=yes	\
-		--track-origin=yes		\
+		--track-origins=yes		\
 		./quark-test -1			\
 		2>&1 | grep -v "^--.*WARNING: unhandled eBPF command"
 
