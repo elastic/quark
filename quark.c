@@ -23,7 +23,7 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
-
+/* LALALA */
 #include "quark.h"
 
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
