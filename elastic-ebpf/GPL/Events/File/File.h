@@ -68,6 +68,7 @@ static void ebpf_file_info__fill(struct ebpf_file_info *finfo, struct dentry *de
      * then it isn't worth it.
      */
     finfo->atime = finfo->mtime = finfo->ctime = 0;
+#if 0
     /* atime */
     if (bpf_core_field_exists(ino->i_atime))
         finfo->atime = BPF_CORE_READ(ino, i_atime.tv_sec) * NANOSECONDS_IN_SECOND +
@@ -113,7 +114,7 @@ static void ebpf_file_info__fill(struct ebpf_file_info *finfo, struct dentry *de
         finfo->ctime = BPF_CORE_READ(ino611, i_ctime_sec) * NANOSECONDS_IN_SECOND +
                        (u64)BPF_CORE_READ(ino611, i_ctime_nsec);
     }
-
+#endif
     if (S_ISREG(finfo->mode)) {
         finfo->type = EBPF_FILE_TYPE_FILE;
     } else if (S_ISDIR(finfo->mode)) {

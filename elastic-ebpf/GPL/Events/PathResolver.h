@@ -187,7 +187,7 @@ static size_t ebpf_resolve_kernfs_node_to_string(char *buf, struct kernfs_node *
 {
     size_t cur = 0;
     int depth = 0, zero = 0, read_len, name_len;
-    int parent_ok;
+    /* int parent_ok; */
     char name[KERNFS_NODE_COMPONENT_MAX_LEN];
     buf[0] = '\0';
 
@@ -207,19 +207,19 @@ static size_t ebpf_resolve_kernfs_node_to_string(char *buf, struct kernfs_node *
          * Verifier gets confused if we do an if else chain here and doesn't
          * eliminate the non existing branch,.
          */
-        parent_ok = 0;
-        if (bpf_core_field_exists(struct kernfs_node___6_15, __parent)) {
-            kn = BPF_CORE_READ((struct kernfs_node___6_15 *)kn, __parent);
-            parent_ok = 1;
-        }
-        if (bpf_core_field_exists(kn->parent)) {
+        /* parent_ok = 0; */
+        /* if (bpf_core_field_exists(struct kernfs_node___6_15, __parent)) { */
+        /*     kn = BPF_CORE_READ((struct kernfs_node___6_15 *)kn, __parent); */
+        /*     parent_ok = 1; */
+        /* } */
+        /* if (bpf_core_field_exists(kn->parent)) { */
             kn = BPF_CORE_READ(kn, parent);
-            parent_ok = 1;
-        }
-        if (!parent_ok) {
-            bpf_printk("could not resolve kernfs_node.parent");
-            goto out_err;
-        }
+        /*     parent_ok = 1; */
+        /* } */
+        /* if (!parent_ok) { */
+        /*     bpf_printk("could not resolve kernfs_node.parent"); */
+        /*     goto out_err; */
+        /* } */
         depth++;
     }
 
