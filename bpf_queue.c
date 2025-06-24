@@ -566,6 +566,23 @@ relo_member(struct btf *btf, int *loc, const char *struct_name,
 	return (*loc);
 }
 
+static struct bpf_probes *
+open_probes(void)
+{
+	struct bpf_object_open_opts	 opts, *op;
+	const char			*custom_path;
+
+	op = NULL;
+	if ((custom_path = getenv("QUARK_BTF_PATH")) != NULL) {
+		bzero(&opts, sizeof(opts));
+		opts.sz = sizeof(opts);
+		opts.btf_custom_path = custom_path;
+		op = &opts;
+	}
+
+	return (bpf_probes__open_opts(op));
+}
+
 static int
 bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
@@ -585,7 +602,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	cgroup_fd = -1;
 	btf = NULL;
 
-	bqq->probes = bpf_probes__open();
+	bqq->probes = open_probes();
 	if (bqq->probes == NULL) {
 		qwarn("bpf_probes__open");
 		goto fail;

@@ -317,12 +317,21 @@ test: quark-test
 test-kernel: initramfs.gz
 	./ktest-all.sh
 
+#
+# We force QUARK_BTF_PATH when testing under valgrind. This forces
+# libbpf to *not* attempt to load additional BTF from kernel modules.
+# Libbpf does BPF commands that valgrind doesn't understand when
+# loading these BTF modules, making valgrind spit thousands of false
+# positives.
+#
 test-valgrind: quark-test
-	$(SUDO) valgrind			\
-		--trace-children=no		\
-		--child-silent-after-fork=yes	\
-		./quark-test -1			\
-		2>&1 | grep -v "^--.*WARNING: unhandled eBPF command"
+	$(SUDO) QUARK_BTF_PATH=/sys/kernel/btf/vmlinux			\
+		valgrind						\
+		--trace-children=no					\
+		--child-silent-after-fork=yes				\
+		./quark-test -1						\
+		2>&1
+# | grep -v "^--.*WARNING: unhandled eBPF command"
 
 initramfs:
 	mkdir initramfs
