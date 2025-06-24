@@ -8,6 +8,7 @@
  */
 
 #include "vmlinux.h"
+#include "vmlinux_extra.h"
 
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
@@ -612,15 +613,38 @@ static int tty_write__enter(struct kiocb *iocb, struct iov_iter *from)
     // @link: link to another pty (master -> slave and vice versa)
     //
     // https://elixir.bootlin.com/linux/v5.19.9/source/drivers/tty/tty_io.c#L2643
-    bool is_master             = false;
+    bool is_master;
     struct ebpf_tty_dev master = {};
     struct ebpf_tty_dev slave  = {};
-    if (BPF_CORE_READ(tty, driver, type) == TTY_DRIVER_TYPE_PTY &&
-        BPF_CORE_READ(tty, driver, subtype) == PTY_TYPE_MASTER) {
+    struct tty_driver *driver = BPF_CORE_READ(tty, driver);
+
+    if (driver == NULL)
+        goto out;
+
+    if (bpf_core_type_exists(enum tty_driver_type)) {
+        struct tty_driver___6_16 *driver616 = (void *)driver;
+        int type, subtype, tval, sval;
+
+        type = BPF_PROBE_READ(driver616, type);
+        subtype = BPF_PROBE_READ(driver616, subtype);
+        if (!bpf_core_enum_value_exists(enum tty_driver_type, TTY_DRIVER_TYPE_PTY))
+            goto out;
+        if (!bpf_core_enum_value_exists(enum tty_driver_subtype, PTY_TYPE_MASTER))
+            goto out;
+        tval = bpf_core_enum_value(enum tty_driver_type, TTY_DRIVER_TYPE_PTY);
+        sval = bpf_core_enum_value(enum tty_driver_subtype, PTY_TYPE_MASTER);
+        is_master = type == tval && subtype == sval;
+    } else {
+        int type, subtype;
+        type = BPF_PROBE_READ(driver, type);
+        subtype = BPF_PROBE_READ(driver, subtype);
+        is_master = type == OLD_TTY_DRIVER_TYPE_PTY && subtype == OLD_PTY_TYPE_MASTER;
+    }
+
+    if (is_master) {
         struct tty_struct *tmp = BPF_CORE_READ(tty, link);
         ebpf_tty_dev__fill(&master, tty);
         ebpf_tty_dev__fill(&slave, tmp);
-        is_master = true;
     } else {
         ebpf_tty_dev__fill(&slave, tty);
     }
