@@ -549,17 +549,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		if (relo_param(btf, &p->rodata->arg__do_truncate__filp__,
 		    "do_truncate", "filp") == -1)
 			goto fail;
-
-		/*
-		 * XXX We can likely get rid of all of those by using
-		 * bpf_core_field_exists inside the probe
-		 */
-		if (relo_member(btf, &off, "inode", "__i_atime") != -1)
-			p->rodata->off__inode____i_atime__ = off;
-		if (relo_member(btf, &off, "inode", "__i_mtime") != -1)
-			p->rodata->off__inode____i_mtime__ = off;
-		if (relo_member(btf, &off, "inode", "__i_ctime") != -1)
-			p->rodata->off__inode____i_ctime__ = off;
 	}
 
 	if (qq->flags & QQ_DNS) {
