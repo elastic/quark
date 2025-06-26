@@ -25,7 +25,7 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-mon</code></td>
-    <td>[<code class="Fl">-BbDekNSstv</code>] [<code class="Fl">-C</code>
+    <td>[<code class="Fl">-BbDeFkMNSstv</code>] [<code class="Fl">-C</code>
       <var class="Ar">filename</var>] [<code class="Fl">-l</code>
       <var class="Ar">maxlength</var>] [<code class="Fl">-m</code>
       <var class="Ar">maxnodes</var>] [<code class="Fl">-P</code>
@@ -87,6 +87,8 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
       <a class="permalink" href="#quark_events"><i class="Em" id="quark_events">quark_events</i></a>.
       Entry leader is how the process entered the system, it is disabled by
       default as it is Elastic/ECS specific.</dd>
+  <dt id="F"><a class="permalink" href="#F"><code class="Fl">-F</code></a></dt>
+  <dd>Enable file events (experimental).</dd>
   <dt id="g"><a class="permalink" href="#g"><code class="Fl">-g</code></a></dt>
   <dd>Use minimal aggregation, fork, exec and exit will
       <a class="permalink" href="#not"><i class="Em" id="not">not</i></a> be
@@ -109,6 +111,8 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
       sorted by time, and the second by pid plus time. Exits after
       <var class="Ar">maxnodes</var> has been reached. This is used purely for
       internal debugging.</dd>
+  <dt id="M"><a class="permalink" href="#M"><code class="Fl">-M</code></a></dt>
+  <dd>Run in a simple benchmark form that only counts and display stats.</dd>
   <dt id="N"><a class="permalink" href="#N"><code class="Fl">-N</code></a></dt>
   <dd>Enable DNS events (experimental).</dd>
   <dt id="P"><a class="permalink" href="#P"><code class="Fl">-P</code></a>
@@ -193,7 +197,7 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">April 4, 2025</td>
+    <td class="foot-date">June 26, 2025</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
