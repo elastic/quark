@@ -667,9 +667,14 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	}
 
 	if (qq->flags & QQ_FILE) {
+        int use_fsnotify =
+            (6 == btf_number_of_params_op_ptr(btf, "inode_operations", "atomic_open"));
+
 		if (use_fentry) {
 			bpf_program__set_autoload(p->progs.fentry__do_renameat2, 1);
 			bpf_program__set_autoload(p->progs.fentry__do_unlinkat, 1);
+            if (use_fsnotify)
+			    bpf_program__set_autoload(p->progs.fentry__fsnotify, 1);
 			bpf_program__set_autoload(p->progs.fentry__mnt_want_write, 1);
 			bpf_program__set_autoload(p->progs.fentry__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.fentry__vfs_unlink, 1);
@@ -688,6 +693,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.kretprobe__chown_common, 1);
 			bpf_program__set_autoload(p->progs.kprobe__do_truncate, 1);
 			bpf_program__set_autoload(p->progs.kretprobe__do_truncate, 1);
+            if (use_fsnotify)
+			    bpf_program__set_autoload(p->progs.kprobe__fsnotify, 1);
 			bpf_program__set_autoload(p->progs.kprobe__vfs_writev, 1);
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_writev, 1);
 			bpf_program__set_autoload(p->progs.kprobe__vfs_rename, 1);
