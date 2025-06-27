@@ -413,6 +413,7 @@ struct quark_process {
 #define QUARK_F_CMDLINE		(1 << 4)
 #define QUARK_F_CWD		(1 << 5)
 #define QUARK_F_CGROUP		(1 << 6)
+#define QUARK_F_ENTITYID	(1 << 7)
 	u64	 flags;
 
 	/* QUARK_F_PROC */
@@ -453,6 +454,8 @@ struct quark_process {
 	char	*cwd;
 	/* QUARK_F_CGROUP */
 	char	*cgroup;
+	/* QUARK_F_ENTITY_ID */
+	char	 entity_id[13];
 };
 
 struct quark_process_iter {

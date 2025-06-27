@@ -43,6 +43,9 @@ CPPFLAGS?= -D_GNU_SOURCE
 ifndef SYSLIB
 CPPFLAGS+= -Iinclude/usr/include
 endif
+ifdef NO_B64
+CPPFLAGS+= -DNO_B64
+endif
 
 CDIAGFLAGS+= -Wall
 CDIAGFLAGS+= -Wextra
@@ -90,13 +93,15 @@ LIBQUARK_DEPS+= $(EEBPF_FILES) include
 endif
 LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
 LIBQUARK_SRCS:=			\
+	base64.c		\
 	bpf_queue.c		\
 	btf.c			\
 	btfhub.c		\
 	compat.c		\
 	kprobe_queue.c		\
 	quark.c			\
-	qutil.c
+	qutil.c			\
+	sha256.c
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 LIBQUARK_STATIC_BIG:= libquark_big.a
@@ -107,6 +112,11 @@ LIBQUARK_TARGET=$(LIBQUARK_STATIC_BIG)
 else
 LIBQUARK_TARGET=$(LIBQUARK_STATIC)
 EXTRA_LDFLAGS+= -lbpf
+endif
+
+# for b64_ntop()
+ifndef NO_B64
+EXTRA_LDFLAGS+= -lresolv
 endif
 
 # ZLIB
@@ -287,7 +297,7 @@ alpine: alpine-image clean-all
 	$(call msg,ALPINE-DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run 				\
 		$(ALPINE_RUN_ARGS) $(SHELL)		\
-		-c "make -C $(PWD) all initramfs.gz EXTRA_LDFLAGS=-lfts"
+		-c "make -C $(PWD) all initramfs.gz EXTRA_LDFLAGS=-lfts NO_B64=y"
 
 alpine-image: clean-all
 	$(call msg,ALPINE-IMAGE,Dockerfile.alpine)
