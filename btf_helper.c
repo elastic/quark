@@ -293,6 +293,50 @@ btf_enum_value(struct btf *btf, const char *dotname, ssize_t *uv)
 }
 
 int
+btf_number_of_params_op_ptr(struct btf *btf, const char *ops_struct, const char* op_name)
+{
+	const char *name;
+	struct btf_type const	*ops_t;
+	struct btf_member	*m;
+	int i;
+
+	ops_t = btf_type_by_name_kind(btf, NULL, ops_struct, BTF_KIND_STRUCT);
+
+	if (!btf_is_struct(ops_t)) {
+		errno = EINVAL;
+		goto fail;
+	}
+
+	m = btf_members(ops_t);
+
+	for (i = 0; i < btf_vlen(ops_t); i++, m++) {
+		name = btf__name_by_offset(btf, m->name_off);
+		if (name == NULL)
+			continue;
+
+		if (!strcmp(op_name, name)) {
+			const struct btf_type *t;
+
+			t = btf__type_by_id(btf, m->type);
+			if (t == NULL)
+				return (-1);
+
+			t = btf__type_by_id(btf, t->type);
+			if (t == NULL)
+				return (-1);
+
+			if (!btf_is_func_proto(t))
+				return (-1);
+
+			return (btf_vlen(t));
+		}
+	}
+
+fail:
+	return (-1);
+}
+
+int
 btf_number_of_params(struct btf *btf, const char *func)
 {
 	s32 off;
