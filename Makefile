@@ -91,7 +91,7 @@ endif
 LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
 LIBQUARK_SRCS:=			\
 	bpf_queue.c		\
-	btf.c			\
+	btf_helper.c	\
 	btfhub.c		\
 	compat.c		\
 	kprobe_queue.c		\
