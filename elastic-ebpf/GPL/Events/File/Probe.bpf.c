@@ -286,7 +286,8 @@ static int do_filp_open__exit(struct file *f)
         goto out;
 
     fmode_t fmode = BPF_CORE_READ(f, f_mode);
-    if (fmode & (fmode_t)0x100000) { // FMODE_CREATED
+    if ((fmode & (fmode_t)0x100000) ||                                 // FMODE_CREATED
+        (ebpf_events_state__get(EBPF_EVENTS_STATE_FS_CREATE) != NULL)) { // 4.18.x
         // generate a file creation event
         prepare_and_send_file_event(f, EBPF_EVENT_FILE_CREATE, NULL, 0);
     } else {
@@ -330,7 +331,43 @@ static int do_filp_open__exit(struct file *f)
     }
 
 out:
+    ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
+
     return 0;
+}
+
+static int fsnotify__enter(u32 mask)
+{
+    if (mask & 0x100) { // FS_CREATE
+        struct ebpf_events_state state = {};
+        ebpf_events_state__set(EBPF_EVENTS_STATE_FS_CREATE, &state);
+    }
+
+    return 0;
+}
+
+SEC("kprobe/fsnotify")
+int BPF_KPROBE(kprobe__fsnotify,
+               struct inode *to_tell,
+               u32 mask,
+               const void *data,
+               int data_is,
+               const unsigned char *file_name,
+               u32 cookie)
+{
+    return fsnotify__enter(mask);
+}
+
+SEC("fentry/fsnotify")
+int BPF_PROG(fentry__fsnotify,
+             struct inode *to_tell,
+             u32 mask,
+             const void *data,
+             int data_is,
+             const unsigned char *file_name,
+             u32 cookie)
+{
+    return fsnotify__enter(mask);
 }
 
 SEC("fexit/do_filp_open")
