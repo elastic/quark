@@ -286,13 +286,10 @@ static int do_filp_open__exit(struct file *f)
         goto out;
 
     fmode_t fmode = BPF_CORE_READ(f, f_mode);
-    if (fmode & (fmode_t)0x100000) { // FMODE_CREATED
+    if ((fmode & (fmode_t)0x100000) ||                                 // FMODE_CREATED
+        (ebpf_events_state__get(EBPF_EVENTS_STATE_FS_CREATE) != NULL)) { // 4.18.x
         // generate a file creation event
         prepare_and_send_file_event(f, EBPF_EVENT_FILE_CREATE, NULL, 0);
-    } else if (ebpf_events_state__get(EBPF_EVENTS_STATE_FS_CREATE) != NULL) {
-        // generate a file creation event
-        prepare_and_send_file_event(f, EBPF_EVENT_FILE_CREATE, NULL, 0);
-        ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
     } else {
         // check if memfd file is being opened
         struct path p              = BPF_CORE_READ(f, f_path);
@@ -334,6 +331,8 @@ static int do_filp_open__exit(struct file *f)
     }
 
 out:
+    ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
+
     return 0;
 }
 
