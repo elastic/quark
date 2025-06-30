@@ -80,6 +80,7 @@ ssize_t			 quark_btf_offset(struct quark_btf *, const char *);
 struct btf;
 s32			btf_root_offset(struct btf *, const char *, int);
 int			btf_number_of_params(struct btf *, const char *);
+int			btf_number_of_params_op_ptr(struct btf *, const char *, const char *);
 int			btf_index_of_param(struct btf *, const char *, const char *);
 
 /* bpf_queue.c */
