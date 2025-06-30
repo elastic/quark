@@ -186,11 +186,27 @@ btf_offsetof(struct btf *btf, const char *parent_name, const char *member_name,
 	if (parent_t == NULL)
 		parent_t = btf_type_by_name_kind(btf, NULL, parent_name,
 		    BTF_KIND_UNION);
-	if (parent_t == NULL)
+	if (parent_t == NULL) {
+		if (ret_member != NULL)
+			*ret_member = NULL;
 		return (-1);
+	}
 
 	return (btf_offsetof_rec(btf, parent_t, member_name, ret_member, 0));
 
+}
+
+/*
+ * Given a struct or union parent_name, find the btf_member{} of member_name.
+ */
+static struct btf_member *
+btf_find_member(struct btf *btf, const char *parent_name, const char *member_name)
+{
+	struct btf_member *member = NULL;
+
+	btf_offsetof(btf, parent_name, member_name, &member);
+
+	return (member);
 }
 
 static s32
@@ -293,10 +309,31 @@ btf_enum_value(struct btf *btf, const char *dotname, ssize_t *uv)
 }
 
 int
+btf_number_of_params_of_ptr(struct btf *btf, const char *parent_name, const char *name)
+{
+	struct btf_member	*m;
+	const struct btf_type	*t;
+
+	m = btf_find_member(btf, parent_name, name);
+	if (m == NULL)
+		return (-1);
+	t = btf__type_by_id(btf, m->type);
+	if (t == NULL)
+		return (-1);
+	t = btf__type_by_id(btf, t->type);
+	if (t == NULL)
+		return (-1);
+	if (!btf_is_func_proto(t))
+		return (-1);
+
+	return (btf_vlen(t));
+}
+
+int
 btf_number_of_params(struct btf *btf, const char *func)
 {
-	s32 off;
-	const struct btf_type *t;
+	const struct btf_type	*t;
+	s32			 off;
 
 	off = btf__find_by_name_kind(btf, func, BTF_KIND_FUNC);
 	if (off < 0)
