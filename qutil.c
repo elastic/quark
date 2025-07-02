@@ -215,6 +215,21 @@ load_file_nostat(int fd, size_t *total)
 	return (buf);
 }
 
+int
+ipv6_supported(void)
+{
+	FILE *fp;
+	int enabled = 0;
+
+	fp = fopen("/proc/sys/net/ipv6", "r");
+	if (fp != NULL) {
+		enabled = 1;
+		fclose(fp);
+	}
+
+	return enabled;
+}
+
 void
 qlog_func(int pri, int do_errno, const char *func, int lineno,
     const char *fmt, ...)
