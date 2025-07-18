@@ -19,7 +19,6 @@ function usage
 	echo "  command...   Command to run in guest"
 	echo
 	echo "Examples:"
-	echo "  $SCRIPT initramfs.gz 9 /bin/bash"
 	echo "  $SCRIPT -v initramfs.gz 8.4 quark-test -vvv"
 	exit 1
 }
@@ -60,7 +59,7 @@ cleanup()	{ [[ -d "$TMPDIR" ]] && rm -rf "$TMPDIR"; }
 trap cleanup EXIT
 
 log "Fetching package list from $URL"
-RPMURL=$(lynx -dump -listonly "$URL"|grep kernel-core)
+RPMURL=$(lynx -dump -listonly "$URL"|grep kernel-core) || die "Can't fetch package list"
 RPMURL=${RPMURL##* }
 RPM=$(basename "$RPMURL")
 VMLINUZ=${RPM##kernel-core-}
