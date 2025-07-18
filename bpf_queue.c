@@ -650,14 +650,17 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		if (use_fentry) {
 			bpf_program__set_autoload(p->progs.fexit__inet_csk_accept, 1);
 			bpf_program__set_autoload(p->progs.fexit__tcp_v4_connect, 1);
-			bpf_program__set_autoload(p->progs.fexit__tcp_v6_connect, 1);
+			if (ipv6_supported())
+				bpf_program__set_autoload(p->progs.fexit__tcp_v6_connect, 1);
 			bpf_program__set_autoload(p->progs.fentry__tcp_close, 1);
 		} else {
 			bpf_program__set_autoload(p->progs.kretprobe__inet_csk_accept, 1);
 			bpf_program__set_autoload(p->progs.kprobe__tcp_v4_connect, 1);
 			bpf_program__set_autoload(p->progs.kretprobe__tcp_v4_connect, 1);
-			bpf_program__set_autoload(p->progs.kprobe__tcp_v6_connect, 1);
-			bpf_program__set_autoload(p->progs.kretprobe__tcp_v6_connect, 1);
+			if (ipv6_supported()) {
+				bpf_program__set_autoload(p->progs.kprobe__tcp_v6_connect, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__tcp_v6_connect, 1);
+			}
 			bpf_program__set_autoload(p->progs.kprobe__tcp_close, 1);
 		}
 
