@@ -19,6 +19,16 @@ else
 $(error unsupported architecture $(ARCH))
 endif
 
+# Check if we are in a musl system
+ifeq ($(shell ldd --version 2>&1|head -n1|grep -q ^musl && echo yes), yes)
+	MUSL?=1
+endif
+
+# Musl doesn't have fts, but distributions provide a libfts
+ifdef MUSL
+EXTRA_LDFLAGS+= -lfts
+endif
+
 ifeq ($(V),1)
 	Q =
 	msg =
@@ -287,7 +297,7 @@ alpine: alpine-image clean-all
 	$(call msg,ALPINE-DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run 				\
 		$(ALPINE_RUN_ARGS) $(SHELL)		\
-		-c "make -C $(PWD) all initramfs.gz EXTRA_LDFLAGS=-lfts"
+		-c "make -C $(PWD) all initramfs.gz"
 
 alpine-image: clean-all
 	$(call msg,ALPINE-IMAGE,Dockerfile.alpine)
