@@ -30,7 +30,6 @@ usage() {
 	echo "  command...      Command to run in guest"
 	echo
 	echo "Examples:"
-	echo "  $SCRIPT initramfs.gz 22.04 /bin/bash"
 	echo "  $SCRIPT -v initramfs.gz 24.04 quark-test -vvv"
 	exit 1
 }
