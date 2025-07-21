@@ -218,15 +218,15 @@ load_file_nostat(int fd, size_t *total)
 int
 ipv6_supported(void)
 {
-	int fd;
-	int enabled = 0;
+	int	fd;
+	int	enabled = 0;
 
 	if ((fd = socket(AF_INET6, SOCK_STREAM, 0)) != -1) {
 		enabled = 1;
 		close(fd);
 	}
 
-	return enabled;
+	return (enabled);
 }
 
 void
