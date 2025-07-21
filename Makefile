@@ -101,11 +101,11 @@ endif
 LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
 LIBQUARK_SRCS:=			\
 	bpf_queue.c		\
-	btf.c			\
 	btfhub.c		\
 	compat.c		\
 	kprobe_queue.c		\
 	quark.c			\
+	qbtf.c			\
 	qutil.c
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a

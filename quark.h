@@ -90,14 +90,6 @@ struct bpf_probes	*quark_get_bpf_probes(struct quark_queue *);
 /* kprobe_queue.c */
 int	kprobe_queue_open(struct quark_queue *);
 
-/* XXX terrible name XXX */
-struct args {
-	char		*buf;
-	size_t		 buf_len;
-	int		 argc;
-	const char	*argv[];
-};
-
 /* qutil.c */
 struct qstr {
 	char	*p;

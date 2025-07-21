@@ -19,7 +19,6 @@ function usage
 	echo "  command...      Command to run in guest"
 	echo
 	echo "Examples:"
-	echo "  $SCRIPT initramfs.gz 40 /bin/bash"
 	echo "  $SCRIPT -v initramfs.gz rawhide quark-test -vvv"
 	exit 1
 }
@@ -45,7 +44,7 @@ shift 2
 [[ -f ./krun.sh ]] || die "Required launcher ./krun.sh is missing"
 
 case $FEDORAVER in
-2?|3?)		URL="https://archives.fedoraproject.org/pub/archive/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
+2?|3?|40)	URL="https://archives.fedoraproject.org/pub/archive/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
 43|rawhide)	URL="https://ftp.fau.de/fedora/linux/development/$FEDORAVER/Everything/x86_64/os/Packages/k";;
 4?)		URL="https://ftp.fau.de/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
 *)		die "Unsupported Fedora version: $FEDORAVER";;
@@ -59,7 +58,7 @@ cleanup()	{ [[ -d "$TMPDIR" ]] && rm -rf "$TMPDIR"; }
 trap cleanup EXIT
 
 log "Fetching package list from $URL"
-RPMURL=$(lynx -dump -listonly "$URL"|grep kernel-core)
+RPMURL=$(lynx -dump -listonly "$URL"|grep kernel-core) || die "Can't fetch package list"
 RPMURL=${RPMURL##* }
 RPM=$(basename "$RPMURL")
 VMLINUZ=${RPM##kernel-core-}
