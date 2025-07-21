@@ -453,6 +453,30 @@ process_by_pid_cmp(struct quark_process *a, struct quark_process *b)
 	return (0);
 }
 
+static void
+process_entity_id(struct quark_process *qp)
+{
+	u32		pid32_le;
+	u64		ns_le;
+	u8		digest[sizeof(pid32_le) + sizeof(ns_le)];
+
+	/* No proc_time_boot, bail */
+	if ((qp->flags & QUARK_F_PROC) == 0)
+		return;
+	/* Already computed, bail */
+	if (qp->proc_entity_id[0] != 0)
+		return;
+
+	pid32_le = htole32(qp->pid);
+	ns_le = htole64(qp->proc_time_boot);
+
+	memcpy(digest, &pid32_le, sizeof(pid32_le));
+	memcpy(digest + sizeof(pid32_le), &ns_le, sizeof(ns_le));
+	if (qb64_ntop(digest, sizeof(digest), qp->proc_entity_id,
+	    sizeof(qp->proc_entity_id)) == -1)
+		qp->proc_entity_id[0] = 0;
+}
+
 /*
  * Socket stuff
  */
@@ -1079,7 +1103,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    flagname, qp->proc_uts_inonum, qp->proc_ipc_inonum);
 		P("  %.4s\tmnt_inonum=%u net_inonum=%u\n",
 		    flagname, qp->proc_mnt_inonum, qp->proc_net_inonum);
-		P("  %.4s\tentry_leader_type=%s entry_leader=%d\n", flagname,
+		P("  %.4s\tentity_id=%s, entry_leader_type=%s entry_leader=%d\n", flagname,
+		    qp->proc_entity_id,
 		    entry_leader_type_str(qp->proc_entry_leader_type),
 		    qp->proc_entry_leader);
 	}
@@ -1340,6 +1365,9 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 			qp->cgroup = raw_task->cgroup;
 			raw_task->cgroup = NULL;
 		}
+
+		/* Depends on QUARK_F_PROC, idempotent */
+		process_entity_id(qp);
 	}
 	if (raw_comm != NULL)
 		comm = raw_comm->comm; /* raw_comm always overrides */
@@ -1798,6 +1826,7 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	sproc_namespace(qp, "ns/ipc", &qp->proc_ipc_inonum, dfd);
 	sproc_namespace(qp, "ns/mnt", &qp->proc_mnt_inonum, dfd);
 	sproc_namespace(qp, "ns/net", &qp->proc_net_inonum, dfd);
+	process_entity_id(qp);
 
 	/* QUARK_F_COMM */
 	if (readlineat(dfd, "comm", qp->comm, sizeof(qp->comm)) > 0)

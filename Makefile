@@ -100,6 +100,7 @@ LIBQUARK_DEPS+= $(EEBPF_FILES) include
 endif
 LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
 LIBQUARK_SRCS:=			\
+	base64.c		\
 	bpf_queue.c		\
 	btfhub.c		\
 	compat.c		\

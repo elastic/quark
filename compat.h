@@ -70,4 +70,10 @@ long long	strtonum(const char *, long long, long long, const char **);
  */
 void		sshbuf_dump_data(const void *, size_t, FILE *);
 
+/*
+ * Base64, portable version of b64_*, so we don't have to link with libresolv
+ */
+int		qb64_ntop(u_char const *, size_t, char *, size_t);
+int 		qb64_pton(char const *, u_char *, size_t);
+
 #endif	/* _COMPAT_H */

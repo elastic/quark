@@ -433,6 +433,7 @@ struct quark_process {
 	u32	 proc_ipc_inonum;
 	u32	 proc_mnt_inonum;
 	u32	 proc_net_inonum;
+	char	 proc_entity_id[17];	/* Source is base64(96bits), which is 16bytes + NUL */
 	/* QUARK_F_EXIT */
 	s32	 exit_code;
 	u64	 exit_time_event;
