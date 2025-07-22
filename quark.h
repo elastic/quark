@@ -105,6 +105,7 @@ int	 strtou64(u64 *, const char *, int);
 char 	*find_line(FILE *, const char *);
 char	*find_line_p(const char *, const char *);
 char	*load_file_nostat(int, size_t *);
+int	 ipv6_supported(void);
 
 enum quark_verbosity_levels {
 	QUARK_VL_SILENT,

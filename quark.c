@@ -2094,9 +2094,11 @@ sproc_scrape(struct quark_queue *qq)
 		r = sproc_net_tcp(qq, AF_INET, &socket_tmp_tree);
 		if (r == -1)
 			goto done;
-		r = sproc_net_tcp(qq, AF_INET6, &socket_tmp_tree);
-		if (r == -1)
-			goto done;
+		if (ipv6_supported()) {
+			r = sproc_net_tcp(qq, AF_INET6, &socket_tmp_tree);
+			if (r == -1)
+				goto done;
+		}
 
 		by_inode = &socket_tmp_tree;
 	}

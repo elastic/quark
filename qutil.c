@@ -215,6 +215,20 @@ load_file_nostat(int fd, size_t *total)
 	return (buf);
 }
 
+int
+ipv6_supported(void)
+{
+	int	fd;
+	int	enabled = 0;
+
+	if ((fd = socket(AF_INET6, SOCK_STREAM, 0)) != -1) {
+		enabled = 1;
+		close(fd);
+	}
+
+	return (enabled);
+}
+
 void
 qlog_func(int pri, int do_errno, const char *func, int lineno,
     const char *fmt, ...)
