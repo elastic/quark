@@ -18,6 +18,7 @@
 #include <netinet/ip.h>
 
 #include <err.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -102,11 +103,13 @@ main(int argc, char *argv[])
 
 	/* child */
 	if (pid == 0) {
-		if (mkdir("/tmp", 0777) != 0)
+		if (setenv("PATH", "/bin", 1) != 0)
+			err(1, "setenv PATH");
+		if (mkdir("/tmp", 0777) == -1)
 			err(1, "mkdir /tmp");
-		if (mkdir("/proc", 0666) != 0)
+		if (mkdir("/proc", 0666) == -1)
 			err(1, "mkdir /proc");
-		if (mkdir("/sys", 0666) != 0)
+		if (mkdir("/sys", 0666) == -1)
 			err(1, "mkdir /sys");
 
 		if (mount(NULL, "/tmp", "tmpfs", 0, NULL) == -1)
