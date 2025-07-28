@@ -757,12 +757,16 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	assert(write(fd, "4", 1) == 1);
 	assert(write(fd, "5", 1) == 1);
 
+	if (unlink(path) == -1)
+		err(1, "unlink");
+
+	/*
+	 * unlink(2) might change atime, so unlink before we fstat(2)
+	 */
 	if (fstat(fd, &st) == -1)
 		err(1, "stat");
 
 	close(fd);
-	if (unlink(path) != 0)
-		err(1, "unlink");
 
 	qev = drain_for_pid(&qq, getpid());
 	assert(qev->events == QUARK_EV_FILE);
