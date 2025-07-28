@@ -10,6 +10,7 @@ quark-btf-static
 quark-test
 quark-test-static
 init
+true
 libquark.a
 libquark_big.a
 bpf_probes_skel.h

@@ -345,17 +345,23 @@ test-valgrind: quark-test
 # | grep -v "^--.*WARNING: unhandled eBPF command"
 
 initramfs:
-	mkdir initramfs
+	mkdir -p initramfs/bin
 
-initramfs.gz: init quark-mon-static quark-btf-static quark-test-static initramfs
+initramfs.gz: init quark-mon-static quark-btf-static quark-test-static true initramfs
 	$(call assert_no_syslib)
 	cp init initramfs/
 	cp quark-mon-static initramfs/quark-mon
 	cp quark-btf-static initramfs/quark-btf
 	cp quark-test-static initramfs/quark-test
+	cp quark-test-static initramfs/quark-test
+	cp true initramfs/bin
 	cd initramfs && find . -print0 | cpio -0 -ov --format=newc | gzip -9 > ../$@
 
 init: init.c
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
+
+true: true.c
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
 

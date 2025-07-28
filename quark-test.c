@@ -105,19 +105,6 @@ color(int color)
 	return (ret);
 }
 
-static char *
-binpath(const char *bin)
-{
-	static char	name[PATH_MAX];
-
-	if (bin != NULL && realpath(bin, name) == NULL)
-		err(1, "can't initialize binpath");
-	else if (bin == NULL && name[0] == 0)
-		err(1, "binpath not initialized");
-
-	return (name);
-}
-
 static int
 backend_of_attr(struct quark_queue_attr *qa)
 {
@@ -320,8 +307,6 @@ usage(void)
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -l\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "usage: %s -N\n",
-	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n",
 	    program_invocation_short_name);
 
@@ -334,8 +319,7 @@ fork_exec_nop(void)
 	pid_t		child;
 	int		status;
 	char *const	argv[] = {
-		binpath(NULL),
-		"-N",
+		"true",
 		"this",
 		"is",
 		"nop!",
@@ -346,7 +330,7 @@ fork_exec_nop(void)
 		err(1, "fork");
 	else if (child == 0) {
 		/* child */
-		return (execv(binpath(NULL), argv));
+		return (execvp("true", argv));
 	}
 
 	/* parent */
@@ -665,8 +649,9 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp->proc_tty_minor != 0);
 #endif
 	/* check strings */
-	assert(!strcmp(qp->comm, program_invocation_short_name));
-	assert(!strcmp(qp->filename, binpath(NULL)));
+	assert(!strcmp(qp->comm, "true"));
+	assert(!strcmp(qp->filename, "/bin/true") ||
+	    !strcmp(qp->filename, "/usr/bin/true"));
 	/* check args */
 	quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
 	argc = 0;
@@ -681,18 +666,15 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 
 		switch (argc) {
 		case 0:
-			assert(!strcmp(arg, binpath(NULL)));
+			assert(!strcmp(arg, "true"));
 			break;
 		case 1:
-			assert(!strcmp(arg, "-N"));
-			break;
-		case 2:
 			assert(!strcmp(arg, "this"));
 			break;
-		case 3:
+		case 2:
 			assert(!strcmp(arg, "is"));
 			break;
-		case 4:
+		case 3:
 			assert(!strcmp(arg, "nop!"));
 			break;
 		default:
@@ -700,7 +682,7 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 		}
 		argc++;
 	}
-	assert(argc == 5);
+	assert(argc == 4);
 	assert(qp->cmdline_len == expected_args_len);
 
 	if (getcwd(path, sizeof(path)) == NULL)
@@ -1475,9 +1457,7 @@ main(int argc, char *argv[])
 	int		  ch, failed, x;
 	struct test	 *t;
 
-	binpath(argv[0]);
-
-	while ((ch = getopt(argc, argv, "1bhklNvVx:")) != -1) {
+	while ((ch = getopt(argc, argv, "1bhklvVx:")) != -1) {
 		switch (ch) {
 		case '1':
 			noforkflag = 1;
@@ -1496,9 +1476,6 @@ main(int argc, char *argv[])
 			break;
 		case 'l':
 			display_tests();
-			break;	/* NOTREACHED */
-		case 'N':
-			exit(0);
 			break;	/* NOTREACHED */
 		case 'v':
 			quark_verbose++;

@@ -12,7 +12,6 @@
 .Nm quark-test
 .Fl h
 .Nm quark-test Fl l
-.Nm quark-test Fl N
 .Nm quark-test Fl V
 .Sh DESCRIPTION
 The
@@ -44,13 +43,6 @@ Display this manpage.
 Run only KPROBE tests.
 .It Fl l
 Prints all available tests on stdout.
-.It Fl N
-This is a nop flag, literally,
-.Nm
-will just exit with 0. Some tests must fork and exec things in order to collect
-events, this keeps the binary self contained by forking and execing itself as we
-don't have access to system utilities in
-.Pa initramfs.gz .
 .It Fl v
 Increase
 .Em quark_verbose ,
