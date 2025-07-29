@@ -33,3 +33,8 @@ Changes from 0.3 to 0.4
     event is in quark_event.bypass.
   o Quark can now be linked against system libraries instead of
     embedding its own libbpf and zlib, via make SYSLIB=y.
+
+Changes from 0.4 to 0.5
+~~~~~~~~~~~~~~~~~~~~~~~
+  o Added support for file events, quark_event{} gets a file member.
+  o entity_id was added to quark_process{}.
