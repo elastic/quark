@@ -29,6 +29,9 @@ ifdef MUSL
 EXTRA_LDFLAGS+= -lfts
 endif
 
+# XXX REMOVE ME FOR TESTING
+EXTRA_LDFLAGS+= -lcjson
+
 ifeq ($(V),1)
 	Q =
 	msg =
@@ -173,7 +176,8 @@ DOCS_HTML+= $(patsubst %.8,docs/%.8.html,$(wildcard *.8))
 all:	$(LIBQUARK_TARGET)		\
 	quark-mon			\
 	quark-btf			\
-	quark-test
+	quark-test			\
+	quark-kube-talker
 
 $(ZLIB_STATIC): $(ZLIB_FILES)
 	$(call assert_no_syslib)
@@ -397,6 +401,9 @@ quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call assert_no_syslib)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
+
+quark-kube-talker: quark-kube-talker.go go.mod
+	go build -o $@ quark-kube-talker.go
 
 man-embedder: man-embedder.c
 	$(call msg,CC,$@)

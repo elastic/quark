@@ -336,6 +336,8 @@ struct quark_event {
 	struct quark_packet		*packet;
 	const void			*bypass;
 	struct quark_file		*file;
+	const struct quark_pod		*pod;
+	const struct quark_container	*container;
 };
 
 /*
@@ -373,6 +375,8 @@ enum gc_type {
 	GC_INVALID,
 	GC_PROCESS,
 	GC_SOCKET,
+	GC_POD,
+	GC_CONTAINER,
 };
 
 struct gc_link {
@@ -478,6 +482,62 @@ struct quark_socket_iter {
 	struct quark_socket	*qsk;
 };
 
+enum quark_container_state {
+	QUARK_CONTAINER_INVALID,
+	QUARK_CONTAINER_WAITING,
+	QUARK_CONTAINER_RUNNING,
+	QUARK_CONTAINER_TERMINATED,
+};
+
+struct quark_container {
+	struct gc_link			 gc;	      	/* must be first */
+	RB_ENTRY(quark_container)	 entry_qkube;	/* our ""global"" linkage */
+	RB_ENTRY(quark_container)	 entry_pod;	/* our linkage inside a quark_pod */
+	char				*container_id;	/* unique id */
+	struct quark_pod		*pod;		/* backpointer to owner */
+	enum quark_container_state	 state;
+	char				*name;
+	char				*image;
+	char				*image_id;	/* do we want this? */
+	char				*command;
+};
+
+/*
+ * A quark_pod holds multiple containters in `pod_containters`.
+ * The same containers are also linked in `containters_by_id` inside quark_kube.
+ * This is to allow a search by `container_id`, which then can follow the `pod`
+ * backpointer, to finally find the pod of a containter_id.
+ */
+RB_HEAD(pod_containers, quark_container);
+RB_HEAD(container_by_id, quark_container);
+
+struct quark_pod {
+	struct gc_link			 gc;	/* must be first */
+	RB_ENTRY(quark_pod)		 entry_by_uid;
+	struct pod_containers		 containers;
+	char				*name;
+	char				*namespace;
+	char				*uid;
+	char				*labels;
+	/* ADD containters */
+	char				*phase;
+};
+
+/*
+ * A quark_pod indexed by uid, this is the main datastructure for quark_kube{}.
+ */
+RB_HEAD(pod_by_uid, quark_pod);
+
+struct quark_kube {
+	int			 fd;
+	char			*buf;
+	size_t			 buf_w;
+	size_t			 buf_r;
+	size_t			 buf_len;
+	struct pod_by_uid	 pod_by_uid;
+	struct container_by_id	 container_by_id;
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
@@ -513,6 +573,7 @@ struct quark_queue_attr {
 	int	max_length;
 	int	cache_grace_time;	/* in ms */
 	int	hold_time;		/* in ms */
+	int	kubefd;			/* -1 for disabled */
 };
 
 /*
@@ -533,6 +594,7 @@ struct quark_queue {
 	int				 max_length;
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
+	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
 	/* Backend related state */
 	struct quark_queue_ops		*queue_ops;
