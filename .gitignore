@@ -9,6 +9,7 @@ quark-btf
 quark-btf-static
 quark-test
 quark-test-static
+quark-kube-talker
 init
 true
 libquark.a

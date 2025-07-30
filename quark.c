@@ -21,8 +21,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <poll.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <cjson/cJSON.h>
 
 #include "quark.h"
 
@@ -32,9 +35,14 @@ static int	raw_event_by_time_cmp(struct raw_event *, struct raw_event *);
 static int	raw_event_by_pidtime_cmp(struct raw_event *, struct raw_event *);
 static int	process_by_pid_cmp(struct quark_process *, struct quark_process *);
 static int	socket_by_src_dst_cmp(struct quark_socket *, struct quark_socket *);
+static int	container_by_id_cmp(struct quark_container *, struct quark_container *);
+static int	pod_by_uid_cmp(struct quark_pod *, struct quark_pod *);
+static int	label_node_cmp(struct label_node *, struct label_node *);
 
 static void	process_cache_delete(struct quark_queue *, struct quark_process *);
 static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
+static void	pod_delete(struct quark_queue *, struct quark_pod *);
+static void	container_delete(struct quark_queue *, struct quark_container *);
 
 /* For debugging */
 int	quark_verbose;
@@ -58,6 +66,21 @@ RB_PROTOTYPE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
 RB_GENERATE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
+
+RB_PROTOTYPE(container_by_id, quark_container,
+    entry_qkube, container_by_id_cmp);
+RB_GENERATE(container_by_id, quark_container,
+    entry_qkube, container_by_id_cmp);
+RB_PROTOTYPE(pod_containers, quark_container,
+    entry_pod, container_by_id_cmp);
+RB_GENERATE(pod_containers, quark_container,
+    entry_pod, container_by_id_cmp);
+
+RB_PROTOTYPE(pod_by_uid, quark_pod, entry_by_uid, pod_by_uid_cmp);
+RB_GENERATE(pod_by_uid, quark_pod, entry_by_uid, pod_by_uid_cmp);
+
+RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
+RB_GENERATE(label_tree, label_node, entry, label_node_cmp);
 
 struct quark {
 	unsigned int	hz;
@@ -347,6 +370,9 @@ gc_collect(struct quark_queue *qq)
 		case GC_SOCKET:
 			socket_cache_delete(qq, (struct quark_socket *)gc);
 			break;
+		case GC_POD:
+			pod_delete(qq, (struct quark_pod *)gc);
+			break;
 		default:
 			qwarnx("invalid gc_type %d, will leak", gc->gc_type);
 			gc_unlink(qq, gc);
@@ -438,6 +464,11 @@ process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 
 	gc = &qp->gc;
 	RB_REMOVE(process_by_pid, &qq->process_by_pid, qp);
+	if (qp->container) {
+		TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
+		qp->container = NULL;
+		qp->flags &= ~QUARK_F_CONTAINER;
+	}
 	gc_unlink(qq, gc);
 	process_free(qp);
 }
@@ -595,6 +626,677 @@ quark_socket_iter_next(struct quark_socket_iter *qi)
 		qi->qsk = RB_NEXT(socket_by_src_dst, &qq->socket_by_src_dst, qi->qsk);
 
 	return (qsk);
+}
+
+/*
+ * Kubernetes things
+ */
+static struct label_node *
+label_lookup(struct label_tree *labels, char *key_string)
+{
+	struct label_node	key, *k;
+
+	key.key = key_string;
+	k = RB_FIND(label_tree, labels, &key);
+	if (k == NULL)
+		errno = ESRCH;
+
+	return (k);
+}
+
+static void
+label_delete(struct label_tree *labels, struct label_node *node)
+{
+	RB_REMOVE(label_tree, labels, node);
+	free(node->key);
+	free(node->value);
+	free(node);
+}
+
+static int
+label_node_cmp(struct label_node *a, struct label_node *b)
+{
+	return (strcmp(a->key, b->key));
+}
+
+static int
+container_by_id_cmp(struct quark_container *a, struct quark_container *b)
+{
+	return (strcmp(a->container_id, b->container_id));
+}
+
+static void
+container_delete(struct quark_queue *qq, struct quark_container *container)
+{
+	struct quark_pod	*pod   = container->pod;
+	struct quark_kube	*qkube = qq->qkube;
+	struct quark_process	*qp;
+
+	if (container->linked) {
+		pod_containers_RB_REMOVE(&pod->containers, container);
+		container_by_id_RB_REMOVE(&qkube->container_by_id, container);
+		container->linked = 0;
+	}
+	while ((qp = TAILQ_FIRST(&container->processes)) != NULL) {
+		TAILQ_REMOVE(&container->processes, qp, entry_container);
+		qp->container = NULL;
+		qp->flags &= ~QUARK_F_CONTAINER;
+	}
+
+	free(container->container_id);
+	free(container->name);
+	free(container->image);
+	free(container->image_id);
+	free(container);
+}
+
+static struct quark_container *
+container_lookup(struct quark_queue *qq, char *container_id)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	struct quark_container	 key, *k;
+
+	key.container_id = container_id;
+	k = RB_FIND(container_by_id, &qkube->container_by_id, &key);
+	if (k == NULL)
+		errno = ESRCH;
+
+	return (k);
+}
+
+static int
+pod_by_uid_cmp(struct quark_pod *a, struct quark_pod *b)
+{
+	return (strcmp(a->uid, b->uid));
+}
+
+static struct quark_pod *
+pod_lookup_by_uid(struct quark_queue *qq, char *uid)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	struct quark_pod	 key, *k;
+
+	key.uid = uid;
+	k = RB_FIND(pod_by_uid, &qkube->pod_by_uid, &key);
+	if (k == NULL)
+		errno = ESRCH;
+
+	return (k);
+}
+
+static int
+pod_insert(struct quark_queue *qq, struct quark_pod *pod)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	struct quark_pod	*col;
+
+	if (pod->linked) {
+		qwarnx("pod already linked!");
+		return (-1);
+	}
+
+	col = RB_INSERT(pod_by_uid, &qkube->pod_by_uid, pod);
+	if (unlikely(col != NULL))
+		return (errno = EEXIST, -1);
+
+	pod->linked = 1;
+
+	return (0);
+}
+
+static void
+pod_delete(struct quark_queue *qq, struct quark_pod *pod)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	struct quark_container	*container;
+	struct label_node	*node;
+
+	if (pod->linked) {
+		RB_REMOVE(pod_by_uid, &qkube->pod_by_uid, pod);
+		pod->linked = 0;
+	}
+	gc_unlink(qq, &pod->gc);
+
+	while ((node = RB_ROOT(&pod->labels)) != NULL)
+		label_delete(&pod->labels, node);
+	/*
+	 * Now we have to tear down every container from this pod.
+	 * Must keep in mind that a container can already be in the gc queue, in
+	 * that case we will "steal" it and delete ourselves here with
+	 * everything else.
+	 */
+	while ((container = RB_ROOT(&pod->containers)) != NULL) {
+		if (container->pod != pod) {
+			qwarnx("BUG: corrupted pod<>containter, leaking data");
+			return;
+		}
+		container_delete(qq, container);
+	}
+
+	free(pod->name);
+	free(pod->namespace);
+	free(pod->uid);
+	free(pod->phase);
+	free(pod);
+}
+
+static struct quark_container *
+pod_lookup_container(struct quark_pod *pod, char *container_id)
+{
+	struct quark_container key, *k;
+
+	key.container_id = container_id;
+	k = pod_containers_RB_FIND(&pod->containers, &key);
+	if (k == NULL)
+		errno = ESRCH;
+
+	return (k);
+}
+
+static void
+debug_json(cJSON *json)
+{
+	char *debug;
+
+	debug = cJSON_Print(json);
+	printf("printing cJSON\n%s\n", debug);
+	free(debug);
+}
+
+static int
+process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *container_json)
+{
+#define GET cJSON_GetObjectItemCaseSensitive
+	struct quark_kube	*qkube = qq->qkube;
+	cJSON			*name, *image, *state;
+	cJSON			*waiting, *running, *terminated;
+	cJSON			*containerID;
+	struct quark_container	*container, *col;
+
+	name	    = GET(container_json, "name");
+	image	    = GET(container_json, "image");
+	state	    = GET(container_json, "state");
+	waiting	    = GET(state, "waiting");
+	running	    = GET(state, "running");
+	terminated  = GET(container_json, "terminated");
+	containerID = GET(container_json, "containerID");
+
+	/*
+	 * When we're waiting there's no containerID yet, so suppress it
+	 */
+	if (waiting != NULL && containerID == NULL)
+		return (0);
+	if (!cJSON_IsString(name)) {
+		qwarnx("bad container name, ignoring");
+		return (-1);
+	}
+	if (!cJSON_IsString(image)) {
+		qwarnx("bad image name, ignoring");
+		return (-1);
+	}
+	if (!cJSON_IsObject(state)) {
+		qwarnx("bad container state, ignoring");
+		return (-1);
+	}
+	if (!cJSON_IsString(containerID)) {
+		qwarnx("bad containerID, ignoring");
+		return (-1);
+	}
+	if (waiting == NULL && running == NULL && terminated == NULL) {
+		qwarnx("unknown container state, ignoring");
+		return (-1);
+	}
+	container = pod_lookup_container(pod, containerID->valuestring);
+	if (container == NULL) {
+		container = calloc(1, sizeof(*container));
+		if (container == NULL)
+			return (-1);
+		TAILQ_INIT(&container->processes);
+		container->container_id = strdup(containerID->valuestring);
+		if (container->container_id == NULL) {
+			container_delete(qq, container);
+			return (-1);
+		}
+		container->name = strdup(name->valuestring);
+		if (container->name == NULL) {
+			container_delete(qq, container);
+			return (-1);
+		}
+		container->image = strdup(image->valuestring);
+		if (container->image == NULL) {
+			container_delete(qq, container);
+			return (-1);
+		}
+		/* XXX fill moar stuff */
+
+		/*
+		 * Finally try to link it
+		 */
+		container->pod = pod;
+		col = pod_containers_RB_INSERT(&pod->containers,
+		    container);
+		if (col != NULL) {
+			qwarnx("unexpected container collision 1");
+			container_delete(qq, container);
+			return (-1);
+		}
+		col = container_by_id_RB_INSERT(&qkube->container_by_id,
+		    container);
+		/*
+		 * If we get a collision on the second insert, we must manually
+		 * unlink the first one, as container->linked means "both" are
+		 * linked.
+		 */
+		if (col != NULL) {
+			qwarnx("unexpected container collision 2");
+			pod_containers_RB_REMOVE(&pod->containers,
+			    container);
+			container_delete(qq, container);
+			return (-1);
+		}
+		container->linked = 1;
+	}
+
+	return (0);
+#undef GET
+}
+
+static int
+process_kube_event(struct quark_queue *qq, cJSON *json)
+{
+#define GET cJSON_GetObjectItemCaseSensitive
+	struct quark_pod	*pod;
+	cJSON			*metadata, *name, *namespace, *uid, *labels;
+	cJSON			*spec, *containers, *status, *phase;
+	cJSON			*deletionTimestamp, *containerStatuses, *label;
+	cJSON			*container_json;
+	char			*tmp;
+	int			 new_pod;
+	struct label_node	*node, *node_aux;
+
+	metadata	  = GET(json, "metadata");
+	name		  = GET(metadata, "name");
+	namespace	  = GET(metadata, "namespace");
+	uid		  = GET(metadata, "uid");
+	deletionTimestamp = GET(metadata, "deletionTimestamp");
+	labels		  = GET(metadata, "labels");
+	spec		  = GET(json, "spec");
+	containers	  = GET(spec, "containers");
+	status		  = GET(json, "status");
+	phase		  = GET(status, "phase");
+	containerStatuses = GET(status, "containerStatuses");
+
+	if (!cJSON_IsObject(metadata)) {
+		qwarnx("bad metadata");
+		return (-1);
+	}
+	if (!cJSON_IsString(name)) {
+		qwarnx("bad name");
+		return (-1);
+	}
+	if (!cJSON_IsString(namespace)) {
+		qwarnx("bad namespace");
+		return (-1);
+	}
+	if (!cJSON_IsString(uid)) {
+		qwarnx("bad uid");
+		return (-1);
+	}
+	if (!cJSON_IsObject(labels)) {
+		qwarnx("bad labels");
+		return (-1);
+	}
+	if (!cJSON_IsObject(spec)) {
+		qwarnx("bad spec");
+		return (-1);
+	}
+	if (!cJSON_IsArray(containers)) {
+		qwarnx("bad containers");
+		return (-1);
+	}
+	if (!cJSON_IsObject(status)) {
+		qwarnx("bad status");
+		return (-1);
+	}
+	if (!cJSON_IsString(phase)) {
+		qwarnx("bad phase");
+		return (-1);
+	}
+
+	pod = pod_lookup_by_uid(qq, uid->valuestring);
+
+	/*
+	 * Check for a deletion, these may happen without a filled
+	 * containerStatuses.
+	 */
+	if (deletionTimestamp != NULL) {
+		if (!cJSON_IsString(deletionTimestamp)) {
+			qwarnx("bad deletionTimestamp");
+			return (-1);
+		}
+		/* Still hasn't Succeeded, bail */
+		if (strcmp(phase->valuestring, "Succeeded"))
+			return (0);
+		/*
+		 * gc_mark is idempotent
+		 */
+		if (pod != NULL)
+			gc_mark(qq, &pod->gc, GC_POD);
+
+		return (0);
+	}
+
+	/*
+	 * Updates and creation need containerStatuses, that's where
+	 * containerID is.
+	 */
+	if (containerStatuses == NULL)
+		return (0);
+	if (!cJSON_IsArray(containerStatuses)) {
+		qwarnx("bad containerStatuses");
+		return (-1);
+	}
+
+	new_pod = 0;
+	if (pod == NULL) {
+		new_pod = 1;
+		if (0)
+			debug_json(json);
+		pod = calloc(1, sizeof(*pod));
+		if (pod == NULL)
+			return (-1);
+		/*
+		 * Only fill immutable data, the rest is filled and/or
+		 * replaced below, so we have the same code for new pods and
+		 * updates.
+		 */
+		RB_INIT(&pod->containers);
+		RB_INIT(&pod->labels);
+		pod->name = strdup(name->valuestring);
+		pod->namespace = strdup(namespace->valuestring);
+		pod->uid = strdup(uid->valuestring);
+		if (pod->name == NULL ||
+		    pod->namespace == NULL ||
+		    pod->uid == NULL) {
+			pod_delete(qq, pod);
+			return (-1);
+		}
+	}
+
+	/* Mutable data */
+	if ((tmp = strdup(phase->valuestring)) != NULL) {
+		free(pod->phase);
+		pod->phase = tmp;
+	}
+
+	/*
+	 * Build labels, old labels start as unseen, and, as we loop mark the
+	 * seen ones, possibly update its value and add new ones, in the end,
+	 * loop again, prune all unseen ones and unmark seen.
+	 */
+	cJSON_ArrayForEach(label, labels) {
+		char	*k, *v;
+
+		if (!cJSON_IsString(label)) {
+			qwarnx("bad label");
+			continue;
+		}
+		k = label->string;
+		v = label->valuestring;
+
+		node = label_lookup(&pod->labels, k);
+		if (node != NULL) {
+			node->seen = 1;
+			if (!strcmp(node->value, v))
+				continue;
+			if ((tmp = strdup(v)) == NULL)
+				continue;
+			free(node->value);
+			node->value = tmp;
+		} else {
+			if ((node = calloc(1, sizeof(*node))) == NULL)
+				continue;
+			node->seen = 1;
+			if ((node->key = strdup(k)) == NULL) {
+				free(node);
+				continue;
+			}
+			if ((node->value = strdup(v)) == NULL) {
+				free(node->key);
+				free(node);
+				continue;
+			}
+			/* Impossible, we just looked up */
+			if (RB_INSERT(label_tree, &pod->labels, node) != NULL) {
+				free(node->key);
+				free(node->value);
+				free(node);
+				continue;
+			}
+		}
+	}
+	RB_FOREACH_SAFE(node, label_tree, &pod->labels, node_aux) {
+		if (node->seen) {
+			node->seen = 0;
+			continue;
+		}
+		label_delete(&pod->labels, node);
+	}
+
+	/*
+	 * Build containers
+	 */
+	cJSON_ArrayForEach(container_json, containerStatuses) {
+		if (process_kube_container(qq, pod, container_json) == -1)
+			qwarnx("process_kube_containers failed");
+	}
+
+	/*
+	 * Link pod
+	 */
+	if (new_pod && pod_insert(qq, pod) == -1) {
+		qwarn("can't insert pod %s", pod->uid);
+		pod_delete(qq, pod);
+		return (-1);
+	}
+
+	return (0);
+#undef GET
+}
+
+static void
+stop_kube(struct quark_queue *qq)
+{
+	struct quark_kube	*qkube = qq->qkube;
+
+	if (qkube == NULL || qkube->fd == -1)
+		return;
+
+	if (epoll_ctl(qq->epollfd, EPOLL_CTL_DEL, qkube->fd, NULL) == -1)
+		qwarn("can't unregister qkube->fd");
+
+	/* We don't close, the user does */
+	qkube->fd = -1;
+}
+
+/*
+ * Returns 0 if there's nothing else to parse, 1 otherwise
+ */
+static int
+parse_kube_events(struct quark_queue *qq)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	size_t			 left_toread;
+	char			*ev;
+	u32			 ev_len;
+	cJSON			*json;
+
+	left_toread = qkube->buf_w - qkube->buf_r;
+	/* In the middle of the 4byte len */
+	if (left_toread < sizeof(ev_len))
+		return (0);
+	memcpy(&ev_len, qkube->buf + qkube->buf_r, sizeof(ev_len));
+	if (ev_len > (qkube->buf_len - sizeof(ev_len))) {
+		qwarnx("BUG: kube msg too long, got %d, maximum is %ld, "
+		    "kubernetes events will stop",
+		    ev_len, qkube->buf_len - sizeof(ev_len));
+
+		stop_kube(qq);
+		return (0);
+	}
+	/* Partial event */
+	if (left_toread < (sizeof(ev_len) + ev_len)) {
+		/*
+		 * If this is a partial event and we're not in the beginning,
+		 * move to the beginning
+		 */
+		if (qkube->buf_r != 0) {
+			memmove(qkube->buf, qkube->buf + qkube->buf_r, left_toread);
+			qkube->buf_r = 0;
+			qkube->buf_w = left_toread;
+		}
+
+		return (0);
+	}
+	/* Consume event */
+	ev = qkube->buf + qkube->buf_r + sizeof(ev_len);
+	qkube->buf_r += sizeof(ev_len) + ev_len;
+
+	/* Caught up, rewind */
+	if (qkube->buf_r == qkube->buf_w)
+		qkube->buf_r = qkube->buf_w = 0;
+
+	if ((json = cJSON_ParseWithLength(ev, ev_len)) == NULL) {
+		qwarnx("can't create json of event (len=%d)", ev_len);
+		return (1);
+	}
+	process_kube_event(qq, json);
+	cJSON_Delete(json);
+
+	return (1);
+}
+
+static void
+read_kube_events(struct quark_queue *qq)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	ssize_t			 n;
+	size_t			 left_towrite;
+
+	if (qkube->fd == -1)
+		return;
+
+	/*
+	 * If we didn't get EPOLLIN, check if it's time to do a read anyway, we
+	 * basically only call epoll_wait() in quark_queue_block(), but on a system
+	 * that is uber busy and never blocks, we would never see EPOLLIN, so
+	 * make sure we try reading at least every 10ms, enough for not
+	 * hammering with one syscall per event.
+	 */
+	if (!qkube->try_read) {
+		if ((now64() - qkube->last_read) >= (u64)MS_TO_NS(10))
+			qkube->try_read = 1;
+		else
+			return;
+	}
+
+	left_towrite = qkube->buf_len - qkube->buf_w;
+	if (left_towrite == 0) {
+		qwarnx("BUG: no more space in buffer, kubernetes events will stop");
+		stop_kube(qq);
+		return;
+	}
+	n = qread(qkube->fd, qkube->buf + qkube->buf_w, left_towrite);
+	qkube->last_read = now64();
+	qkube->try_read = 0;
+	if (n == -1) {
+		if (errno == EAGAIN)
+			return;
+		qwarn("unexpected error reading kube pipe, kubernetes events will stop");
+		stop_kube(qq);
+		return;
+	} else if (n == 0) {
+		qwarnx("unexpected EOF from kubefd pipe, kubernetes events will stop");
+		stop_kube(qq);
+		return;
+	}
+	qkube->buf_w += n;
+
+	while (parse_kube_events(qq)) {
+		;		/* NADA */
+	}
+}
+
+static void
+link_kube_data(struct quark_queue *qq, struct quark_process *qp)
+{
+	struct quark_container		*container;
+	char				*name, *dot;
+	char				 container_id[NAME_MAX];
+	int				 r;
+
+	if (qp == NULL)
+		return;
+	if ((qp->flags & QUARK_F_CONTAINER) || qp->container != NULL)
+		return;
+	if (!(qp->flags & QUARK_F_CGROUP))
+		return;
+	if ((name = strrchr(qp->cgroup, '/')) == NULL)
+		return;
+	name++;
+	/* docker-f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829.scope */
+	/* "containerID": "docker://f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829", */
+	if (strncmp(name, "docker-", 7))
+		return;
+	name += 7;
+	r = snprintf(container_id, sizeof(container_id), "docker://%s", name);
+	if (r < 0 || r >= (int)(sizeof(container_id)))
+		return;
+	dot = strrchr(container_id, '.');
+	if (dot == NULL)
+		return;
+	*dot = 0;
+	if ((container = container_lookup(qq, container_id)) == NULL)
+		return;
+
+	qp->container = container;
+	TAILQ_INSERT_TAIL(&container->processes, qp, entry_container);
+	qp->flags |= QUARK_F_CONTAINER;
+}
+
+/*
+ * Reads data from kubefd for 2 seconds in order to prime kubernetes metadata,
+ * we then enrich them into all our running processes.
+ */
+static int
+prime_kube(struct quark_queue *qq)
+{
+	struct pollfd		 pfd;
+	int			 r;
+	u64			 deadline;
+	struct quark_kube	*qkube = qq->qkube;
+
+	if (qkube == NULL || qkube->fd == -1)
+		return (errno = EINVAL, -1);
+
+	bzero(&pfd, sizeof(pfd));
+	pfd.fd = qkube->fd;
+	pfd.events = POLLIN;
+
+	qwarnx("priming kube events...");
+	deadline = now64() + (u64)MS_TO_NS(2000);
+	do {
+		if ((r = poll(&pfd, 1, 25)) == -1) {
+			qwarn("poll");
+			return (-1);
+		}
+		if (r == 0)
+			continue;
+		qkube->try_read = 1;
+		read_kube_events(qq);
+	} while (now64() < deadline);
+
+	return (0);
 }
 
 static const char *
@@ -988,6 +1690,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_socket	*qsk;
 	const struct quark_packet	*packet;
 	const struct quark_file		*file;
+	const struct quark_pod		*pod;
+	const struct quark_container	*container;
 	int				 pid;
 
 	if (qev->events == QUARK_EV_BYPASS) {
@@ -1132,6 +1836,39 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		fl = event_flag_str(QUARK_F_EXIT);
 		PF(fl, "exit_code=%d exit_time=%llu\n",
 		    qp->exit_code, qp->exit_time_event);
+	}
+
+	if (qp->flags & QUARK_F_CONTAINER) {
+		container = qp->container;
+		pod = container ? container->pod : NULL;
+
+		if (pod != NULL) {
+			int			 first = 1;
+			struct label_node	*node;
+
+			fl = "POD";
+			PF(fl, "name=%s namespace=%s\n",
+			    pod->name, pod->namespace);
+			PF(fl, "uid=%s phase=%s\n",
+			    pod->uid, pod->phase);
+			PF(fl, "labels=");
+			P("[ ");
+
+			/* cast to deconstify */
+			RB_FOREACH(node, label_tree, (struct label_tree *)&pod->labels) {
+				if (!first)
+					P(", ");
+				P("%s=%s", node->key, node->value);
+				first = 0;
+			}
+
+			P(" ]\n");
+		}
+		if (container != NULL) {
+			fl = "CONT";
+			PF(fl, "name=%s image=%s\n", container->name, container->image);
+			PF(fl, "container_id=%s\n", container->container_id);
+		}
 	}
 
 	fflush(f);
@@ -1970,7 +2707,7 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 		if (col != NULL) {
 			free(ss);
 			qwarnx("socket collision");
-			return (-1);
+			return (errno = EEXIST, -1);
 		}
 	}
 
@@ -2422,11 +3159,15 @@ int
 quark_queue_block(struct quark_queue *qq)
 {
 	struct epoll_event	 ev;
+	struct quark_kube	*qkube = qq->qkube;
+	int			 nfd;
 
 	if (qq->epollfd == -1)
 		return (errno = EINVAL, -1);
-	if (epoll_wait(qq->epollfd, &ev, 1, 100) == -1)
+	if ((nfd = epoll_wait(qq->epollfd, &ev, 1, 100)) == -1)
 		return (-1);
+	if (qkube != NULL && nfd > 0 && qkube->fd == ev.data.fd)
+		qkube->try_read = 1;
 
 	return (0);
 }
@@ -2478,7 +3219,8 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (qa->flags & QQ_BYPASS) {
 		if ((qa->flags &
 		    (QQ_KPROBE|QQ_ENTRY_LEADER|QQ_MIN_AGG|QQ_THREAD_EVENTS)) ||
-		    !(qa->flags & QQ_EBPF))
+		    !(qa->flags & QQ_EBPF) ||
+		    qa->kubefd != -1)
 			return (errno = EINVAL, -1);
 
 		/*
@@ -2525,6 +3267,75 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		goto fail;
 	}
 
+	/*
+	 * If we have kubernetes, initilize its state, then block for some
+	 * seconds to prime all pods and containers
+	 */
+	if (qa->kubefd != -1) {
+		int			 fl;
+		struct quark_kube	*qkube;
+		struct epoll_event	 ev;
+
+		if ((qkube = calloc(1, sizeof(*qkube))) == NULL) {
+			qwarn("can't allocate qkube");
+			goto fail;
+		}
+
+		/*
+		 * Don't blame me, blame google:
+		 * https://github.com/kubernetes/kubernetes/blob/db1990f48b92d603f469c1c89e2ad36da1b74846/test/integration/master/synthetic_master_test.go#L315
+		 * We allocate 4MB to give some slack.
+		 */
+		qkube->buf_len = 1 << 22; /* 4MB */
+		qkube->buf_r = 0;
+		qkube->buf_w = 0;
+		qkube->fd = qa->kubefd;
+		qkube->try_read = 1;
+		qkube->last_read = 0;
+		RB_INIT(&qkube->pod_by_uid);
+		RB_INIT(&qkube->container_by_id);
+
+		if ((fl = fcntl(qkube->fd, F_GETFL)) == -1) {
+			qwarn("can't get kubefd flags");
+			free(qkube);
+			goto fail;
+		}
+		if (fcntl(qkube->fd, F_SETFL, fl | O_NONBLOCK) == -1) {
+			qwarn("can't set kubefd to nonblocking");
+			free(qkube);
+			goto fail;
+		}
+		if ((qkube->buf = calloc(1, qkube->buf_len)) == NULL) {
+			qwarn("can't allocate qkube buffer");
+			free(qkube);
+			goto fail;
+		}
+
+		bzero(&ev, sizeof(ev));
+		ev.events = EPOLLIN;
+		ev.data.fd = qkube->fd;
+		if (epoll_ctl(qq->epollfd, EPOLL_CTL_ADD, qkube->fd,
+		    &ev) == -1) {
+			qwarn("can't add kube fd to epoll");
+			free(qkube->buf);
+			free(qkube);
+			goto fail;
+		}
+
+		qq->qkube = qkube;
+
+		/*
+		 * Prime our cache
+		 */
+		if (prime_kube(qq) == -1) {
+			qwarn("can't prime kubernetes metadata");
+			goto fail;
+		}
+	}
+
+	/*
+	 * Open the rings
+	 */
 	if (bpf_queue_open(qq) && kprobe_queue_open(qq)) {
 		qwarnx("all backends failed");
 		goto fail;
@@ -2550,6 +3361,18 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		}
 	}
 
+	/*
+	 * At this point, existing processes have been loaded and kubernetes
+	 * metada has been primed. Now it's the time to correlate both.
+	 */
+	if (qq->qkube != NULL) {
+		struct quark_process	*qp;
+
+		RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
+			link_kube_data(qq, qp);
+		}
+	}
+
 	return (0);
 
 fail:
@@ -2567,6 +3390,7 @@ quark_queue_close(struct quark_queue *qq)
 	struct raw_event	*raw;
 	struct quark_process	*qp;
 	struct quark_socket	*qsk;
+	struct quark_pod	*pod;
 
 	/* Don't forget the storage for the last sent event */
 	event_storage_clear(qq);
@@ -2587,6 +3411,15 @@ quark_queue_close(struct quark_queue *qq)
 	/* Clean up backend */
 	if (qq->queue_ops != NULL)
 		qq->queue_ops->close(qq);
+	/* Clean up qkube */
+	if (qq->qkube != NULL) {
+		stop_kube(qq);
+		while ((pod = RB_ROOT(&qq->qkube->pod_by_uid)) != NULL)
+			pod_delete(qq, pod);
+		free(qq->qkube->buf);
+		free(qq->qkube);
+		qq->qkube = NULL;
+	}
 	/* Close epollfd */
 	if (qq->epollfd != -1) {
 		if (close(qq->epollfd) == -1)
@@ -2880,6 +3713,9 @@ quark_queue_get_event(struct quark_queue *qq)
 	struct raw_event		*raw;
 	const struct quark_event	*qev;
 
+	if (qq->qkube != NULL)
+		read_kube_events(qq);
+
 	if (qq->flags & QQ_BYPASS)
 		return (get_bypass_event(qq));
 
@@ -2913,6 +3749,9 @@ quark_queue_get_event(struct quark_queue *qq)
 		raw_event_free(raw);
 	}
 
+	if (qev != NULL && qq->qkube != NULL)
+		link_kube_data(qq, (struct quark_process *)qev->process);
+
 	/* GC all processes and sockets that exited after some grace time */
 	gc_collect(qq);
 
@@ -2931,6 +3770,7 @@ quark_start_kube_talker(const char *kube_config, pid_t *pid)
 	*pid = -1;
 	if ((pipe(pipefd)) == -1)
 		return (-1);
+
 	if ((*pid = fork()) == -1) {
 		close(pipefd[0]);
 		close(pipefd[1]);

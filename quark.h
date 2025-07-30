@@ -100,7 +100,7 @@ struct qstr {
 ssize_t	 qread(int, void *, size_t);
 int	 qwrite(int, const void *, size_t);
 ssize_t	 qreadlinkat(int, const char *, char *, size_t);
-int	qclosefrom(int, int);
+int	 qclosefrom(int, int);
 int	 isnumber(const char *);
 ssize_t	 readlineat(int, const char *, char *, size_t);
 int	 strtou64(u64 *, const char *, int);
@@ -375,6 +375,7 @@ enum gc_type {
 	GC_INVALID,
 	GC_PROCESS,
 	GC_SOCKET,
+	GC_POD,
 };
 
 struct gc_link {
@@ -399,6 +400,7 @@ TAILQ_HEAD(gc_queue, gc_link);
 struct quark_process {
 	struct gc_link			gc;		/* must be first */
 	RB_ENTRY(quark_process)		entry_by_pid;
+	TAILQ_ENTRY(quark_process)	entry_container;
 	/* Always present */
 	u32	 pid;
 
@@ -409,6 +411,7 @@ struct quark_process {
 #define QUARK_F_CMDLINE		(1 << 4)
 #define QUARK_F_CWD		(1 << 5)
 #define QUARK_F_CGROUP		(1 << 6)
+#define QUARK_F_CONTAINER	(1 << 7)
 	u64	 flags;
 
 	/* QUARK_F_PROC */
@@ -450,6 +453,8 @@ struct quark_process {
 	char	*cwd;
 	/* QUARK_F_CGROUP */
 	char	*cgroup;
+	/* QUARK_F_CONTAINER */
+	struct quark_container *container;
 };
 
 struct quark_process_iter {
@@ -478,6 +483,74 @@ struct quark_socket {
 struct quark_socket_iter {
 	struct quark_queue	*qq;
 	struct quark_socket	*qsk;
+};
+
+/*
+ * A label node
+ */
+struct label_node {
+	RB_ENTRY(label_node)	 entry;
+	char			*key;
+	char			*value;
+	int			 seen;
+};
+
+RB_HEAD(label_tree, label_node);
+
+/*
+ * A container's lifecycle is tied to its parent quark_pod.
+ */
+struct quark_container {
+	RB_ENTRY(quark_container)	 entry_qkube;	/* our ""global"" linkage */
+	RB_ENTRY(quark_container)	 entry_pod;	/* our linkage inside a quark_pod */
+	TAILQ_HEAD(, quark_process)	 processes;	/* processes in this container */
+	int				 linked;	/* both entries are linked */
+	char				*container_id;	/* unique id */
+	struct quark_pod		*pod;		/* backpointer to owner */
+	char				*name;
+	char				*image;
+	char				*image_id;	/* do we want this? */
+};
+
+/*
+ * A quark_pod holds multiple containters in pod_containters.
+ * The same containers are also linked in containters_by_id inside quark_kube.
+ * This is to allow a search by container_id, which then can follow the pod
+ * backpointer, to finally find the pod of a containter_id.
+ */
+RB_HEAD(pod_containers, quark_container);
+RB_HEAD(container_by_id, quark_container);
+
+struct quark_pod {
+	struct gc_link		 gc;		/* must be first */
+	RB_ENTRY(quark_pod)	 entry_by_uid;
+	int			 linked;	/* true if entry_by_uid is linked */
+	char			*name;
+	char			*namespace;
+	char			*uid;
+	struct label_tree	 labels;
+	struct pod_containers	 containers;
+	char			*phase;
+};
+
+/*
+ * A quark_pod indexed by uid, this is the main data structure for quark_kube{}.
+ */
+RB_HEAD(pod_by_uid, quark_pod);
+
+/*
+ * The state for all kubernetes metadata.
+ */
+struct quark_kube {
+	int			 fd;			/* input pipe for json data */
+	int			 try_read;		/* should we try to read from fd */
+	u64			 last_read;		/* last time in ns we read */
+	char			*buf;			/* buffer for cJSON */
+	size_t			 buf_w;			/* write pointer */
+	size_t			 buf_r;			/* read pointer */
+	size_t			 buf_len;		/* total length */
+	struct pod_by_uid	 pod_by_uid;		/* uid comes from json */
+	struct container_by_id	 container_by_id;	/* in containerID format from json */
 };
 
 struct quark_queue_stats {
@@ -536,6 +609,7 @@ struct quark_queue {
 	int				 max_length;
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
+	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
 	/* Backend related state */
 	struct quark_queue_ops		*queue_ops;
