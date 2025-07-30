@@ -2,6 +2,7 @@ SHELL= /bin/bash
 PWD= $(shell pwd)
 HTML2MARKDOWN?= html2markdown
 SUDO?= sudo
+GO?= go
 
 # Normalize ARCH
 ifeq ($(shell uname -m), x86_64)
@@ -178,7 +179,8 @@ DOCS_HTML+= $(patsubst %.8,docs/%.8.html,$(wildcard *.8))
 all:	$(LIBQUARK_TARGET)		\
 	quark-mon			\
 	quark-btf			\
-	quark-test
+	quark-test			\
+	quark-kube-talker
 
 $(ZLIB_STATIC): $(ZLIB_FILES)
 	$(call assert_no_syslib)
@@ -248,6 +250,7 @@ docker-cross-arm64: clean-all docker-image manpages.h
 		-e CC=aarch64-linux-gnu-gcc		\
 		-e LD=aarch64-linux-gnu-ld		\
 		-e AR=aarch64-linux-gnu-ar		\
+		-e GOARCH=arm64				\
 		$(DOCKER_RUN_ARGS)			\
 		$(SHELL) -c "make -C $(PWD) all initramfs.gz"
 
@@ -271,13 +274,13 @@ CENTOS7_RUN_ARGS=$(QDOCKER)				\
 		centos7-quark-builder
 
 centos7: clean-all docker-image centos7-image
-	# We first make only bpf_probes.o and bpf_probes_skel.h in the
-	# modern Ubuntu image, we can't make those on centos7
+	# We first make only bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
+	# in the modern Ubuntu image, we can't make those on centos7.
 	$(DOCKER) run					\
 		$(DOCKER_RUN_ARGS)			\
-		$(SHELL) -c "make -C $(PWD) bpf_probes.o bpf_probes_skel.h"
+		$(SHELL) -c "make -C $(PWD) bpf_probes.o bpf_probes_skel.h quark-kube-talker"
 	# Now we build the rest of the suite as it won't try to rebuild
-	# bpf_probes.o and bpf_probes_skel.h
+	# bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
 	$(DOCKER) run					\
 		$(CENTOS7_RUN_ARGS)			\
 		$(SHELL) -c "make -j1 -C $(PWD)"
@@ -406,6 +409,10 @@ quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
+quark-kube-talker: quark-kube-talker.go go.mod
+	$(call msg,GO,$@)
+	$(Q)$(GO) build -o $@ quark-kube-talker.go $(QREDIR)
+
 man-embedder: man-embedder.c
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
@@ -482,6 +489,7 @@ clean:
 		quark-btf-static	\
 		quark-test		\
 		quark-test-static	\
+		quark-kube-talker	\
 		true			\
 		btf_prog_skel.h		\
 		init
