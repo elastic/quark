@@ -314,7 +314,7 @@ usage(void)
 }
 
 static pid_t
-fork_exec_nop(void)
+fork_exec_relative_nop(int relative)
 {
 	pid_t		child;
 	int		status;
@@ -330,7 +330,12 @@ fork_exec_nop(void)
 		err(1, "fork");
 	else if (child == 0) {
 		/* child */
-		return (execvp("true", argv));
+		if (relative) {
+			if (execvp("bin/true", argv) == -1)
+				return execvp("./true", argv);
+		}
+		else
+			return execvp("true", argv);
 	}
 
 	/* parent */
@@ -340,6 +345,12 @@ fork_exec_nop(void)
 		errx(1, "child didn't exit cleanly");
 
 	return (child);
+}
+
+static pid_t
+fork_exec_nop(void)
+{
+	return fork_exec_relative_nop(0);
 }
 
 static int
@@ -580,7 +591,7 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
-t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
+fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative_exec)
 {
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
@@ -595,7 +606,12 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	child = fork_exec_nop();
+	if (relative_exec)
+		assert(path == realpath("bin/true", path) || path == realpath("./true", path));
+	else
+		assert(path == realpath("/bin/true", path) || path == realpath("/usr/bin/true", path));
+
+	child = fork_exec_relative_nop(relative_exec);
 	qev = drain_for_pid(&qq, child);
 
 	/* check qev.events */
@@ -650,8 +666,7 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 #endif
 	/* check strings */
 	assert(!strcmp(qp->comm, "true"));
-	assert(!strcmp(qp->filename, "/bin/true") ||
-	    !strcmp(qp->filename, "/usr/bin/true"));
+	assert(!strcmp(qp->filename, path));
 	/* check args */
 	quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
 	argc = 0;
@@ -701,6 +716,18 @@ t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 	quark_queue_close(&qq);
 
 	return (0);
+}
+
+static int
+t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
+{
+	return fork_exec_exit(t, qa, 0);
+}
+
+static int
+t_absolute_filename(const struct test *t, struct quark_queue_attr *qa)
+{
+	return fork_exec_exit(t, qa, 1);
 }
 
 /* Make sure an exit comes from tgid, not tid */
@@ -1189,6 +1216,7 @@ struct test all_tests[] = {
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
+	T_EBPF(t_absolute_filename),
 	T(t_namespace),
 	T(t_cache_grace),
 	T(t_min_agg),
