@@ -347,7 +347,7 @@ test-valgrind: quark-test
 initramfs:
 	mkdir -p initramfs/bin
 
-initramfs.gz: init quark-mon-static quark-btf-static quark-test-static true initramfs
+initramfs.gz: init quark-mon-static quark-btf-static quark-test-static initramfs
 	$(call assert_no_syslib)
 	cp init initramfs/
 	cp quark-mon-static initramfs/quark-mon
@@ -375,7 +375,7 @@ quark-btf: quark-btf.c manpages.h $(LIBQUARK_TARGET)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
 
-quark-test: quark-test.c manpages.h $(LIBQUARK_TARGET)
+quark-test: quark-test.c manpages.h $(LIBQUARK_TARGET) true
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
@@ -392,7 +392,7 @@ quark-btf-static: quark-btf.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
-quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
+quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG) true
 	$(call msg,CC,$@)
 	$(call assert_no_syslib)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
@@ -474,6 +474,7 @@ clean:
 		quark-btf-static	\
 		quark-test		\
 		quark-test-static	\
+		true			\
 		btf_prog_skel.h		\
 		init
 	$(Q)rm -rf initramfs
