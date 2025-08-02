@@ -474,6 +474,7 @@ clean:
 		quark-btf-static	\
 		quark-test		\
 		quark-test-static	\
+		true			\
 		btf_prog_skel.h		\
 		init
 	$(Q)rm -rf initramfs
