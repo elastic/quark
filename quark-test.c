@@ -314,7 +314,7 @@ usage(void)
 }
 
 static pid_t
-fork_exec_relative_nop(int relative)
+fork_exec_nop_rel(int relative)
 {
 	pid_t		child;
 	int		status;
@@ -329,13 +329,31 @@ fork_exec_relative_nop(int relative)
 	if ((child = fork()) == -1)
 		err(1, "fork");
 	else if (child == 0) {
+		struct stat	 st;
+		char		*true_path, *true_dir;
+
 		/* child */
-		if (relative) {
-			if (execvp("bin/true", argv) == -1)
-				return execvp("./true", argv);
+		if (stat("/usr/bin/true", &st) == 0) {
+			true_path = "/usr/bin/true";
+			true_dir = "/usr/bin";
 		}
-		else
-			return execvp("true", argv);
+		else if (stat("/bin/true", &st) == 0) {
+			true_path = "/bin/true";
+			true_dir = "/bin";
+		} else
+			errx(1, "can't find true binary");
+
+		if (!relative)
+			return (execv(true_path, argv));
+
+		/*
+		 * Chdir to the parent of true, /bin, or /usr/bin and so on...
+		 */
+		if (true_dir == NULL || *true_dir == 0)
+			errx(1, "bad true_dir");
+		if (chdir(true_dir) == -1)
+			err(1, "chdir true_dir");
+		return (execv("./true", argv));
 	}
 
 	/* parent */
@@ -350,7 +368,7 @@ fork_exec_relative_nop(int relative)
 static pid_t
 fork_exec_nop(void)
 {
-	return fork_exec_relative_nop(0);
+	return (fork_exec_nop_rel(0));
 }
 
 static int
@@ -591,7 +609,7 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
-fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative_exec)
+fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 {
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
@@ -606,12 +624,7 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative_e
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	if (relative_exec)
-		assert(path == realpath("bin/true", path) || path == realpath("./true", path));
-	else
-		assert(path == realpath("/bin/true", path) || path == realpath("/usr/bin/true", path));
-
-	child = fork_exec_relative_nop(relative_exec);
+	child = fork_exec_nop_rel(relative);
 	qev = drain_for_pid(&qq, child);
 
 	/* check qev.events */
@@ -666,7 +679,8 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative_e
 #endif
 	/* check strings */
 	assert(!strcmp(qp->comm, "true"));
-	assert(!strcmp(qp->filename, path));
+	assert(!strcmp(qp->filename, "/bin/true") ||
+	    !strcmp(qp->filename, "/usr/bin/true"));
 	/* check args */
 	quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
 	argc = 0;
@@ -702,7 +716,15 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative_e
 
 	if (getcwd(path, sizeof(path)) == NULL)
 		err(1, "getcwd");
-	assert(!strcmp(path, qp->cwd));
+	/*
+	 * If we did a relative exec, the child changes current directory to
+	 * either /bin or /usr/bin
+	 */
+	if (relative)
+		assert(!strcmp("/bin", qp->cwd) || !strcmp("/usr/bin",
+		    qp->cwd));
+	else
+		assert(!strcmp(path, qp->cwd));
 
 	/*
 	 * We haven't changed the cgroup, so the child cgroup should be the same
@@ -721,13 +743,13 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative_e
 static int
 t_fork_exec_exit(const struct test *t, struct quark_queue_attr *qa)
 {
-	return fork_exec_exit(t, qa, 0);
+	return (fork_exec_exit(t, qa, 0));
 }
 
 static int
-t_absolute_filename(const struct test *t, struct quark_queue_attr *qa)
+t_fork_exec_exit_rel(const struct test *t, struct quark_queue_attr *qa)
 {
-	return fork_exec_exit(t, qa, 1);
+	return (fork_exec_exit(t, qa, 1));
 }
 
 /* Make sure an exit comes from tgid, not tid */
@@ -1208,6 +1230,7 @@ t_dns(const struct test *t, struct quark_queue_attr *qa)
 struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
+	T_EBPF(t_fork_exec_exit_rel),
 	T(t_exit_tgid),
 	T_EBPF(t_file),
 	T_EBPF(t_bypass),
@@ -1216,7 +1239,6 @@ struct test all_tests[] = {
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
-	T_EBPF(t_absolute_filename),
 	T(t_namespace),
 	T(t_cache_grace),
 	T(t_min_agg),
@@ -1297,7 +1319,7 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 
 	linepos = printf("%s @ %s", t->name,
 	    be == QQ_EBPF ? "ebpf" : "kprobe");
-	while (++linepos < 30)
+	while (++linepos < 32)
 		putchar('.');
 
 	fflush(stdout);

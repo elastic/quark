@@ -14,7 +14,6 @@ steps:
     command: "make centos7"
     artifact_paths:
       - "quark-test"
-      - "true"
     agents:
       image: family/core-ubuntu-2404
       provider: gcp

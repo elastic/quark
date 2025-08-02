@@ -15,8 +15,5 @@ fi
 download quark-test .
 chmod +x quark-test
 
-download true .
-chmod +x true
-
 sudo ./quark-test
 exit $?
