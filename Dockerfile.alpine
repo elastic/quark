@@ -4,6 +4,7 @@ RUN apk add 						\
 	clang						\
         bpftool						\
 	gcc						\
+	go						\
 	libbsd						\
 	libbsd-dev					\
 	make						\

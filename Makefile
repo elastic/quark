@@ -272,13 +272,13 @@ CENTOS7_RUN_ARGS=$(QDOCKER)				\
 		centos7-quark-builder
 
 centos7: clean-all docker-image centos7-image
-	# We first make only bpf_probes.o and bpf_probes_skel.h in the
-	# modern Ubuntu image, we can't make those on centos7
+	# We first make only bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
+	# in the modern Ubuntu image, we can't make those on centos7.
 	$(DOCKER) run					\
 		$(DOCKER_RUN_ARGS)			\
-		$(SHELL) -c "make -C $(PWD) bpf_probes.o bpf_probes_skel.h"
+		$(SHELL) -c "make -C $(PWD) bpf_probes.o bpf_probes_skel.h quark-kube-talker"
 	# Now we build the rest of the suite as it won't try to rebuild
-	# bpf_probes.o and bpf_probes_skel.h
+	# bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
 	$(DOCKER) run					\
 		$(CENTOS7_RUN_ARGS)			\
 		$(SHELL) -c "make -j1 -C $(PWD)"
@@ -486,6 +486,7 @@ clean:
 		quark-btf-static	\
 		quark-test		\
 		quark-test-static	\
+		quark-kube-talker	\
 		true			\
 		btf_prog_skel.h		\
 		init

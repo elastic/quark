@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y		\
 	clang						\
 	cpio						\
 	gcc						\
+	golang						\
 	gcc-aarch64-linux-gnu				\
 	linux-tools-6.11.0-26-generic			\
 	make						\
