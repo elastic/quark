@@ -29,9 +29,6 @@ ifdef MUSL
 EXTRA_LDFLAGS+= -lfts
 endif
 
-# XXX REMOVE ME FOR TESTING
-EXTRA_LDFLAGS+= -lcjson
-
 ifeq ($(V),1)
 	Q =
 	msg =
@@ -111,6 +108,11 @@ LIBQUARK_SRCS:=			\
 	quark.c			\
 	qbtf.c			\
 	qutil.c
+# CJSON
+# We build the source directly as it's just one file
+ifndef SYSLIB
+LIBQUARK_SRCS+= cJSON.c
+endif
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 LIBQUARK_STATIC_BIG:= libquark_big.a
@@ -120,7 +122,7 @@ ifndef SYSLIB
 LIBQUARK_TARGET=$(LIBQUARK_STATIC_BIG)
 else
 LIBQUARK_TARGET=$(LIBQUARK_STATIC)
-EXTRA_LDFLAGS+= -lbpf
+EXTRA_LDFLAGS+= -lbpf -lcjson
 endif
 
 # ZLIB
@@ -312,13 +314,16 @@ alpine-image: clean-all
 		-t alpine-quark-builder			\
 		.
 
-include: $(LIBBPF_DEPS)
+include: $(LIBBPF_DEPS) cJSON.h
+	$(call msg,make,include)
 	$(Q)make -C $(LIBBPF_SRC)			\
 		NO_PKG_CONFIG=y				\
 		install_headers DESTDIR=../../include $(QREDIR)
 	$(Q)make -C $(LIBBPF_SRC)			\
 		NO_PKG_CONFIG=y				\
 		install_uapi_headers DESTDIR=../../include $(QREDIR)
+	$(Q)mkdir -p include/cjson
+	$(Q)cp cJSON.h include/cjson
 
 %.svg: %.dot
 	$(call msg,DOT,$@)
