@@ -2597,11 +2597,6 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		RB_INIT(&qkube->pod_by_uid);
 		RB_INIT(&qkube->container_by_id);
 
-		if ((qkube->buf = calloc(1, qkube->buf_len)) == NULL) {
-			qwarn("can't allocate qkube buffer");
-			free(qkube);
-			goto fail;
-		}
 		if ((fl = fcntl(qkube->fd, F_GETFL)) == -1) {
 			qwarn("can't get kubefd flags");
 			free(qkube);
@@ -2609,6 +2604,11 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		}
 		if (fcntl(qkube->fd, F_SETFL, fl | O_NONBLOCK) == -1) {
 			qwarn("can't set kubefd to nonblocking");
+			free(qkube);
+			goto fail;
+		}
+		if ((qkube->buf = calloc(1, qkube->buf_len)) == NULL) {
+			qwarn("can't allocate qkube buffer");
 			free(qkube);
 			goto fail;
 		}
@@ -3138,7 +3138,7 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 		col = container_by_id_RB_INSERT(&qkube->container_by_id,
 		    container);
 		if (col != NULL) {
-			qwarnx("unexpected container collision 1");
+			qwarnx("unexpected container collision 2");
 			pod_containers_RB_REMOVE(&pod->containers,
 			    container);
 			container_free(container);
