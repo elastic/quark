@@ -2969,17 +2969,6 @@ container_by_id_cmp(struct quark_container *a, struct quark_container *b)
 }
 
 static void
-container_free(struct quark_container *container)
-{
-	free(container->container_id);
-	free(container->name);
-	free(container->image);
-	free(container->image_id);
-	free(container->command);
-	free(container);
-}
-
-static void
 container_delete(struct quark_queue *qq, struct quark_container *container)
 {
 	struct quark_pod	*pod   = container->pod;
@@ -2987,10 +2976,19 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 
 	printf("deleting container %s containerID=%s\n",
 	    container->name, container->container_id);
-	pod_containers_RB_REMOVE(&pod->containers, container);
-	container_by_id_RB_REMOVE(&qkube->container_by_id, container);
+	if (container->linked) {
+		pod_containers_RB_REMOVE(&pod->containers, container);
+		container_by_id_RB_REMOVE(&qkube->container_by_id, container);
+		container->linked = 0;
+	}
 	gc_unlink(qq, &container->gc);
-	container_free(container);
+
+	free(container->container_id);
+	free(container->name);
+	free(container->image);
+	free(container->image_id);
+	free(container->command);
+	free(container);
 }
 
 static struct quark_container *
@@ -3160,20 +3158,20 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 			return (-1);
 		container->container_id = strdup(containerID->valuestring);
 		if (container->container_id == NULL) {
-			container_free(container);
+			container_delete(qq, container);
 			return (-1);
 		}
 		container->name = strdup(name->valuestring);
 		if (container->name == NULL) {
-			container_free(container);
+			container_delete(qq, container);
 			return (-1);
 		}
 		container->image = strdup(image->valuestring);
 		if (container->image == NULL) {
-			container_free(container);
+			container_delete(qq, container);
 			return (-1);
 		}
-		/* XXX fill other stuff than name */
+		/* XXX fill moar stuff */
 
 		/*
 		 * Finally try to link it
@@ -3183,29 +3181,34 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 		    container);
 		if (col != NULL) {
 			qwarnx("unexpected container collision 1");
-			container_free(container);
+			container_delete(qq, container);
 			return (-1);
 		}
 		col = container_by_id_RB_INSERT(&qkube->container_by_id,
 		    container);
+		/*
+		 * If we get a collision on the second insert, we must manually
+		 * unlink the first one, as container->linked means "both" are
+		 * linked.
+		 */
 		if (col != NULL) {
 			qwarnx("unexpected container collision 2");
 			pod_containers_RB_REMOVE(&pod->containers,
 			    container);
-			container_free(container);
+			container_delete(qq, container);
 			return (-1);
 		}
+		container->linked = 1;
 		printf("container %s containerID=%s created, state is ",
 		    container->name, container->container_id);
 	}
+	/* XXX REVISE THIS XXX */
 	if (waiting != NULL)
 		container->state = QUARK_CONTAINER_WAITING;
 	else if (running != NULL)
 		container->state = QUARK_CONTAINER_RUNNING;
 	else if (terminated != NULL)
 		container->state = QUARK_CONTAINER_TERMINATED;
-
-	printf("%d\n", container->state);
 
 	return (0);
 #undef GET

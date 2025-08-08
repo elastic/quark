@@ -507,6 +507,7 @@ struct quark_container {
 	struct gc_link			 gc;		/* must be first */
 	RB_ENTRY(quark_container)	 entry_qkube;	/* our ""global"" linkage */
 	RB_ENTRY(quark_container)	 entry_pod;	/* our linkage inside a quark_pod */
+	int				 linked;	/* both entries are linked */
 	char				*container_id;	/* unique id */
 	struct quark_pod		*pod;		/* backpointer to owner */
 	enum quark_container_state	 state;
