@@ -51,7 +51,7 @@ endif
 
 CPPFLAGS?= -D_GNU_SOURCE
 ifndef SYSLIB
-CPPFLAGS+= -Iinclude/usr/include
+CPPFLAGS+= -Iinclude
 endif
 
 CDIAGFLAGS+= -Wall
@@ -316,14 +316,13 @@ alpine-image: clean-all
 
 include: $(LIBBPF_DEPS) cJSON.h
 	$(call msg,make,include)
-	$(Q)make -C $(LIBBPF_SRC)			\
-		NO_PKG_CONFIG=y				\
-		install_headers DESTDIR=../../include $(QREDIR)
-	$(Q)make -C $(LIBBPF_SRC)			\
-		NO_PKG_CONFIG=y				\
-		install_uapi_headers DESTDIR=../../include $(QREDIR)
-	$(Q)mkdir -p include/cjson
-	$(Q)cp cJSON.h include/cjson
+	$(Q)make -C $(LIBBPF_SRC)					\
+		NO_PKG_CONFIG=y						\
+		install_headers INCLUDEDIR=../../include $(QREDIR)
+	$(Q)make -C $(LIBBPF_SRC)					\
+		NO_PKG_CONFIG=y						\
+		install_uapi_headers UAPIDIR=../../include $(QREDIR)
+	$(Q)install -D -m 444 cJSON.h include/cjson/cJSON.h
 	$(Q)touch include
 
 %.svg: %.dot
