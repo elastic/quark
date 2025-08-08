@@ -408,6 +408,9 @@ quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
 quark-kube-talker: quark-kube-talker.go go.mod
+	which go
+	env
+	go env
 	go build -o $@ quark-kube-talker.go
 
 man-embedder: man-embedder.c

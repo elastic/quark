@@ -1,5 +1,5 @@
 FROM alpine:3.22
-ENV HOME=/home/quark-builder
+ENV HOME=/tmp/quark-builder
 RUN apk add 						\
 	bash						\
 	clang						\
