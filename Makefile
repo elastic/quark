@@ -324,6 +324,7 @@ include: $(LIBBPF_DEPS) cJSON.h
 		install_uapi_headers DESTDIR=../../include $(QREDIR)
 	$(Q)mkdir -p include/cjson
 	$(Q)cp cJSON.h include/cjson
+	$(Q)touch include
 
 %.svg: %.dot
 	$(call msg,DOT,$@)

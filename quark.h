@@ -484,6 +484,17 @@ struct quark_socket_iter {
 	struct quark_socket	*qsk;
 };
 
+/*
+ * A string to string map backed by rank-balanced trees
+ */
+struct stos_node {
+	RB_ENTRY(stos_node)	 entry;
+	char			*key;
+	char			*value;
+};
+
+RB_HEAD(stos_tree, stos_node);
+
 enum quark_container_state {
 	QUARK_CONTAINER_INVALID,
 	QUARK_CONTAINER_WAITING,
@@ -492,7 +503,7 @@ enum quark_container_state {
 };
 
 struct quark_container {
-	struct gc_link			 gc;	      	/* must be first */
+	struct gc_link			 gc;		/* must be first */
 	RB_ENTRY(quark_container)	 entry_qkube;	/* our ""global"" linkage */
 	RB_ENTRY(quark_container)	 entry_pod;	/* our linkage inside a quark_pod */
 	char				*container_id;	/* unique id */
@@ -514,15 +525,14 @@ RB_HEAD(pod_containers, quark_container);
 RB_HEAD(container_by_id, quark_container);
 
 struct quark_pod {
-	struct gc_link			 gc;	/* must be first */
-	RB_ENTRY(quark_pod)		 entry_by_uid;
-	struct pod_containers		 containers;
-	char				*name;
-	char				*namespace;
-	char				*uid;
-	char				*labels;
-	/* ADD containters */
-	char				*phase;
+	struct gc_link		 gc;	/* must be first */
+	RB_ENTRY(quark_pod)	 entry_by_uid;
+	char			*name;
+	char			*namespace;
+	char			*uid;
+	struct stos_tree	 labels;
+	struct pod_containers	 containers;
+	char			*phase;
 };
 
 /*
@@ -530,6 +540,9 @@ struct quark_pod {
  */
 RB_HEAD(pod_by_uid, quark_pod);
 
+/*
+ * TODO DOCUMENT THIS
+ */
 struct quark_kube {
 	int			 fd;
 	int			 do_read;
