@@ -51,7 +51,7 @@ endif
 
 CPPFLAGS?= -D_GNU_SOURCE
 ifndef SYSLIB
-CPPFLAGS+= -Iinclude/usr/include
+CPPFLAGS+= -Iinclude
 endif
 
 CDIAGFLAGS+= -Wall
@@ -108,6 +108,11 @@ LIBQUARK_SRCS:=			\
 	quark.c			\
 	qbtf.c			\
 	qutil.c
+# CJSON
+# We build the source directly as it's just one file
+ifndef SYSLIB
+LIBQUARK_SRCS+= cJSON.c
+endif
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 LIBQUARK_STATIC_BIG:= libquark_big.a
@@ -117,7 +122,7 @@ ifndef SYSLIB
 LIBQUARK_TARGET=$(LIBQUARK_STATIC_BIG)
 else
 LIBQUARK_TARGET=$(LIBQUARK_STATIC)
-EXTRA_LDFLAGS+= -lbpf
+EXTRA_LDFLAGS+= -lbpf -lcjson
 endif
 
 # ZLIB
@@ -308,13 +313,16 @@ alpine-image: clean-all
 		-t alpine-quark-builder			\
 		.
 
-include: $(LIBBPF_DEPS)
-	$(Q)make -C $(LIBBPF_SRC)			\
-		NO_PKG_CONFIG=y				\
-		install_headers DESTDIR=../../include $(QREDIR)
-	$(Q)make -C $(LIBBPF_SRC)			\
-		NO_PKG_CONFIG=y				\
-		install_uapi_headers DESTDIR=../../include $(QREDIR)
+include: $(LIBBPF_DEPS) cJSON.h
+	$(call msg,make,include)
+	$(Q)make -C $(LIBBPF_SRC)					\
+		NO_PKG_CONFIG=y						\
+		install_headers INCLUDEDIR=../../include $(QREDIR)
+	$(Q)make -C $(LIBBPF_SRC)					\
+		NO_PKG_CONFIG=y						\
+		install_uapi_headers UAPIDIR=../../include $(QREDIR)
+	$(Q)install -D -m 444 cJSON.h include/cjson/cJSON.h
+	$(Q)touch include
 
 %.svg: %.dot
 	$(call msg,DOT,$@)
