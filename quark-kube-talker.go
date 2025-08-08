@@ -19,13 +19,12 @@ import (
 )
 
 func main() {
-	var configPath string
-
-	if len(os.Args) != 2 {
+	if len(os.Args) != 3 {
 		panic("bad args")
 	}
 
-	fd, err := strconv.Atoi(os.Args[1])
+	configPath := os.Args[1]
+	fd, err := strconv.Atoi(os.Args[2])
 	err = syscall.SetNonblock(fd, true)
 	if err != nil {
 		panic("can't set non block")
@@ -33,9 +32,6 @@ func main() {
 	file := os.NewFile(uintptr(fd), "")
 
 	fmt.Printf("starting: %+v (fd=%+v) (file=%+v)", os.Args, fd, file)
-
-	//	configPath = filepath.Join(homedir.HomeDir(), ".kube", "config")
-	configPath = "/home/haesbaert/.kube/config"
 
 	config, err := clientcmd.BuildConfigFromFlags("", configPath)
 	if err != nil {
