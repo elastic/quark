@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Copyright (c) 2024 Elastic NV */
 
+#include <sys/resource.h>
+
 #include <ctype.h>		/* is_digit(3) */
 #include <err.h>
 #include <errno.h>
@@ -66,6 +68,27 @@ qreadlinkat(int dfd, const char *pathname, char *buf, size_t bufsiz)
 	buf[n] = 0;
 
 	return (strlen(pathname));
+}
+
+/*
+ * Like closefrom but can keep one fd open
+ */
+int
+qclosefrom(int lowfd, int keep)
+{
+	int	i;
+	long	highfd;
+
+	highfd = sysconf(_SC_OPEN_MAX);
+	if (highfd < 0 || highfd > INT_MAX)
+		highfd = INT_MAX;
+
+	for (i = lowfd; i < (int)highfd; i++) {
+		if (i != keep)
+			(void)close(i);
+	}
+
+	return (0);
 }
 
 int
