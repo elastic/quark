@@ -3068,12 +3068,8 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	}
 	gc_unlink(qq, &pod->gc);
 
-	while ((node = RB_ROOT(&pod->labels)) != NULL) {
-		RB_REMOVE(label_tree, &pod->labels, node);
-		free(node->key);
-		free(node->value);
-		free(node);
-	}
+	while ((node = RB_ROOT(&pod->labels)) != NULL)
+		label_delete(&pod->labels, node);
 	/*
 	 * Now we have to tear down every container from this pod.
 	 * Must keep in mind that a container can already be in the gc queue, in
