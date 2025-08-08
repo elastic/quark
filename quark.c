@@ -2594,6 +2594,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qkube->buf_r = 0;
 		qkube->buf_w = 0;
 		qkube->fd = qa->kubefd;
+		qkube->do_read = 1;
 		RB_INIT(&qkube->pod_by_uid);
 		RB_INIT(&qkube->container_by_id);
 
@@ -3499,4 +3500,43 @@ quark_queue_get_event(struct quark_queue *qq)
 	gc_collect(qq);
 
 	return (qev);
+}
+
+int
+quark_start_kube_talker(const char *kube_config, pid_t *pid)
+{
+	int	pipefd[2];
+	char	pidbuf[16];
+
+	if (kube_config == NULL || pid == NULL)
+		return (errno = EINVAL, -1);
+
+	*pid = -1;
+	if ((pipe(pipefd)) == -1)
+		err(1, "pipe");
+	if ((*pid = fork()) == -1)
+		err(1, "fork");
+
+	/* parent */
+	if (*pid != 0) {
+		close(pipefd[1]);
+
+		return (pipefd[0]);
+	}
+
+	/* child */
+	close(pipefd[0]);
+
+	if (qclosefrom(3, pipefd[1]) == -1) {
+		qwarn("qclosefrom");
+		qwarnx("not closing child descriptors");
+	}
+
+	snprintf(pidbuf, sizeof(pidbuf), "%d", pipefd[1]);
+
+	if (execl("quark-kube-talker", "quark-kube-talker",
+	    kube_config, pidbuf, (char *)NULL) == -1)
+		err(1, "execl");
+
+	return (0);		/* NOTREACHED */
 }

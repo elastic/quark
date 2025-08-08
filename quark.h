@@ -48,6 +48,7 @@ int	 quark_queue_block(struct quark_queue *);
 const struct quark_event *quark_queue_get_event(struct quark_queue *);
 int	 quark_queue_get_epollfd(struct quark_queue *);
 void	 quark_queue_get_stats(struct quark_queue *, struct quark_queue_stats *);
+int	 quark_start_kube_talker(const char *, pid_t *);
 int	 quark_dump_process_cache_graph(struct quark_queue *, FILE *);
 int	 quark_dump_raw_event_graph(struct quark_queue *, FILE *, FILE *);
 int	 quark_event_dump(const struct quark_event *, FILE *);
@@ -99,6 +100,7 @@ struct qstr {
 ssize_t	 qread(int, void *, size_t);
 int	 qwrite(int, const void *, size_t);
 ssize_t	 qreadlinkat(int, const char *, char *, size_t);
+int	 qclosefrom(int, int);
 int	 isnumber(const char *);
 ssize_t	 readlineat(int, const char *, char *, size_t);
 int	 strtou64(u64 *, const char *, int);
@@ -530,6 +532,7 @@ RB_HEAD(pod_by_uid, quark_pod);
 
 struct quark_kube {
 	int			 fd;
+	int			 do_read;
 	char			*buf;
 	size_t			 buf_w;
 	size_t			 buf_r;

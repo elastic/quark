@@ -124,38 +124,6 @@ usage(void)
 	exit(1);
 }
 
-static int
-hackish_kube(const char *kube_config, pid_t *ret_pid)
-{
-	int	pipefd[2];
-	pid_t	pid;
-	char	pidbuf[16];
-
-	*ret_pid = -1;
-	if ((pipe(pipefd)) == -1)
-		err(1, "pipe");
-	if ((pid = fork()) == -1)
-		err(1, "fork");
-
-	/* parent */
-	if (pid != 0) {
-		*ret_pid = pid;
-		close(pipefd[1]);
-		return (pipefd[0]);
-	}
-	snprintf(pidbuf, sizeof(pidbuf), "%d", pipefd[1]);
-
-	/* child */
-	close(pipefd[0]);
-
-	if (execl("quark-kube-talker", "quark-kube-talker",
-	    kube_config, pidbuf, (char *)NULL) == -1)
-		err(1, "execl");
-
-	ret_pid = NULL;
-	return (0);		/* NOTREACHED */
-}
-
 int
 main(int argc, char *argv[])
 {
@@ -305,9 +273,10 @@ main(int argc, char *argv[])
 		err(1, "sigaction");
 
 	if (kube_config != NULL) {
-		qa.kubefd = hackish_kube(kube_config, &kube_talker_pid);
-		printf("kube_talker pid=%d fd=%d\n", kube_talker_pid,
-		    qa.kubefd);
+		qa.kubefd = quark_start_kube_talker(kube_config,
+		    &kube_talker_pid);
+		if (qa.kubefd == -1)
+			err(1, "can't start quark-kube-talker");
 	}
 	if ((qq = calloc(1, sizeof(*qq))) == NULL)
 		err(1, "calloc");
