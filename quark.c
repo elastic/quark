@@ -641,6 +641,16 @@ label_lookup(struct label_tree *labels, char *key_string)
 	return (k);
 }
 
+/* TODO take pod */
+static void
+label_delete(struct label_tree *labels, struct label_node *node)
+{
+	RB_REMOVE(label_tree, labels, node);
+	free(node->key);
+	free(node->value);
+	free(node);
+}
+
 static int
 label_node_cmp(struct label_node *a, struct label_node *b)
 {
@@ -3225,6 +3235,7 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	cJSON			*container_json;
 	char			*tmp;
 	int			 new_pod;
+	struct label_node	*node, *node_aux;
 
 	metadata	  = GET(json, "metadata");
 	name		  = GET(metadata, "name");
@@ -3342,11 +3353,12 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	}
 
 	/*
-	 * Build labels
+	 * Build labels, mark all old labels as unseen, and, as we loop mark the
+	 * seen ones, possibly update its value and add new ones, in the end,
+	 * loop again and prune all unseen ones.
 	 */
 	cJSON_ArrayForEach(label, labels) {
 		char			*k, *v;
-		struct label_node	*node;
 
 		if (!cJSON_IsString(label)) {
 			qwarnx("bad label");
@@ -3357,6 +3369,7 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 
 		node = label_lookup(&pod->labels, k);
 		if (node != NULL) {
+			node->seen = 1;
 			if (!strcmp(node->value, v))
 				continue;
 			if ((tmp = strdup(v)) == NULL)
@@ -3366,6 +3379,7 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 		} else if (node == NULL) {
 			if ((node = calloc(1, sizeof(*node))) == NULL)
 				continue;
+			node->seen = 1;
 			if ((node->key = strdup(k)) == NULL) {
 				free(node);
 				continue;
@@ -3383,6 +3397,13 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 				continue;
 			}
 		}
+	}
+	RB_FOREACH_SAFE(node, label_tree, &pod->labels, node_aux) {
+		if (node->seen) {
+			node->seen = 0;
+			continue;
+		}
+		label_delete(&pod->labels, node);
 	}
 
 	/*
