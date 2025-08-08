@@ -485,15 +485,16 @@ struct quark_socket_iter {
 };
 
 /*
- * A string to string map backed by rank-balanced trees
+ * A label node
  */
-struct stos_node {
-	RB_ENTRY(stos_node)	 entry;
+struct label_node {
+	RB_ENTRY(label_node)	 entry;
 	char			*key;
 	char			*value;
+	int			 seen;
 };
 
-RB_HEAD(stos_tree, stos_node);
+RB_HEAD(label_tree, label_node);
 
 enum quark_container_state {
 	QUARK_CONTAINER_INVALID,
@@ -525,12 +526,13 @@ RB_HEAD(pod_containers, quark_container);
 RB_HEAD(container_by_id, quark_container);
 
 struct quark_pod {
-	struct gc_link		 gc;	/* must be first */
+	struct gc_link		 gc;		/* must be first */
 	RB_ENTRY(quark_pod)	 entry_by_uid;
+	int			 linked;	/* true if entry_by_uid is linked */
 	char			*name;
 	char			*namespace;
 	char			*uid;
-	struct stos_tree	 labels;
+	struct label_tree	 labels;
 	struct pod_containers	 containers;
 	char			*phase;
 };

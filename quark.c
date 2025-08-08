@@ -37,7 +37,7 @@ static int	process_by_pid_cmp(struct quark_process *, struct quark_process *);
 static int	socket_by_src_dst_cmp(struct quark_socket *, struct quark_socket *);
 static int	container_by_id_cmp(struct quark_container *, struct quark_container *);
 static int	pod_by_uid_cmp(struct quark_pod *, struct quark_pod *);
-static int	stos_cmp(struct stos_node *, struct stos_node *);
+static int	label_node_cmp(struct label_node *, struct label_node *);
 
 static void	process_cache_delete(struct quark_queue *, struct quark_process *);
 static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
@@ -79,8 +79,8 @@ RB_GENERATE(pod_containers, quark_container,
 RB_PROTOTYPE(pod_by_uid, quark_pod, entry_by_uid, pod_by_uid_cmp);
 RB_GENERATE(pod_by_uid, quark_pod, entry_by_uid, pod_by_uid_cmp);
 
-RB_PROTOTYPE(stos_tree, stos_node, entry, stos_cmp);
-RB_GENERATE(stos_tree, stos_node, entry, stos_cmp);
+RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
+RB_GENERATE(label_tree, label_node, entry, label_node_cmp);
 
 struct quark {
 	unsigned int	hz;
@@ -628,13 +628,13 @@ quark_socket_iter_next(struct quark_socket_iter *qi)
 	return (qsk);
 }
 
-static struct stos_node *
-stos_lookup(struct stos_tree *stos, char *key_string)
+static struct label_node *
+label_lookup(struct label_tree *labels, char *key_string)
 {
-	struct stos_node	key, *k;
+	struct label_node	key, *k;
 
 	key.key = key_string;
-	k = RB_FIND(stos_tree, stos, &key);
+	k = RB_FIND(label_tree, labels, &key);
 	if (k == NULL)
 		errno = ESRCH;
 
@@ -642,7 +642,7 @@ stos_lookup(struct stos_tree *stos, char *key_string)
 }
 
 static int
-stos_cmp(struct stos_node *a, struct stos_node *b)
+label_node_cmp(struct label_node *a, struct label_node *b)
 {
 	return (strcmp(a->key, b->key));
 }
@@ -1183,7 +1183,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	/* KUBE STUFF */
 	if (pod != NULL) {
 		int			 first = 1;
-		struct stos_node	*node;
+		struct label_node	*node;
 
 		flagname = "POD";
 		P("  %.4s\tname=%s namespace=%s uid=%s\n",
@@ -1192,7 +1192,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		P("[ ");
 
 		/* cast to deconstify */
-		RB_FOREACH(node, stos_tree, (struct stos_tree *)&pod->labels) {
+		RB_FOREACH(node, label_tree, (struct label_tree *)&pod->labels) {
 			if (!first)
 				P(", ");
 			P("%s=%s", node->key, node->value);
@@ -3013,16 +3013,6 @@ pod_by_uid_cmp(struct quark_pod *a, struct quark_pod *b)
 	return (strcmp(a->uid, b->uid));
 }
 
-static void
-pod_free(struct quark_pod *pod)
-{
-	free(pod->name);
-	free(pod->namespace);
-	free(pod->uid);
-	//free(pod->labels);
-	free(pod->phase);
-}
-
 static struct quark_pod *
 pod_lookup_by_uid(struct quark_queue *qq, char *uid)
 {
@@ -3043,9 +3033,16 @@ pod_insert(struct quark_queue *qq, struct quark_pod *pod)
 	struct quark_kube	*qkube = qq->qkube;
 	struct quark_pod	*col;
 
+	if (pod->linked) {
+		qwarnx("pod already linked!");
+		return (-1);
+	}
+
 	col = RB_INSERT(pod_by_uid, &qkube->pod_by_uid, pod);
 	if (unlikely(col != NULL))
 		return (errno = EEXIST, -1);
+
+	pod->linked = 1;
 
 	return (0);
 }
@@ -3055,14 +3052,16 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 {
 	struct quark_kube	*qkube = qq->qkube;
 	struct quark_container	*container;
-	struct stos_node	*node;
+	struct label_node	*node;
 
-	printf("deleting pod %s\n", pod->uid);
-	RB_REMOVE(pod_by_uid, &qkube->pod_by_uid, pod);
+	if (pod->linked) {
+		RB_REMOVE(pod_by_uid, &qkube->pod_by_uid, pod);
+		pod->linked = 0;
+	}
 	gc_unlink(qq, &pod->gc);
 
 	while ((node = RB_ROOT(&pod->labels)) != NULL) {
-		RB_REMOVE(stos_tree, &pod->labels, node);
+		RB_REMOVE(label_tree, &pod->labels, node);
 		free(node->key);
 		free(node->value);
 		free(node);
@@ -3081,7 +3080,11 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 		container_delete(qq, container);
 	}
 
-	pod_free(pod);
+	free(pod->name);
+	free(pod->namespace);
+	free(pod->uid);
+	free(pod->phase);
+	free(pod);
 }
 
 static struct quark_container *
@@ -3320,7 +3323,7 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 		if (pod->name == NULL ||
 		    pod->namespace == NULL ||
 		    pod->uid == NULL) {
-			pod_free(pod);
+			pod_delete(qq, pod);
 			return (-1);
 		}
 	} else {
@@ -3336,20 +3339,11 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	}
 
 	/*
-	 * Link pod, from now on we can't pod_free().
-	 */
-	if (new_pod && pod_insert(qq, pod) == -1) {
-		qwarn("can't insert pod %s", pod->uid);
-		pod_free(pod);
-		return (-1);
-	}
-
-	/*
 	 * Build labels
 	 */
 	cJSON_ArrayForEach(label, labels) {
 		char			*k, *v;
-		struct stos_node	*node;
+		struct label_node	*node;
 
 		if (!cJSON_IsString(label)) {
 			qwarnx("bad label");
@@ -3358,7 +3352,7 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 		k = label->string;
 		v = label->valuestring;
 
-		node = stos_lookup(&pod->labels, k);
+		node = label_lookup(&pod->labels, k);
 		if (node != NULL) {
 			if (!strcmp(node->value, v))
 				continue;
@@ -3379,7 +3373,7 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 				continue;
 			}
 			/* Impossible, we just looked up */
-			if (RB_INSERT(stos_tree, &pod->labels, node) != NULL) {
+			if (RB_INSERT(label_tree, &pod->labels, node) != NULL) {
 				free(node->key);
 				free(node->value);
 				free(node);
@@ -3394,6 +3388,15 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	cJSON_ArrayForEach(container_json, containerStatuses) {
 		if (process_kube_container(qq, pod, container_json) == -1)
 			qwarnx("process_kube_containers failed");
+	}
+
+	/*
+	 * Link pod
+	 */
+	if (new_pod && pod_insert(qq, pod) == -1) {
+		qwarn("can't insert pod %s", pod->uid);
+		pod_delete(qq, pod);
+		return (-1);
 	}
 
 	return (0);
