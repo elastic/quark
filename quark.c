@@ -2604,6 +2604,11 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	else
 		qq->agg_matrix = agg_matrix;
 
+	if ((qq->epollfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
+		qwarn("can't create epollfd");
+		goto fail;
+	}
+
 	if (bpf_queue_open(qq) && kprobe_queue_open(qq)) {
 		qwarnx("all backends failed");
 		goto fail;
@@ -2710,6 +2715,12 @@ quark_queue_close(struct quark_queue *qq)
 		free(qq->qkube->buf);
 		free(qq->qkube);
 		qq->qkube = NULL;
+	}
+	/* Close epollfd */
+	if (qq->epollfd != -1) {
+		if (close(qq->epollfd) == -1)
+			qwarn("close epollfd");
+		qq->epollfd = -1;
 	}
 }
 
