@@ -51,7 +51,7 @@ endif
 
 CPPFLAGS?= -D_GNU_SOURCE
 ifndef SYSLIB
-CPPFLAGS+= -Iinclude/usr/include
+CPPFLAGS+= -Iinclude
 endif
 
 CDIAGFLAGS+= -Wall
@@ -108,6 +108,11 @@ LIBQUARK_SRCS:=			\
 	quark.c			\
 	qbtf.c			\
 	qutil.c
+# CJSON
+# We build the source directly as it's just one file
+ifndef SYSLIB
+LIBQUARK_SRCS+= cJSON.c
+endif
 LIBQUARK_OBJS:= $(patsubst %.c,%.o,$(LIBQUARK_SRCS))
 LIBQUARK_STATIC:= libquark.a
 LIBQUARK_STATIC_BIG:= libquark_big.a
@@ -117,7 +122,7 @@ ifndef SYSLIB
 LIBQUARK_TARGET=$(LIBQUARK_STATIC_BIG)
 else
 LIBQUARK_TARGET=$(LIBQUARK_STATIC)
-EXTRA_LDFLAGS+= -lbpf
+EXTRA_LDFLAGS+= -lbpf -lcjson
 endif
 
 # ZLIB
@@ -173,7 +178,8 @@ DOCS_HTML+= $(patsubst %.8,docs/%.8.html,$(wildcard *.8))
 all:	$(LIBQUARK_TARGET)		\
 	quark-mon			\
 	quark-btf			\
-	quark-test
+	quark-test			\
+	quark-kube-talker
 
 $(ZLIB_STATIC): $(ZLIB_FILES)
 	$(call assert_no_syslib)
@@ -266,13 +272,13 @@ CENTOS7_RUN_ARGS=$(QDOCKER)				\
 		centos7-quark-builder
 
 centos7: clean-all docker-image centos7-image
-	# We first make only bpf_probes.o and bpf_probes_skel.h in the
-	# modern Ubuntu image, we can't make those on centos7
+	# We first make only bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
+	# in the modern Ubuntu image, we can't make those on centos7.
 	$(DOCKER) run					\
 		$(DOCKER_RUN_ARGS)			\
-		$(SHELL) -c "make -C $(PWD) bpf_probes.o bpf_probes_skel.h"
+		$(SHELL) -c "make -C $(PWD) bpf_probes.o bpf_probes_skel.h quark-kube-talker"
 	# Now we build the rest of the suite as it won't try to rebuild
-	# bpf_probes.o and bpf_probes_skel.h
+	# bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
 	$(DOCKER) run					\
 		$(CENTOS7_RUN_ARGS)			\
 		$(SHELL) -c "make -j1 -C $(PWD)"
@@ -308,13 +314,16 @@ alpine-image: clean-all
 		-t alpine-quark-builder			\
 		.
 
-include: $(LIBBPF_DEPS)
-	$(Q)make -C $(LIBBPF_SRC)			\
-		NO_PKG_CONFIG=y				\
-		install_headers DESTDIR=../../include $(QREDIR)
-	$(Q)make -C $(LIBBPF_SRC)			\
-		NO_PKG_CONFIG=y				\
-		install_uapi_headers DESTDIR=../../include $(QREDIR)
+include: $(LIBBPF_DEPS) cJSON.h
+	$(call msg,make,include)
+	$(Q)make -C $(LIBBPF_SRC)					\
+		NO_PKG_CONFIG=y						\
+		install_headers INCLUDEDIR=../../include $(QREDIR)
+	$(Q)make -C $(LIBBPF_SRC)					\
+		NO_PKG_CONFIG=y						\
+		install_uapi_headers UAPIDIR=../../include $(QREDIR)
+	$(Q)install -D -m 444 cJSON.h include/cjson/cJSON.h
+	$(Q)touch include
 
 %.svg: %.dot
 	$(call msg,DOT,$@)
@@ -398,6 +407,12 @@ quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
+quark-kube-talker: quark-kube-talker.go go.mod
+	which go
+	env
+	go env
+	go build -o $@ quark-kube-talker.go
+
 man-embedder: man-embedder.c
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -o $@ $^
@@ -474,6 +489,7 @@ clean:
 		quark-btf-static	\
 		quark-test		\
 		quark-test-static	\
+		quark-kube-talker	\
 		true			\
 		btf_prog_skel.h		\
 		init

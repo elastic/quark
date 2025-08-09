@@ -48,6 +48,7 @@ int	 quark_queue_block(struct quark_queue *);
 const struct quark_event *quark_queue_get_event(struct quark_queue *);
 int	 quark_queue_get_epollfd(struct quark_queue *);
 void	 quark_queue_get_stats(struct quark_queue *, struct quark_queue_stats *);
+int	 quark_start_kube_talker(const char *, pid_t *);
 int	 quark_dump_process_cache_graph(struct quark_queue *, FILE *);
 int	 quark_dump_raw_event_graph(struct quark_queue *, FILE *, FILE *);
 int	 quark_event_dump(const struct quark_event *, FILE *);
@@ -99,6 +100,7 @@ struct qstr {
 ssize_t	 qread(int, void *, size_t);
 int	 qwrite(int, const void *, size_t);
 ssize_t	 qreadlinkat(int, const char *, char *, size_t);
+int	 qclosefrom(int, int);
 int	 isnumber(const char *);
 ssize_t	 readlineat(int, const char *, char *, size_t);
 int	 strtou64(u64 *, const char *, int);
@@ -336,6 +338,8 @@ struct quark_event {
 	struct quark_packet		*packet;
 	const void			*bypass;
 	struct quark_file		*file;
+	const struct quark_pod		*pod;
+	const struct quark_container	*container;
 };
 
 /*
@@ -373,6 +377,8 @@ enum gc_type {
 	GC_INVALID,
 	GC_PROCESS,
 	GC_SOCKET,
+	GC_POD,
+	GC_CONTAINER,
 };
 
 struct gc_link {
@@ -478,6 +484,79 @@ struct quark_socket_iter {
 	struct quark_socket	*qsk;
 };
 
+/*
+ * A label node
+ */
+struct label_node {
+	RB_ENTRY(label_node)	 entry;
+	char			*key;
+	char			*value;
+	int			 seen;
+};
+
+RB_HEAD(label_tree, label_node);
+
+enum quark_container_state {
+	QUARK_CONTAINER_INVALID,
+	QUARK_CONTAINER_WAITING,
+	QUARK_CONTAINER_RUNNING,
+	QUARK_CONTAINER_TERMINATED,
+};
+
+struct quark_container {
+	struct gc_link			 gc;		/* must be first */
+	RB_ENTRY(quark_container)	 entry_qkube;	/* our ""global"" linkage */
+	RB_ENTRY(quark_container)	 entry_pod;	/* our linkage inside a quark_pod */
+	int				 linked;	/* both entries are linked */
+	char				*container_id;	/* unique id */
+	struct quark_pod		*pod;		/* backpointer to owner */
+	enum quark_container_state	 state;
+	char				*name;
+	char				*image;
+	char				*image_id;	/* do we want this? */
+	char				*command;
+};
+
+/*
+ * A quark_pod holds multiple containters in `pod_containters`.
+ * The same containers are also linked in `containters_by_id` inside quark_kube.
+ * This is to allow a search by `container_id`, which then can follow the `pod`
+ * backpointer, to finally find the pod of a containter_id.
+ */
+RB_HEAD(pod_containers, quark_container);
+RB_HEAD(container_by_id, quark_container);
+
+struct quark_pod {
+	struct gc_link		 gc;		/* must be first */
+	RB_ENTRY(quark_pod)	 entry_by_uid;
+	int			 linked;	/* true if entry_by_uid is linked */
+	char			*name;
+	char			*namespace;
+	char			*uid;
+	struct label_tree	 labels;
+	struct pod_containers	 containers;
+	char			*phase;
+};
+
+/*
+ * A quark_pod indexed by uid, this is the main datastructure for quark_kube{}.
+ */
+RB_HEAD(pod_by_uid, quark_pod);
+
+/*
+ * TODO DOCUMENT THIS
+ */
+struct quark_kube {
+	int			 fd;
+	int			 do_read;
+	char			*buf;
+	size_t			 buf_w;
+	size_t			 buf_r;
+	size_t			 buf_len;
+	struct pod_by_uid	 pod_by_uid;
+	struct container_by_id	 container_by_id;
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
@@ -513,6 +592,7 @@ struct quark_queue_attr {
 	int	max_length;
 	int	cache_grace_time;	/* in ms */
 	int	hold_time;		/* in ms */
+	int	kubefd;			/* -1 for disabled */
 };
 
 /*
@@ -533,6 +613,7 @@ struct quark_queue {
 	int				 max_length;
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
+	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
 	/* Backend related state */
 	struct quark_queue_ops		*queue_ops;
