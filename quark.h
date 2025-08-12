@@ -100,11 +100,11 @@ struct qstr {
 ssize_t	 qread(int, void *, size_t);
 int	 qwrite(int, const void *, size_t);
 ssize_t	 qreadlinkat(int, const char *, char *, size_t);
-int      qclosefrom(int, int);
+int	qclosefrom(int, int);
 int	 isnumber(const char *);
 ssize_t	 readlineat(int, const char *, char *, size_t);
 int	 strtou64(u64 *, const char *, int);
-char 	*find_line(FILE *, const char *);
+char	*find_line(FILE *, const char *);
 char	*find_line_p(const char *, const char *);
 char	*load_file_nostat(int, size_t *);
 int	 ipv6_supported(void);
