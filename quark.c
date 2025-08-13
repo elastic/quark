@@ -2537,7 +2537,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		 */
 		if (entry_leaders_build(qq) == -1) {
 			qwarnx("can't compute entry leaders");
-			return (-1);
+			goto fail;
 		}
 	}
 
@@ -2921,9 +2921,12 @@ quark_start_kube_talker(const char *kube_config, pid_t *pid)
 
 	*pid = -1;
 	if ((pipe(pipefd)) == -1)
-		err(1, "pipe");
-	if ((*pid = fork()) == -1)
-		err(1, "fork");
+		return (-1);
+	if ((*pid = fork()) == -1) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return (-1);
+	}
 
 	/* parent */
 	if (*pid != 0) {
