@@ -1426,11 +1426,6 @@ kprobe_queue_open(struct quark_queue *qq)
 		}
 	}
 
-	qq->epollfd = epoll_create1(EPOLL_CLOEXEC);
-	if (qq->epollfd == -1) {
-		qwarn("epoll_create1");
-		goto fail;
-	}
 	TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry) {
 		bzero(&ev, sizeof(ev));
 		ev.events = EPOLLIN;
@@ -1508,40 +1503,41 @@ kprobe_queue_close(struct quark_queue *qq)
 	struct perf_group_leader	*pgl;
 	struct kprobe_state		*ks;
 
-	if (kqq != NULL) {
-		/* Stop and close the perf rings */
-		while ((pgl = TAILQ_FIRST(&kqq->perf_group_leaders)) != NULL) {
-			/* XXX PERF_IOC_FLAG_GROUP see bugs */
-			if (pgl->fd != -1) {
-				if (ioctl(pgl->fd, PERF_EVENT_IOC_DISABLE,
-				    PERF_IOC_FLAG_GROUP) == -1)
-					qwarnx("ioctl PERF_EVENT_IOC_DISABLE:");
-				close(pgl->fd);
-			}
-			if (pgl->mmap.metadata != NULL) {
-				if (munmap(pgl->mmap.metadata,
-				    pgl->mmap.mapped_size) != 0)
-					qwarn("munmap");
-			}
-			TAILQ_REMOVE(&kqq->perf_group_leaders, pgl, entry);
-			free(pgl);
-		}
-		/* Clean up all state allocated to kprobes */
-		while ((ks = TAILQ_FIRST(&kqq->kprobe_states)) != NULL) {
-			if (ks->fd != -1)
-				close(ks->fd);
-			TAILQ_REMOVE(&kqq->kprobe_states, ks, entry);
-			free(ks);
-		}
+	if (kqq == NULL)
+		return;
 
-		kprobe_uninstall_all(kqq->qid);
-		free(kqq);
-		kqq = NULL;
-		qq->queue_be = NULL;
+	/* Stop and close the perf rings */
+	while ((pgl = TAILQ_FIRST(&kqq->perf_group_leaders)) != NULL) {
+		/* XXX PERF_IOC_FLAG_GROUP see bugs */
+		if (pgl->fd != -1) {
+			if (ioctl(pgl->fd, PERF_EVENT_IOC_DISABLE,
+			    PERF_IOC_FLAG_GROUP) == -1)
+				qwarnx("ioctl PERF_EVENT_IOC_DISABLE:");
+			if (epoll_ctl(qq->epollfd, EPOLL_CTL_DEL, pgl->fd,
+			    NULL) == -1)
+				qwarn("epoll_ctl EPOLL_CTL_DEL");
+
+			close(pgl->fd);
+			pgl->fd = -1;
+		}
+		if (pgl->mmap.metadata != NULL) {
+			if (munmap(pgl->mmap.metadata,
+			    pgl->mmap.mapped_size) != 0)
+				qwarn("munmap");
+		}
+		TAILQ_REMOVE(&kqq->perf_group_leaders, pgl, entry);
+		free(pgl);
 	}
-	/* Clean up epoll instance */
-	if (qq->epollfd != -1) {
-		close(qq->epollfd);
-		qq->epollfd = -1;
+	/* Clean up all state allocated to kprobes */
+	while ((ks = TAILQ_FIRST(&kqq->kprobe_states)) != NULL) {
+		if (ks->fd != -1)
+			close(ks->fd);
+		TAILQ_REMOVE(&kqq->kprobe_states, ks, entry);
+		free(ks);
 	}
+
+	kprobe_uninstall_all(kqq->qid);
+	free(kqq);
+	kqq = NULL;
+	qq->queue_be = NULL;
 }

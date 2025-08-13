@@ -589,9 +589,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	struct bpf_queue		*bqq;
 	struct bpf_probes		*p;
 	struct ring_buffer_opts		 ringbuf_opts;
-	int				 cgroup_fd, i, off;
+	int				 cgroup_fd, i, off, ringbuf_fd;
 	struct bpf_prog_skeleton	*ps;
 	struct btf			*btf;
+	struct epoll_event		 ev;
 
 	libbpf_set_print(libbpf_print_fn);
 
@@ -829,9 +830,18 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		goto fail;
 	}
 
-	qq->epollfd = ring_buffer__epoll_fd(bqq->ringbuf);
-	if (qq->epollfd < 0)
+	ringbuf_fd = ring_buffer__epoll_fd(bqq->ringbuf);
+	if (ringbuf_fd < 0) {
+		qwarnx("ring_buffer__epoll_fd failed");
 		goto fail;
+	}
+	bzero(&ev, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.fd = ringbuf_fd;
+	if (epoll_ctl(qq->epollfd, EPOLL_CTL_ADD, ringbuf_fd, &ev) == -1) {
+		qwarn("epoll_ctl");
+		goto fail;
+	}
 
 	qq->queue_ops = &queue_ops_bpf;
 	qq->stats.backend = QQ_EBPF;
@@ -910,21 +920,29 @@ bpf_queue_close(struct quark_queue *qq)
 {
 	struct bpf_queue	*bqq = qq->queue_be;
 
-	if (bqq != NULL) {
-		if (bqq->probes != NULL) {
-			bpf_probes__destroy(bqq->probes);
-			bqq->probes = NULL;
-		}
-		if (bqq->ringbuf != NULL) {
-			ring_buffer__free(bqq->ringbuf);
-			bqq->ringbuf = NULL;
-		}
-		free(bqq);
-		bqq = NULL;
-		qq->queue_be = NULL;
+	if (bqq == NULL)
+		return;
+	if (bqq->probes != NULL) {
+		bpf_probes__destroy(bqq->probes);
+		bqq->probes = NULL;
 	}
-	/* Closed in ring_buffer__free() */
-	qq->epollfd = -1;
+	if (bqq->ringbuf != NULL) {
+		int	ringbuf_fd;
+
+		ringbuf_fd = ring_buffer__epoll_fd(bqq->ringbuf);
+		if (ringbuf_fd >= 0) {
+			if (epoll_ctl(qq->epollfd, EPOLL_CTL_DEL, ringbuf_fd,
+			    NULL) == -1)
+				qwarn("epoll_ctl EPOLL_CTL_DEL");
+		}
+		/* this closes ringbuf_fd! */
+		ring_buffer__free(bqq->ringbuf);
+		ringbuf_fd = -1;
+		bqq->ringbuf = NULL;
+	}
+	free(bqq);
+	bqq = NULL;
+	qq->queue_be = NULL;
 }
 
 struct bpf_probes *
