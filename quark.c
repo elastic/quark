@@ -971,10 +971,18 @@ file_op_mask_str(u32 op_mask, char *buf, size_t len)
 		if (fprintf(f, __VA_ARGS__) < 0)	\
 			return (-1);			\
 	} while(0)
+
+#define PF(_flag, ...)						\
+	do {							\
+		if (fprintf(f, "  %.4s\t", _flag) < 0)		\
+			return (-1);				\
+		P(__VA_ARGS__);					\
+	} while(0)						\
+
 int
 quark_event_dump(const struct quark_event *qev, FILE *f)
 {
-	const char			*flagname;
+	const char			*fl;
 	char				 buf[1024];
 	const struct quark_process	*qp;
 	const struct quark_socket	*qsk;
@@ -1003,7 +1011,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 
 	if (qev->events & (QUARK_EV_SOCK_CONN_ESTABLISHED|QUARK_EV_SOCK_CONN_CLOSED)) {
 		char local[INET6_ADDRSTRLEN], remote[INET6_ADDRSTRLEN];
-		flagname = "SOCK";
+		fl = "SOCK";
 
 		if (qsk == NULL)
 			return (-1);
@@ -1016,41 +1024,41 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    remote, sizeof(remote)) == NULL)
 			strlcpy(remote, "bad address", sizeof(remote));
 
-		P("  %.4s\tlocal=%s:%d remote=%s:%d\n", flagname,
+		PF(fl, "local=%s:%d remote=%s:%d\n",
 		    local, ntohs(qsk->local.port),
 		    remote, ntohs(qsk->remote.port));
 	}
 
 	if (qev->events & QUARK_EV_PACKET) {
-		flagname = "PKT";
+		fl = "PKT";
 
 		if (packet == NULL)
 			return (-1);
 
-		P("  %.4s\torigin=%s, len=%zd/%zd\n", flagname,
+		PF(fl, "origin=%s, len=%zd/%zd\n",
 		    packet->origin == QUARK_PACKET_ORIGIN_DNS ? "dns" : "?",
 		    packet->cap_len, packet->orig_len);
 		sshbuf_dump_data(packet->data, packet->cap_len, f);
 	}
 
 	if (qev->events & QUARK_EV_FILE) {
-		flagname = "FILE";
+		fl = "FILE";
 
 		if (file == NULL)
 			return (-1);
 
 		file_op_mask_str(file->op_mask, buf, sizeof(buf));
-		P("  %.4s\top=%s\n", flagname, buf);
+		PF(fl, "op=%s\n", buf);
 		if (file->path != NULL)
-			P("  %.4s\tpath=%s\n", flagname, file->path);
+			PF(fl, "path=%s\n", file->path);
 		if (file->old_path != NULL)
-			P("  %.4s\told_path=%s\n", flagname, file->old_path);
+			PF(fl, "old_path=%s\n", file->old_path);
 		if (file->sym_target != NULL)
-			P("  %.4s\tsym_target=%s\n", flagname,
+			PF(fl, "sym_target=%s\n",
 			    file->sym_target);
-		P("  %.4s\tmode=0%o uid=%d gid=%d size=%llu inode=%llu\n",
-		    flagname, file->mode, file->uid, file->gid, file->size, file->inode);
-		P("  %.4s\tatime=%llu mtime=%llu ctime=%llu\n", flagname,
+		PF(fl, "mode=0%o uid=%d gid=%d size=%llu inode=%llu\n",
+		    file->mode, file->uid, file->gid, file->size, file->inode);
+		PF(fl, "atime=%llu mtime=%llu ctime=%llu\n",
 		    file->atime, file->mtime, file->ctime);
 	}
 
@@ -1058,8 +1066,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		return (-1);
 
 	if (qp->flags & QUARK_F_COMM) {
-		flagname = event_flag_str(QUARK_F_COMM);
-		P("  %.4s\tcomm=%s\n", flagname, qp->comm);
+		fl = event_flag_str(QUARK_F_COMM);
+		PF(fl, "comm=%s\n", qp->comm);
 	}
 
 	if (qp->flags & QUARK_F_CMDLINE) {
@@ -1067,9 +1075,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		const char			*arg;
 		int				 first = 1;
 
-		flagname = event_flag_str(QUARK_F_CMDLINE);
+		fl = event_flag_str(QUARK_F_CMDLINE);
 
-		P("  %.4s\tcmdline=", flagname);
+		PF(fl, "cmdline=");
 		P("[ ");
 
 		quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
@@ -1083,46 +1091,46 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		P(" ]\n");
 	}
 	if (qp->flags & QUARK_F_PROC) {
-		flagname = event_flag_str(QUARK_F_PROC);
-		P("  %.4s\tppid=%d\n", flagname, qp->proc_ppid);
-		P("  %.4s\tuid=%d gid=%d suid=%d sgid=%d "
+		fl = event_flag_str(QUARK_F_PROC);
+		PF(fl, "ppid=%d\n", qp->proc_ppid);
+		PF(fl, "uid=%d gid=%d suid=%d sgid=%d "
 		    "euid=%d egid=%d pgid=%d sid=%d\n",
-		    flagname, qp->proc_uid, qp->proc_gid, qp->proc_suid,
+		    qp->proc_uid, qp->proc_gid, qp->proc_suid,
 		    qp->proc_sgid, qp->proc_euid, qp->proc_egid,
 		    qp->proc_pgid, qp->proc_sid);
-		P("  %.4s\tcap_inheritable=0x%llx cap_permitted=0x%llx "
+		PF(fl, "cap_inheritable=0x%llx cap_permitted=0x%llx "
 		    "cap_effective=0x%llx\n",
-		    flagname, qp->proc_cap_inheritable,
+		    qp->proc_cap_inheritable,
 		    qp->proc_cap_permitted, qp->proc_cap_effective);
-		P("  %.4s\tcap_bset=0x%llx cap_ambient=0x%llx\n",
-		    flagname, qp->proc_cap_bset, qp->proc_cap_ambient);
-		P("  %.4s\ttime_boot=%llu tty_major=%d tty_minor=%d\n",
-		    flagname, qp->proc_time_boot,
+		PF(fl, "cap_bset=0x%llx cap_ambient=0x%llx\n",
+		    qp->proc_cap_bset, qp->proc_cap_ambient);
+		PF(fl, "time_boot=%llu tty_major=%d tty_minor=%d\n",
+		    qp->proc_time_boot,
 		    qp->proc_tty_major, qp->proc_tty_minor);
-		P("  %.4s\tuts_inonum=%u ipc_inonum=%u\n",
-		    flagname, qp->proc_uts_inonum, qp->proc_ipc_inonum);
-		P("  %.4s\tmnt_inonum=%u net_inonum=%u\n",
-		    flagname, qp->proc_mnt_inonum, qp->proc_net_inonum);
-		P("  %.4s\tentity_id=%s, entry_leader_type=%s entry_leader=%d\n", flagname,
+		PF(fl, "uts_inonum=%u ipc_inonum=%u\n",
+		    qp->proc_uts_inonum, qp->proc_ipc_inonum);
+		PF(fl, "mnt_inonum=%u net_inonum=%u\n",
+		    qp->proc_mnt_inonum, qp->proc_net_inonum);
+		PF(fl, "entity_id=%s, entry_leader_type=%s entry_leader=%d\n",
 		    qp->proc_entity_id,
 		    entry_leader_type_str(qp->proc_entry_leader_type),
 		    qp->proc_entry_leader);
 	}
 	if (qp->flags & QUARK_F_CWD) {
-		flagname = event_flag_str(QUARK_F_CWD);
-		P("  %.4s\tcwd=%s\n", flagname, qp->cwd);
+		fl = event_flag_str(QUARK_F_CWD);
+		PF(fl, "cwd=%s\n", qp->cwd);
 	}
 	if (qp->flags & QUARK_F_FILENAME) {
-		flagname = event_flag_str(QUARK_F_FILENAME);
-		P("  %.4s\tfilename=%s\n", flagname, qp->filename);
+		fl = event_flag_str(QUARK_F_FILENAME);
+		PF(fl, "filename=%s\n", qp->filename);
 	}
 	if (qp->flags & QUARK_F_CGROUP) {
-		flagname = event_flag_str(QUARK_F_CGROUP);
-		P("  %.4s\tcgroup=%s\n", flagname, qp->cgroup);
+		fl = event_flag_str(QUARK_F_CGROUP);
+		PF(fl, "cgroup=%s\n", qp->cgroup);
 	}
 	if (qp->flags & QUARK_F_EXIT) {
-		flagname = event_flag_str(QUARK_F_EXIT);
-		P("  %.4s\texit_code=%d exit_time=%llu\n", flagname,
+		fl = event_flag_str(QUARK_F_EXIT);
+		PF(fl, "exit_code=%d exit_time=%llu\n",
 		    qp->exit_code, qp->exit_time_event);
 	}
 
@@ -1130,6 +1138,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 
 	return (0);
 }
+#undef PF
 #undef P
 
 /* User facing version of process_cache_lookup() */
