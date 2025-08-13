@@ -961,13 +961,13 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 		qwarnx("bad phase");
 		return (-1);
 	}
-	if (!cJSON_IsArray(containerStatuses)) {
-		qwarnx("bad containerStatuses: %p", containerStatuses);
-		return (-1);
-	}
 
 	pod = pod_lookup_by_uid(qq, uid->valuestring);
 
+	/*
+	 * Check for a deletion, these may happen without a filled
+	 * containerStatuses.
+	 */
 	if (deletionTimestamp != NULL) {
 		if (!cJSON_IsString(deletionTimestamp)) {
 			qwarnx("bad deletionTimestamp");
@@ -983,6 +983,15 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 			gc_mark(qq, &pod->gc, GC_POD);
 
 		return (0);
+	}
+
+	/*
+	 * Updates and creation need containerStatuses, that's where
+	 * containerID is.
+	 */
+	if (!cJSON_IsArray(containerStatuses)) {
+		qwarnx("bad containerStatuses: %p", containerStatuses);
+		return (-1);
 	}
 
 	new_pod = 0;
@@ -1823,8 +1832,10 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 			struct label_node	*node;
 
 			flagname = "POD";
-			P("  %.4s\tname=%s namespace=%s uid=%s\n",
-			    flagname, pod->name, pod->namespace, pod->uid);
+			P("  %.4s\tname=%s namespace=%s\n",
+			    flagname, pod->name, pod->namespace);
+			P("  %.4s\tuid=%s phase=%s\n",
+			    flagname, pod->uid, pod->phase);
 			P("  %.4s\tlabels=", flagname);
 			P("[ ");
 

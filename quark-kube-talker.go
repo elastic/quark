@@ -1,20 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
 	"syscall"
-	"encoding/json"
-	"encoding/binary"
-	"bytes"
-	//	"path/filepath"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
-	//	"k8s.io/client-go/util/homedir"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -30,8 +27,6 @@ func main() {
 		panic("can't set non block")
 	}
 	file := os.NewFile(uintptr(fd), "")
-
-	fmt.Printf("starting: %+v (fd=%+v) (file=%+v)", os.Args, fd, file)
 
 	config, err := clientcmd.BuildConfigFromFlags("", configPath)
 	if err != nil {
@@ -49,7 +44,6 @@ func main() {
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*v1.Pod)
-			fmt.Printf("POD ADDED: %s/%s\n", pod.Namespace, pod.Name)
 			// We don't care about addition without containerStatuses
 			// No point in forwarding Pending, when it gets to Running it will have what we want
 			if len(pod.Status.ContainerStatuses) == 0 ||
@@ -72,14 +66,10 @@ func main() {
 				return
 			}
 
-			fmt.Printf("POD UPDATED: %s/%s (Status: %s -> %s)\n", newPod.Namespace, newPod.Name, oldPod.Status.Phase, newPod.Status.Phase)
 			forward(file, newPod)
 		},
 		DeleteFunc: func(obj interface{}) {
-			// Kubernetes client-go sends a FinalStateUnknown object for deleted items
-			// if the object was not in the local cache.
 			if pod, ok := obj.(*v1.Pod); ok {
-				fmt.Printf("POD DELETED: %s/%s\n", pod.Namespace, pod.Name)
 				forward(file, pod)
 			} else {
 				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
@@ -88,7 +78,7 @@ func main() {
 					return
 				}
 				if pod, ok := tombstone.Obj.(*v1.Pod); ok {
-					fmt.Printf("POD DELETED (from tombstone): %s/%s\n", pod.Namespace, pod.Name)
+					forward(file, pod);
 				} else {
 					fmt.Fprintf(os.Stderr, "Error decoding object when deleting pod, tombstone contained non-Pod object: %#v\n", tombstone.Obj)
 				}
