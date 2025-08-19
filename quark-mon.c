@@ -145,26 +145,23 @@ usage(void)
 
  */
 
-static int
+static void
 test_hanson_meta(struct hanson *h)
 {
-	int	r = 0, first;
+	int	first = 1;
 
-	first = 1;
-	r |= hanson_add_key_value(h, "name", "hello-node-c74958b5d-twwbg", &first);
-	r |= hanson_add_key_value(h, "generateName", "hello-node-c74958b5d-", &first);
-	r |= hanson_add_key_value(h, "namespace", "default", &first);
+	hanson_add_key_value(h, "name", "hello-node-c74958b5d-twwbg", &first);
+	hanson_add_key_value(h, "generateName", "hello-node-c74958b5d-", &first);
+	hanson_add_key_value(h, "namespace", "default", &first);
 
-	r |= hanson_add_object(h, "labels", &first);
+	hanson_add_object(h, "labels", &first);
 	{
 		int label_first = 1;
 
-		r |= hanson_add_key_value(h, "app", "hello-node", &label_first);
-		r |= hanson_add_key_value(h, "pod-template-hash", "c74958b5d", &label_first);
+		hanson_add_key_value(h, "app", "hello-node", &label_first);
+		hanson_add_key_value(h, "pod-template-hash", "c74958b5d", &label_first);
 	}
-	r |= hanson_close_object(h);
-
-	return (r);
+	hanson_close_object(h);
 }
 
 static void
@@ -177,11 +174,11 @@ test_hanson(void)
 
 	r = 0;
 	if (hanson_open(&h) == -1)
-		err(1, "hanson_open");
+		err(1, "XXhanson_open");
 
-	r |= hanson_add_object(&h, "metadata", NULL);
-	r |= test_hanson_meta(&h);
-	r |= hanson_close_object(&h);
+	hanson_add_object(&h, "metadata", NULL);
+	test_hanson_meta(&h);
+	hanson_close_object(&h);
 
 	if (hanson_close(&h, &buf, &buf_len) == -1)
 		err(1, "hanson_open");
@@ -208,6 +205,8 @@ main(int argc, char *argv[])
 	pid_t				 kube_talker_pid;
 	const char			*kube_config;
 
+	int zflag = 0; 		/* XXXREMOVEME */
+
 	quark_queue_default_attr(&qa);
 	qa.flags &= ~QQ_ALL_BACKENDS;
 	maxnodes = -1;
@@ -219,7 +218,7 @@ main(int argc, char *argv[])
 	benchmark = 0;
 	kube_config = NULL;
 
-	while ((ch = getopt(argc, argv, "BbC:DeFgHhK:kl:Mm:NP:tSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DeFgHhK:kl:Mm:NP:tSsvVz")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -311,6 +310,9 @@ main(int argc, char *argv[])
 			break;
 		case 'V':
 			display_version();
+			break;
+		case 'z':
+			zflag = 1;
 			break;
 		default:
 			usage();
@@ -421,7 +423,18 @@ main(int argc, char *argv[])
 		    filter_ppid != qev->process->proc_ppid)
 			continue;
 
-		quark_event_dump(qev, stdout);
+		if (zflag) {
+			char	*buf;
+			size_t	 buf_len;
+
+			if (quark_event_to_ecs(qev, &buf, &buf_len) == -1)
+				qwarnx("quark_event_to_ecs");
+			else {
+				printf("(%zd)\n%s\n", buf_len, buf);
+				free(buf);
+			}
+		} else 
+			quark_event_dump(qev, stdout);
 	}
 
 	if (graph_by_pidtime != NULL && graph_by_time != NULL) {

@@ -141,10 +141,14 @@ struct hanson {
 	/* char	*buf; */
 	/* size_t	 size; */
 	/* size_t	 total_size; */
+	int	 error;
 	char	*buf;
 	size_t	 buf_len;
 	FILE	*stream;
 };
+
+/* ecs.c */
+int	quark_event_to_ecs(const struct quark_event *qev, char **, size_t *);
 
 /*
  * Time helpers

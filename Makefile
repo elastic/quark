@@ -105,6 +105,7 @@ LIBQUARK_SRCS:=			\
 	bpf_queue.c		\
 	btfhub.c		\
 	compat.c		\
+	ecs.c			\
 	hanson.c		\
 	kprobe_queue.c		\
 	qbtf.c			\

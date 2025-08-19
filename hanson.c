@@ -2,6 +2,7 @@
 /* Copyright (c) 2025 Elastic NV */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "quark.h"
@@ -12,8 +13,10 @@ hanson_add(struct hanson *h, void *data, size_t data_len)
 	size_t	r;
 
 	r = fwrite(data, 1, data_len, h->stream);
-	if (unlikely(r != data_len || ferror(h->stream)))
+	if (unlikely(r != data_len || ferror(h->stream))) {
+		h->error = 1;
 		return (-1);
+	}
 
 	return (0);
 }
@@ -73,6 +76,23 @@ hanson_add_key_value(struct hanson *h, char *k, char *v, int *first)
 	return (r);
 }
 
+int				/* XXX unify with object maybe */
+hanson_add_array(struct hanson *h, char *name, int *first)
+{
+	int	r = 0;
+
+	if (first != NULL) {
+		if (*first == 0)
+			r |= hanson_add_ascii(h, ',');
+		*first = 0;
+	}
+	r |= hanson_add_string(h, name);
+	r |= hanson_add_ascii(h, ':');
+	r |= hanson_add_ascii(h, '[');
+
+	return (r);
+}
+
 int
 hanson_add_object(struct hanson *h, char *name, int *first)
 {
@@ -99,6 +119,7 @@ hanson_close_object(struct hanson *h)
 int
 hanson_open(struct hanson *h)
 {
+	h->error = 0;
 	h->buf_len = 0;
 	h->buf = NULL;
 	if ((h->stream = open_memstream(&h->buf, &h->buf_len)) == NULL)
@@ -123,11 +144,19 @@ hanson_close(struct hanson *h, char **buf, size_t *buf_len)
 	r |= hanson_add_ascii(h, '}');
 	r |= hanson_add_ascii(h, 0);
 	if (fclose(h->stream) != 0)
+		h->error = 1;
+	if (h->error) {
+		free(h->buf);
 		r = -1;
-	*buf = h->buf;
-	*buf_len = h->buf_len;
+	} else {
+		*buf = h->buf;
+		*buf_len = h->buf_len;
+	}
 	h->buf = NULL;
 	h->buf_len = 0;
+
+	if (h->error)
+		r = -1;
 
 	return (r);
 }
