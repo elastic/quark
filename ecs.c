@@ -9,6 +9,52 @@
 
 #include "quark.h"
 
+#define S(_a)	#_a
+static const char *cap_to_string[64] = {
+	[0]  = S(CAP_CHOWN),
+	[1]  = S(CAP_DAC_OVERRIDE),
+	[2]  = S(CAP_DAC_READ_SEARCH),
+	[3]  = S(CAP_FOWNER),
+	[4]  = S(CAP_FSETID),
+	[5]  = S(CAP_KILL),
+	[6]  = S(CAP_SETGID),
+	[7]  = S(CAP_SETUID),
+	[8]  = S(CAP_SETPCAP),
+	[9]  = S(CAP_LINUX_IMMUTABLE),
+	[10] = S(CAP_NET_BIND_SERVICE),
+	[11] = S(CAP_NET_BROADCAST),
+	[12] = S(CAP_NET_ADMIN),
+	[13] = S(CAP_NET_RAW),
+	[14] = S(CAP_IPC_LOCK),
+	[15] = S(CAP_IPC_OWNER),
+	[16] = S(CAP_SYS_MODULE),
+	[17] = S(CAP_SYS_RAWIO),
+	[18] = S(CAP_SYS_CHROOT),
+	[19] = S(CAP_SYS_PTRACE),
+	[20] = S(CAP_SYS_PACCT),
+	[21] = S(CAP_SYS_ADMIN),
+	[22] = S(CAP_SYS_BOOT),
+	[23] = S(CAP_SYS_NICE),
+	[24] = S(CAP_SYS_RESOURCE),
+	[25] = S(CAP_SYS_TIME),
+	[26] = S(CAP_SYS_TTY_CONFIG),
+	[27] = S(CAP_MKNOD),
+	[28] = S(CAP_LEASE),
+	[29] = S(CAP_AUDIT_WRITE),
+	[30] = S(CAP_AUDIT_CONTROL),
+	[31] = S(CAP_SETFCAP),
+	[32] = S(CAP_MAC_OVERRIDE),
+	[33] = S(CAP_MAC_ADMIN),
+	[34] = S(CAP_SYSLOG),
+	[35] = S(CAP_WAKE_ALARM),
+	[36] = S(CAP_BLOCK_SUSPEND),
+	[37] = S(CAP_AUDIT_READ),
+	[38] = S(CAP_PERFMON),
+	[39] = S(CAP_BPF),
+	[40] = S(CAP_CHECKPOINT_RESTORE),
+};
+#undef S
+
 static int
 is_interactive(const struct quark_process *qp)
 {
@@ -117,7 +163,6 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 			strlcat(buf, "-received", sizeof(buf));
 		else if (qev->packet->direction == QUARK_PACKET_DIR_EGRESS)
 			strlcat(buf, "-sent", sizeof(buf));
-
 	} else if (file) {
 		u32 mask = qev->file->op_mask;
 
@@ -139,6 +184,68 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 	hanson_add_key_value(h, "action", buf, first);
 
 	return (r);
+}
+
+static int
+ecs_capabilities(struct quark_queue *qq, struct hanson *h, u64 caps, int *first)
+{
+	int		 c, bit;
+	const char	*name;
+	char		 buf[32];
+
+	while ((bit = ffsll(caps)) != 0) {
+		c = bit - 1;
+		caps &= ~(1ULL << c);
+		name = cap_to_string[c];
+
+		if (unlikely(name == NULL)) {
+			snprintf(buf, sizeof(buf), "CAP_%d", c);
+			name = buf;
+		}
+
+		hanson_add_string(h, (char *)name, first);
+	}
+
+	return (0);
+}
+
+static int
+ecs_thread(struct quark_queue *qq, struct hanson *h,
+    const struct quark_process *qp, int *first)
+{
+	int r = 0;
+
+	hanson_add_object(h, "thread", first);
+	{
+		int	thread_first = 1;
+
+		hanson_add_object(h, "capabilities", &thread_first);
+		{
+			int	capabilities_first = 1;
+
+			hanson_add_array(h, "effective", &capabilities_first);
+			{
+				int	effective_first = 1;
+
+				r |= ecs_capabilities(qq, h,
+				    qp->proc_cap_effective, &effective_first);
+			}
+			hanson_close_array(h);
+
+			hanson_add_array(h, "permitted", &capabilities_first);
+			{
+				int	permitted_first = 1;
+
+				r |= ecs_capabilities(qq, h,
+				    qp->proc_cap_permitted, &permitted_first);
+			}
+			hanson_close_array(h);
+		}
+		hanson_close_object(h);
+	}
+	hanson_close_object(h);
+
+	return (0);
 }
 
 static int
@@ -291,6 +398,19 @@ ecs_process_tty(struct hanson *h, const struct quark_process *qp, int *first)
 	return (0);
 }
 
+static const char *
+container_runtime(struct quark_container *container)
+{
+	if (!strncmp(container->container_id, "docker://", 9))
+		return "docker";
+	else if (!strncmp(container->container_id, "cri-o://", 5))
+		return "cri-o";
+	else if (!strncmp(container->container_id, "containerd://", 13))
+		return "containerd";
+
+	return "unknown";
+}
+
 static int
 ecs_container(struct hanson *h, const struct quark_event *qev, int *first)
 {
@@ -309,8 +429,7 @@ ecs_container(struct hanson *h, const struct quark_event *qev, int *first)
 
 	hanson_add_key_value(h, "id", container->container_id, first);
 	hanson_add_key_value(h, "name", container->name, first);
-	/* XXX FIXME we now support more things */
-	hanson_add_key_value(h, "runtime", "fixme", first);
+	hanson_add_key_value(h, "runtime", container_runtime(container), first);
 
 	/* container.label.* */
 	hanson_add_object(h, "labels", first);
@@ -378,12 +497,8 @@ ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
 
 static int
 ecs_process(struct quark_queue *qq, struct hanson *h,
-    const struct quark_event *qev, int *first)
+    const struct quark_process *qp, int do_parent, int *first)
 {
-	const struct quark_process	*qp;
-
-	qp = qev->process;
-
 	hanson_add_key_value_int(h, "pid", qp->pid, first);
 
 	if (qp->flags & QUARK_F_PROC) {
@@ -398,8 +513,24 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 		    first);
 		/* process.user.* */
 		ecs_process_user(qq, h, qp, first);
+		/* thread.* */
+		ecs_thread(qq, h, qp, first);
 		/* process.tty.* */
 		ecs_process_tty(h, qp, first);
+
+		/* process.parent */
+		if (do_parent) {
+			hanson_add_object(h, "parent", first);
+			{
+				int				 parent_first = 1;
+				const struct quark_process	*parent;
+
+				parent = quark_process_lookup(qq, qp->proc_ppid);
+				if ((parent = quark_process_lookup(qq, qp->proc_ppid)) != NULL)
+					ecs_process(qq, h, parent, 0, &parent_first);
+			}
+			hanson_close_object(h);
+		}
 	}
 
 	if (qp->flags & QUARK_F_COMM)
@@ -553,6 +684,67 @@ ecs_file(struct quark_queue *qq, struct hanson *h,
 	return (0);
 }
 
+static int
+ecs_host(struct quark_queue *qq, struct hanson *h, int *first)
+{
+	struct quark_sysinfo	*si = &qq->sysinfo;
+	size_t			 i;
+
+	if (si->hostname != NULL) {
+		hanson_add_key_value(h, "hostname", si->hostname, first);
+		hanson_add_key_value(h, "name", si->hostname, first);
+	}
+	if (si->uts_machine != NULL)
+		hanson_add_key_value(h, "architecture", si->uts_machine, first);
+
+	hanson_add_array(h, "ip", first);
+	{
+		int	ip_first = 1;
+
+		for (i = 0; i < si->ip_addrs_len; i++) {
+			hanson_add_string(h, si->ip_addrs[i], &ip_first);
+		}
+	}
+	hanson_close_array(h);
+
+	hanson_add_array(h, "mac", first);
+	{
+		int	mac_first = 1;
+
+		for (i = 0; i < si->mac_addrs_len; i++) {
+			hanson_add_string(h, si->mac_addrs[i], &mac_first);
+		}
+	}
+	hanson_close_array(h);
+
+	hanson_add_object(h, "os", first);
+	{
+		int	os_first = 1;
+
+		if (si->uts_release)
+			hanson_add_key_value(h, "kernel",
+			    si->uts_release, &os_first);
+		if (si->os_name)
+			hanson_add_key_value(h, "name",
+			    si->os_name, &os_first);
+		if (si->os_version_id)
+			hanson_add_key_value(h, "version",
+			    si->os_version_id, &os_first);
+		if (si->os_pretty_name)
+			hanson_add_key_value(h, "full",
+			    si->os_pretty_name, &os_first);
+		if (si->os_release_type)
+			hanson_add_key_value(h, "release_type",
+			    si->os_release_type, &os_first);
+	}
+	hanson_close_object(h);
+
+
+
+	/* XXX missing bootid, boot.id, id */
+	return (0);
+}
+
 int
 quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
     char **buf, size_t *buf_len)
@@ -581,7 +773,7 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 		{
 			int	process_first = 1;
 
-			ecs_process(qq, &h, qev, &process_first);
+			ecs_process(qq, &h, qev->process, 1, &process_first);
 		}
 		hanson_close_object(&h);
 
@@ -616,6 +808,14 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 		}
 		hanson_close_object(&h);
 	}
+
+	hanson_add_object(&h, "host", &top_first);
+	{
+		int	host_first = 1;
+
+		ecs_host(qq, &h, &host_first);
+	}
+	hanson_close_object(&h);
 
 	if (hanson_close(&h, buf, buf_len) == -1)
 		return (-1);

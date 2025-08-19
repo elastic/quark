@@ -133,15 +133,15 @@ void	 qlog_func(int, int, const char *, int, const char *, ...) __attribute__((f
 /* hanson.c */
 struct hanson;
 int	 hanson_add_ascii(struct hanson *, int);
-int	 hanson_add_string(struct hanson *, char *, int *);
+int	 hanson_add_string(struct hanson *, const char *, int *);
 int	 hanson_add_integer(struct hanson *, int64_t);
 int	 hanson_add_boolean(struct hanson *h, int, int *);
-int	 hanson_add_key_value(struct hanson *, char *, char *, int *);
-int	 hanson_add_key_value_int(struct hanson *, char *, int64_t, int *);
-int	 hanson_add_key_value_bool(struct hanson *, char *, int, int *);
-int	 hanson_add_array(struct hanson *, char *, int *);
+int	 hanson_add_key_value(struct hanson *, const char *, const char *, int *);
+int	 hanson_add_key_value_int(struct hanson *, const char *, int64_t, int *);
+int	 hanson_add_key_value_bool(struct hanson *, const char *, int, int *);
+int	 hanson_add_array(struct hanson *, const char *, int *);
 int	 hanson_close_array(struct hanson *);
-int	 hanson_add_object(struct hanson *, char *, int *);
+int	 hanson_add_object(struct hanson *, const char *, int *);
 int	 hanson_close_object(struct hanson *);
 int	 hanson_open(struct hanson *);
 int	 hanson_close(struct hanson *, char **, size_t *);
@@ -612,6 +612,31 @@ struct quark_group {
 	char			*name;
 };
 
+/*
+ * General system information, static and stored in quark_queue.
+ */
+struct quark_sysinfo {
+	char	 *hostname;
+	char	**ip_addrs;	/* Solely for ECS generation */
+	size_t	  ip_addrs_len;
+	char	**mac_addrs;	/* Solely for ECS generation */
+	size_t	  mac_addrs_len;
+	/* uname(2) */
+	char	 *uts_sysname;
+	char	 *uts_nodename;
+	char	 *uts_release;
+	char	 *uts_version;
+	char	 *uts_machine;
+	/* /etc/os-release */
+	char	 *os_name;
+	char	 *os_version;
+	char	 *os_release_type;
+	char	 *os_id;
+	char	 *os_version_id;
+	char	 *os_codename;
+	char	 *os_pretty_name;
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
@@ -662,6 +687,7 @@ struct quark_queue {
 	struct socket_by_src_dst	 socket_by_src_dst;
 	struct passwd_by_uid		 passwd_by_uid;
 	struct group_by_gid		 group_by_gid;
+	struct quark_sysinfo		 sysinfo;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
 	const u8			(*agg_matrix)[RAW_NUM_TYPES];

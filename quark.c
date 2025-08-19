@@ -2,9 +2,14 @@
 /* Copyright (c) 2024 Elastic NV */
 
 #include <sys/epoll.h>
+#include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 
+#include <netpacket/packet.h>
+
+#include <netinet/ether.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 
@@ -14,6 +19,7 @@
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
+#include <ifaddrs.h>
 #include <fcntl.h>
 #include <fts.h>
 #include <grp.h>
@@ -3140,6 +3146,267 @@ bad:
 	return (-1);
 }
 
+static int
+quark_sysinfo_os_release(struct quark_sysinfo *si)
+{
+	FILE	*f;
+	ssize_t	 n;
+	size_t	 line_len;
+	char	*line, *k, *v, *aux;
+
+	if ((f = fopen("/etc/os-release", "r")) == NULL) {
+		qwarn("fopen /etc/os-release");
+		return (-1);
+	}
+
+	line_len = 0;
+	line = NULL;
+	while ((n = getline(&line, &line_len, f)) != -1) {
+		if (n == 0 || line[n - 1] != '\n') {
+			qwarnx("bad line");
+			continue;
+		}
+		line[n - 1] = 0;
+		k = line;
+		if (*k == 0) {
+			qwarnx("bad line, empty");
+			continue;
+		}
+		v = strchr(line, '=');
+		if (v == NULL) {
+			qwarnx("bad line, no separator");
+			continue;
+		}
+		*v++ = 0;
+		if (*v == 0) {
+			qwarnx("bad line, no value");
+			continue;
+		} else if (*v == '"') {
+			v++;
+			aux = strchr(v, '"');
+			if (aux == NULL) {
+				qwarnx("unterminated line");
+				continue;
+			}
+			*aux = 0;
+		}
+#if 0
+		printf("%s is %s\n", k, v);
+#endif
+		if (!strcasecmp(k, "name"))
+			si->os_name = strdup(v);
+		else if (!strcasecmp(k, "version"))
+			si->os_version = strdup(v);
+		else if (!strcasecmp(k, "release_type"))
+			si->os_release_type = strdup(v);
+		else if (!strcasecmp(k, "os_id"))
+			si->os_id = strdup(v);
+		else if (!strcasecmp(k, "version_id"))
+			si->os_version_id = strdup(v);
+		else if (!strcasecmp(k, "codename"))
+			si->os_codename = strdup(v);
+		else if (!strcasecmp(k, "pretty_name"))
+			si->os_pretty_name = strdup(v);
+	}
+	free(line);
+	fclose(f);
+
+	return (0);
+}
+
+static int
+quark_sysinfo_ifaddrs(struct quark_sysinfo *si)
+{
+	struct ifaddrs		 *ifa, *ifaddrs;
+	int			  af;
+	size_t			  i;
+	char			  buf[INET6_ADDRSTRLEN];
+	char			**tmp;
+
+	if (getifaddrs(&ifaddrs) == -1) {
+		qwarn("getifaddrs");
+
+		return (-1);
+	}
+
+	/*
+	 * Look for all addresses that have an ip adress
+	 */
+	si->ip_addrs_len = si->mac_addrs_len = 0;
+	for (ifa = ifaddrs; ifa != NULL; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr == NULL)
+			continue;
+		af = ifa->ifa_addr->sa_family;
+		if (af == AF_INET) {
+			struct sockaddr_in	 *sin;
+
+			sin = (struct sockaddr_in *)ifa->ifa_addr;
+			if (inet_ntop(af, &sin->sin_addr, buf, sizeof(buf)) == NULL) {
+				qwarn("inet_ntop ifname %s", ifa->ifa_name);
+				continue;
+			}
+		}
+		if (af == AF_INET6) {
+			struct sockaddr_in6	 *sin6;
+
+			sin6 = (struct sockaddr_in6 *)ifa->ifa_addr;
+			if (inet_ntop(af, &sin6->sin6_addr,
+			    buf, sizeof(buf)) == NULL) {
+				warn("inet_ntop ifname %s", ifa->ifa_name);
+				continue;
+			}
+		}
+		if (af == AF_INET || af == AF_INET6) {
+			/* Check if unique */
+			for (i = 0; i < si->ip_addrs_len; i++) {
+				if (!strcmp(buf, si->ip_addrs[i]))
+					goto next;
+			}
+			tmp = reallocarray(si->ip_addrs,
+			    si->ip_addrs_len + 1, sizeof(char *));
+			if (tmp == NULL) {
+				qwarn("reallocarray");
+				continue;
+			}
+			si->ip_addrs = tmp;
+			si->ip_addrs[si->ip_addrs_len] = strdup(buf);
+			si->ip_addrs_len++;
+		}
+		if (af == AF_PACKET) {
+			struct sockaddr_ll	*sll;
+			struct ether_addr	*ether, zero_ether;
+			char			*eth_buf;
+
+			sll = (struct sockaddr_ll *)ifa->ifa_addr;
+			if (sll->sll_halen != 6)
+				continue;
+			ether = (struct ether_addr *)sll->sll_addr;
+			bzero(&zero_ether, sizeof(zero_ether));
+			if (!memcmp(&zero_ether, ether, 6))
+				continue;
+			if ((eth_buf = ether_ntoa(ether)) == NULL) {
+				qwarn("ether_ntoa ifname %s", ifa->ifa_name);
+				continue;
+			}
+			/* Check if unique */
+			for (i = 0; i < si->ip_addrs_len; i++) {
+				if (!strcmp(eth_buf, si->ip_addrs[i]))
+					goto next;
+			}
+			tmp = reallocarray(si->mac_addrs,
+			    si->mac_addrs_len + 1, sizeof(char *));
+			if (tmp == NULL) {
+				qwarn("reallocarray");
+				continue;
+			}
+			si->mac_addrs = tmp;
+			si->mac_addrs[si->mac_addrs_len] = strdup(eth_buf);
+			si->mac_addrs_len++;
+		}
+next:
+	}
+	freeifaddrs(ifaddrs);
+#if 1
+	{
+
+		for (i = 0; i < si->ip_addrs_len; i++) {
+			printf("ip[%zd] = %s\n", i, si->ip_addrs[i]);
+		}
+		for (i = 0; i < si->mac_addrs_len; i++) {
+			printf("mac[%zd] = %s\n", i, si->mac_addrs[i]);
+		}
+	}
+#endif
+	return (0);
+}
+
+static void
+quark_sysinfo_delete(struct quark_sysinfo *si)
+{
+	size_t i;
+
+	free(si->hostname);
+	si->hostname = NULL;
+	/* ip_addrs */
+	for (i = 0; i < si->ip_addrs_len; i++)
+		free(si->ip_addrs[i]);
+	free(si->ip_addrs);
+	si->ip_addrs = NULL;
+	si->ip_addrs_len = 0;
+	/* mac_addrs */
+	for (i = 0; i < si->mac_addrs_len; i++)
+		free(si->mac_addrs[i]);
+	free(si->mac_addrs);
+	si->mac_addrs = NULL;
+	si->mac_addrs_len = 0;
+	/* uts_* */
+	free(si->uts_sysname);
+	si->uts_sysname = NULL;
+	free(si->uts_nodename);
+	si->uts_nodename = NULL;
+	free(si->uts_release);
+	si->uts_release = NULL;
+	free(si->uts_version);
+	si->uts_version = NULL;
+	free(si->uts_machine);
+	si->uts_machine = NULL;
+	/* os_* */
+	free(si->os_name);
+	si->os_name = NULL;
+	free(si->os_version);
+	si->os_version = NULL;
+	free(si->os_release_type);
+	si->os_release_type = NULL;
+	free(si->os_id);
+	si->os_id = NULL;
+	free(si->os_version_id);
+	si->os_version_id = NULL;
+	free(si->os_codename);
+	si->os_codename = NULL;
+	free(si->os_pretty_name);
+	si->os_pretty_name = NULL;
+}
+
+static int
+quark_sysinfo_init(struct quark_sysinfo *si)
+{
+	struct utsname	uts;
+	int		r = 0;
+	char		hostname[MAXHOSTNAMELEN];
+
+	bzero(hostname, sizeof(hostname));
+	if (gethostname(hostname, sizeof(hostname)) == -1)
+		r = -1;
+	else {
+		hostname[sizeof(hostname) - 1] = 0;
+		si->hostname = strdup(hostname);
+	}
+
+	if (uname(&uts) == -1)
+		r = -1;
+	else {
+		si->uts_sysname = strdup(uts.sysname);
+		si->uts_nodename = strdup(uts.nodename);
+		si->uts_release = strdup(uts.release);
+		si->uts_version = strdup(uts.version);
+		si->uts_machine = strdup(uts.machine);
+#if 0
+		printf("%s is %s\n", "si->uts_sysname", si->uts_sysname);
+		printf("%s is %s\n", "si->uts_nodename", si->uts_nodename);
+		printf("%s is %s\n", "si->uts_release", si->uts_release);
+		printf("%s is %s\n", "si->uts_version", si->uts_version);
+		printf("%s is %s\n", "si->uts_machine", si->uts_machine);
+#endif
+	}
+
+	if (quark_sysinfo_os_release(si) == -1)
+		r = -1;
+
+	if (quark_sysinfo_ifaddrs(si) == -1)
+		r = -1;
+
+	return (r);
+}
 
 /*
  * Aggregation is a relationship between a parent event and a child event. In a
@@ -3649,6 +3916,12 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (quark_group_populate(&qq->group_by_gid) == -1)
 		qwarn("Can't build group database, not fatal");
 
+	/*
+	 * Build quark_sysinfo, really only used for ECS for now, not fatal
+	 */
+	if (quark_sysinfo_init(&qq->sysinfo) == -1)
+		qwarn("Can't init quark_sysinfo, not fatal");
+
 	return (0);
 
 fail:
@@ -3710,6 +3983,8 @@ quark_queue_close(struct quark_queue *qq)
 		free(qgrp->name);
 		free(qgrp);
 	}
+	/* Clean up sysinfo */
+	quark_sysinfo_delete(&qq->sysinfo);
 	/* Close epollfd */
 	if (qq->epollfd != -1) {
 		if (close(qq->epollfd) == -1)
