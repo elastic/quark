@@ -124,11 +124,13 @@ usage(void)
 	exit(1);
 }
 
+
 int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes;
-	int				 do_priv_drop, do_snap, benchmark, lflag;
+	int				 do_priv_drop, do_snap, do_ecs;
+	int				 benchmark, lflag;
 	u32				 filter_ppid;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
@@ -149,8 +151,9 @@ main(int argc, char *argv[])
 	lflag = 0;
 	benchmark = 0;
 	kube_config = NULL;
+	do_ecs = 0;
 
-	while ((ch = getopt(argc, argv, "BbC:DeFghK:kl:Mm:NP:tSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DEeFghK:kl:Mm:NP:tSsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -170,6 +173,9 @@ main(int argc, char *argv[])
 			break;
 		case 'e':
 			qa.flags |= QQ_ENTRY_LEADER;
+			break;
+		case 'E':
+			do_ecs = 1;
 			break;
 		case 'F':
 			qa.flags |= QQ_FILE;
@@ -349,7 +355,22 @@ main(int argc, char *argv[])
 		    filter_ppid != qev->process->proc_ppid)
 			continue;
 
-		quark_event_dump(qev, stdout);
+		/*
+		 * Finally print it to stdout
+		 */
+		if (do_ecs) {
+			char	*ecs_buf;
+			size_t	 ecs_buf_len;
+
+			if (quark_event_to_ecs(qq, qev, &ecs_buf, &ecs_buf_len) == -1)
+				qwarnx("quark_event_to_ecs");
+			else {
+				printf("%s\n", ecs_buf);
+				fflush(stdout);
+				free(ecs_buf);
+			}
+		} else
+			quark_event_dump(qev, stdout);
 	}
 
 	if (graph_by_pidtime != NULL && graph_by_time != NULL) {

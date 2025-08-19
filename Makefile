@@ -50,7 +50,11 @@ ifdef CENTOS7
 CFLAGS+= -std=gnu99 -DNO_PUSH_PRAGMA
 endif
 
-CPPFLAGS?= -D_GNU_SOURCE
+CPPFLAGS+= -D_GNU_SOURCE
+ifndef MUSL
+CPPFLAGS+= -DHAVE_GETPWENT_R
+CPPFLAGS+= -DHAVE_GETGRENT_R
+endif
 ifndef SYSLIB
 CPPFLAGS+= -Iinclude
 endif
@@ -105,9 +109,11 @@ LIBQUARK_SRCS:=			\
 	bpf_queue.c		\
 	btfhub.c		\
 	compat.c		\
+	ecs.c			\
+	hanson.c		\
 	kprobe_queue.c		\
-	quark.c			\
 	qbtf.c			\
+	quark.c			\
 	qutil.c
 # CJSON
 # We build the source directly as it's just one file
@@ -347,7 +353,7 @@ test-kernel: initramfs.gz
 # positives.
 #
 test-valgrind: quark-test
-	$(SUDO) QUARK_BTF_PATH=/sys/kernel/btf/vmlinux			\
+	$(SUDO) VALGRIND=1 QUARK_BTF_PATH=/sys/kernel/btf/vmlinux	\
 		valgrind						\
 		--trace-children=no					\
 		--child-silent-after-fork=yes				\
