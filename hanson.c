@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: Apache-2.0
+/* Copyright (c) 2025 Elastic NV */
+
+#include <stdio.h>
+#include <string.h>
+
+#include "quark.h"
+
+static int
+hanson_add(struct hanson *h, void *data, size_t data_len)
+{
+	size_t	r;
+
+	r = fwrite(data, 1, data_len, h->stream);
+	if (unlikely(r != data_len || ferror(h->stream)))
+		return (-1);
+
+	return (0);
+}
+
+int
+hanson_add_ascii(struct hanson *h, int c)
+{
+	int	r = 0;
+	char	c8;
+
+	c8 = c & 0xff;
+	r |= hanson_add(h, &c8, 1);
+
+	return (r);
+}
+
+int
+hanson_add_string(struct hanson *h, char *s)
+{
+	int	r = 0;
+
+	r |= hanson_add_ascii(h, '"');
+	r |= hanson_add(h, s, strlen(s));
+	r |= hanson_add_ascii(h, '"');
+
+	return (r);
+}
+
+int
+hanson_add_integer(struct hanson *h, int64_t v)
+{
+	int		r = 0, len;
+	char		buf[32];
+
+	len = snprintf(buf, sizeof(buf), "%lld", (long long)v);
+	/* if (len < 0) */
+	/* 	r = -1; */
+	r |= hanson_add(h, buf, len);
+
+	return (r);
+}
+
+int
+hanson_add_key_value(struct hanson *h, char *k, char *v, int *first)
+{
+	int	r = 0;
+
+	if (first != NULL) {
+		if (*first == 0)
+			r |= hanson_add_ascii(h, ',');
+		*first = 0;
+	}
+	r |= hanson_add_string(h, k);
+	r |= hanson_add_ascii(h, ':');
+	r |= hanson_add_string(h, v);
+
+	return (r);
+}
+
+int
+hanson_add_object(struct hanson *h, char *name, int *first)
+{
+	int	r = 0;
+
+	if (first != NULL) {
+		if (*first == 0)
+			r |= hanson_add_ascii(h, ',');
+		*first = 0;
+	}
+	r |= hanson_add_string(h, name);
+	r |= hanson_add_ascii(h, ':');
+	r |= hanson_add_ascii(h, '{');
+
+	return (r);
+}
+
+int
+hanson_close_object(struct hanson *h)
+{
+	return (hanson_add_ascii(h, '}'));
+}
+
+int
+hanson_open(struct hanson *h)
+{
+	h->buf_len = 0;
+	h->buf = NULL;
+	if ((h->stream = open_memstream(&h->buf, &h->buf_len)) == NULL)
+		return (-1);
+	if (hanson_add_ascii(h, '{') == -1) {
+		fclose(h->stream);
+		h->buf_len = 0;
+		h->buf = NULL;
+		h->stream = NULL;
+
+		return (-1);
+	}
+
+	return (0);
+}
+
+int
+hanson_close(struct hanson *h, char **buf, size_t *buf_len)
+{
+	int	r = 0;
+
+	r |= hanson_add_ascii(h, '}');
+	r |= hanson_add_ascii(h, 0);
+	if (fclose(h->stream) != 0)
+		r = -1;
+	*buf = h->buf;
+	*buf_len = h->buf_len;
+	h->buf = NULL;
+	h->buf_len = 0;
+
+	return (r);
+}

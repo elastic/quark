@@ -124,6 +124,75 @@ usage(void)
 	exit(1);
 }
 
+
+/*
+  {
+	"metadata": {
+		"name": "hello-node-c74958b5d-twwbg",
+		"generateName": "hello-node-c74958b5d-",
+		"namespace": "default",
+		"uid": "760ad5b7-3d9f-4a98-9049-506ed47c96f7",
+		"resourceVersion": "848122",
+		"generation": 1,
+		"creationTimestamp": "2025-08-04T14:45:30Z",
+		"labels": {
+			"app": "hello-node",
+			"pod-template-hash": "c74958b5d"
+		},
+		"foo": "bar"
+	}
+  }
+
+ */
+
+static int
+test_hanson_meta(struct hanson *h)
+{
+	int	r = 0, first;
+
+	first = 1;
+	r |= hanson_add_key_value(h, "name", "hello-node-c74958b5d-twwbg", &first);
+	r |= hanson_add_key_value(h, "generateName", "hello-node-c74958b5d-", &first);
+	r |= hanson_add_key_value(h, "namespace", "default", &first);
+
+	r |= hanson_add_object(h, "labels", &first);
+	{
+		int label_first = 1;
+
+		r |= hanson_add_key_value(h, "app", "hello-node", &label_first);
+		r |= hanson_add_key_value(h, "pod-template-hash", "c74958b5d", &label_first);
+	}
+	r |= hanson_close_object(h);
+
+	return (r);
+}
+
+static void
+test_hanson(void)
+{
+	struct hanson	 h;
+	char		*buf;
+	size_t		 buf_len;
+	int		 r;
+
+	r = 0;
+	if (hanson_open(&h) == -1)
+		err(1, "hanson_open");
+
+	r |= hanson_add_object(&h, "metadata", NULL);
+	r |= test_hanson_meta(&h);
+	r |= hanson_close_object(&h);
+
+	if (hanson_close(&h, &buf, &buf_len) == -1)
+		err(1, "hanson_open");
+
+	printf("%s buf_len=%zd\n", r == 0 ? "SUCCESS" : "FAIL", buf_len);
+	printf("%s\n", buf);
+	free(buf);
+
+	exit(r);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -150,7 +219,7 @@ main(int argc, char *argv[])
 	benchmark = 0;
 	kube_config = NULL;
 
-	while ((ch = getopt(argc, argv, "BbC:DeFghK:kl:Mm:NP:tSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DeFgHhK:kl:Mm:NP:tSsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -176,6 +245,9 @@ main(int argc, char *argv[])
 			break;
 		case 'g':
 			qa.flags |= QQ_MIN_AGG;
+			break;
+		case 'H':
+			test_hanson();
 			break;
 		case 'h':
 			if (isatty(STDOUT_FILENO))

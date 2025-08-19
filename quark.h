@@ -125,6 +125,27 @@ enum quark_verbosity_levels {
 #define	 qdebugx(fmt, ...) qlog(QUARK_VL_DEBUG, 0, fmt, ##__VA_ARGS__)
 void	 qlog_func(int, int, const char *, int, const char *, ...) __attribute__((format(printf, 5,6)));
 
+/* hanson.c */
+/* TODO */
+struct hanson;
+int	 hanson_add_ascii(struct hanson *, int);
+int	 hanson_add_string(struct hanson *, char *);
+int	 hanson_add_integer(struct hanson *, int64_t);
+int	 hanson_add_key_value(struct hanson *, char *, char *, int *);
+int	 hanson_add_object(struct hanson *, char *, int *);
+int	 hanson_close_object(struct hanson *);
+int	 hanson_open(struct hanson *);
+int	 hanson_close(struct hanson *, char **, size_t *);
+
+struct hanson {
+	/* char	*buf; */
+	/* size_t	 size; */
+	/* size_t	 total_size; */
+	char	*buf;
+	size_t	 buf_len;
+	FILE	*stream;
+};
+
 /*
  * Time helpers
  */
