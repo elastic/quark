@@ -1261,6 +1261,51 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_hanson(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct hanson	 h;
+	char		*buf;
+	size_t		 buf_len;
+	int		 top_first = 1;
+	const char	*expected =
+	    "{\"mytest\":{"
+	    ",\"esc_bslash\":\"_\\\\_\","
+	    "\"esc_dquote\":\"_\\\"_\","
+	    "\"esc_bspace\":\"_\\b_\","
+	    "\"esc_feed\":\"_\\f_\","
+	    "\"esc_nl\":\"_\\n_\","
+	    "\"esc_cr\":\"_\\r_\","
+	    "\"esc_tab\":\"_\\t_\","
+	    "\"esc_unicode\":\"_\\u0001_\""
+	    "}}";
+
+	assert(hanson_open(&h) == 0);
+
+	hanson_add_object(&h, "mytest", &top_first);
+	/* Test escaped strings */
+	hanson_add_key_value(&h, "esc_bslash", "_\\_", &top_first);
+	hanson_add_key_value(&h, "esc_dquote", "_\"_", &top_first);
+
+	hanson_add_key_value(&h, "esc_bspace", "_\b_", &top_first);
+	hanson_add_key_value(&h, "esc_feed", "_\f_", &top_first);
+	hanson_add_key_value(&h, "esc_nl", "_\n_", &top_first);
+	hanson_add_key_value(&h, "esc_cr", "_\r_", &top_first);
+	hanson_add_key_value(&h, "esc_tab", "_\t_", &top_first);
+	hanson_add_key_value(&h, "esc_unicode", "_\1_", &top_first);
+	hanson_close_object(&h);
+
+	assert(hanson_close(&h, &buf, &buf_len) == 0);
+
+	if (strcmp(buf, expected)) {
+		errx(1, "json doesn't match\n got: %s\nwant: %s\n",
+		    buf, expected);
+	}
+	free(buf);
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  */
@@ -1285,6 +1330,7 @@ struct test all_tests[] = {
 	T(t_cache_grace),
 	T(t_min_agg),
 	T(t_stats),
+	T_EBPF(t_hanson),
 	{ NULL,	NULL, 0, 0 }
 };
 #undef S
