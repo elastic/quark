@@ -7,6 +7,8 @@
 
 #include "quark.h"
 
+RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp); /* XXXX */
+
 /* XXX Hackish!! */
 static int
 is_interactive(const struct quark_process *qp)
@@ -196,6 +198,51 @@ ecs_process_tty(struct hanson *h, const struct quark_process *qp, int *first)
 }
 
 static int
+ecs_container(struct hanson *h, const struct quark_event *qev, int *first)
+{
+	const struct quark_process	*qp;
+	struct quark_container		*container;
+	struct quark_pod		*pod;
+	struct label_node		*label;
+
+	if (qev->process == NULL || qev->process->container == NULL ||
+	    qev->process->container->pod == NULL)
+		return (-1);
+
+	qp = qev->process;
+	container = qp->container;
+	pod = container->pod;
+
+	hanson_add_key_value(h, "id", container->container_id, first);
+	hanson_add_key_value(h, "name", container->name, first);
+	/* docker is the only one we support */
+	hanson_add_key_value(h, "runtime", "docker", first);
+
+	/* container.label.* */
+	hanson_add_object(h, "labels", first);
+	{
+		int	label_first = 1;
+
+		RB_FOREACH(label, label_tree, &pod->labels) {
+			hanson_add_key_value(h, label->key, label->value, &label_first);
+		}
+	}
+	hanson_close_object(h);
+
+	/* container image */
+	hanson_add_object(h, "image", first);
+	{
+		int	image_first = 1;
+
+		hanson_add_key_value(h, "name", container->image, &image_first);
+//		hanson_add_key_value(h, "id", container->image_id, &image_first);
+	}
+	hanson_close_object(h);
+
+	return (0);
+}
+
+static int
 ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 {
 	const struct quark_process	*qp;
@@ -309,6 +356,16 @@ quark_event_to_ecs(const struct quark_event *qev, char **buf, size_t *buf_len)
 			ecs_process(&h, qev, &process_first);
 		}
 		hanson_close_object(&h);
+
+		if (qev->process->container != NULL) {
+			hanson_add_object(&h, "container", &top_first);
+			{
+				int	container_first = 1;
+
+				ecs_container(&h, qev, &container_first);
+			}
+			hanson_close_object(&h);
+		}
 	}
 
 	if (hanson_close(&h, buf, buf_len) == -1)
