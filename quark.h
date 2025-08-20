@@ -170,6 +170,10 @@ int	quark_event_to_ecs(const struct quark_event *qev, char **, size_t *);
 #define MS_TO_NS(_x)	((u64)(_x) * NS_PER_MS)
 #endif /* MS_TO_NS */
 
+#ifndef NS_TO_S
+#define NS_TO_S(_x)	((u64)(_x) / NS_PER_S)
+#endif /* NS_TO_S */
+
 /*
  * Generic exported constants
  */

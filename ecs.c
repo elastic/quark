@@ -11,6 +11,22 @@
 
 RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp); /* XXXX */
 
+static char *
+ctime_chomped(const time_t *t, char buf[26])
+{
+	char	*p, *p1;
+
+	p = ctime_r(t, buf);
+
+	if (p != NULL) {
+		p1 = strchr(buf, '\n');
+		if (p1 != NULL)
+			*p1 = 0;
+	}
+
+	return (p);
+}
+
 /* XXX Hackish!! */
 static int
 is_interactive(const struct quark_process *qp)
@@ -260,13 +276,9 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 		hanson_add_key_value(h, "entity_id", (char *)qp->proc_entity_id,
 		    first);
 
-		start_sec = qp->proc_time_boot / 1000000000ULL;
-		if (ctime_r(&start_sec, start_time) != NULL) {
-			char *p = strchr(start_time, '\n');
-			if (p != NULL)
-				*p = 0;
+		start_sec = NS_TO_S(qp->proc_time_boot);
+		if (ctime_chomped(&start_sec, start_time) != NULL)
 			hanson_add_key_value(h, "start", start_time, first);
-		}
 		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
 		    first);
 		/* process.user.* */
@@ -311,13 +323,9 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 		hanson_add_key_value(h, "entity_id", (char *)qp->proc_entity_id,
 		    first);
 
-		end_sec = qp->exit_time_event / 1000000000ULL;
-		if (ctime_r(&end_sec, end_time) != NULL) {
-			char *p = strchr(end_time, '\n');
-			if (p != NULL)
-				*p = 0;
+		end_sec = NS_TO_S(qp->exit_time_event);
+		if (ctime_chomped(&end_sec, end_time) != NULL)
 			hanson_add_key_value(h, "end", end_time, first);
-		}
 
 		hanson_add_key_value_int(h, "exit_code", qp->exit_code, first);
 	}
@@ -390,6 +398,31 @@ ecs_socket(struct hanson *h, const struct quark_event *qev, int *first)
 	return (0);
 }
 
+static int
+ecs_file(struct hanson *h, const struct quark_event *qev, int *first)
+{
+	struct quark_file	*file = qev->file;
+	char			 buf[32];
+	time_t			 ctime, mtime, atime;
+
+	hanson_add_key_value(h, "path", (char *)file->path, first);
+	hanson_add_key_value_int(h, "inode", file->inode, first);
+
+	ctime = NS_TO_S(file->ctime);
+	mtime = NS_TO_S(file->mtime);
+	atime = NS_TO_S(file->atime);
+	if (ctime_chomped(&ctime, buf) != NULL)
+		hanson_add_key_value(h, "ctime", buf, first);
+	if (ctime_chomped(&mtime, buf) != NULL)
+		hanson_add_key_value(h, "mtime", buf, first);
+	if (ctime_chomped(&atime, buf) != NULL)
+		hanson_add_key_value(h, "atime", buf, first);
+	snprintf(buf, sizeof(buf), "0%o", file->mode);
+	hanson_add_key_value(h, "mode", buf, first);
+
+	return (0);
+}
+
 int
 quark_event_to_ecs(const struct quark_event *qev, char **buf, size_t *buf_len)
 {
@@ -434,6 +467,16 @@ quark_event_to_ecs(const struct quark_event *qev, char **buf, size_t *buf_len)
 
 	if (qev->socket != NULL)
 		ecs_socket(&h, qev, &top_first);
+
+	if (qev->file != NULL) {
+		hanson_add_object(&h, "file", &top_first);
+		{
+			int	file_first = 1;
+
+			ecs_file(&h, qev, &file_first);
+		}
+		hanson_close_object(&h);
+	}
 
 	if (hanson_close(&h, buf, buf_len) == -1)
 		return (-1);
