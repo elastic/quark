@@ -5,6 +5,27 @@
 
 #include "quark.h"
 
+/* XXX Hackish!! */
+static int
+is_interactive(const struct quark_process *qp)
+{
+	u32	major, minor;
+
+	major = qp->proc_tty_major;
+	minor = qp->proc_tty_minor;
+
+	if (major >= 136 && major <= 143)
+		return (1);
+	if (major == 4) {
+		if (minor <= 63)
+			return (1);
+		else if (minor > 63 && minor <= 255)
+			return (1);
+	}
+
+	return (0);
+}
+
 static int
 ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 {
@@ -84,11 +105,76 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 	if (qp == NULL)
 		return (0);
 
+	hanson_add_key_value_int(h, "pid", qp->pid, first);
+
+	if (qp->flags & QUARK_F_PROC) {
+		hanson_add_key_value(h, "entity_id", (char *)qp->proc_entity_id,
+		    first);
+		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
+		    first);
+	}
+
 	if (qp->flags & QUARK_F_COMM)
 		hanson_add_key_value(h, "name", (char *)qp->comm, first);
 
+	if (qp->flags & QUARK_F_FILENAME)
+		hanson_add_key_value(h, "executable", qp->filename, first);
+
 	if (qp->flags & QUARK_F_CMDLINE) {
-		char buf[1024];
+		int	count = 0;
+
+		hanson_add_array(h, "command_line", first);
+		{
+			struct quark_cmdline_iter	 qcmdi;
+			const char			*arg;
+			int				 cmdline_first = 1;
+
+			quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
+			while ((arg = quark_cmdline_iter_next(&qcmdi)) != NULL) {
+				hanson_add_string(h, (char *)arg,
+				    &cmdline_first);
+				count++;
+			}
+		}
+		hanson_close_array(h);
+		hanson_add_key_value_int(h, "args_count", count, first);
+	}
+
+	if (qp->flags & QUARK_F_CWD) {
+		hanson_add_key_value(h, "working_directory", qp->cwd, first);
+	}
+
+	if (qp->flags & QUARK_F_EXIT) {
+		hanson_add_key_value_int(h, "exit_code", qp->exit_code, first);
+	}
+
+	/* process.user.* */
+	if (qp->flags & QUARK_F_PROC) {
+		hanson_add_object(h, "user", first);
+		{
+			int	user_first = 1;
+
+			hanson_add_key_value_int(h, "id", qp->proc_uid,
+			    &user_first);
+			/* XXX no username */
+
+			/* process.user.group.* */
+			hanson_add_object(h, "group", &user_first);
+			{
+				int	group_first = 1;
+
+				hanson_add_key_value_int(h, "id", qp->proc_gid,
+				    &group_first);
+			}
+			hanson_close_object(h);
+
+			/* process.user. */
+		}
+		hanson_close_object(h);
+		hanson_add_key_value(h, "entity_id", (char *)qp->proc_entity_id,
+		    first);
+		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
+		    first);
 	}
 
 	return (0);
@@ -99,7 +185,6 @@ quark_event_to_ecs(const struct quark_event *qev, char **buf, size_t *buf_len)
 {
 	struct hanson	h;
 	int		top_first;
-	/* struct quark_process	*qp; */
 
 	if (qev->events == QUARK_EV_BYPASS)
 		return (errno = EINVAL, -1);

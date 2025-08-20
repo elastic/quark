@@ -21,6 +21,31 @@ hanson_add(struct hanson *h, void *data, size_t data_len)
 	return (0);
 }
 
+static int
+hanson_maybe_first(struct hanson *h, int *first)
+{
+	int	r = 0;
+
+	if (first != NULL) {
+		if (*first == 0)
+			r |= hanson_add_ascii(h, ',');
+		*first = 0;
+	}
+
+	return (r);
+}
+
+static int
+hanson_add_string_lead(struct hanson *h, char *s, char *lead)
+{
+	int	r = 0;
+
+	r |= hanson_add_string(h, s, NULL);
+	r |= hanson_add(h, lead, strlen(lead));
+
+	return (r);
+}
+
 int
 hanson_add_ascii(struct hanson *h, int c)
 {
@@ -34,10 +59,11 @@ hanson_add_ascii(struct hanson *h, int c)
 }
 
 int
-hanson_add_string(struct hanson *h, char *s)
+hanson_add_string(struct hanson *h, char *s, int *first)
 {
 	int	r = 0;
 
+	r |= hanson_maybe_first(h, first);
 	r |= hanson_add_ascii(h, '"');
 	r |= hanson_add(h, s, strlen(s));
 	r |= hanson_add_ascii(h, '"');
@@ -60,37 +86,68 @@ hanson_add_integer(struct hanson *h, int64_t v)
 }
 
 int
-hanson_add_key_value(struct hanson *h, char *k, char *v, int *first)
+hanson_add_boolean(struct hanson *h, int v, int *first)
 {
-	int	r = 0;
+	int	 r = 0;
+	char	*s = v ? "true" : "false";
 
-	if (first != NULL) {
-		if (*first == 0)
-			r |= hanson_add_ascii(h, ',');
-		*first = 0;
-	}
-	r |= hanson_add_string(h, k);
-	r |= hanson_add_ascii(h, ':');
-	r |= hanson_add_string(h, v);
+	r |= hanson_maybe_first(h, first);
+	r |= hanson_add(h, s, strlen(s));
 
 	return (r);
 }
 
-int				/* XXX unify with object maybe */
+int
+hanson_add_key_value(struct hanson *h, char *k, char *v, int *first)
+{
+	int	r = 0;
+
+	r |= hanson_add_string(h, k, first);
+	r |= hanson_add_ascii(h, ':');
+	r |= hanson_add_string(h, v, NULL);
+
+	return (r);
+}
+
+int
+hanson_add_key_value_int(struct hanson *h, char *k, int64_t v, int *first)
+{
+	int	r = 0;
+
+	r |= hanson_add_string(h, k, first);
+	r |= hanson_add_ascii(h, ':');
+	r |= hanson_add_integer(h, v);
+
+	return (r);
+}
+
+int
+hanson_add_key_value_bool(struct hanson *h, char *k, int v, int *first)
+{
+	int	r = 0;
+
+	r |= hanson_add_string(h, k, first);
+	r |= hanson_add_ascii(h, ':');
+	r |= hanson_add_boolean(h, v, NULL);
+
+	return (r);
+}
+
+int
 hanson_add_array(struct hanson *h, char *name, int *first)
 {
 	int	r = 0;
 
-	if (first != NULL) {
-		if (*first == 0)
-			r |= hanson_add_ascii(h, ',');
-		*first = 0;
-	}
-	r |= hanson_add_string(h, name);
-	r |= hanson_add_ascii(h, ':');
-	r |= hanson_add_ascii(h, '[');
+	r |= hanson_maybe_first(h, first);
+	r |= hanson_add_string_lead(h, name, ":[");
 
 	return (r);
+}
+
+int
+hanson_close_array(struct hanson *h)
+{
+	return (hanson_add_ascii(h, ']'));
 }
 
 int
@@ -98,14 +155,8 @@ hanson_add_object(struct hanson *h, char *name, int *first)
 {
 	int	r = 0;
 
-	if (first != NULL) {
-		if (*first == 0)
-			r |= hanson_add_ascii(h, ',');
-		*first = 0;
-	}
-	r |= hanson_add_string(h, name);
-	r |= hanson_add_ascii(h, ':');
-	r |= hanson_add_ascii(h, '{');
+	r |= hanson_maybe_first(h, first);
+	r |= hanson_add_string_lead(h, name, ":{");
 
 	return (r);
 }
