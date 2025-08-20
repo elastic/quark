@@ -171,6 +171,29 @@ ecs_process_user(struct hanson *h, const struct quark_process *qp, int *first)
 }
 
 static int
+ecs_process_tty(struct hanson *h, const struct quark_process *qp, int *first)
+{
+	hanson_add_object(h, "tty", first);
+	{
+		int	tty_first = 1;
+
+		hanson_add_object(h, "char_device", &tty_first);
+		{
+			int	char_device_first = 1;
+
+			hanson_add_key_value_int(h, "major", qp->proc_tty_major,
+			    &char_device_first);
+			hanson_add_key_value_int(h, "minor", qp->proc_tty_minor,
+			    &char_device_first);
+		}
+		hanson_close_object(h);
+	}
+	hanson_close_object(h);
+
+	return (0);
+}
+
+static int
 ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 {
 	const struct quark_process	*qp;
@@ -181,13 +204,6 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 		return (0);
 
 	hanson_add_key_value_int(h, "pid", qp->pid, first);
-
-	if (qp->flags & QUARK_F_PROC) {
-		hanson_add_key_value(h, "entity_id", (char *)qp->proc_entity_id,
-		    first);
-		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
-		    first);
-	}
 
 	if (qp->flags & QUARK_F_COMM)
 		hanson_add_key_value(h, "name", (char *)qp->comm, first);
@@ -215,21 +231,21 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 		hanson_add_key_value_int(h, "args_count", count, first);
 	}
 
-	if (qp->flags & QUARK_F_CWD) {
+	if (qp->flags & QUARK_F_CWD)
 		hanson_add_key_value(h, "working_directory", qp->cwd, first);
-	}
 
-	if (qp->flags & QUARK_F_EXIT) {
+	if (qp->flags & QUARK_F_EXIT)
 		hanson_add_key_value_int(h, "exit_code", qp->exit_code, first);
-	}
 
-	/* process.user.* */
 	if (qp->flags & QUARK_F_PROC) {
 		hanson_add_key_value(h, "entity_id", (char *)qp->proc_entity_id,
 		    first);
 		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
 		    first);
+		/* process.user.* */
 		ecs_process_user(h, qp, first);
+		/* process.tty.* */
+		ecs_process_tty(h, qp, first);
 	}
 
 	return (0);
