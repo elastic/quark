@@ -96,6 +96,12 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
+ecs_process_usert(struct hanson *h, const struct quark_event *qev, int *first)
+{
+
+}
+
+static int
 ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 {
 	const struct quark_process	*qp;
@@ -168,7 +174,47 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 			}
 			hanson_close_object(h);
 
-			/* process.user. */
+			/* process.user.effective.*/
+			hanson_add_object(h, "effective", &user_first);
+			{
+				int	eff_first = 1;
+
+				hanson_add_key_value_int(h, "id", qp->proc_euid,
+				    &eff_first);
+
+				/* process.user.effective.group.* */
+				hanson_add_object(h, "group", &eff_first);
+				{
+					int	eff_group_first = 1;
+
+					hanson_add_key_value_int(h, "id", qp->proc_egid,
+					    &eff_group_first);
+					/* XXX no effective name */
+				}
+				hanson_close_object(h);
+			}
+			hanson_close_object(h);
+
+			/* process.user.saved.* */
+			hanson_add_object(h, "saved", &user_first);
+			{
+				int	saved_first = 1;
+
+				hanson_add_key_value_int(h, "id", qp->proc_suid,
+				    &saved_first);
+
+				/* process.user.saved.group.* */
+				hanson_add_object(h, "group", &saved_first);
+				{
+					int	saved_group_first = 1;
+
+					hanson_add_key_value_int(h, "id",
+					    qp->proc_sgid, &saved_group_first);
+					/* XXX no group name */
+				}
+				hanson_close_object(h);
+			}
+			hanson_close_object(h);
 		}
 		hanson_close_object(h);
 		hanson_add_key_value(h, "entity_id", (char *)qp->proc_entity_id,
