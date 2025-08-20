@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Copyright (c) 2025 Elastic NV */
 
+#include <arpa/inet.h>
+
 #include <errno.h>
 #include <string.h>
 #include <time.h>
@@ -249,9 +251,6 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 
 	qp = qev->process;
 
-	if (qp == NULL)
-		return (0);
-
 	hanson_add_key_value_int(h, "pid", qp->pid, first);
 
 	if (qp->flags & QUARK_F_PROC) {
@@ -326,6 +325,71 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 	return (0);
 }
 
+static int
+ecs_socket(struct hanson *h, const struct quark_event *qev, int *first)
+{
+	const struct quark_socket	*qsk;
+	char				 buf[INET6_ADDRSTRLEN];
+
+	qsk = qev->socket;
+
+	/* source.* */
+	hanson_add_object(h, "source", first);
+	{
+		int	source_first = 1;
+
+		if (inet_ntop(qsk->local.af, &qsk->local.addr6,
+		    buf, sizeof(buf)) != NULL) {
+			hanson_add_key_value(h, "address", buf, &source_first);
+			hanson_add_key_value(h, "ip", buf, &source_first);
+			hanson_add_key_value_int(h, "port", ntohs(qsk->local.port), &source_first);
+		}
+	}
+	hanson_close_object(h);
+
+	/* destination.* */
+	hanson_add_object(h, "destination", first);
+	{
+		int	destination_first = 1;
+
+		if (inet_ntop(qsk->remote.af, &qsk->remote.addr6,
+		    buf, sizeof(buf)) != NULL) {
+			hanson_add_key_value(h, "address", buf, &destination_first);
+			hanson_add_key_value(h, "ip", buf, &destination_first);
+			hanson_add_key_value_int(h, "port", ntohs(qsk->remote.port), &destination_first);
+		}
+	}
+	hanson_close_object(h);
+
+	/* network.* */
+	hanson_add_object(h, "network", first);
+	{
+		int	 network_first = 1;
+		char	*afs;
+
+		/* we only have tcp for now */
+		hanson_add_key_value(h, "transport", "tcp", &network_first);
+
+		switch(qsk->local.af) {
+		case AF_INET:
+			afs = "ipv4";
+			break;
+		case AF_INET6:
+			afs = "ipv6";
+			break;
+		default:
+			afs = "unknown";
+			break;
+		}
+
+		hanson_add_key_value(h, "type", afs, &network_first);
+		/* XXX missing direction */
+	}
+	hanson_close_object(h);
+
+	return (0);
+}
+
 int
 quark_event_to_ecs(const struct quark_event *qev, char **buf, size_t *buf_len)
 {
@@ -367,6 +431,9 @@ quark_event_to_ecs(const struct quark_event *qev, char **buf, size_t *buf_len)
 			hanson_close_object(&h);
 		}
 	}
+
+	if (qev->socket != NULL)
+		ecs_socket(&h, qev, &top_first);
 
 	if (hanson_close(&h, buf, buf_len) == -1)
 		return (-1);
