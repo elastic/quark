@@ -261,6 +261,47 @@ ecs_container(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
+ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
+{
+	const struct quark_process	*qp;
+	struct quark_container		*container;
+	struct quark_pod		*pod;
+	struct label_node		*label;
+
+	if (qev->process == NULL || qev->process->container == NULL ||
+	    qev->process->container->pod == NULL)
+		return (-1);
+
+	qp = qev->process;
+	container = qp->container;
+	pod = container->pod;
+
+	hanson_add_object(h, "resource", first);
+	{
+		int	resource_first = 1;
+
+		hanson_add_key_value(h, "type", "pod", &resource_first);
+		hanson_add_key_value(h, "name", pod->name, &resource_first);
+		hanson_add_key_value(h, "namespace", pod->namespace,
+		    &resource_first);
+
+		hanson_add_object(h, "labels", &resource_first);
+		{
+			int	label_first = 1;
+
+			RB_FOREACH(label, label_tree, &pod->labels) {
+				hanson_add_key_value(h,
+				    label->key, label->value, &label_first);
+			}
+		}
+		hanson_close_object(h);
+	}
+	hanson_close_object(h);
+
+	return (0);
+}
+
+static int
 ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 {
 	const struct quark_process	*qp;
@@ -407,6 +448,12 @@ ecs_file(struct hanson *h, const struct quark_event *qev, int *first)
 
 	hanson_add_key_value(h, "path", (char *)file->path, first);
 	hanson_add_key_value_int(h, "inode", file->inode, first);
+	hanson_add_key_value_int(h, "size", file->size, first);
+	hanson_add_key_value_int(h, "uid", file->uid, first);
+	hanson_add_key_value_int(h, "gid", file->gid, first);
+
+	snprintf(buf, sizeof(buf), "0%o", file->mode);
+	hanson_add_key_value(h, "mode", buf, first);
 
 	ctime = NS_TO_S(file->ctime);
 	mtime = NS_TO_S(file->mtime);
@@ -416,9 +463,8 @@ ecs_file(struct hanson *h, const struct quark_event *qev, int *first)
 	if (ctime_chomped(&mtime, buf) != NULL)
 		hanson_add_key_value(h, "mtime", buf, first);
 	if (ctime_chomped(&atime, buf) != NULL)
-		hanson_add_key_value(h, "atime", buf, first);
-	snprintf(buf, sizeof(buf), "0%o", file->mode);
-	hanson_add_key_value(h, "mode", buf, first);
+		hanson_add_key_value(h, "accessed", buf, first);
+
 
 	return (0);
 }
@@ -460,6 +506,14 @@ quark_event_to_ecs(const struct quark_event *qev, char **buf, size_t *buf_len)
 				int	container_first = 1;
 
 				ecs_container(&h, qev, &container_first);
+			}
+			hanson_close_object(&h);
+
+			hanson_add_object(&h, "orchestrator", &top_first);
+			{
+				int	orchestrator_first = 1;
+
+				ecs_orchestrator(&h, qev, &orchestrator_first);
 			}
 			hanson_close_object(&h);
 		}
