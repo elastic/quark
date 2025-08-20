@@ -2,6 +2,8 @@
 /* Copyright (c) 2025 Elastic NV */
 
 #include <errno.h>
+#include <string.h>
+#include <time.h>
 
 #include "quark.h"
 
@@ -205,6 +207,28 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 
 	hanson_add_key_value_int(h, "pid", qp->pid, first);
 
+	if (qp->flags & QUARK_F_PROC) {
+		char	start_time[32];
+		time_t 	start_sec;
+
+		hanson_add_key_value(h, "entity_id", (char *)qp->proc_entity_id,
+		    first);
+
+		start_sec = qp->proc_time_boot / 1000000000ULL;
+		if (ctime_r(&start_sec, start_time) != NULL) {
+			char *p = strchr(start_time, '\n');
+			if (p != NULL)
+				*p = 0;
+			hanson_add_key_value(h, "start", start_time, first);
+		}
+		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
+		    first);
+		/* process.user.* */
+		ecs_process_user(h, qp, first);
+		/* process.tty.* */
+		ecs_process_tty(h, qp, first);
+	}
+
 	if (qp->flags & QUARK_F_COMM)
 		hanson_add_key_value(h, "name", (char *)qp->comm, first);
 
@@ -234,18 +258,22 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 	if (qp->flags & QUARK_F_CWD)
 		hanson_add_key_value(h, "working_directory", qp->cwd, first);
 
-	if (qp->flags & QUARK_F_EXIT)
-		hanson_add_key_value_int(h, "exit_code", qp->exit_code, first);
+	if (qp->flags & QUARK_F_EXIT) {
+		char	end_time[32];
+		time_t 	end_sec;
 
-	if (qp->flags & QUARK_F_PROC) {
 		hanson_add_key_value(h, "entity_id", (char *)qp->proc_entity_id,
 		    first);
-		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
-		    first);
-		/* process.user.* */
-		ecs_process_user(h, qp, first);
-		/* process.tty.* */
-		ecs_process_tty(h, qp, first);
+
+		end_sec = qp->exit_time_event / 1000000000ULL;
+		if (ctime_r(&end_sec, end_time) != NULL) {
+			char *p = strchr(end_time, '\n');
+			if (p != NULL)
+				*p = 0;
+			hanson_add_key_value(h, "end", end_time, first);
+		}
+
+		hanson_add_key_value_int(h, "exit_code", qp->exit_code, first);
 	}
 
 	return (0);
