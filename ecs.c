@@ -96,9 +96,74 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
-ecs_process_usert(struct hanson *h, const struct quark_event *qev, int *first)
+ecs_process_user(struct hanson *h, const struct quark_process *qp, int *first)
 {
+	if (qp == NULL || !(qp->flags & QUARK_F_PROC))
+		return (-1);
 
+	hanson_add_object(h, "user", first);
+	{
+		int	user_first = 1;
+
+		hanson_add_key_value_int(h, "id", qp->proc_uid,
+		    &user_first);
+		/* XXX no username */
+
+		/* process.user.group.* */
+		hanson_add_object(h, "group", &user_first);
+		{
+			int	group_first = 1;
+
+			hanson_add_key_value_int(h, "id", qp->proc_gid,
+			    &group_first);
+		}
+		hanson_close_object(h);
+
+		/* process.user.effective.*/
+		hanson_add_object(h, "effective", &user_first);
+		{
+			int	eff_first = 1;
+
+			hanson_add_key_value_int(h, "id", qp->proc_euid,
+			    &eff_first);
+
+			/* process.user.effective.group.* */
+			hanson_add_object(h, "group", &eff_first);
+			{
+				int	eff_group_first = 1;
+
+				hanson_add_key_value_int(h, "id", qp->proc_egid,
+				    &eff_group_first);
+				/* XXX no effective name */
+			}
+			hanson_close_object(h);
+		}
+		hanson_close_object(h);
+
+		/* process.user.saved.* */
+		hanson_add_object(h, "saved", &user_first);
+		{
+			int	saved_first = 1;
+
+			hanson_add_key_value_int(h, "id", qp->proc_suid,
+			    &saved_first);
+
+			/* process.user.saved.group.* */
+			hanson_add_object(h, "group", &saved_first);
+			{
+				int	saved_group_first = 1;
+
+				hanson_add_key_value_int(h, "id",
+				    qp->proc_sgid, &saved_group_first);
+				/* XXX no group name */
+			}
+			hanson_close_object(h);
+		}
+		hanson_close_object(h);
+	}
+	hanson_close_object(h);
+
+	return (0);
 }
 
 static int
@@ -156,71 +221,11 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 
 	/* process.user.* */
 	if (qp->flags & QUARK_F_PROC) {
-		hanson_add_object(h, "user", first);
-		{
-			int	user_first = 1;
-
-			hanson_add_key_value_int(h, "id", qp->proc_uid,
-			    &user_first);
-			/* XXX no username */
-
-			/* process.user.group.* */
-			hanson_add_object(h, "group", &user_first);
-			{
-				int	group_first = 1;
-
-				hanson_add_key_value_int(h, "id", qp->proc_gid,
-				    &group_first);
-			}
-			hanson_close_object(h);
-
-			/* process.user.effective.*/
-			hanson_add_object(h, "effective", &user_first);
-			{
-				int	eff_first = 1;
-
-				hanson_add_key_value_int(h, "id", qp->proc_euid,
-				    &eff_first);
-
-				/* process.user.effective.group.* */
-				hanson_add_object(h, "group", &eff_first);
-				{
-					int	eff_group_first = 1;
-
-					hanson_add_key_value_int(h, "id", qp->proc_egid,
-					    &eff_group_first);
-					/* XXX no effective name */
-				}
-				hanson_close_object(h);
-			}
-			hanson_close_object(h);
-
-			/* process.user.saved.* */
-			hanson_add_object(h, "saved", &user_first);
-			{
-				int	saved_first = 1;
-
-				hanson_add_key_value_int(h, "id", qp->proc_suid,
-				    &saved_first);
-
-				/* process.user.saved.group.* */
-				hanson_add_object(h, "group", &saved_first);
-				{
-					int	saved_group_first = 1;
-
-					hanson_add_key_value_int(h, "id",
-					    qp->proc_sgid, &saved_group_first);
-					/* XXX no group name */
-				}
-				hanson_close_object(h);
-			}
-			hanson_close_object(h);
-		}
-		hanson_close_object(h);
 		hanson_add_key_value(h, "entity_id", (char *)qp->proc_entity_id,
 		    first);
 		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
 		    first);
+		ecs_process_user(h, qp, first);
 	}
 
 	return (0);
