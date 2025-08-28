@@ -760,6 +760,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_shmget, 1);
 		bpf_program__set_autoload(p->progs.module_load, 1);
 		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
+		bpf_program__set_autoload(p->progs.kprobe__arch_ptrace, 1);
 	}
 
 	if (qq->flags & QQ_TTY) {

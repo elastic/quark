@@ -346,12 +346,10 @@ out:
     return 0;
 }
 
-SEC("kprobe/ptrace_attach")
-int BPF_KPROBE(kprobe__ptrace_attach,
-               struct task_struct *child,
-               long request,
-               unsigned long addr,
-               unsigned long flags)
+static int ptrace_event(struct task_struct *child,
+                        long request,
+                        unsigned long addr,
+                        unsigned long data)
 {
     if (ebpf_events_is_trusted_pid())
         goto out;
@@ -383,11 +381,33 @@ int BPF_KPROBE(kprobe__ptrace_attach,
 
     event->child_pid = child_tgid;
     event->request   = request;
+    event->addr      = addr;
+    event->data      = data;
 
     bpf_ringbuf_submit(event, 0);
 
 out:
     return 0;
+}
+
+SEC("kprobe/ptrace_attach")
+int BPF_KPROBE(kprobe__ptrace_attach,
+               struct task_struct *child,
+               long request,
+               unsigned long addr,
+               unsigned long data)
+{
+    return ptrace_event(child, request, addr, data);
+}
+
+SEC("kprobe/arch_ptrace")
+int BPF_KPROBE(kprobe__arch_ptrace,
+               struct task_struct *child,
+               long request,
+               unsigned long addr,
+               unsigned long data)
+{
+    return ptrace_event(child, request, addr, data);
 }
 
 SEC("tracepoint/syscalls/sys_enter_shmget")

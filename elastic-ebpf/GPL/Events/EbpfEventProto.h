@@ -356,6 +356,8 @@ struct ebpf_process_ptrace_event {
     struct ebpf_pid_info pids;
     uint32_t child_pid;
     int64_t request;
+    uint64_t addr;
+    uint64_t data;
 } __attribute__((packed));
 
 struct ebpf_process_load_module_event {
