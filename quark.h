@@ -63,6 +63,8 @@ const struct quark_socket *quark_socket_lookup(struct quark_queue *,
     struct quark_sockaddr *, struct quark_sockaddr *);
 struct quark_passwd *quark_passwd_lookup(struct quark_queue *, uid_t);
 struct quark_group *quark_group_lookup(struct quark_queue *, gid_t);
+int	 quark_parse_cgroup_container(const char *,
+    char *, size_t, char *, size_t);
 
 /* btf.c */
 struct quark_btf_target {
