@@ -818,7 +818,7 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 	state	    = GET(container_json, "state");
 	waiting	    = GET(state, "waiting");
 	running	    = GET(state, "running");
-	terminated  = GET(container_json, "terminated");
+	terminated  = GET(state, "terminated");
 	containerID = GET(container_json, "containerID");
 
 	/*
