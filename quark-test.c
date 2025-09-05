@@ -62,55 +62,6 @@ static int	bflag;		/* run bpf tests */
 static int	kflag;		/* run kprobe tests */
 
 static int
-t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
-{
-	struct {
-		const char *in;
-		int expected_ret; /* 1 known, 0 unknown, -1 fail */
-		const char *scheme; /* may be "" when unknown */
-		const char *id;
-	} cases[] = {
-		{ "docker-f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829.scope",
-		    1, "docker://", "f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829" },
-		{ "cri-containerd-abc123def456.scope", 1, "containerd://", "abc123def456" },
-		{ "containerd-abc123def456.scope", 1, "containerd://", "abc123def456" },
-		{ "crio-0123456789abcdef.scope", 1, "cri-o://", "0123456789abcdef" },
-		{ "abcdef0123456789", 0, "", "abcdef0123456789" },
-		/* negative cases */
-		{ "docker-.scope", -1, NULL, NULL },
-		{ "docker-zzzz.scope", -1, NULL, NULL },
-		{ "containerd-.scope", -1, NULL, NULL },
-		{ "crio-.scope", -1, NULL, NULL },
-		{ "nothex", -1, NULL, NULL },
-		{ "ABCDEF", -1, NULL, NULL },
-		{ "something-abcdef.scope", -1, NULL, NULL },
-		{ "docker-abcdef.scopeX", -1, NULL, NULL },
-		{ NULL, 0, NULL, NULL }
-	};
-	char	scheme[32];
-	char	id[NAME_MAX];
-	int		r;
-	size_t	i;
-
-	(void)t;
-	(void)qa;
-
-	for (i = 0; cases[i].in != NULL; i++) {
-		bzero(scheme, sizeof(scheme));
-		bzero(id, sizeof(id));
-		r = quark_parse_cgroup_container(cases[i].in, scheme, sizeof(scheme),
-		    id, sizeof(id));
-		assert(r == cases[i].expected_ret);
-		if (r >= 0) {
-			assert(!strcmp(id, cases[i].id));
-			assert(!strcmp(scheme, cases[i].scheme));
-		}
-	}
-
-	return (0);
-}
-
-static int
 fancy_tty(void)
 {
 	char	*term = getenv("TERM");
@@ -643,6 +594,55 @@ fork_sock_write(u16 port, int type, u16 *bound_port)
 	}
 
 	return (child);
+}
+
+static int
+t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct {
+		const char *in;
+		int expected_ret; /* 1 known, 0 unknown, -1 fail */
+		const char *scheme; /* may be "" when unknown */
+		const char *id;
+	} cases[] = {
+		{ "docker-f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829.scope",
+		    1, "docker://", "f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829" },
+		{ "cri-containerd-abc123def456.scope", 1, "containerd://", "abc123def456" },
+		{ "containerd-abc123def456.scope", 1, "containerd://", "abc123def456" },
+		{ "crio-0123456789abcdef.scope", 1, "cri-o://", "0123456789abcdef" },
+		{ "abcdef0123456789", 0, "", "abcdef0123456789" },
+		/* negative cases */
+		{ "docker-.scope", -1, NULL, NULL },
+		{ "docker-zzzz.scope", -1, NULL, NULL },
+		{ "containerd-.scope", -1, NULL, NULL },
+		{ "crio-.scope", -1, NULL, NULL },
+		{ "nothex", -1, NULL, NULL },
+		{ "ABCDEF", -1, NULL, NULL },
+		{ "something-abcdef.scope", -1, NULL, NULL },
+		{ "docker-abcdef.scopeX", -1, NULL, NULL },
+		{ NULL, 0, NULL, NULL }
+	};
+	char	scheme[32];
+	char	id[NAME_MAX];
+	int		r;
+	size_t	i;
+
+	(void)t;
+	(void)qa;
+
+	for (i = 0; cases[i].in != NULL; i++) {
+		bzero(scheme, sizeof(scheme));
+		bzero(id, sizeof(id));
+		r = quark_parse_cgroup_container(cases[i].in, scheme, sizeof(scheme),
+		    id, sizeof(id));
+		assert(r == cases[i].expected_ret);
+		if (r >= 0) {
+			assert(!strcmp(id, cases[i].id));
+			assert(!strcmp(scheme, cases[i].scheme));
+		}
+	}
+
+	return (0);
 }
 
 static int
