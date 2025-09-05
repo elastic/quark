@@ -1227,13 +1227,76 @@ read_kube_events(struct quark_queue *qq)
 	}
 }
 
+/*
+ * Build the kubernetes container_id from a cgroup
+ * cgroup is what we get from the kernel, like docker-<id>.scope.
+ * container_id is how kubernetes sees it, like docker://<id>.
+ * Returns 0 if container_id is filled, -1 otherwise.
+ * Keep this function non static so we can test it.
+ */
+int
+parse_kube_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
+{
+	char		*name, *dot, *id;
+	const char	*lookup_prefix;
+	int		 r, id_skip;
+
+	if ((name = strrchr(cgroup, '/')) == NULL)
+		return (-1);
+	name++;
+
+	/*
+	 * Atm we only accept the systemd format, foo-<id>.scope
+	 * docker-<id>.scope                 -> docker://<id>
+	 * crio-<id>.scope|libpod-<id>.scope -> cri-o://<id>
+	 * cri-containerd-<id>.scope         -> containerd://<id>
+	 * containerd-<id>.scope             -> containerd://<id>
+	 */
+	id_skip = 0;
+
+	lookup_prefix = NULL;
+	if (!strncmp(name, "docker-", 7)) {
+		id_skip = 7;
+		lookup_prefix = "docker";
+	} else if (!strncmp(name, "crio-", 5)) {
+		id_skip = 5;
+		lookup_prefix = "cri-o";
+	} else if (!strncmp(name, "libpod-", 7)) {
+		id_skip = 7;
+		lookup_prefix = "cri-o";
+	} else if (!strncmp(name, "cri-containerd-", 15)) {
+		id_skip = 15;
+		lookup_prefix = "containerd";
+	} else if (!strncmp(name, "containerd-", 11)) {
+		id_skip = 11;
+		lookup_prefix = "containerd";
+	} else
+		return (-1);
+
+	/*
+	 * id starts after the foo- prefix, we still need to chomp the trailing
+	 * .scope
+	 */
+	id = name + id_skip;
+
+	/* copy the whole thing with the lookup_prefix, and then chomp .scope */
+	r = snprintf(container_id, container_id_len,
+	    "%s://%s", lookup_prefix, id);
+	if (r < 0 || r >= (int)container_id_len)
+		return (-1);
+	dot = strrchr(container_id, '.');
+	if (dot == NULL)
+		return (-1);
+	*dot = 0;
+
+	return (0);
+}
+
 static void
 link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 {
-	struct quark_container		*container;
-	char				*name, *dot;
-	char				 container_id[NAME_MAX];
-	int				 r;
+	struct quark_container	*container;
+	char			 cid[NAME_MAX];
 
 	if (qp == NULL)
 		return;
@@ -1241,22 +1304,9 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 		return;
 	if (!(qp->flags & QUARK_F_CGROUP))
 		return;
-	if ((name = strrchr(qp->cgroup, '/')) == NULL)
+	if (parse_kube_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
 		return;
-	name++;
-	/* docker-f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829.scope */
-	/* "containerID": "docker://f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829", */
-	if (strncmp(name, "docker-", 7))
-		return;
-	name += 7;
-	r = snprintf(container_id, sizeof(container_id), "docker://%s", name);
-	if (r < 0 || r >= (int)(sizeof(container_id)))
-		return;
-	dot = strrchr(container_id, '.');
-	if (dot == NULL)
-		return;
-	*dot = 0;
-	if ((container = container_lookup(qq, container_id)) == NULL)
+	if ((container = container_lookup(qq, cid)) == NULL)
 		return;
 
 	qp->container = container;
