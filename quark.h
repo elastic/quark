@@ -61,6 +61,8 @@ void	 quark_socket_iter_init(struct quark_socket_iter *, struct quark_queue *);
 const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
 const struct quark_socket *quark_socket_lookup(struct quark_queue *,
     struct quark_sockaddr *, struct quark_sockaddr *);
+int	 quark_parse_cgroup_container(const char *,
+    char *, size_t, char *, size_t);
 
 /* btf.c */
 struct quark_btf_target {
