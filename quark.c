@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fts.h>
+#include <grp.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -41,6 +42,7 @@ static int	container_by_id_cmp(struct quark_container *, struct quark_container 
 static int	pod_by_uid_cmp(struct quark_pod *, struct quark_pod *);
 static int	label_node_cmp(struct label_node *, struct label_node *);
 static int	quark_passwd_cmp(struct quark_passwd *, struct quark_passwd *);
+static int	quark_group_cmp(struct quark_group *, struct quark_group *);
 
 static void	process_cache_delete(struct quark_queue *, struct quark_process *);
 static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
@@ -87,6 +89,9 @@ RB_GENERATE(label_tree, label_node, entry, label_node_cmp);
 
 RB_PROTOTYPE(passwd_by_uid, quark_passwd, entry, quark_passwd_cmp);
 RB_GENERATE(passwd_by_uid, quark_passwd, entry, quark_passwd_cmp);
+
+RB_PROTOTYPE(group_by_gid, quark_group, entry, quark_group_cmp);
+RB_GENERATE(group_by_gid, quark_group, entry, quark_group_cmp);
 
 struct quark {
 	unsigned int	hz;
@@ -2909,25 +2914,28 @@ quark_passwd_populate(struct passwd_by_uid *by_uid)
 	 * re-entrant, setpwent() shares the file offset.
 	 */
 	setpwent();
-#ifdef  HAVE_GETPWENT_R
-	while (getpwent_r(&pwd_storage, buf, buf_size, &pw) == 0) {
+#ifdef HAVE_GETPWENT_R
+	while (getpwent_r(&pwd_storage, buf, buf_size, &pw) == 0)
 #else
-	while ((pw = getpwent()) != NULL) {
-#endif /*  */
+	while ((pw = getpwent()) != NULL)
+#endif /* HAVE_GETPWENT_R */
+	{
 		qpw = calloc(1, sizeof(*qpw));
-		if (qpw == NULL) {
-			qwarn("calloc");
+		if (qpw == NULL)
 			goto bad;
-		}
 		qpw->name = strdup(pw->pw_name);
 		if (qpw->name == NULL) {
-			qwarn("strdup");
+			free(qpw);
 			goto bad;
 		}
 		qpw->uid = pw->pw_uid;
 		qpw->gid = pw->pw_gid;
 //		printf("%s:%d\n", pw->pw_name, pw->pw_uid);
-		RB_INSERT(passwd_by_uid, by_uid, qpw);
+		if (RB_INSERT(passwd_by_uid, by_uid, qpw) != NULL) {
+			qwarnx("unexpected collision in pwd uid %d", qpw->uid);
+			free(qpw->name);
+			free(qpw);
+		}
 	}
 	endpwent();
 	free(buf);
@@ -2968,6 +2976,80 @@ quark_passwd_lookup(struct quark_queue *qq, uid_t uid)
 
 	return (qpwd);
 }
+
+static int
+quark_group_cmp(struct quark_group *a, struct quark_group *b)
+{
+	if (a->gid < b->gid)
+		return (-1);
+	else if (a->gid > b->gid)
+		return (1);
+
+	return (0);
+}
+
+struct quark_group *
+quark_group_lookup(struct quark_queue *qq, gid_t gid)
+{
+	struct quark_group	key, *qgrp;
+
+	key.gid = gid;
+	qgrp = RB_FIND(group_by_gid, &qq->group_by_gid, &key);
+	if (qgrp == NULL)
+		errno = ESRCH;
+
+	return (qgrp);
+}
+
+static int
+quark_group_populate(struct group_by_gid *by_gid)
+{
+	char			*buf;
+	long			 buf_size;
+	struct group		 grp_storage;
+	struct group		*grp;
+	struct quark_group	*qgrp;
+
+	buf = NULL;
+	buf_size = sysconf(_SC_GETGR_R_SIZE_MAX);
+	if (buf_size == -1)
+		buf_size = 65536;
+
+	if ((buf = malloc(buf_size)) == NULL)
+		goto bad;
+
+	setgrent();
+	while (getgrent_r(&grp_storage, buf, buf_size, &grp) == 0) {
+		if ((qgrp = calloc(1, sizeof(*qgrp))) == NULL)
+			goto bad;
+		qgrp->gid = grp->gr_gid;
+		if ((qgrp->name = strdup(grp->gr_name)) == NULL) {
+			free(qgrp);
+			goto bad;
+		}
+		if (RB_INSERT(group_by_gid, by_gid, qgrp) != NULL) {
+			qwarnx("unexpected collision in group gid %d",
+			    qgrp->gid);
+			free(qgrp->name);
+			free(qgrp);
+		}
+	}
+	endgrent();
+	free(buf);
+
+	return (0);
+
+bad:
+	free(buf);
+	while ((qgrp = RB_ROOT(by_gid)) != NULL) {
+		RB_REMOVE(group_by_gid, by_gid, qgrp);
+		free(qgrp->name);
+		free(qgrp);
+	}
+
+	return (-1);
+}
+
 
 /*
  * Aggregation is a relationship between a parent event and a child event. In a
@@ -3341,6 +3423,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	RB_INIT(&qq->process_by_pid);
 	RB_INIT(&qq->socket_by_src_dst);
 	RB_INIT(&qq->passwd_by_uid);
+	RB_INIT(&qq->group_by_gid);
 	TAILQ_INIT(&qq->event_gc);
 	qq->flags = qa->flags;
 	qq->max_length = qa->max_length;
@@ -3470,6 +3553,12 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (quark_passwd_populate(&qq->passwd_by_uid) == -1)
 		qwarn("Can't build user database, not fatal");
 
+	/*
+	 * Build group database, really only used for ECS and event dumping.
+	 */
+	if (quark_group_populate(&qq->group_by_gid) == -1)
+		qwarn("Can't build group database, not fatal");
+
 	return (0);
 
 fail:
@@ -3489,6 +3578,7 @@ quark_queue_close(struct quark_queue *qq)
 	struct quark_socket	*qsk;
 	struct quark_pod	*pod;
 	struct quark_passwd	*qpw;
+	struct quark_group	*qgrp;
 
 	/* Don't forget the storage for the last sent event */
 	event_storage_clear(qq);
@@ -3523,6 +3613,12 @@ quark_queue_close(struct quark_queue *qq)
 		RB_REMOVE(passwd_by_uid, &qq->passwd_by_uid, qpw);
 		free(qpw->name);
 		free(qpw);
+	}
+	/* Clean up group entries */
+	while ((qgrp = RB_ROOT(&qq->group_by_gid)) != NULL) {
+		RB_REMOVE(group_by_gid, &qq->group_by_gid, qgrp);
+		free(qgrp->name);
+		free(qgrp);
 	}
 	/* Close epollfd */
 	if (qq->epollfd != -1) {

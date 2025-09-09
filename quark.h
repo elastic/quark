@@ -62,6 +62,7 @@ const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
 const struct quark_socket *quark_socket_lookup(struct quark_queue *,
     struct quark_sockaddr *, struct quark_sockaddr *);
 struct quark_passwd *quark_passwd_lookup(struct quark_queue *, uid_t);
+struct quark_group *quark_group_lookup(struct quark_queue *, gid_t);
 
 /* btf.c */
 struct quark_btf_target {
@@ -595,9 +596,20 @@ RB_HEAD(passwd_by_uid, quark_passwd);
 
 struct quark_passwd {
 	RB_ENTRY(quark_passwd)	 entry;
-	char			*name;
 	uid_t			 uid;
 	gid_t			 gid;
+	char			*name;
+};
+
+/*
+ * Group database, can't afford to go through glibc in the hotpath
+ */
+RB_HEAD(group_by_gid, quark_group);
+
+struct quark_group {
+	RB_ENTRY(quark_group)	 entry;
+	gid_t			 gid;
+	char			*name;
 };
 
 struct quark_queue_stats {
@@ -649,6 +661,7 @@ struct quark_queue {
 	struct gc_queue			 event_gc;
 	struct socket_by_src_dst	 socket_by_src_dst;
 	struct passwd_by_uid		 passwd_by_uid;
+	struct group_by_gid		 group_by_gid;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
 	const u8			(*agg_matrix)[RAW_NUM_TYPES];

@@ -133,11 +133,15 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 static int
 ecs_process_user(struct quark_queue *qq, struct hanson *h, const struct quark_process *qp, int *first)
 {
-	struct quark_passwd *e_pw, *r_pw, *s_pw;
+	struct quark_passwd	*e_pw, *r_pw, *s_pw;
+	struct quark_group	*e_gr, *r_gr, *s_gr;
 
 	if (qp == NULL || !(qp->flags & QUARK_F_PROC))
 		return (-1);
 
+	/*
+	 * Fetch usernames
+	 */
 	r_pw = quark_passwd_lookup(qq, qp->proc_uid);
 
 	if (qp->proc_euid == qp->proc_uid)
@@ -151,6 +155,24 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h, const struct quark_pr
 		s_pw = e_pw;
 	else
 		s_pw = quark_passwd_lookup(qq, qp->proc_suid);
+
+	/*
+	 * Fetch group names
+	 */
+	r_gr = quark_group_lookup(qq, qp->proc_gid);
+
+	if (qp->proc_egid == qp->proc_gid)
+		e_gr = r_gr;
+	else
+		e_gr = quark_group_lookup(qq, qp->proc_egid);
+
+	if (qp->proc_sgid == qp->proc_gid)
+		s_gr = r_gr;
+	else if (qp->proc_sgid == qp->proc_egid)
+		s_gr = e_gr;
+	else
+		s_gr = quark_group_lookup(qq, qp->proc_sgid);
+
 
 	hanson_add_object(h, "user", first);
 	{
@@ -173,6 +195,9 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h, const struct quark_pr
 
 			hanson_add_key_value_int(h, "id", qp->proc_egid,
 			    &group_first);
+			if (e_gr != NULL)
+				hanson_add_key_value(h, "name", e_gr->name,
+				    &group_first);
 		}
 		hanson_close_object(h);
 
@@ -186,7 +211,6 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h, const struct quark_pr
 			if (r_pw != NULL)
 				hanson_add_key_value(h, "name", r_pw->name,
 				    &real_first);
-
 		}
 		hanson_close_object(h);
 
@@ -197,7 +221,9 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h, const struct quark_pr
 
 			hanson_add_key_value_int(h, "id", qp->proc_gid,
 			    &real_group_first);
-			/* XXX no effective name */
+			if (r_gr != NULL)
+				hanson_add_key_value(h, "name", r_gr->name,
+				    &real_group_first);
 		}
 		hanson_close_object(h);
 
@@ -222,7 +248,9 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h, const struct quark_pr
 
 			hanson_add_key_value_int(h, "id", qp->proc_sgid,
 			    &saved_group_first);
-			/* XXX no effective name */
+			if (s_gr != NULL)
+				hanson_add_key_value(h, "name", s_gr->name,
+				    &saved_group_first);
 		}
 		hanson_close_object(h);
 	}
