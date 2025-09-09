@@ -131,10 +131,26 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
-ecs_process_user(struct hanson *h, const struct quark_process *qp, int *first)
+ecs_process_user(struct quark_queue *qq, struct hanson *h, const struct quark_process *qp, int *first)
 {
+	struct quark_passwd *e_pw, *r_pw, *s_pw;
+
 	if (qp == NULL || !(qp->flags & QUARK_F_PROC))
 		return (-1);
+
+	r_pw = quark_passwd_lookup(qq, qp->proc_uid);
+
+	if (qp->proc_euid == qp->proc_uid)
+		e_pw = r_pw;
+	else
+		e_pw = quark_passwd_lookup(qq, qp->proc_euid);
+
+	if (qp->proc_suid == qp->proc_uid)
+		s_pw = r_pw;
+	else if (qp->proc_suid == qp->proc_euid)
+		s_pw = e_pw;
+	else
+		s_pw = quark_passwd_lookup(qq, qp->proc_suid);
 
 	hanson_add_object(h, "user", first);
 	{
@@ -146,7 +162,9 @@ ecs_process_user(struct hanson *h, const struct quark_process *qp, int *first)
 		 */
 		hanson_add_key_value_int(h, "id", qp->proc_euid,
 		    &user_first);
-		/* XXX no username */
+		if (e_pw != NULL)
+			hanson_add_key_value(h, "name", e_pw->name,
+			    &user_first);
 
 		/* process.user.group.* */
 		hanson_add_object(h, "group", &user_first);
@@ -165,6 +183,10 @@ ecs_process_user(struct hanson *h, const struct quark_process *qp, int *first)
 
 			hanson_add_key_value_int(h, "id", qp->proc_uid,
 			    &real_first);
+			if (r_pw != NULL)
+				hanson_add_key_value(h, "name", r_pw->name,
+				    &real_first);
+
 		}
 		hanson_close_object(h);
 
@@ -184,8 +206,12 @@ ecs_process_user(struct hanson *h, const struct quark_process *qp, int *first)
 		{
 			int	saved_first = 1;
 
-			hanson_add_key_value_int(h, "id", qp->proc_uid,
+			hanson_add_key_value_int(h, "id", qp->proc_suid,
 			    &saved_first);
+			if (s_pw != NULL)
+				hanson_add_key_value(h, "name", s_pw->name,
+				    &saved_first);
+
 		}
 		hanson_close_object(h);
 
@@ -194,7 +220,7 @@ ecs_process_user(struct hanson *h, const struct quark_process *qp, int *first)
 		{
 			int	saved_group_first = 1;
 
-			hanson_add_key_value_int(h, "id", qp->proc_gid,
+			hanson_add_key_value_int(h, "id", qp->proc_sgid,
 			    &saved_group_first);
 			/* XXX no effective name */
 		}
@@ -315,7 +341,7 @@ ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
-ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
+ecs_process(struct quark_queue *qq, struct hanson *h, const struct quark_event *qev, int *first)
 {
 	const struct quark_process	*qp;
 
@@ -336,7 +362,7 @@ ecs_process(struct hanson *h, const struct quark_event *qev, int *first)
 		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
 		    first);
 		/* process.user.* */
-		ecs_process_user(h, qp, first);
+		ecs_process_user(qq, h, qp, first);
 		/* process.tty.* */
 		ecs_process_tty(h, qp, first);
 	}
@@ -453,7 +479,7 @@ ecs_socket(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
-ecs_file(struct hanson *h, const struct quark_event *qev, int *first)
+ecs_file(struct quark_queue *qq, struct hanson *h, const struct quark_event *qev, int *first)
 {
 	struct quark_file	*file = qev->file;
 	char			 buf[32], *ext;
@@ -493,7 +519,7 @@ ecs_file(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 int
-quark_event_to_ecs(const struct quark_event *qev, char **buf, size_t *buf_len)
+quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev, char **buf, size_t *buf_len)
 {
 	struct hanson	h;
 	int		top_first;
@@ -519,7 +545,7 @@ quark_event_to_ecs(const struct quark_event *qev, char **buf, size_t *buf_len)
 		{
 			int	process_first = 1;
 
-			ecs_process(&h, qev, &process_first);
+			ecs_process(qq, &h, qev, &process_first);
 		}
 		hanson_close_object(&h);
 
@@ -550,7 +576,7 @@ quark_event_to_ecs(const struct quark_event *qev, char **buf, size_t *buf_len)
 		{
 			int	file_first = 1;
 
-			ecs_file(&h, qev, &file_first);
+			ecs_file(qq, &h, qev, &file_first);
 		}
 		hanson_close_object(&h);
 	}

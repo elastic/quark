@@ -61,6 +61,7 @@ void	 quark_socket_iter_init(struct quark_socket_iter *, struct quark_queue *);
 const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
 const struct quark_socket *quark_socket_lookup(struct quark_queue *,
     struct quark_sockaddr *, struct quark_sockaddr *);
+struct quark_passwd *quark_passwd_lookup(struct quark_queue *, uid_t);
 
 /* btf.c */
 struct quark_btf_target {
@@ -153,7 +154,7 @@ struct hanson {
 };
 
 /* ecs.c */
-int	quark_event_to_ecs(const struct quark_event *qev, char **, size_t *);
+int	quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev, char **, size_t *);
 
 /*
  * Time helpers
@@ -587,6 +588,18 @@ struct quark_kube {
 	struct container_by_id	 container_by_id;	/* in containerID format from json */
 };
 
+/*
+ * Passwd database, can't afford to go through glibc in the hotpath
+ */
+RB_HEAD(passwd_by_uid, quark_passwd);
+
+struct quark_passwd {
+	RB_ENTRY(quark_passwd)	 entry;
+	char			*name;
+	uid_t			 uid;
+	gid_t			 gid;
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
@@ -635,6 +648,7 @@ struct quark_queue {
 	struct process_by_pid		 process_by_pid;
 	struct gc_queue			 event_gc;
 	struct socket_by_src_dst	 socket_by_src_dst;
+	struct passwd_by_uid		 passwd_by_uid;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
 	const u8			(*agg_matrix)[RAW_NUM_TYPES];

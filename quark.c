@@ -3,6 +3,7 @@
 
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -22,6 +23,7 @@
 #include <string.h>
 #include <strings.h>
 #include <poll.h>
+#include <pwd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -38,6 +40,7 @@ static int	socket_by_src_dst_cmp(struct quark_socket *, struct quark_socket *);
 static int	container_by_id_cmp(struct quark_container *, struct quark_container *);
 static int	pod_by_uid_cmp(struct quark_pod *, struct quark_pod *);
 static int	label_node_cmp(struct label_node *, struct label_node *);
+static int	quark_passwd_cmp(struct quark_passwd *, struct quark_passwd *);
 
 static void	process_cache_delete(struct quark_queue *, struct quark_process *);
 static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
@@ -81,6 +84,9 @@ RB_GENERATE(pod_by_uid, quark_pod, entry_by_uid, pod_by_uid_cmp);
 
 RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
 RB_GENERATE(label_tree, label_node, entry, label_node_cmp);
+
+RB_PROTOTYPE(passwd_by_uid, quark_passwd, entry, quark_passwd_cmp);
+RB_GENERATE(passwd_by_uid, quark_passwd, entry, quark_passwd_cmp);
 
 struct quark {
 	unsigned int	hz;
@@ -2879,6 +2885,83 @@ fetch_boottime(void)
 	return (btime * NS_PER_S);
 }
 
+static int
+quark_passwd_populate(struct passwd_by_uid *by_uid)
+{
+	char			*buf;
+	long			 buf_size;
+	struct passwd		 pwd_storage, *pw;
+	struct quark_passwd	*qpw;
+
+	buf = NULL;
+	buf_size = sysconf(_SC_GETPW_R_SIZE_MAX);
+	if (buf_size == -1)
+		buf_size = 65536;
+
+	if ((buf = malloc(buf_size)) == NULL)
+		goto bad;
+
+	/*
+	 * XXX glibc is awesome, they invent a getpwent_r that is not
+	 * re-entrant, setpwent() shares the file offset.
+	 */
+	setpwent();
+	while (getpwent_r(&pwd_storage, buf, buf_size, &pw) == 0) {
+		qpw = calloc(1, sizeof(*qpw));
+		if (qpw == NULL) {
+			qwarn("calloc");
+			goto bad;
+		}
+		qpw->name = strdup(pw->pw_name);
+		if (qpw->name == NULL) {
+			qwarn("strdup");
+			goto bad;
+		}
+		qpw->uid = pw->pw_uid;
+		qpw->gid = pw->pw_gid;
+//		printf("%s:%d\n", pw->pw_name, pw->pw_uid);
+		RB_INSERT(passwd_by_uid, by_uid, qpw);
+	}
+	endpwent();
+	free(buf);
+
+	return (0);
+
+bad:
+	free(buf);
+	while ((qpw = RB_ROOT(by_uid)) != NULL) {
+		RB_REMOVE(passwd_by_uid, by_uid, qpw);
+		free(qpw->name);
+		free(qpw);
+	}
+
+	return (-1);
+}
+
+static int
+quark_passwd_cmp(struct quark_passwd *a, struct quark_passwd *b)
+{
+	if (a->uid < b->uid)
+		return (-1);
+	else if (a->uid > b->uid)
+		return (1);
+
+	return (0);
+}
+
+struct quark_passwd *
+quark_passwd_lookup(struct quark_queue *qq, uid_t uid)
+{
+	struct quark_passwd	key, *qpwd;
+
+	key.uid = uid;
+	qpwd = RB_FIND(passwd_by_uid, &qq->passwd_by_uid, &key);
+	if (qpwd == NULL)
+		errno = ESRCH;
+
+	return (qpwd);
+}
+
 /*
  * Aggregation is a relationship between a parent event and a child event. In a
  * fork+exec cenario, fork is the parent, exec is the child.
@@ -3250,6 +3333,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	RB_INIT(&qq->raw_event_by_pidtime);
 	RB_INIT(&qq->process_by_pid);
 	RB_INIT(&qq->socket_by_src_dst);
+	RB_INIT(&qq->passwd_by_uid);
 	TAILQ_INIT(&qq->event_gc);
 	qq->flags = qa->flags;
 	qq->max_length = qa->max_length;
@@ -3373,6 +3457,12 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		}
 	}
 
+	/*
+	 * Build username database, really only used for ECS and event dumping.
+	 */
+	if (quark_passwd_populate(&qq->passwd_by_uid) == -1)
+		qwarn("Can't build user database, not fatal");
+
 	return (0);
 
 fail:
@@ -3391,6 +3481,7 @@ quark_queue_close(struct quark_queue *qq)
 	struct quark_process	*qp;
 	struct quark_socket	*qsk;
 	struct quark_pod	*pod;
+	struct quark_passwd	*qpw;
 
 	/* Don't forget the storage for the last sent event */
 	event_storage_clear(qq);
@@ -3419,6 +3510,12 @@ quark_queue_close(struct quark_queue *qq)
 		free(qq->qkube->buf);
 		free(qq->qkube);
 		qq->qkube = NULL;
+	}
+	/* Clean up passwd entries */
+	while ((qpw = RB_ROOT(&qq->passwd_by_uid)) != NULL) {
+		RB_REMOVE(passwd_by_uid, &qq->passwd_by_uid, qpw);
+		free(qpw->name);
+		free(qpw);
 	}
 	/* Close epollfd */
 	if (qq->epollfd != -1) {

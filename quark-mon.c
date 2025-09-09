@@ -362,10 +362,10 @@ main(int argc, char *argv[])
 			char	*ecs_buf;
 			size_t	 ecs_buf_len;
 
-			if (quark_event_to_ecs(qev, &ecs_buf, &ecs_buf_len) == -1)
+			if (quark_event_to_ecs(qq, qev, &ecs_buf, &ecs_buf_len) == -1)
 				qwarnx("quark_event_to_ecs");
 			else {
-				printf("(%zd)\n%s\n", ecs_buf_len, ecs_buf);
+				printf("%s\n", ecs_buf);
 				free(ecs_buf);
 			}
 			fflush(stdout);
