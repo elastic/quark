@@ -2890,7 +2890,10 @@ quark_passwd_populate(struct passwd_by_uid *by_uid)
 {
 	char			*buf;
 	long			 buf_size;
-	struct passwd		 pwd_storage, *pw;
+	struct passwd		*pw;
+#ifdef HAVE_GETPWENT_R
+	struct passwd		 pwd_storage;
+#endif
 	struct quark_passwd	*qpw;
 
 	buf = NULL;
@@ -2906,7 +2909,11 @@ quark_passwd_populate(struct passwd_by_uid *by_uid)
 	 * re-entrant, setpwent() shares the file offset.
 	 */
 	setpwent();
+#ifdef  HAVE_GETPWENT_R
 	while (getpwent_r(&pwd_storage, buf, buf_size, &pw) == 0) {
+#else
+	while ((pw = getpwent()) != NULL) {
+#endif /*  */
 		qpw = calloc(1, sizeof(*qpw));
 		if (qpw == NULL) {
 			qwarn("calloc");

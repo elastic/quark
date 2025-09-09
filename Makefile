@@ -50,7 +50,10 @@ ifdef CENTOS7
 CFLAGS+= -std=gnu99 -DNO_PUSH_PRAGMA
 endif
 
-CPPFLAGS?= -D_GNU_SOURCE
+CPPFLAGS+= -D_GNU_SOURCE
+ifndef MUSL
+CPPFLAGS+= -DHAVE_GETPWENT_R
+endif
 ifndef SYSLIB
 CPPFLAGS+= -Iinclude
 endif
