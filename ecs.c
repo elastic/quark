@@ -131,7 +131,8 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
-ecs_process_user(struct quark_queue *qq, struct hanson *h, const struct quark_process *qp, int *first)
+ecs_process_user(struct quark_queue *qq, struct hanson *h,
+    const struct quark_process *qp, int *first)
 {
 	struct quark_passwd	*e_pw, *r_pw, *s_pw;
 	struct quark_group	*e_gr, *r_gr, *s_gr;
@@ -369,7 +370,8 @@ ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
-ecs_process(struct quark_queue *qq, struct hanson *h, const struct quark_event *qev, int *first)
+ecs_process(struct quark_queue *qq, struct hanson *h,
+    const struct quark_event *qev, int *first)
 {
 	const struct quark_process	*qp;
 
@@ -507,12 +509,17 @@ ecs_socket(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
-ecs_file(struct quark_queue *qq, struct hanson *h, const struct quark_event *qev, int *first)
+ecs_file(struct quark_queue *qq, struct hanson *h,
+    const struct quark_event *qev, int *first)
 {
 	struct quark_file	*file = qev->file;
 	char			 buf[32], *ext;
 	time_t			 ctime, mtime, atime;
+	struct quark_passwd	*pw;
+	struct quark_group	*gr;
 
+	pw = quark_passwd_lookup(qq, file->uid);
+	gr = quark_group_lookup(qq, file->gid);
 	ext = safe_basename(file->path);
 	if (ext != NULL) {
 		ext = strrchr(ext, '.');
@@ -528,7 +535,11 @@ ecs_file(struct quark_queue *qq, struct hanson *h, const struct quark_event *qev
 	hanson_add_key_value_int(h, "inode", file->inode, first);
 	hanson_add_key_value_int(h, "size", file->size, first);
 	hanson_add_key_value_int(h, "uid", file->uid, first);
+	if (pw != NULL)
+		hanson_add_key_value(h, "owner", pw->name, first);
 	hanson_add_key_value_int(h, "gid", file->gid, first);
+	if (gr != NULL)
+		hanson_add_key_value(h, "group", gr->name, first);
 
 	snprintf(buf, sizeof(buf), "0%o", file->mode);
 	hanson_add_key_value(h, "mode", buf, first);
@@ -547,7 +558,8 @@ ecs_file(struct quark_queue *qq, struct hanson *h, const struct quark_event *qev
 }
 
 int
-quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev, char **buf, size_t *buf_len)
+quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
+    char **buf, size_t *buf_len)
 {
 	struct hanson	h;
 	int		top_first;
