@@ -7,6 +7,8 @@
 
 #include "quark.h"
 
+int	hanson_add_ascii(struct hanson *, int);
+
 static int
 hanson_add(struct hanson *h, void *data, size_t data_len)
 {
@@ -19,6 +21,87 @@ hanson_add(struct hanson *h, void *data, size_t data_len)
 	}
 
 	return (0);
+}
+
+/*
+ * Don't chage to char, otherwise it will sign extend on wide characters
+ */
+static inline int
+is_escape_char(u_char c)
+{
+	int	v = 0;
+
+	switch (c) {
+	case '\\':	/* FALLTHROUGH */
+	case '\"':	/* FALLTHROUGH */
+	case '\b':	/* FALLTHROUGH */
+	case '\f':	/* FALLTHROUGH */
+	case '\n':	/* FALLTHROUGH */
+	case '\r':	/* FALLTHROUGH */
+	case '\t':	/* FALLTHROUGH */
+		v = 1;
+		break;
+	default:
+		if (c < 32)
+			v = 1;
+		break;
+	}
+
+	return (v);
+}
+
+static int
+hanson_add_string_escaped(struct hanson *h, char *s)
+{
+	int	 r = 0, len, c;
+	char	*p;
+	char	 unicode_buf[16];
+
+	for (p = s; *p != 0; p++) {
+		c = is_escape_char(*p);
+
+		if (likely(!c)) {
+			hanson_add_ascii(h, *p);
+			continue;
+		}
+
+		hanson_add_ascii(h, '\\');
+		switch (c) {
+		case '\\':
+			r |= hanson_add_ascii(h, '\\');
+			break;
+		case '\"':
+			r |= hanson_add_ascii(h, '\"');
+			break;
+		case '\b':
+			r |= hanson_add_ascii(h, 'b');
+			break;
+		case '\f':
+			r |= hanson_add_ascii(h, 'f');
+			break;
+		case '\n':
+			r |= hanson_add_ascii(h, 'n');
+			break;
+		case '\r':
+			r |= hanson_add_ascii(h, 'r');
+			break;
+		case '\t':
+			r |= hanson_add_ascii(h, 't');
+			break;
+		default:
+			len = snprintf(unicode_buf, sizeof(unicode_buf),
+			    "u%04x", (u_char)*p);
+			if (likely(len > 0))
+				r |= hanson_add(h, unicode_buf, len);
+			else {
+				h->error = 1;
+				r = -1;
+			}
+			break;
+		}
+	}
+
+	return (r);
 }
 
 static int
@@ -61,11 +144,27 @@ hanson_add_ascii(struct hanson *h, int c)
 int
 hanson_add_string(struct hanson *h, char *s, int *first)
 {
-	int	r = 0;
+	int	 r = 0;
+	char	*p;
+	int	 need_escape;
+	size_t	 len;
 
 	r |= hanson_maybe_first(h, first);
 	r |= hanson_add_ascii(h, '"');
-	r |= hanson_add(h, s, strlen(s));
+
+	need_escape = 0;
+	for (p = s, len = 0; *p != 0; p++, len++) {
+		if (is_escape_char(*p)) {
+			need_escape = 1;
+			break;
+		}
+	}
+
+	if (need_escape)
+		r |= hanson_add_string_escaped(h, s);
+	else
+		r |= hanson_add(h, s, len);
+
 	r |= hanson_add_ascii(h, '"');
 
 	return (r);
@@ -78,9 +177,12 @@ hanson_add_integer(struct hanson *h, int64_t v)
 	char		buf[32];
 
 	len = snprintf(buf, sizeof(buf), "%lld", (long long)v);
-	/* if (len < 0) */
-	/* 	r = -1; */
-	r |= hanson_add(h, buf, len);
+	if (likely(len > 0))
+		r |= hanson_add(h, buf, len);
+	else {
+		h->error = 1;
+		r = -1;
+	}
 
 	return (r);
 }

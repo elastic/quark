@@ -465,7 +465,6 @@ ecs_file(struct hanson *h, const struct quark_event *qev, int *first)
 	if (ctime_chomped(&atime, buf) != NULL)
 		hanson_add_key_value(h, "accessed", buf, first);
 
-
 	return (0);
 }
 
