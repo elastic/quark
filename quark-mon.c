@@ -125,76 +125,12 @@ usage(void)
 }
 
 
-/*
-  {
-	"metadata": {
-		"name": "hello-node-c74958b5d-twwbg",
-		"generateName": "hello-node-c74958b5d-",
-		"namespace": "default",
-		"uid": "760ad5b7-3d9f-4a98-9049-506ed47c96f7",
-		"resourceVersion": "848122",
-		"generation": 1,
-		"creationTimestamp": "2025-08-04T14:45:30Z",
-		"labels": {
-			"app": "hello-node",
-			"pod-template-hash": "c74958b5d"
-		},
-		"foo": "bar"
-	}
-  }
-
- */
-
-static void
-test_hanson_meta(struct hanson *h)
-{
-	int	first = 1;
-
-	hanson_add_key_value(h, "name", "hello-node-c74958b5d-twwbg", &first);
-	hanson_add_key_value(h, "generateName", "hello-node-c74958b5d-", &first);
-	hanson_add_key_value(h, "namespace", "default", &first);
-
-	hanson_add_object(h, "labels", &first);
-	{
-		int label_first = 1;
-
-		hanson_add_key_value(h, "app", "hello-node", &label_first);
-		hanson_add_key_value(h, "pod-template-hash", "c74958b5d", &label_first);
-	}
-	hanson_close_object(h);
-}
-
-static void
-test_hanson(void)
-{
-	struct hanson	 h;
-	char		*buf;
-	size_t		 buf_len;
-	int		 r;
-
-	r = 0;
-	if (hanson_open(&h) == -1)
-		err(1, "XXhanson_open");
-
-	hanson_add_object(&h, "metadata", NULL);
-	test_hanson_meta(&h);
-	hanson_close_object(&h);
-
-	if (hanson_close(&h, &buf, &buf_len) == -1)
-		err(1, "hanson_open");
-
-	printf("%s buf_len=%zd\n", r == 0 ? "SUCCESS" : "FAIL", buf_len);
-	printf("%s\n", buf);
-	free(buf);
-
-	exit(r);
-}
-
 int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes;
-	int				 do_priv_drop, do_snap, benchmark, lflag;
+	int				 do_priv_drop, do_snap, do_ecs;
+	int				 benchmark, lflag;
 	u32				 filter_ppid;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
@@ -204,8 +140,6 @@ main(int argc, char *argv[])
 	struct timespec			 bench_stamp, now;
 	pid_t				 kube_talker_pid;
 	const char			*kube_config;
-
-	int zflag = 0; 		/* XXXREMOVEME */
 
 	quark_queue_default_attr(&qa);
 	qa.flags &= ~QQ_ALL_BACKENDS;
@@ -217,8 +151,9 @@ main(int argc, char *argv[])
 	lflag = 0;
 	benchmark = 0;
 	kube_config = NULL;
+	do_ecs = 0;
 
-	while ((ch = getopt(argc, argv, "BbC:DeFgHhK:kl:Mm:NP:tSsvVz")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DEeFghK:kl:Mm:NP:tSsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -239,14 +174,14 @@ main(int argc, char *argv[])
 		case 'e':
 			qa.flags |= QQ_ENTRY_LEADER;
 			break;
+		case 'E':
+			do_ecs = 1;
+			break;
 		case 'F':
 			qa.flags |= QQ_FILE;
 			break;
 		case 'g':
 			qa.flags |= QQ_MIN_AGG;
-			break;
-		case 'H':
-			test_hanson();
 			break;
 		case 'h':
 			if (isatty(STDOUT_FILENO))
@@ -310,9 +245,6 @@ main(int argc, char *argv[])
 			break;
 		case 'V':
 			display_version();
-			break;
-		case 'z':
-			zflag = 1;
 			break;
 		default:
 			usage();
@@ -423,16 +355,20 @@ main(int argc, char *argv[])
 		    filter_ppid != qev->process->proc_ppid)
 			continue;
 
-		if (zflag) {
-			char	*buf;
-			size_t	 buf_len;
+		/*
+		 * Finally print it to stdout
+		 */
+		if (do_ecs) {
+			char	*ecs_buf;
+			size_t	 ecs_buf_len;
 
-			if (quark_event_to_ecs(qev, &buf, &buf_len) == -1)
+			if (quark_event_to_ecs(qev, &ecs_buf, &ecs_buf_len) == -1)
 				qwarnx("quark_event_to_ecs");
 			else {
-				printf("(%zd)\n%s\n", buf_len, buf);
-				free(buf);
+				printf("(%zd)\n%s\n", ecs_buf_len, ecs_buf);
+				free(ecs_buf);
 			}
+			fflush(stdout);
 		} else 
 			quark_event_dump(qev, stdout);
 	}
