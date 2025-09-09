@@ -48,6 +48,19 @@ is_interactive(const struct quark_process *qp)
 	return (0);
 }
 
+static char *
+safe_basename(const char *path)
+{
+	char	*p;
+
+	p = strrchr(path, '/');
+
+	if (p != NULL && p[1] != 0)
+		return (p + 1);
+
+	return (NULL);
+}
+
 static int
 ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 {
@@ -443,10 +456,21 @@ static int
 ecs_file(struct hanson *h, const struct quark_event *qev, int *first)
 {
 	struct quark_file	*file = qev->file;
-	char			 buf[32];
+	char			 buf[32], *ext;
 	time_t			 ctime, mtime, atime;
 
+	ext = safe_basename(file->path);
+	if (ext != NULL) {
+		ext = strrchr(ext, '.');
+		if (ext != NULL && ext[1] != 0)
+			ext++;
+		else
+			ext = NULL;
+	}
+
 	hanson_add_key_value(h, "path", (char *)file->path, first);
+	if (ext != NULL)
+		hanson_add_key_value(h, "extension", ext, first);
 	hanson_add_key_value_int(h, "inode", file->inode, first);
 	hanson_add_key_value_int(h, "size", file->size, first);
 	hanson_add_key_value_int(h, "uid", file->uid, first);
