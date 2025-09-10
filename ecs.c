@@ -350,8 +350,7 @@ ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
 
 		hanson_add_key_value(h, "type", "pod", &resource_first);
 		hanson_add_key_value(h, "name", pod->name, &resource_first);
-		hanson_add_key_value(h, "namespace", pod->namespace,
-		    &resource_first);
+		hanson_add_key_value(h, "namespace", pod->ns, &resource_first);
 
 		hanson_add_object(h, "labels", &resource_first);
 		{
