@@ -1,0 +1,327 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  build-gnu-amd64:
+    name: Build linux-amd64-gnu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build with Docker (Ubuntu GNU)
+        run: |
+          make docker
+
+      - name: Strip binaries and libs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Executables
+          for f in quark-mon quark-btf quark-test quark-kube-talker; do
+            if [[ -f "$f" ]]; then strip --strip-unneeded "$f" || true; fi
+          done
+          # Static executables (may not exist on all targets)
+          for f in quark-mon-static quark-btf-static quark-test-static; do
+            if [[ -f "$f" ]]; then strip --strip-unneeded "$f" || true; fi
+          done
+          # Static libraries
+          for f in libquark.a libquark_big.a; do
+            if [[ -f "$f" ]]; then strip -g "$f" || true; fi
+          done
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="quark-${TAG}-linux-amd64-gnu"
+          ROOT="dist/${PKG}"
+          mkdir -p "$ROOT/bin" "$ROOT/bin-static" "$ROOT/lib" "$ROOT/include" "$ROOT/man"
+          # Binaries
+          install -m 0755 quark-mon quark-btf quark-test quark-kube-talker "$ROOT/bin/"
+          # Static binaries (if present)
+          for f in quark-mon-static quark-btf-static quark-test-static; do
+            [[ -f "$f" ]] && install -m 0755 "$f" "$ROOT/bin-static/" || true
+          done
+          # Libraries
+          install -m 0644 libquark.a libquark_big.a "$ROOT/lib/"
+          # Minimal SDK headers
+          install -m 0644 quark.h "$ROOT/include/"
+          # Man pages and docs
+          for f in *.3 *.7 *.8; do
+            [[ -f "$f" ]] && install -m 0644 "$f" "$ROOT/man/" || true
+          done
+          # Notices
+          install -m 0644 LICENSE.txt NOTICE.txt CHANGES "$ROOT/"
+          # Tarball + checksum
+          mkdir -p dist
+          tar -C "$ROOT" -czf "dist/${PKG}.tar.gz" .
+          sha256sum "dist/${PKG}.tar.gz" > "dist/${PKG}.tar.gz.sha256"
+          rm -rf "$ROOT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-${{ env.TAG }}-linux-amd64-gnu
+          path: |
+            dist/quark-${{ env.TAG }}-linux-amd64-gnu.tar.gz
+            dist/quark-${{ env.TAG }}-linux-amd64-gnu.tar.gz.sha256
+
+  build-gnu-amd64-glibc217:
+    name: Build linux-amd64-gnu-glibc217 (CentOS 7)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build with Docker (CentOS 7)
+        run: |
+          make centos7
+
+      - name: Strip binaries and libs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Executables
+          for f in quark-mon quark-btf quark-test quark-kube-talker; do
+            if [[ -f "$f" ]]; then strip --strip-unneeded "$f" || true; fi
+          done
+          # Static executables (unlikely on this target, but try)
+          for f in quark-mon-static quark-btf-static quark-test-static; do
+            if [[ -f "$f" ]]; then strip --strip-unneeded "$f" || true; fi
+          done
+          # Static libraries
+          for f in libquark.a libquark_big.a; do
+            if [[ -f "$f" ]]; then strip -g "$f" || true; fi
+          done
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="quark-${TAG}-linux-amd64-gnu-glibc217"
+          ROOT="dist/${PKG}"
+          mkdir -p "$ROOT/bin" "$ROOT/bin-static" "$ROOT/lib" "$ROOT/include" "$ROOT/man"
+          # Binaries
+          install -m 0755 quark-mon quark-btf quark-test quark-kube-talker "$ROOT/bin/"
+          # Static binaries (if present)
+          for f in quark-mon-static quark-btf-static quark-test-static; do
+            [[ -f "$f" ]] && install -m 0755 "$f" "$ROOT/bin-static/" || true
+          done
+          # Libraries
+          install -m 0644 libquark.a libquark_big.a "$ROOT/lib/"
+          # Minimal SDK headers
+          install -m 0644 quark.h "$ROOT/include/"
+          # Man pages and docs
+          for f in *.3 *.7 *.8; do
+            [[ -f "$f" ]] && install -m 0644 "$f" "$ROOT/man/" || true
+          done
+          # Notices
+          install -m 0644 LICENSE.txt NOTICE.txt CHANGES "$ROOT/"
+          # Tarball + checksum
+          mkdir -p dist
+          tar -C "$ROOT" -czf "dist/${PKG}.tar.gz" .
+          sha256sum "dist/${PKG}.tar.gz" > "dist/${PKG}.tar.gz.sha256"
+          rm -rf "$ROOT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-${{ env.TAG }}-linux-amd64-gnu-glibc217
+          path: |
+            dist/quark-${{ env.TAG }}-linux-amd64-gnu-glibc217.tar.gz
+            dist/quark-${{ env.TAG }}-linux-amd64-gnu-glibc217.tar.gz.sha256
+
+  build-gnu-arm64:
+    name: Build linux-arm64-gnu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build with Docker (ARM64 cross-compile)
+        run: |
+          make docker-cross-arm64
+
+      - name: Strip binaries and libs (in Docker for aarch64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use builder image to run the appropriate aarch64 strip
+          docker run -q \
+            -v "$PWD":"$PWD" \
+            -w "$PWD" \
+            -u "$(id -u):$(id -g)" \
+            quark-builder \
+            bash -lc '
+              set -e
+              for f in quark-mon quark-btf quark-test quark-kube-talker; do
+                [[ -f "$f" ]] && aarch64-linux-gnu-strip --strip-unneeded "$f" || true;
+              done
+              for f in quark-mon-static quark-btf-static quark-test-static; do
+                [[ -f "$f" ]] && aarch64-linux-gnu-strip --strip-unneeded "$f" || true;
+              done
+              for f in libquark.a libquark_big.a; do
+                [[ -f "$f" ]] && aarch64-linux-gnu-strip -g "$f" || true;
+              done'
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="quark-${TAG}-linux-arm64-gnu"
+          ROOT="dist/${PKG}"
+          mkdir -p "$ROOT/bin" "$ROOT/bin-static" "$ROOT/lib" "$ROOT/include" "$ROOT/man"
+          # Binaries
+          install -m 0755 quark-mon quark-btf quark-test quark-kube-talker "$ROOT/bin/"
+          # Static binaries (if present)
+          for f in quark-mon-static quark-btf-static quark-test-static; do
+            [[ -f "$f" ]] && install -m 0755 "$f" "$ROOT/bin-static/" || true
+          done
+          # Libraries
+          install -m 0644 libquark.a libquark_big.a "$ROOT/lib/"
+          # Minimal SDK headers
+          install -m 0644 quark.h "$ROOT/include/"
+          # Man pages and docs
+          for f in *.3 *.7 *.8; do
+            [[ -f "$f" ]] && install -m 0644 "$f" "$ROOT/man/" || true
+          done
+          # Notices
+          install -m 0644 LICENSE.txt NOTICE.txt CHANGES "$ROOT/"
+          # Tarball + checksum
+          mkdir -p dist
+          tar -C "$ROOT" -czf "dist/${PKG}.tar.gz" .
+          sha256sum "dist/${PKG}.tar.gz" > "dist/${PKG}.tar.gz.sha256"
+          rm -rf "$ROOT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-${{ env.TAG }}-linux-arm64-gnu
+          path: |
+            dist/quark-${{ env.TAG }}-linux-arm64-gnu.tar.gz
+            dist/quark-${{ env.TAG }}-linux-arm64-gnu.tar.gz.sha256
+
+  build-musl-amd64:
+    name: Build linux-amd64-musl
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build with Docker (Alpine musl)
+        run: |
+          make alpine
+
+      - name: Strip binaries and libs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Executables
+          for f in quark-mon quark-btf quark-test quark-kube-talker; do
+            if [[ -f "$f" ]]; then strip --strip-unneeded "$f" || true; fi
+          done
+          # Static executables (musl static expected here)
+          for f in quark-mon-static quark-btf-static quark-test-static; do
+            if [[ -f "$f" ]]; then strip --strip-unneeded "$f" || true; fi
+          done
+          # Static libraries
+          for f in libquark.a libquark_big.a; do
+            if [[ -f "$f" ]]; then strip -g "$f" || true; fi
+          done
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="quark-${TAG}-linux-amd64-musl"
+          ROOT="dist/${PKG}"
+          mkdir -p "$ROOT/bin" "$ROOT/bin-static" "$ROOT/lib" "$ROOT/include" "$ROOT/man"
+          # Binaries
+          install -m 0755 quark-mon quark-btf quark-test quark-kube-talker "$ROOT/bin/"
+          # Static binaries (if present)
+          for f in quark-mon-static quark-btf-static quark-test-static; do
+            [[ -f "$f" ]] && install -m 0755 "$f" "$ROOT/bin-static/" || true
+          done
+          # Libraries
+          install -m 0644 libquark.a libquark_big.a "$ROOT/lib/"
+          # Minimal SDK headers
+          install -m 0644 quark.h "$ROOT/include/"
+          # Man pages and docs
+          for f in *.3 *.7 *.8; do
+            [[ -f "$f" ]] && install -m 0644 "$f" "$ROOT/man/" || true
+          done
+          # Notices
+          install -m 0644 LICENSE.txt NOTICE.txt CHANGES "$ROOT/"
+          # Tarball + checksum
+          mkdir -p dist
+          tar -C "$ROOT" -czf "dist/${PKG}.tar.gz" .
+          sha256sum "dist/${PKG}.tar.gz" > "dist/${PKG}.tar.gz.sha256"
+          rm -rf "$ROOT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-${{ env.TAG }}-linux-amd64-musl
+          path: |
+            dist/quark-${{ env.TAG }}-linux-amd64-musl.tar.gz
+            dist/quark-${{ env.TAG }}-linux-amd64-musl.tar.gz.sha256
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - build-gnu-amd64
+      - build-gnu-amd64-glibc217
+      - build-gnu-arm64
+      - build-musl-amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate combined SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.TAG }}
+          body_path: CHANGES
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/SHA256SUMS
+
