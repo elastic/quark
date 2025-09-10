@@ -3006,7 +3006,9 @@ quark_group_populate(struct group_by_gid *by_gid)
 {
 	char			*buf;
 	long			 buf_size;
+#ifdef HAVE_GETGRENT_R
 	struct group		 grp_storage;
+#endif
 	struct group		*grp;
 	struct quark_group	*qgrp;
 
@@ -3019,7 +3021,12 @@ quark_group_populate(struct group_by_gid *by_gid)
 		goto bad;
 
 	setgrent();
-	while (getgrent_r(&grp_storage, buf, buf_size, &grp) == 0) {
+#ifdef HAVE_GETGRENT_R
+	while (getgrent_r(&grp_storage, buf, buf_size, &grp) == 0)
+#else
+	while ((grp = (getgrent())) != NULL)
+#endif
+	{
 		if ((qgrp = calloc(1, sizeof(*qgrp))) == NULL)
 			goto bad;
 		qgrp->gid = grp->gr_gid;
