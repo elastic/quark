@@ -562,7 +562,7 @@ struct quark_pod {
 	RB_ENTRY(quark_pod)	 entry_by_uid;
 	int			 linked;	/* true if entry_by_uid is linked */
 	char			*name;
-	char			*namespace;
+	char			*ns;
 	char			*uid;
 	struct label_tree	 labels;
 	struct pod_containers	 containers;

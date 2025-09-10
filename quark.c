@@ -785,7 +785,7 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	}
 
 	free(pod->name);
-	free(pod->namespace);
+	free(pod->ns);
 	free(pod->uid);
 	free(pod->phase);
 	free(pod);
@@ -1024,10 +1024,10 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 		RB_INIT(&pod->containers);
 		RB_INIT(&pod->labels);
 		pod->name = strdup(name->valuestring);
-		pod->namespace = strdup(namespace->valuestring);
+		pod->ns = strdup(namespace->valuestring);
 		pod->uid = strdup(uid->valuestring);
 		if (pod->name == NULL ||
-		    pod->namespace == NULL ||
+		    pod->ns == NULL ||
 		    pod->uid == NULL) {
 			pod_delete(qq, pod);
 			return (-1);
@@ -1859,7 +1859,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 
 			fl = "POD";
 			PF(fl, "name=%s namespace=%s\n",
-			    pod->name, pod->namespace);
+			    pod->name, pod->ns);
 			PF(fl, "uid=%s phase=%s\n",
 			    pod->uid, pod->phase);
 			PF(fl, "labels=");
