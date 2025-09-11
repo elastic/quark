@@ -353,7 +353,7 @@ test-kernel: initramfs.gz
 # positives.
 #
 test-valgrind: quark-test
-	$(SUDO) QUARK_BTF_PATH=/sys/kernel/btf/vmlinux			\
+	$(SUDO) VALGRIND=1 QUARK_BTF_PATH=/sys/kernel/btf/vmlinux	\
 		valgrind						\
 		--trace-children=no					\
 		--child-silent-after-fork=yes				\

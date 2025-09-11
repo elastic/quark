@@ -2901,6 +2901,13 @@ quark_passwd_populate(struct passwd_by_uid *by_uid)
 #endif
 	struct quark_passwd	*qpw;
 
+	if (getenv("VALGRIND") != NULL) {
+		qwarnx("running on valgrind, skipping user database.\n"
+		    "glibc will dlopen nss_switch and never release it back, "
+		    "which makes valgrind think there is a leak when there isn't");
+		return (0);
+	}
+
 	buf = NULL;
 	buf_size = sysconf(_SC_GETPW_R_SIZE_MAX);
 	if (buf_size == -1)
@@ -3011,6 +3018,13 @@ quark_group_populate(struct group_by_gid *by_gid)
 #endif
 	struct group		*grp;
 	struct quark_group	*qgrp;
+
+	if (getenv("VALGRIND") != NULL) {
+		qwarnx("running on valgrind, skipping group database\n"
+		    "glibc will dlopen nss_switch and never release it back\n"
+		    "which makes valgrind think there is a leak when there isn't");
+		return (0);
+	}
 
 	buf = NULL;
 	buf_size = sysconf(_SC_GETGR_R_SIZE_MAX);
