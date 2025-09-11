@@ -98,113 +98,6 @@ struct quark {
 	u64		boottime;
 } quark;
 
-static int
-is_hex_lower(const char *s)
-{
-	const unsigned char *p = (const unsigned char *)s;
-
-	if (*p == '\0')
-		return (0);
-	for (; *p; p++) {
-		if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f')))
-			return (0);
-	}
-	return (1);
-}
-
-/*
- * Parse a cgroup basename like:
- *   docker-<id>.scope
- *   cri-containerd-<id>.scope
- *   containerd-<id>.scope
- *   crio-<id>.scope
- *   libpod-<id>.scope
- *   <id>
- * into a scheme (ending with "://") and an id.
- *
- * Returns:
- *   1 on success with a known scheme
- *   0 on success with unknown scheme (scheme="")
- *  -1 on failure (id not recognized)
- */
-int
-quark_parse_cgroup_container(const char *basename,
-    char *scheme, size_t scheme_len,
-    char *id, size_t id_len)
-{
-	char		 buf[NAME_MAX];
-	const char	*p = basename;
-	size_t		 n;
-
-	if (scheme_len > 0)
-		scheme[0] = 0;
-	if (id_len > 0)
-		id[0] = 0;
-
-	if (basename == NULL)
-		return (-1);
-
-	/* Copy and strip trailing .scope if present */
-	n = strlcpy(buf, p, sizeof(buf));
-	if (n >= sizeof(buf))
-		return (-1);
-	if (n > 6 && !strcmp(buf + n - 6, ".scope"))
-		buf[n - 6] = 0;
-
-	/* docker-<id> */
-	if (!strncmp(buf, "docker-", 7)) {
-		if (scheme_len > 0)
-			(void)strlcpy(scheme, "docker://", scheme_len);
-		p = buf + 7;
-		if (!is_hex_lower(p))
-			return (-1);
-		if (strlcpy(id, p, id_len) >= id_len)
-			return (-1);
-		return (1);
-	}
-	/* cri-containerd-<id> */
-	if (!strncmp(buf, "cri-containerd-", 15)) {
-		if (scheme_len > 0)
-			(void)strlcpy(scheme, "containerd://", scheme_len);
-		p = buf + 15;
-		if (!is_hex_lower(p))
-			return (-1);
-		if (strlcpy(id, p, id_len) >= id_len)
-			return (-1);
-		return (1);
-	}
-	/* containerd-<id> */
-	if (!strncmp(buf, "containerd-", 11)) {
-		if (scheme_len > 0)
-			(void)strlcpy(scheme, "containerd://", scheme_len);
-		p = buf + 11;
-		if (!is_hex_lower(p))
-			return (-1);
-		if (strlcpy(id, p, id_len) >= id_len)
-			return (-1);
-		return (1);
-	}
-	/* crio-<id> */
-	if (!strncmp(buf, "crio-", 5)) {
-		if (scheme_len > 0)
-			(void)strlcpy(scheme, "cri-o://", scheme_len);
-		p = buf + 5;
-		if (!is_hex_lower(p))
-			return (-1);
-		if (strlcpy(id, p, id_len) >= id_len)
-			return (-1);
-		return (1);
-	}
-
-	/* No known prefix: treat the whole basename as the id */
-	if (!is_hex_lower(buf))
-		return (-1);
-	if (strlcpy(id, buf, id_len) >= id_len)
-		return (-1);
-	/* Unknown scheme */
-	return (0);
-}
-
 struct raw_event *
 raw_event_alloc(int type)
 {
@@ -1345,15 +1238,75 @@ read_kube_events(struct quark_queue *qq)
 	}
 }
 
+/*
+ * Build the kubernetes container_id from a cgroup
+ * cgroup is what we get from the kernel, like docker-<id>.scope.
+ * container_id is how kubernetes sees it, like docker://<id>.
+ * Returns 0 if container_id is filled, -1 otherwise.
+ * Keep this function non static so we can test it.
+ */
+int
+parse_kube_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
+{
+	char	*name, *dot, *id, *lookup_prefix;
+	int	 r, id_skip;
+
+	if ((name = strrchr(cgroup, '/')) == NULL)
+		return (-1);
+	name++;
+
+	/*
+	 * Atm we only accept the systemd format, foo-<id>.scope
+	 * docker-<id>.scope                 -> docker://<id>
+	 * crio-<id>.scope|libpod-<id>.scope -> cri-o://<id>
+	 * cri-containerd-<id>.scope         -> containerd://<id>
+	 * containerd-<id>.scope             -> containerd://<id>
+	 */
+	id_skip = 0;
+
+	lookup_prefix = NULL;
+	if (!strncmp(name, "docker-", 7)) {
+		id_skip = 7;
+		lookup_prefix = "docker";
+	} else if (!strncmp(name, "crio-", 5)) {
+		id_skip = 5;
+		lookup_prefix = "cri-o";
+	} else if (!strncmp(name, "libpod-", 7)) {
+		id_skip = 7;
+		lookup_prefix = "cri-o";
+	} else if (!strncmp(name, "cri-containerd-", 15)) {
+		id_skip = 15;
+		lookup_prefix = "containerd";
+	} else if (!strncmp(name, "containerd-", 11)) {
+		id_skip = 11;
+		lookup_prefix = "containerd";
+	} else
+		return (-1);
+
+	/*
+	 * id starts after the foo- prefix, we still need to chomp the trailing
+	 * .scope
+	 */
+	id = name + id_skip;
+
+	/* copy the whole thing with the lookup_prefix, and then chomp .scope */
+	r = snprintf(container_id, container_id_len,
+	    "%s://%s", lookup_prefix, id);
+	if (r < 0 || r >= (int)container_id_len)
+		return (-1);
+	dot = strrchr(container_id, '.');
+	if (dot == NULL)
+		return (-1);
+	*dot = 0;
+
+	return (0);
+}
+
 static void
 link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 {
 	struct quark_container	*container;
-	char					*name;
-	char					 scheme[32];
-	char					 id[NAME_MAX];
-	char					 full_id[NAME_MAX + 32];
-	int						 r, have_scheme;
+	char			 cid[NAME_MAX];
 
 	if (qp == NULL)
 		return;
@@ -1361,56 +1314,10 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 		return;
 	if (!(qp->flags & QUARK_F_CGROUP))
 		return;
-	if ((name = strrchr(qp->cgroup, '/')) == NULL)
+	if (parse_kube_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
 		return;
-	name++;
-	/*
-	 * Parse the basename to runtime scheme + id.
-	 * Accept common forms:
-	 *   docker-<id>.scope            -> docker://<id>
-	 *   cri-containerd-<id>.scope    -> containerd://<id>
-	 *   containerd-<id>.scope        -> containerd://<id>
-	 *   crio-<id>.scope|libpod-<id>.scope -> cri-o://<id>
-	 *   <id>                         -> unknown scheme
-	 */
-	bzero(scheme, sizeof(scheme));
-	bzero(id, sizeof(id));
-	bzero(full_id, sizeof(full_id));
-	have_scheme = quark_parse_cgroup_container(name, scheme, sizeof(scheme),
-	    id, sizeof(id));
-	if (have_scheme == -1)
+	if ((container = container_lookup(qq, cid)) == NULL)
 		return;
-
-	/* If we parsed a known scheme, try direct lookup first. */
-	if (have_scheme == 1) {
-		r = snprintf(full_id, sizeof(full_id), "%s%s", scheme, id);
-		if (r < 0 || r >= (int)sizeof(full_id))
-			return;
-		if ((container = container_lookup(qq, full_id)) == NULL)
-			return;
-	} else {
-		/* Unknown scheme: try common CRI orders. */
-		const char *candidates[] = {
-			"containerd://",
-			"docker://",
-			"cri-o://",
-			NULL
-		};
-		int i;
-
-		container = NULL;
-		for (i = 0; candidates[i] != NULL; i++) {
-			r = snprintf(full_id, sizeof(full_id), "%s%s",
-			    candidates[i], id);
-			if (r < 0 || r >= (int)sizeof(full_id))
-				continue;
-			container = container_lookup(qq, full_id);
-			if (container != NULL)
-				break;
-		}
-		if (container == NULL)
-			return;
-	}
 
 	qp->container = container;
 	TAILQ_INSERT_TAIL(&container->processes, qp, entry_container);

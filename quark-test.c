@@ -597,55 +597,6 @@ fork_sock_write(u16 port, int type, u16 *bound_port)
 }
 
 static int
-t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
-{
-	struct {
-		const char *in;
-		int expected_ret; /* 1 known, 0 unknown, -1 fail */
-		const char *scheme; /* may be "" when unknown */
-		const char *id;
-	} cases[] = {
-		{ "docker-f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829.scope",
-		    1, "docker://", "f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829" },
-		{ "cri-containerd-abc123def456.scope", 1, "containerd://", "abc123def456" },
-		{ "containerd-abc123def456.scope", 1, "containerd://", "abc123def456" },
-		{ "crio-0123456789abcdef.scope", 1, "cri-o://", "0123456789abcdef" },
-		{ "abcdef0123456789", 0, "", "abcdef0123456789" },
-		/* negative cases */
-		{ "docker-.scope", -1, NULL, NULL },
-		{ "docker-zzzz.scope", -1, NULL, NULL },
-		{ "containerd-.scope", -1, NULL, NULL },
-		{ "crio-.scope", -1, NULL, NULL },
-		{ "nothex", -1, NULL, NULL },
-		{ "ABCDEF", -1, NULL, NULL },
-		{ "something-abcdef.scope", -1, NULL, NULL },
-		{ "docker-abcdef.scopeX", -1, NULL, NULL },
-		{ NULL, 0, NULL, NULL }
-	};
-	char	scheme[32];
-	char	id[NAME_MAX];
-	int		r;
-	size_t	i;
-
-	(void)t;
-	(void)qa;
-
-	for (i = 0; cases[i].in != NULL; i++) {
-		bzero(scheme, sizeof(scheme));
-		bzero(id, sizeof(id));
-		r = quark_parse_cgroup_container(cases[i].in, scheme, sizeof(scheme),
-		    id, sizeof(id));
-		assert(r == cases[i].expected_ret);
-		if (r >= 0) {
-			assert(!strcmp(id, cases[i].id));
-			assert(!strcmp(scheme, cases[i].scheme));
-		}
-	}
-
-	return (0);
-}
-
-static int
 t_probe(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue	qq;
@@ -1269,6 +1220,47 @@ t_dns(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
+{
+	char	cid[NAME_MAX];
+	int	i, r;
+
+	struct {
+		const char	*in;
+		const char	*out;
+		int		 expected_ret;	/* -1 fail, 0 found, any other fail */
+	} cases[] = {
+		{ "foo/docker-f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829.scope",
+		  "docker://f6aa2e3fa923d32f4d7905727cf1011148e4da0fd101492e98a27e8c55c5c829",
+		  0 },
+		{ "foo/cri-containerd-abc123def456.scope", "containerd://abc123def456", 0 },
+		{ "foo/containerd-abc123def456.scope", "containerd://abc123def456", 0 },
+		{ "foo/crio-0123456789abcdef.scope", "cri-o://0123456789abcdef", 0 },
+		/* negative cases */
+		{ "crio-0123456789abcdef.scope", "cri-o://0123456789abcdef", -1 },
+		{ "docker-.scope", NULL, -1 },
+		{ "containerd-.scope", NULL, -1 },
+		{ "crio-.scope", NULL, -1 },
+		{ "nothex", NULL, -1 },
+		{ "ABCDEF", NULL, -1 },
+		{ "something-abcdef.scope", NULL, -1 },
+		{ "docker-abcdef.scopeX", NULL, -1 },
+		{ NULL, NULL, -1 }
+	};
+
+	for (i = 0; cases[i].in != NULL; i++) {
+		bzero(cid, sizeof(cid));
+
+		r = parse_kube_cgroup(cases[i].in, cid, sizeof(cid));
+		assert(r == cases[i].expected_ret);
+		if (r == 0)
+			assert(!strcmp(cid, cases[i].out));
+	}
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  */
@@ -1277,9 +1269,8 @@ t_dns(const struct test *t, struct quark_queue_attr *qa)
 #define T_EBPF(_x)	{ S(_x), _x, QQ_EBPF, 0 }
 #define S(_x)		#_x
 struct test all_tests[] = {
-    T(t_cgroup_parse),
-    T(t_probe),
-    T(t_fork_exec_exit),
+	T(t_probe),
+	T(t_fork_exec_exit),
 	T_EBPF(t_fork_exec_exit_rel),
 	T(t_exit_tgid),
 	T_EBPF(t_file),
@@ -1289,6 +1280,7 @@ struct test all_tests[] = {
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
+	T_EBPF(t_cgroup_parse),
 	T(t_namespace),
 	T(t_cache_grace),
 	T(t_min_agg),
