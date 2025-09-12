@@ -3,6 +3,8 @@ PWD= $(shell pwd)
 HTML2MARKDOWN?= html2markdown
 SUDO?= sudo
 GO?= go
+INSTALL?= install
+PREFIX?= /usr/local
 
 # Normalize ARCH
 ifeq ($(shell uname -m), x86_64)
@@ -509,8 +511,70 @@ clean-docs:
 	$(call msg,CLEAN,docs)
 	$(Q)rm -f docs/*.html
 
+#
+# Installation and distribution packaging
+#
+# Standard install (FHS) uses PREFIX and DESTDIR. Default PREFIX=/usr/local.
+# Binaries -> $(PREFIX)/bin
+# Libraries -> $(PREFIX)/lib
+# Header -> $(PREFIX)/include
+# Manpages -> $(PREFIX)/share/man/man{3,7,8}
+#
+install: all
+	$(call msg,INSTALL,bin)
+	$(Q)$(INSTALL) -d $(DESTDIR)$(PREFIX)/bin
+	$(Q)$(INSTALL) -m 0755 quark-mon $(DESTDIR)$(PREFIX)/bin/
+	$(Q)$(INSTALL) -m 0755 quark-btf $(DESTDIR)$(PREFIX)/bin/
+	$(Q)$(INSTALL) -m 0755 quark-test $(DESTDIR)$(PREFIX)/bin/
+	$(Q)$(INSTALL) -m 0755 quark-kube-talker $(DESTDIR)$(PREFIX)/bin/
+	$(call msg,INSTALL,lib)
+	$(Q)$(INSTALL) -d $(DESTDIR)$(PREFIX)/lib
+	$(Q)$(INSTALL) -m 0644 $(LIBQUARK_STATIC) $(DESTDIR)$(PREFIX)/lib/
+	$(Q)$(INSTALL) -m 0644 $(LIBQUARK_STATIC_BIG) $(DESTDIR)$(PREFIX)/lib/
+	$(call msg,INSTALL,include)
+	$(Q)$(INSTALL) -d $(DESTDIR)$(PREFIX)/include
+	$(Q)$(INSTALL) -m 0644 quark.h $(DESTDIR)$(PREFIX)/include/
+	$(call msg,INSTALL,man)
+	$(Q)$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/man/man3
+	$(Q)$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/man/man7
+	$(Q)$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/man/man8
+	$(Q)for f in *.3; do [ -f "$$f" ] && $(INSTALL) -m 0644 "$$f" $(DESTDIR)$(PREFIX)/share/man/man3/ || true; done
+	$(Q)for f in *.7; do [ -f "$$f" ] && $(INSTALL) -m 0644 "$$f" $(DESTDIR)$(PREFIX)/share/man/man7/ || true; done
+	$(Q)for f in *.8; do [ -f "$$f" ] && $(INSTALL) -m 0644 "$$f" $(DESTDIR)$(PREFIX)/share/man/man8/ || true; done
+
+# Flattened distribution staging (tarball-friendly)
+# Uses DESTDIR as the staging root, creates top-level bin/, bin-static/, lib/, include/, man/
+dist: all
+	$(call msg,DIST,$(DESTDIR))
+	$(Q)test -n "$(DESTDIR)" || (echo "DESTDIR is required for 'make dist'"; exit 1)
+	$(Q)$(INSTALL) -d $(DESTDIR)/bin $(DESTDIR)/lib $(DESTDIR)/include $(DESTDIR)/man
+	# Optional static bin dir if any static binaries exist
+	$(Q)mkdir -p $(DESTDIR)/bin-static
+	# Binaries
+	$(Q)$(INSTALL) -m 0755 quark-mon $(DESTDIR)/bin/
+	$(Q)$(INSTALL) -m 0755 quark-btf $(DESTDIR)/bin/
+	$(Q)$(INSTALL) -m 0755 quark-test $(DESTDIR)/bin/
+	$(Q)$(INSTALL) -m 0755 quark-kube-talker $(DESTDIR)/bin/
+	# Static binaries (if built)
+	$(Q)[ -f quark-mon-static ] && $(INSTALL) -m 0755 quark-mon-static $(DESTDIR)/bin-static/ || true
+	$(Q)[ -f quark-btf-static ] && $(INSTALL) -m 0755 quark-btf-static $(DESTDIR)/bin-static/ || true
+	$(Q)[ -f quark-test-static ] && $(INSTALL) -m 0755 quark-test-static $(DESTDIR)/bin-static/ || true
+	# Libraries
+	$(Q)$(INSTALL) -m 0644 $(LIBQUARK_STATIC) $(DESTDIR)/lib/
+	$(Q)$(INSTALL) -m 0644 $(LIBQUARK_STATIC_BIG) $(DESTDIR)/lib/
+	# Minimal SDK header
+	$(Q)$(INSTALL) -m 0644 quark.h $(DESTDIR)/include/
+	# Manpages (flattened in man/)
+	$(Q)for f in *.3 *.7 *.8; do [ -f "$$f" ] && $(INSTALL) -m 0644 "$$f" $(DESTDIR)/man/ || true; done
+	# Notices
+	$(Q)$(INSTALL) -m 0644 LICENSE.txt $(DESTDIR)/
+	$(Q)$(INSTALL) -m 0644 NOTICE.txt $(DESTDIR)/
+	$(Q)$(INSTALL) -m 0644 CHANGES $(DESTDIR)/
+
 .PHONY:				\
 	all			\
+	install			\
+	dist			\
 	btfhub			\
 	centos7			\
 	centos7-image		\
