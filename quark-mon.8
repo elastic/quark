@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDeFkMNSstv
+.Op Fl BbDEeFkMNSstv
 .Op Fl C Ar filename
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
@@ -52,6 +52,8 @@ dot -Tsvg filename -o filename.svg
 .It Fl D
 Drop priviledges to nobody and chroot to /var/empty, useful to show how quark
 can run without priviledges.
+.It Fl E
+Output ECS JSON to stdout (experimental).
 .It Fl e
 Include
 .Em proc_entry_leader

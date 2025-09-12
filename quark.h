@@ -61,6 +61,9 @@ void	 quark_socket_iter_init(struct quark_socket_iter *, struct quark_queue *);
 const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
 const struct quark_socket *quark_socket_lookup(struct quark_queue *,
     struct quark_sockaddr *, struct quark_sockaddr *);
+struct quark_passwd *quark_passwd_lookup(struct quark_queue *, uid_t);
+struct quark_group *quark_group_lookup(struct quark_queue *, gid_t);
+
 /* quark.c: These are exported for testing only */
 int	 parse_kube_cgroup(const char *, char *, size_t);
 
@@ -127,6 +130,32 @@ enum quark_verbosity_levels {
 #define	 qdebugx(fmt, ...) qlog(QUARK_VL_DEBUG, 0, fmt, ##__VA_ARGS__)
 void	 qlog_func(int, int, const char *, int, const char *, ...) __attribute__((format(printf, 5,6)));
 
+/* hanson.c */
+struct hanson;
+int	 hanson_add_ascii(struct hanson *, int);
+int	 hanson_add_string(struct hanson *, char *, int *);
+int	 hanson_add_integer(struct hanson *, int64_t);
+int	 hanson_add_boolean(struct hanson *h, int, int *);
+int	 hanson_add_key_value(struct hanson *, char *, char *, int *);
+int	 hanson_add_key_value_int(struct hanson *, char *, int64_t, int *);
+int	 hanson_add_key_value_bool(struct hanson *, char *, int, int *);
+int	 hanson_add_array(struct hanson *, char *, int *);
+int	 hanson_close_array(struct hanson *);
+int	 hanson_add_object(struct hanson *, char *, int *);
+int	 hanson_close_object(struct hanson *);
+int	 hanson_open(struct hanson *);
+int	 hanson_close(struct hanson *, char **, size_t *);
+
+struct hanson {
+	int	 error;
+	char	*buf;
+	size_t	 buf_len;
+	FILE	*stream;
+};
+
+/* ecs.c */
+int	quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev, char **, size_t *);
+
 /*
  * Time helpers
  */
@@ -141,6 +170,10 @@ void	 qlog_func(int, int, const char *, int, const char *, ...) __attribute__((f
 #ifndef MS_TO_NS
 #define MS_TO_NS(_x)	((u64)(_x) * NS_PER_MS)
 #endif /* MS_TO_NS */
+
+#ifndef NS_TO_S
+#define NS_TO_S(_x)	((u64)(_x) / NS_PER_S)
+#endif /* NS_TO_S */
 
 /*
  * Generic exported constants
@@ -498,6 +531,7 @@ struct label_node {
 };
 
 RB_HEAD(label_tree, label_node);
+RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
 
 /*
  * A container's lifecycle is tied to its parent quark_pod.
@@ -555,6 +589,29 @@ struct quark_kube {
 	struct container_by_id	 container_by_id;	/* in containerID format from json */
 };
 
+/*
+ * Passwd database, can't afford to go through glibc in the hotpath
+ */
+RB_HEAD(passwd_by_uid, quark_passwd);
+
+struct quark_passwd {
+	RB_ENTRY(quark_passwd)	 entry;
+	uid_t			 uid;
+	gid_t			 gid;
+	char			*name;
+};
+
+/*
+ * Group database, can't afford to go through glibc in the hotpath
+ */
+RB_HEAD(group_by_gid, quark_group);
+
+struct quark_group {
+	RB_ENTRY(quark_group)	 entry;
+	gid_t			 gid;
+	char			*name;
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
@@ -603,6 +660,8 @@ struct quark_queue {
 	struct process_by_pid		 process_by_pid;
 	struct gc_queue			 event_gc;
 	struct socket_by_src_dst	 socket_by_src_dst;
+	struct passwd_by_uid		 passwd_by_uid;
+	struct group_by_gid		 group_by_gid;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
 	const u8			(*agg_matrix)[RAW_NUM_TYPES];
