@@ -75,7 +75,7 @@ case "$UBUNTU_VERSION" in
 	20.04) CODENAME=focal ;;
 	22.04) CODENAME=jammy ;;
 	24.04) CODENAME=noble ;;
-	25.04) CODENAME=oracular ;;
+	25.04) CODENAME=plucky ;;
 	*) die "Unsupported Ubuntu version: $UBUNTU_VERSION" ;;
 esac
 
