@@ -117,7 +117,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-BbDeFkMNSstv] "
-	    "[-K kubeconfig] [-C filename ] [-l maxlength] [-m maxnodes] [-P ppid]\n",
+	    "[-K kubeconfig] [-n node] [-C filename ] [-l maxlength] [-m maxnodes] [-P ppid]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
 
@@ -140,6 +140,7 @@ main(int argc, char *argv[])
 	struct timespec			 bench_stamp, now;
 	pid_t				 kube_talker_pid;
 	const char			*kube_config;
+	const char			*node_name;
 
 	quark_queue_default_attr(&qa);
 	qa.flags &= ~QQ_ALL_BACKENDS;
@@ -152,8 +153,9 @@ main(int argc, char *argv[])
 	benchmark = 0;
 	kube_config = NULL;
 	do_ecs = 0;
+	node_name = NULL;
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFghK:kl:Mm:NP:tSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DEeFghK:kl:Mm:Nn:P:tSsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -191,6 +193,9 @@ main(int argc, char *argv[])
 			break;	/* NOTREACHED */
 		case 'K':
 			kube_config = optarg;
+			break;
+		case 'n':
+			node_name = optarg;
 			break;
 		case 'k':
 			qa.flags |= QQ_KPROBE;
@@ -279,7 +284,9 @@ main(int argc, char *argv[])
 		err(1, "sigaction");
 
 	if (kube_config != NULL) {
-		qa.kubefd = quark_start_kube_talker(kube_config,
+		if (node_name == NULL)
+			fprintf(stderr, "-K provided without -n; quark-kube-talker will use NODE_NAME or hostname fallback\n");
+		qa.kubefd = quark_start_kube_talker(kube_config, node_name,
 		    &kube_talker_pid);
 		if (qa.kubefd == -1)
 			err(1, "can't start quark-kube-talker");

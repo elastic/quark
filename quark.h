@@ -48,7 +48,7 @@ int	 quark_queue_block(struct quark_queue *);
 const struct quark_event *quark_queue_get_event(struct quark_queue *);
 int	 quark_queue_get_epollfd(struct quark_queue *);
 void	 quark_queue_get_stats(struct quark_queue *, struct quark_queue_stats *);
-int	 quark_start_kube_talker(const char *, pid_t *);
+int	 quark_start_kube_talker(const char *, const char *, pid_t *);
 int	 quark_dump_process_cache_graph(struct quark_queue *, FILE *);
 int	 quark_dump_raw_event_graph(struct quark_queue *, FILE *, FILE *);
 int	 quark_event_dump(const struct quark_event *, FILE *);

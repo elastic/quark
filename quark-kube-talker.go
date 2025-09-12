@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -14,15 +15,22 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 )
 
 func main() {
-	if len(os.Args) != 3 {
-		panic("usage: quark-kube-talker kube_config_path fd_number")
+	// Flags: optional node-name override; positional args: kube_config_path fd_number
+	nodeNameFlag := flag.String("node-name", "", "Node name to restrict pod watch to")
+	flag.Parse()
+
+	args := flag.Args()
+	if len(args) != 2 {
+		panic("usage: quark-kube-talker [-node-name <name>] kube_config_path fd_number")
 	}
 
-	configPath := os.Args[1]
-	fd, err := strconv.Atoi(os.Args[2])
+	configPath := args[0]
+	fd, err := strconv.Atoi(args[1])
 	if err != nil {
 		panic(err.Error())
 	}
@@ -42,7 +50,25 @@ func main() {
 		panic(err.Error())
 	}
 
-	factory := informers.NewSharedInformerFactory(clientset, 0)
+	// Determine node name: flag -> env -> hostname (with log on fallback)
+	nodeName := *nodeNameFlag
+	if nodeName == "" {
+		nodeName = os.Getenv("NODE_NAME")
+	}
+	if nodeName == "" {
+		host, herr := os.Hostname()
+		if herr != nil || host == "" {
+			panic("unable to determine node name: provide --node-name or set NODE_NAME")
+		}
+		nodeName = host
+		fmt.Fprintf(os.Stderr, "NODE_NAME not set and --node-name not provided; falling back to hostname: %s\n", nodeName)
+	}
+
+	// Restrict to pods scheduled on this node only
+	tweak := informers.WithTweakListOptions(func(lo *metav1.ListOptions) {
+		lo.FieldSelector = fields.OneTermEqualSelector("spec.nodeName", nodeName).String()
+	})
+	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 0, tweak)
 	podInformer := factory.Core().V1().Pods().Informer()
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{

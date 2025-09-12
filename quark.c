@@ -4029,7 +4029,7 @@ quark_queue_get_event(struct quark_queue *qq)
 }
 
 int
-quark_start_kube_talker(const char *kube_config, pid_t *pid)
+quark_start_kube_talker(const char *kube_config, const char *node_name, pid_t *pid)
 {
 	int	pipefd[2];
 	char	fdbuf[16];
@@ -4064,9 +4064,15 @@ quark_start_kube_talker(const char *kube_config, pid_t *pid)
 
 	snprintf(fdbuf, sizeof(fdbuf), "%d", pipefd[1]);
 
-	if (execl("quark-kube-talker", "quark-kube-talker",
-	    kube_config, fdbuf, (char *)NULL) == -1)
-		err(1, "execl");
+	if (node_name != NULL && *node_name != '\0') {
+		if (execl("quark-kube-talker", "quark-kube-talker",
+		    "-node-name", node_name, kube_config, fdbuf, (char *)NULL) == -1)
+			err(1, "execl");
+	} else {
+		if (execl("quark-kube-talker", "quark-kube-talker",
+		    kube_config, fdbuf, (char *)NULL) == -1)
+			err(1, "execl");
+	}
 
 	return (0);		/* NOTREACHED */
 }
