@@ -44,6 +44,7 @@ func main() {
 
 	factory := informers.NewSharedInformerFactory(clientset, 0)
 	podInformer := factory.Core().V1().Pods().Informer()
+	nodeInformer := factory.Core().V1().Nodes().Informer()
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
@@ -54,7 +55,7 @@ func main() {
 				pod.Status.Phase == v1.PodPending {
 				return
 			}
-			forward(file, pod)
+			forwardPod(file, pod)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			oldPod := oldObj.(*v1.Pod)
@@ -70,11 +71,11 @@ func main() {
 				return
 			}
 
-			forward(file, newPod)
+			forwardPod(file, newPod)
 		},
 		DeleteFunc: func(obj interface{}) {
 			if pod, ok := obj.(*v1.Pod); ok {
-				forward(file, pod)
+				forwardPod(file, pod)
 			} else {
 				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
@@ -82,9 +83,40 @@ func main() {
 					return
 				}
 				if pod, ok := tombstone.Obj.(*v1.Pod); ok {
-					forward(file, pod)
+					forwardPod(file, pod)
 				} else {
 					fmt.Fprintf(os.Stderr, "Error decoding object when deleting pod, tombstone contained non-Pod object: %#v\n", tombstone.Obj)
+				}
+			}
+		},
+	})
+
+	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			node := obj.(*v1.Node)
+			forwardNode(file, node)
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldNode := oldObj.(*v1.Node)
+			newNode := newObj.(*v1.Node)
+			if oldNode.ResourceVersion == newNode.ResourceVersion {
+				return
+			}
+			forwardNode(file, newNode)
+		},
+		DeleteFunc: func(obj interface{}) {
+			if node, ok := obj.(*v1.Node); ok {
+				forwardNode(file, node)
+			} else {
+				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				if !ok {
+					fmt.Fprintf(os.Stderr, "Error decoding object when deleting node, could not get object from tombstone: %#v\n", obj)
+					return
+				}
+				if node, ok := tombstone.Obj.(*v1.Node); ok {
+					forwardNode(file, node)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error decoding object when deleting node, tombstone contained non-Node object: %#v\n", tombstone.Obj)
 				}
 			}
 		},
@@ -95,14 +127,43 @@ func main() {
 
 	factory.Start(stopCh)
 
+	if version, err := clientset.Discovery().ServerVersion(); err == nil {
+		forwardClusterVersion(file, version.GitVersion)
+	}
+
 	<-stopCh
 }
 
-func forward(f *os.File, pod *v1.Pod) {
+func forwardPod(f *os.File, pod *v1.Pod) {
+	// Golang doesn't export a WriteV, so we have to stash it in a buffer :/
+	if pod == nil {
+		return
+	}
+	pod.TypeMeta.Kind = "Pod"
+	forward(f, pod)
+}
+
+func forwardNode(f *os.File, node *v1.Node) {
+	if node == nil {
+		return
+	}
+	node.TypeMeta.Kind = "Node"
+	forward(f, node)
+}
+
+func forwardClusterVersion(f *os.File, version string) {
+	payload := map[string]string{
+		"kind":    "QuarkClusterVersion",
+		"version": version,
+	}
+	forward(f, payload)
+}
+
+func forward(f *os.File, obj interface{}) {
 	// Golang doesn't export a WriteV, so we have to stash it in a buffer :/
 	var buffer bytes.Buffer
 
-	j, err := json.Marshal(pod)
+	j, err := json.Marshal(obj)
 	if err != nil {
 		panic(err.Error())
 	}

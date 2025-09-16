@@ -311,8 +311,10 @@ ecs_container(struct hanson *h, const struct quark_event *qev, int *first)
 	container = qp->container;
 	pod = container->pod;
 
-	hanson_add_key_value(h, "id", container->container_id, first);
-	hanson_add_key_value(h, "name", container->name, first);
+	if (container->container_id != NULL)
+		hanson_add_key_value(h, "id", container->container_id, first);
+	if (container->name != NULL)
+		hanson_add_key_value(h, "name", container->name, first);
 	/* docker is the only one we support */
 	hanson_add_key_value(h, "runtime", "docker", first);
 
@@ -332,16 +334,86 @@ ecs_container(struct hanson *h, const struct quark_event *qev, int *first)
 	{
 		int	image_first = 1;
 
-		hanson_add_key_value(h, "name", container->image, &image_first);
-		/* FUTURE: hanson_add_key_value(h, "id", container->image_id, &image_first); */
+		if (container->image != NULL)
+			hanson_add_key_value(h, "name", container->image,
+		    &image_first);
+		if (container->image_tag != NULL)
+			hanson_add_key_value(h, "tag", container->image_tag,
+		    &image_first);
+		if (container->image_digest != NULL)
+			hanson_add_key_value(h, "hash", container->image_digest,
+		    &image_first);
+		if (container->image_id != NULL)
+			hanson_add_key_value(h, "id", container->image_id,
+		    &image_first);
 	}
 	hanson_close_object(h);
+
+	if (container->security_ctx.present) {
+		const struct quark_security_ctx	*sc = &container->security_ctx;
+
+		hanson_add_object(h, "security_context", first);
+		{
+			int	ctx_first = 1;
+
+			if (sc->privileged_set)
+				hanson_add_key_value_bool(h, "privileged",
+			    sc->privileged, &ctx_first);
+			if (sc->allow_privilege_escalation_set)
+				hanson_add_key_value_bool(h,
+			    "allow_privilege_escalation",
+			    sc->allow_privilege_escalation, &ctx_first);
+			if (sc->run_as_non_root_set)
+				hanson_add_key_value_bool(h, "run_as_non_root",
+			    sc->run_as_non_root, &ctx_first);
+			if (sc->run_as_user_set)
+				hanson_add_key_value_int(h, "run_as_user",
+			    sc->run_as_user, &ctx_first);
+			if (sc->run_as_group_set)
+				hanson_add_key_value_int(h, "run_as_group",
+			    sc->run_as_group, &ctx_first);
+
+			if (sc->cap_add.count > 0 || sc->cap_drop.count > 0) {
+				hanson_add_object(h, "capabilities", &ctx_first);
+				{
+					int	cap_first = 1;
+					int	i;
+
+					if (sc->cap_add.count > 0) {
+						hanson_add_array(h, "add", &cap_first);
+						{
+							int	arr_first = 1;
+							for (i = 0; i < sc->cap_add.count; i++)
+								hanson_add_string(h,
+								    sc->cap_add.values[i],
+								    &arr_first);
+						}
+						hanson_close_array(h);
+					}
+					if (sc->cap_drop.count > 0) {
+						hanson_add_array(h, "drop", &cap_first);
+						{
+							int	arr_first = 1;
+							for (i = 0; i < sc->cap_drop.count; i++)
+								hanson_add_string(h,
+								    sc->cap_drop.values[i],
+								    &arr_first);
+						}
+						hanson_close_array(h);
+					}
+				}
+				hanson_close_object(h);
+			}
+		}
+		hanson_close_object(h);
+	}
 
 	return (0);
 }
 
 static int
-ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
+ecs_orchestrator(struct quark_queue *qq, struct hanson *h,
+    const struct quark_event *qev, int *first)
 {
 	const struct quark_process	*qp;
 	struct quark_container		*container;
@@ -363,6 +435,9 @@ ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
 		hanson_add_key_value(h, "type", "pod", &resource_first);
 		hanson_add_key_value(h, "name", pod->name, &resource_first);
 		hanson_add_key_value(h, "namespace", pod->ns, &resource_first);
+		if (pod->pod_ip != NULL)
+			hanson_add_key_value(h, "ip", pod->pod_ip,
+		    &resource_first);
 
 		hanson_add_object(h, "labels", &resource_first);
 		{
@@ -374,6 +449,161 @@ ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
 			}
 		}
 		hanson_close_object(h);
+	}
+	hanson_close_object(h);
+
+	if (qq != NULL && qq->qkube != NULL &&
+	    qq->qkube->cluster_version != NULL) {
+		hanson_add_object(h, "cluster", first);
+		{
+			int	cluster_first = 1;
+
+			hanson_add_key_value(h, "version",
+			    qq->qkube->cluster_version, &cluster_first);
+		}
+		hanson_close_object(h);
+	}
+
+	return (0);
+}
+
+static int
+ecs_cloud(struct hanson *h, const struct quark_event *qev, int *first)
+{
+	const struct quark_process	*qp;
+	struct quark_container		*container;
+	struct quark_pod		*pod;
+	struct quark_node		*node;
+
+	if (qev->process == NULL || qev->process->container == NULL ||
+	    qev->process->container->pod == NULL)
+		return (-1);
+
+	qp = qev->process;
+	container = qp->container;
+	pod = container->pod;
+	node = pod->node;
+	if (node == NULL)
+		return (-1);
+
+	if (node->provider == NULL && node->region == NULL &&
+	    node->zone == NULL && node->name == NULL &&
+	    node->instance_id == NULL)
+		return (-1);
+
+	hanson_add_object(h, "cloud", first);
+	{
+		int	cloud_first = 1;
+
+		if (node->provider != NULL)
+			hanson_add_key_value(h, "provider",
+			    node->provider, &cloud_first);
+		if (node->region != NULL)
+			hanson_add_key_value(h, "region",
+			    node->region, &cloud_first);
+		if (node->zone != NULL)
+			hanson_add_key_value(h, "availability_zone",
+			    node->zone, &cloud_first);
+
+		hanson_add_object(h, "instance", &cloud_first);
+		{
+			int	instance_first = 1;
+
+			if (node->name != NULL)
+				hanson_add_key_value(h, "name", node->name,
+			    &instance_first);
+			if (node->instance_id != NULL)
+				hanson_add_key_value(h, "id",
+			    node->instance_id, &instance_first);
+		}
+		hanson_close_object(h);
+	}
+	hanson_close_object(h);
+
+	return (0);
+}
+
+static int
+ecs_host(struct hanson *h, const struct quark_event *qev, int *first)
+{
+	const struct quark_process	*qp;
+	struct quark_container		*container;
+	struct quark_pod		*pod;
+	struct quark_node		*node;
+	int			 i;
+
+	if (qev->process == NULL || qev->process->container == NULL ||
+	    qev->process->container->pod == NULL)
+		return (-1);
+
+	qp = qev->process;
+	container = qp->container;
+	pod = container->pod;
+	node = pod->node;
+	if (node == NULL)
+		return (-1);
+
+	if (node->hostname == NULL && node->name == NULL &&
+	    node->architecture == NULL && node->ips.count == 0 &&
+	    node->boot_id == NULL && node->os_type == NULL &&
+	    node->os_image == NULL && node->kernel_version == NULL)
+		return (-1);
+
+	hanson_add_object(h, "host", first);
+	{
+		int	host_first = 1;
+
+		if (node->hostname != NULL)
+			hanson_add_key_value(h, "hostname", node->hostname,
+		    &host_first);
+		if (node->name != NULL)
+			hanson_add_key_value(h, "name", node->name,
+		    &host_first);
+		if (node->architecture != NULL)
+			hanson_add_key_value(h, "architecture",
+		    node->architecture, &host_first);
+
+		if (node->ips.count > 0) {
+			hanson_add_array(h, "ip", &host_first);
+			{
+				int	ip_first = 1;
+
+				for (i = 0; i < node->ips.count; i++)
+					hanson_add_string(h, node->ips.list[i],
+				    &ip_first);
+			}
+			hanson_close_array(h);
+		}
+
+		if (node->boot_id != NULL) {
+			hanson_add_object(h, "boot", &host_first);
+			{
+				int	boot_first = 1;
+
+				hanson_add_key_value(h, "id", node->boot_id,
+				    &boot_first);
+			}
+			hanson_close_object(h);
+		}
+
+		if (node->os_type != NULL || node->os_image != NULL ||
+		    node->kernel_version != NULL) {
+			hanson_add_object(h, "os", &host_first);
+			{
+				int	os_first = 1;
+
+				if (node->os_type != NULL)
+					hanson_add_key_value(h, "type",
+				    node->os_type, &os_first);
+				if (node->os_image != NULL)
+					hanson_add_key_value(h, "full",
+				    node->os_image, &os_first);
+				if (node->kernel_version != NULL)
+					hanson_add_key_value(h, "kernel",
+				    node->kernel_version, &os_first);
+			}
+			hanson_close_object(h);
+		}
 	}
 	hanson_close_object(h);
 
@@ -605,11 +835,14 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 			{
 				int	orchestrator_first = 1;
 
-				ecs_orchestrator(&h, qev, &orchestrator_first);
+				ecs_orchestrator(qq, &h, qev, &orchestrator_first);
 			}
 			hanson_close_object(&h);
 		}
 	}
+
+	ecs_cloud(&h, qev, &top_first);
+	ecs_host(&h, qev, &top_first);
 
 	if (qev->socket != NULL)
 		ecs_socket(&h, qev, &top_first);

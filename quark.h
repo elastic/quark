@@ -533,6 +533,36 @@ struct label_node {
 RB_HEAD(label_tree, label_node);
 RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
 
+#define QUARK_CAP_LIST_MAX	16
+
+struct quark_cap_list {
+	int	 count;
+	char	*values[QUARK_CAP_LIST_MAX];
+};
+
+struct quark_security_ctx {
+	int		 present;
+	int		 privileged_set;
+	int		 privileged;
+	int		 allow_privilege_escalation_set;
+	int		 allow_privilege_escalation;
+	int		 run_as_user_set;
+	uid_t	 run_as_user;
+	int		 run_as_group_set;
+	gid_t	 run_as_group;
+	int		 run_as_non_root_set;
+	int		 run_as_non_root;
+	struct quark_cap_list	cap_add;
+	struct quark_cap_list	cap_drop;
+};
+
+#define QUARK_NODE_IP_MAX	16
+
+struct quark_node_ip_list {
+	int	 count;
+	char	**list;
+};
+
 /*
  * A container's lifecycle is tied to its parent quark_pod.
  */
@@ -546,6 +576,9 @@ struct quark_container {
 	char				*name;
 	char				*image;
 	char				*image_id;	/* do we want this? */
+	char				*image_tag;
+	char				*image_digest;
+	struct quark_security_ctx	 security_ctx;
 };
 
 /*
@@ -567,6 +600,9 @@ struct quark_pod {
 	struct label_tree	 labels;
 	struct pod_containers	 containers;
 	char			*phase;
+	char			*pod_ip;
+	char			*node_name;
+	struct quark_node	*node;
 };
 
 /*
@@ -577,6 +613,27 @@ RB_HEAD(pod_by_uid, quark_pod);
 /*
  * The state for all kubernetes metadata.
  */
+RB_HEAD(node_by_name, quark_node);
+
+struct quark_node {
+	RB_ENTRY(quark_node)	 entry;
+	char			*name;
+	char			*provider_id;
+	char			*provider;
+	char			*instance_id;
+	char			*region;
+	char			*zone;
+	char			*hostname;
+	char			*architecture;
+	char			*os_image;
+	char			*os_type;
+	char			*kernel_version;
+	char			*boot_id;
+	struct quark_node_ip_list ips;
+};
+
+RB_PROTOTYPE(node_by_name, quark_node, entry, node_by_name_cmp);
+
 struct quark_kube {
 	int			 fd;			/* input pipe for json data */
 	int			 try_read;		/* should we try to read from fd */
@@ -587,6 +644,8 @@ struct quark_kube {
 	size_t			 buf_len;		/* total length */
 	struct pod_by_uid	 pod_by_uid;		/* uid comes from json */
 	struct container_by_id	 container_by_id;	/* in containerID format from json */
+	struct node_by_name	 nodes;
+	char			*cluster_version;
 };
 
 /*

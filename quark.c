@@ -41,6 +41,7 @@ static int	socket_by_src_dst_cmp(struct quark_socket *, struct quark_socket *);
 static int	container_by_id_cmp(struct quark_container *, struct quark_container *);
 static int	pod_by_uid_cmp(struct quark_pod *, struct quark_pod *);
 static int	label_node_cmp(struct label_node *, struct label_node *);
+static int	node_by_name_cmp(struct quark_node *, struct quark_node *);
 static int	quark_passwd_cmp(struct quark_passwd *, struct quark_passwd *);
 static int	quark_group_cmp(struct quark_group *, struct quark_group *);
 
@@ -48,6 +49,7 @@ static void	process_cache_delete(struct quark_queue *, struct quark_process *);
 static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
 static void	pod_delete(struct quark_queue *, struct quark_pod *);
 static void	container_delete(struct quark_queue *, struct quark_container *);
+static void	node_delete(struct quark_queue *, struct quark_node *);
 
 /* For debugging */
 int	quark_verbose;
@@ -86,6 +88,9 @@ RB_GENERATE(pod_by_uid, quark_pod, entry_by_uid, pod_by_uid_cmp);
 
 RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
 RB_GENERATE(label_tree, label_node, entry, label_node_cmp);
+
+RB_PROTOTYPE(node_by_name, quark_node, entry, node_by_name_cmp);
+RB_GENERATE(node_by_name, quark_node, entry, node_by_name_cmp);
 
 RB_PROTOTYPE(passwd_by_uid, quark_passwd, entry, quark_passwd_cmp);
 RB_GENERATE(passwd_by_uid, quark_passwd, entry, quark_passwd_cmp);
@@ -671,6 +676,126 @@ label_node_cmp(struct label_node *a, struct label_node *b)
 }
 
 static int
+quark_update_string(char **dst, const char *src)
+{
+	char	*tmp;
+
+	if (dst == NULL)
+		return (-1);
+
+	if (src == NULL) {
+		if (*dst != NULL) {
+			free(*dst);
+			*dst = NULL;
+		}
+		return (0);
+	}
+
+	tmp = strdup(src);
+	if (tmp == NULL)
+		return (-1);
+
+	free(*dst);
+	*dst = tmp;
+
+	return (0);
+}
+
+static void
+quark_replace_string(char **dst, char *value)
+{
+	if (dst == NULL)
+		return;
+	free(*dst);
+	*dst = value;
+}
+
+static void
+cap_list_clear(struct quark_cap_list *list)
+{
+	int	i;
+
+	if (list == NULL)
+		return;
+
+	for (i = 0; i < list->count; i++) {
+		free(list->values[i]);
+		list->values[i] = NULL;
+	}
+	list->count = 0;
+}
+
+static int
+cap_list_append(struct quark_cap_list *list, const char *value)
+{
+	char	*dup;
+
+	if (list == NULL || value == NULL || *value == '\0')
+		return (0);
+	if (list->count >= QUARK_CAP_LIST_MAX)
+		return (0);
+	dup = strdup(value);
+	if (dup == NULL)
+		return (-1);
+
+	list->values[list->count++] = dup;
+
+	return (0);
+}
+
+static void
+security_ctx_clear(struct quark_security_ctx *ctx)
+{
+	if (ctx == NULL)
+		return;
+
+	cap_list_clear(&ctx->cap_add);
+	cap_list_clear(&ctx->cap_drop);
+	bzero(ctx, sizeof(*ctx));
+}
+
+static void
+node_ip_list_clear(struct quark_node_ip_list *ips)
+{
+	int	i;
+
+	if (ips == NULL)
+		return;
+
+	for (i = 0; i < ips->count; i++)
+		free(ips->list[i]);
+	free(ips->list);
+	ips->list = NULL;
+	ips->count = 0;
+}
+
+static int
+node_ip_list_append(struct quark_node_ip_list *ips, const char *value)
+{
+	char	**tmp, *dup;
+
+	if (ips == NULL || value == NULL || *value == '\0')
+		return (0);
+	if (ips->count >= QUARK_NODE_IP_MAX)
+		return (0);
+
+	dup = strdup(value);
+	if (dup == NULL)
+		return (-1);
+
+	tmp = realloc(ips->list, sizeof(*ips->list) * (ips->count + 1));
+	if (tmp == NULL) {
+		free(dup);
+		return (-1);
+	}
+
+	ips->list = tmp;
+	ips->list[ips->count++] = dup;
+
+	return (0);
+}
+
+static int
 container_by_id_cmp(struct quark_container *a, struct quark_container *b)
 {
 	return (strcmp(a->container_id, b->container_id));
@@ -698,6 +823,9 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 	free(container->name);
 	free(container->image);
 	free(container->image_id);
+	free(container->image_tag);
+	free(container->image_digest);
+	security_ctx_clear(&container->security_ctx);
 	free(container);
 }
 
@@ -788,6 +916,8 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	free(pod->ns);
 	free(pod->uid);
 	free(pod->phase);
+	free(pod->pod_ip);
+	free(pod->node_name);
 	free(pod);
 }
 
@@ -804,6 +934,214 @@ pod_lookup_container(struct quark_pod *pod, char *container_id)
 	return (k);
 }
 
+static int
+node_by_name_cmp(struct quark_node *a, struct quark_node *b)
+{
+	return (strcmp(a->name, b->name));
+}
+
+static struct quark_node *
+node_lookup(struct quark_queue *qq, const char *name)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	struct quark_node	 key, *k;
+
+	key.name = (char *)name;
+	k = RB_FIND(node_by_name, &qkube->nodes, &key);
+	if (k == NULL)
+		errno = ESRCH;
+
+	return (k);
+}
+
+static int
+node_insert(struct quark_queue *qq, struct quark_node *node)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	struct quark_node	*col;
+
+	col = RB_INSERT(node_by_name, &qkube->nodes, node);
+	if (col != NULL)
+		return (errno = EEXIST, -1);
+
+	return (0);
+}
+
+static void
+node_delete(struct quark_queue *qq, struct quark_node *node)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	struct quark_pod	*pod;
+
+	if (node == NULL)
+		return;
+
+	RB_REMOVE(node_by_name, &qkube->nodes, node);
+
+	RB_FOREACH(pod, pod_by_uid, &qkube->pod_by_uid) {
+		if (pod->node == node)
+			pod->node = NULL;
+	}
+
+	free(node->name);
+	free(node->provider_id);
+	free(node->provider);
+	free(node->instance_id);
+	free(node->region);
+	free(node->zone);
+	free(node->hostname);
+	free(node->architecture);
+	free(node->os_image);
+	free(node->os_type);
+	free(node->kernel_version);
+	free(node->boot_id);
+	node_ip_list_clear(&node->ips);
+	free(node);
+}
+
+static void
+link_node_to_pods(struct quark_queue *qq, struct quark_node *node)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	struct quark_pod	*pod;
+
+	if (node == NULL)
+		return;
+
+	RB_FOREACH(pod, pod_by_uid, &qkube->pod_by_uid) {
+		if (pod->node_name == NULL)
+			continue;
+		if (strcmp(pod->node_name, node->name))
+			continue;
+		pod->node = node;
+	}
+}
+
+static cJSON *
+find_spec_container(cJSON *containers, const char *name)
+{
+	cJSON	*entry, *entry_name;
+
+	if (!cJSON_IsArray(containers) || name == NULL)
+		return (NULL);
+
+	cJSON_ArrayForEach(entry, containers) {
+		entry_name = cJSON_GetObjectItemCaseSensitive(entry, "name");
+		if (!cJSON_IsString(entry_name))
+			continue;
+		if (strcmp(entry_name->valuestring, name) == 0)
+			return (entry);
+	}
+
+	return (NULL);
+}
+
+static char *
+parse_image_tag(const char *image)
+{
+	const char	*end, *p, *colon = NULL;
+
+	if (image == NULL)
+		return (NULL);
+
+	end = strchr(image, '@');
+	if (end == NULL)
+		end = image + strlen(image);
+
+	for (p = end; p > image; p--) {
+		if (p[-1] == ':') {
+			colon = p - 1;
+			break;
+		}
+		if (p[-1] == '/')
+			break;
+	}
+	if (colon == NULL)
+		return (NULL);
+	if (colon + 1 >= end)
+		return (NULL);
+
+	return (strndup(colon + 1, end - (colon + 1)));
+}
+
+static char *
+parse_image_digest(const char *image_id)
+{
+	const char	*start, *p;
+
+	if (image_id == NULL)
+		return (NULL);
+
+	start = image_id;
+	p = strstr(image_id, "://");
+	if (p != NULL)
+		start = p + 3;
+
+	p = strrchr(start, '@');
+	if (p != NULL)
+		start = p + 1;
+
+	while (*start == ' ')
+		start++;
+	if (*start == '\0')
+		return (NULL);
+
+	p = start + strlen(start);
+	while (p > start && isspace((unsigned char)p[-1]))
+		p--;
+	if (p <= start)
+		return (NULL);
+
+	return (strndup(start, p - start));
+}
+
+static void
+parse_provider_id(const char *provider_id, char **provider, char **instance_id)
+{
+	const char	*start;
+	char		*prov = NULL, *inst = NULL;
+
+	if (provider == NULL || instance_id == NULL)
+		return;
+	if (provider_id == NULL)
+		goto out;
+
+	start = strstr(provider_id, "://");
+	if (start != NULL) {
+		prov = strndup(provider_id, start - provider_id);
+		start += 3;
+	} else {
+		prov = strdup(provider_id);
+		start = provider_id;
+	}
+
+	if (*start != '\0')
+		inst = strdup(start);
+
+	if (prov != NULL) {
+		if (!strcasecmp(prov, "gce")) {
+			free(prov);
+			prov = strdup("gcp");
+		} else if (!strcasecmp(prov, "digitalocean")) {
+			/* keep as digitalocean */
+		} else if (!strcasecmp(prov, "aws")) {
+			/* keep */
+		} else if (!strcasecmp(prov, "azure")) {
+			/* keep */
+		}
+	}
+
+out:
+	if (provider != NULL)
+		quark_replace_string(provider, prov);
+	else
+		free(prov);
+	if (instance_id != NULL)
+		quark_replace_string(instance_id, inst);
+	else
+		free(inst);
+}
+
 static void
 debug_json(cJSON *json)
 {
@@ -815,22 +1153,30 @@ debug_json(cJSON *json)
 }
 
 static int
-process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *container_json)
+process_kube_container(struct quark_queue *qq, struct quark_pod *pod,
+    cJSON *status_json, cJSON *spec_container)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_kube	*qkube = qq->qkube;
 	cJSON			*name, *image, *state;
 	cJSON			*waiting, *running, *terminated;
-	cJSON			*containerID;
+	cJSON			*containerID, *imageID;
 	struct quark_container	*container, *col;
+	cJSON			*spec_image, *security;
+	const char		*image_for_tag = NULL;
+	char			*new_tag, *new_digest;
+	struct quark_security_ctx	*sc;
 
-	name	    = GET(container_json, "name");
-	image	    = GET(container_json, "image");
-	state	    = GET(container_json, "state");
+	name	    = GET(status_json, "name");
+	image	    = GET(status_json, "image");
+	state	    = GET(status_json, "state");
 	waiting	    = GET(state, "waiting");
 	running	    = GET(state, "running");
 	terminated  = GET(state, "terminated");
-	containerID = GET(container_json, "containerID");
+	containerID = GET(status_json, "containerID");
+ 	imageID     = GET(status_json, "imageID");
+	spec_image  = spec_container != NULL ? GET(spec_container, "image") : NULL;
+	security    = spec_container != NULL ? GET(spec_container, "securityContext") : NULL;
 
 	/*
 	 * When we're waiting there's no containerID yet, so suppress it
@@ -868,17 +1214,6 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 			container_delete(qq, container);
 			return (-1);
 		}
-		container->name = strdup(name->valuestring);
-		if (container->name == NULL) {
-			container_delete(qq, container);
-			return (-1);
-		}
-		container->image = strdup(image->valuestring);
-		if (container->image == NULL) {
-			container_delete(qq, container);
-			return (-1);
-		}
-		/* XXX fill moar stuff */
 
 		/*
 		 * Finally try to link it
@@ -908,12 +1243,101 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 		container->linked = 1;
 	}
 
+	container->pod = pod;
+
+	if (cJSON_IsString(name))
+		if (quark_update_string(&container->name, name->valuestring) == -1)
+			return (-1);
+
+	if (cJSON_IsString(spec_image)) {
+		if (quark_update_string(&container->image,
+		    spec_image->valuestring) == -1)
+			return (-1);
+		image_for_tag = spec_image->valuestring;
+	} else if (cJSON_IsString(image)) {
+		if (quark_update_string(&container->image, image->valuestring) == -1)
+			return (-1);
+		image_for_tag = image->valuestring;
+	} else {
+		image_for_tag = NULL;
+	}
+
+	if (cJSON_IsString(imageID)) {
+		if (quark_update_string(&container->image_id,
+		    imageID->valuestring) == -1)
+			return (-1);
+		new_digest = parse_image_digest(imageID->valuestring);
+		quark_replace_string(&container->image_digest, new_digest);
+	} else {
+		quark_replace_string(&container->image_digest, NULL);
+	}
+
+	new_tag = parse_image_tag(image_for_tag);
+	quark_replace_string(&container->image_tag, new_tag);
+
+	sc = &container->security_ctx;
+	security_ctx_clear(sc);
+	if (cJSON_IsObject(security)) {
+		cJSON	*field, *capabilities, *cap;
+
+		sc->present = 1;
+		field = GET(security, "privileged");
+		if (cJSON_IsBool(field)) {
+			sc->privileged_set = 1;
+			sc->privileged = cJSON_IsTrue(field);
+		}
+		field = GET(security, "allowPrivilegeEscalation");
+		if (cJSON_IsBool(field)) {
+			sc->allow_privilege_escalation_set = 1;
+			sc->allow_privilege_escalation = cJSON_IsTrue(field);
+		}
+		field = GET(security, "runAsNonRoot");
+		if (cJSON_IsBool(field)) {
+			sc->run_as_non_root_set = 1;
+			sc->run_as_non_root = cJSON_IsTrue(field);
+		}
+		field = GET(security, "runAsUser");
+		if (cJSON_IsNumber(field)) {
+			sc->run_as_user_set = 1;
+			sc->run_as_user = (uid_t)field->valuedouble;
+		}
+		field = GET(security, "runAsGroup");
+		if (cJSON_IsNumber(field)) {
+			sc->run_as_group_set = 1;
+			sc->run_as_group = (gid_t)field->valuedouble;
+		}
+
+		capabilities = GET(security, "capabilities");
+		if (cJSON_IsObject(capabilities)) {
+			field = GET(capabilities, "add");
+			if (cJSON_IsArray(field)) {
+				cJSON_ArrayForEach(cap, field) {
+					if (!cJSON_IsString(cap))
+						continue;
+					if (cap_list_append(&sc->cap_add,
+					    cap->valuestring) == -1)
+						qwarnx("can't store securityContext capabilities add");
+				}
+			}
+			field = GET(capabilities, "drop");
+			if (cJSON_IsArray(field)) {
+				cJSON_ArrayForEach(cap, field) {
+					if (!cJSON_IsString(cap))
+						continue;
+					if (cap_list_append(&sc->cap_drop,
+					    cap->valuestring) == -1)
+						qwarnx("can't store securityContext capabilities drop");
+				}
+			}
+		}
+	}
+
 	return (0);
 #undef GET
 }
 
 static int
-process_kube_event(struct quark_queue *qq, cJSON *json)
+process_kube_pod(struct quark_queue *qq, cJSON *json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_pod	*pod;
@@ -921,9 +1345,12 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	cJSON			*spec, *containers, *status, *phase;
 	cJSON			*deletionTimestamp, *containerStatuses, *label;
 	cJSON			*container_json;
+	cJSON			*podIP, *podIPs, *nodeName;
+	const char		*pod_ip_value;
 	char			*tmp;
 	int			 new_pod;
 	struct label_node	*node, *node_aux;
+	struct quark_node	*node_ptr;
 
 	metadata	  = GET(json, "metadata");
 	name		  = GET(metadata, "name");
@@ -936,6 +1363,9 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	status		  = GET(json, "status");
 	phase		  = GET(status, "phase");
 	containerStatuses = GET(status, "containerStatuses");
+	podIP		  = GET(status, "podIP");
+	podIPs		  = GET(status, "podIPs");
+	nodeName	  = GET(spec, "nodeName");
 
 	if (!cJSON_IsObject(metadata)) {
 		qwarnx("bad metadata");
@@ -1040,6 +1470,37 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 		pod->phase = tmp;
 	}
 
+	pod_ip_value = NULL;
+	if (cJSON_IsString(podIP))
+		pod_ip_value = podIP->valuestring;
+	else if (cJSON_IsArray(podIPs)) {
+		cJSON *ip_entry;
+
+		cJSON_ArrayForEach(ip_entry, podIPs) {
+			if (!cJSON_IsString(ip_entry))
+				continue;
+			pod_ip_value = ip_entry->valuestring;
+			break;
+		}
+	}
+	if (quark_update_string(&pod->pod_ip, pod_ip_value) == -1)
+		return (-1);
+
+	if (cJSON_IsString(nodeName)) {
+		if (quark_update_string(&pod->node_name,
+		    nodeName->valuestring) == -1)
+			return (-1);
+	} else {
+		quark_update_string(&pod->node_name, NULL);
+	}
+
+	pod->node = NULL;
+	if (pod->node_name != NULL) {
+		node_ptr = node_lookup(qq, pod->node_name);
+		if (node_ptr != NULL)
+			pod->node = node_ptr;
+	}
+
 	/*
 	 * Build labels, old labels start as unseen, and, as we loop mark the
 	 * seen ones, possibly update its value and add new ones, in the end,
@@ -1098,7 +1559,14 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	 * Build containers
 	 */
 	cJSON_ArrayForEach(container_json, containerStatuses) {
-		if (process_kube_container(qq, pod, container_json) == -1)
+		cJSON *status_name, *spec_match = NULL;
+
+		status_name = cJSON_GetObjectItemCaseSensitive(container_json, "name");
+		if (cJSON_IsString(status_name))
+			spec_match = find_spec_container(containers,
+			    status_name->valuestring);
+		if (process_kube_container(qq, pod, container_json,
+		    spec_match) == -1)
 			qwarnx("process_kube_containers failed");
 	}
 
@@ -1113,6 +1581,199 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 
 	return (0);
 #undef GET
+}
+
+static int
+process_kube_node(struct quark_queue *qq, cJSON *json)
+{
+#define GET cJSON_GetObjectItemCaseSensitive
+	cJSON			*metadata, *name, *labels, *spec, *status;
+	cJSON			*providerID, *addresses, *nodeInfo, *deletionTimestamp;
+	struct quark_node	*node;
+	const char		*hostname, *region, *zone;
+	cJSON			*addr;
+
+	metadata = GET(json, "metadata");
+	name = GET(metadata, "name");
+	labels = GET(metadata, "labels");
+	deletionTimestamp = GET(metadata, "deletionTimestamp");
+	spec = GET(json, "spec");
+	providerID = spec != NULL ? GET(spec, "providerID") : NULL;
+	status = GET(json, "status");
+	addresses = status != NULL ? GET(status, "addresses") : NULL;
+	nodeInfo = status != NULL ? GET(status, "nodeInfo") : NULL;
+
+	if (!cJSON_IsObject(metadata) || !cJSON_IsString(name)) {
+		qwarnx("bad node metadata");
+		return (-1);
+	}
+	if (!cJSON_IsObject(labels))
+		labels = NULL;
+
+	node = node_lookup(qq, name->valuestring);
+	if (deletionTimestamp != NULL) {
+		if (!cJSON_IsString(deletionTimestamp)) {
+			qwarnx("bad node deletionTimestamp");
+			return (-1);
+		}
+		if (node != NULL)
+			node_delete(qq, node);
+
+		return (0);
+	}
+
+	if (node == NULL) {
+		node = calloc(1, sizeof(*node));
+		if (node == NULL)
+			return (-1);
+		node->name = strdup(name->valuestring);
+		if (node->name == NULL) {
+			free(node);
+			return (-1);
+		}
+		if (node_insert(qq, node) == -1) {
+			free(node->name);
+			free(node);
+			return (-1);
+		}
+	}
+
+	if (cJSON_IsString(providerID)) {
+		if (quark_update_string(&node->provider_id,
+		    providerID->valuestring) == -1)
+			return (-1);
+		parse_provider_id(node->provider_id,
+		    &node->provider, &node->instance_id);
+	}
+
+	region = zone = NULL;
+	if (labels != NULL) {
+		cJSON *label_region, *label_zone;
+
+		label_region = cJSON_GetObjectItemCaseSensitive(labels,
+		    "topology.kubernetes.io/region");
+		if (cJSON_IsString(label_region))
+			region = label_region->valuestring;
+		else {
+			label_region = cJSON_GetObjectItemCaseSensitive(labels,
+			    "failure-domain.beta.kubernetes.io/region");
+			if (cJSON_IsString(label_region))
+				region = label_region->valuestring;
+		}
+
+		label_zone = cJSON_GetObjectItemCaseSensitive(labels,
+		    "topology.kubernetes.io/zone");
+		if (cJSON_IsString(label_zone))
+			zone = label_zone->valuestring;
+		else {
+			label_zone = cJSON_GetObjectItemCaseSensitive(labels,
+			    "failure-domain.beta.kubernetes.io/zone");
+			if (cJSON_IsString(label_zone))
+				zone = label_zone->valuestring;
+		}
+	}
+	if (quark_update_string(&node->region, region) == -1)
+		return (-1);
+	if (quark_update_string(&node->zone, zone) == -1)
+		return (-1);
+
+	node_ip_list_clear(&node->ips);
+	hostname = NULL;
+	if (cJSON_IsArray(addresses)) {
+		cJSON *type, *value;
+
+		cJSON_ArrayForEach(addr, addresses) {
+			type = GET(addr, "type");
+			value = GET(addr, "address");
+			if (!cJSON_IsString(type) || !cJSON_IsString(value))
+				continue;
+			if (!strcmp(type->valuestring, "Hostname"))
+				hostname = value->valuestring;
+			if (!strcmp(type->valuestring, "InternalIP") ||
+			    !strcmp(type->valuestring, "ExternalIP")) {
+				if (node_ip_list_append(&node->ips,
+				    value->valuestring) == -1)
+					qwarnx("can't store node IP address");
+			}
+		}
+	}
+	if (hostname == NULL)
+		hostname = name->valuestring;
+	if (quark_update_string(&node->hostname, hostname) == -1)
+		return (-1);
+
+	if (cJSON_IsObject(nodeInfo)) {
+		cJSON *field;
+
+		field = GET(nodeInfo, "architecture");
+		if (cJSON_IsString(field))
+			if (quark_update_string(&node->architecture,
+			    field->valuestring) == -1)
+				return (-1);
+		field = GET(nodeInfo, "osImage");
+		if (cJSON_IsString(field))
+			if (quark_update_string(&node->os_image,
+			    field->valuestring) == -1)
+				return (-1);
+		field = GET(nodeInfo, "operatingSystem");
+		if (cJSON_IsString(field))
+			if (quark_update_string(&node->os_type,
+			    field->valuestring) == -1)
+				return (-1);
+		field = GET(nodeInfo, "kernelVersion");
+		if (cJSON_IsString(field))
+			if (quark_update_string(&node->kernel_version,
+			    field->valuestring) == -1)
+				return (-1);
+		field = GET(nodeInfo, "bootID");
+		if (cJSON_IsString(field))
+			if (quark_update_string(&node->boot_id,
+			    field->valuestring) == -1)
+				return (-1);
+	}
+
+	link_node_to_pods(qq, node);
+
+	return (0);
+#undef GET
+}
+
+static int
+process_kube_cluster_version(struct quark_queue *qq, cJSON *json)
+{
+	struct quark_kube	*qkube = qq->qkube;
+	cJSON			*version;
+
+	if (qkube == NULL)
+		return (-1);
+
+	version = cJSON_GetObjectItemCaseSensitive(json, "version");
+	if (!cJSON_IsString(version))
+		return (-1);
+
+	if (quark_update_string(&qkube->cluster_version,
+	    version->valuestring) == -1)
+		return (-1);
+
+	return (0);
+}
+
+static int
+process_kube_event(struct quark_queue *qq, cJSON *json)
+{
+	cJSON	*kind;
+
+	kind = cJSON_GetObjectItemCaseSensitive(json, "kind");
+	if (cJSON_IsString(kind)) {
+		if (!strcmp(kind->valuestring, "Pod"))
+			return (process_kube_pod(qq, json));
+		if (!strcmp(kind->valuestring, "Node"))
+			return (process_kube_node(qq, json));
+		if (!strcmp(kind->valuestring, "QuarkClusterVersion"))
+			return (process_kube_cluster_version(qq, json));
+	}
+
+	return (process_kube_pod(qq, json));
 }
 
 static void
@@ -3538,6 +4199,8 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qkube->last_read = 0;
 		RB_INIT(&qkube->pod_by_uid);
 		RB_INIT(&qkube->container_by_id);
+		RB_INIT(&qkube->nodes);
+		qkube->cluster_version = NULL;
 
 		if ((fl = fcntl(qkube->fd, F_GETFL)) == -1) {
 			qwarn("can't get kubefd flags");
@@ -3647,6 +4310,7 @@ quark_queue_close(struct quark_queue *qq)
 	struct quark_process	*qp;
 	struct quark_socket	*qsk;
 	struct quark_pod	*pod;
+	struct quark_node	*node;
 	struct quark_passwd	*qpw;
 	struct quark_group	*qgrp;
 
@@ -3674,6 +4338,9 @@ quark_queue_close(struct quark_queue *qq)
 		stop_kube(qq);
 		while ((pod = RB_ROOT(&qq->qkube->pod_by_uid)) != NULL)
 			pod_delete(qq, pod);
+		while ((node = RB_ROOT(&qq->qkube->nodes)) != NULL)
+			node_delete(qq, node);
+		free(qq->qkube->cluster_version);
 		free(qq->qkube->buf);
 		free(qq->qkube);
 		qq->qkube = NULL;
