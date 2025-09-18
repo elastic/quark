@@ -133,9 +133,9 @@ void	 qlog_func(int, int, const char *, int, const char *, ...) __attribute__((f
 
 /* hanson.c */
 struct hanson;
-int	 hanson_add_ascii(struct hanson *, int);
+int	 hanson_add_ascii(struct hanson *, char);
 int	 hanson_add_string(struct hanson *, char *, int *);
-int	 hanson_add_integer(struct hanson *, int64_t);
+int	 hanson_add_integer(struct hanson *, int64_t, int *);
 int	 hanson_add_boolean(struct hanson *h, int, int *);
 int	 hanson_add_key_value(struct hanson *, char *, char *, int *);
 int	 hanson_add_key_value_int(struct hanson *, char *, int64_t, int *);
@@ -150,8 +150,8 @@ int	 hanson_close(struct hanson *, char **, size_t *);
 struct hanson {
 	int	 error;
 	char	*buf;
+	char	*buf_w;
 	size_t	 buf_len;
-	FILE	*stream;
 };
 
 /* ecs.c */

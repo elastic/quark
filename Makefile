@@ -57,6 +57,7 @@ CPPFLAGS+= -DHAVE_GETGRENT_R
 endif
 ifndef CENTOS7
 CPPFLAGS+= -DHAVE_EXPLICIT_BZERO
+CPPFLAGS+= -DHAVE_REALLOCARRAY
 endif
 ifndef SYSLIB
 CPPFLAGS+= -Iinclude
@@ -189,7 +190,8 @@ all:	$(LIBQUARK_TARGET)		\
 	quark-mon			\
 	quark-btf			\
 	quark-test			\
-	quark-kube-talker
+	quark-kube-talker		\
+	hanson-bench
 
 $(ZLIB_STATIC): $(ZLIB_FILES)
 	$(call assert_no_syslib)
@@ -385,6 +387,11 @@ true: true.c
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
 
+hanson-bench: hanson-bench.c $(LIBQUARK_TARGET)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
+
 quark-mon: quark-mon.c manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
@@ -490,6 +497,7 @@ clean:
 	$(Q)rm -f			\
 		*.o			\
 		*.a			\
+		hanson-bench		\
 		man-embedder		\
 		manpages.h		\
 		quark-mon		\
