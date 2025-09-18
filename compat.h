@@ -70,6 +70,10 @@ long long	strtonum(const char *, long long, long long, const char **);
  */
 void		sshbuf_dump_data(const void *, size_t, FILE *);
 
+#ifndef HAVE_REALLOCARRAY
+void		*reallocarray(void *, size_t, size_t);
+#endif	/* HAVE_REALLOCARRAY */
+
 /*
  * Base64, portable version of b64_*, so we don't have to link with libresolv
  */
