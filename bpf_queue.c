@@ -637,12 +637,12 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 */
 	bpf_program__set_autoload(p->progs.sched_process_fork, 1);
 	bpf_program__set_autoload(p->progs.sched_process_exec, 1);
-	bpf_program__set_autoload(p->progs.sched_process_exit, 1);
 
 	if (use_fentry)
-		bpf_program__set_autoload(p->progs.fentry__taskstats_exit, 1);
+		bpf_program__set_autoload(p->progs.fentry__disassociate_ctty, 1);
 	else
-		bpf_program__set_autoload(p->progs.kprobe__taskstats_exit, 1);
+		bpf_program__set_autoload(p->progs.kprobe__disassociate_ctty, 1);
+
 	/* Used in process probes, so always on */
 	if (relo_member(btf, &off, "iov_iter", "__iov") != -1)
 		p->rodata->off__iov_iter____iov__ = off;
