@@ -112,6 +112,9 @@ main(int argc, char *argv[])
 		if (mkdir("/sys", 0666) == -1)
 			err(1, "mkdir /sys");
 
+		if (mkdir("/cgroup2 with spaces", 0666) == -1)
+			err(1, "mkdir /cgroup2 with spaces");
+
 		if (mount(NULL, "/tmp", "tmpfs", 0, NULL) == -1)
 			err(1, "mount /tmp");
 		if (mount("proc", "/proc", "proc", 0, NULL) == -1)
@@ -128,8 +131,8 @@ main(int argc, char *argv[])
 				errx(1, "couldn't mount tracefs or debugfs");
 			}
 		}
-		if (mount(NULL, "/sys/fs/cgroup", "cgroup2", 0, NULL) == -1)
-			err(1, "mount /sys/fs/cgroup");
+		if (mount(NULL, "/cgroup2 with spaces", "cgroup2", 0, NULL) == -1)
+			err(1, "mount /cgroup2 with spaces");
 
 		net_up();
 

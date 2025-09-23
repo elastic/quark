@@ -4,6 +4,7 @@
 #include <sys/epoll.h>
 #include <sys/param.h>
 #include <sys/sysinfo.h>
+#include <sys/vfs.h>
 
 #include <ctype.h>
 #include <err.h>
@@ -583,6 +584,128 @@ open_probes(void)
 	return (bpf_probes__open_opts(op));
 }
 
+/*
+ *
+ * Mount points may contain octal escapes like \040 for space, so we have to
+ * decode those. For example,
+ *
+ * 2345 31 0:74 / /test\040dir rw,relatime shared:652 - tmpfs none rw,inode64
+ *
+ * This function decodes the octal escapes in place and null terminates.
+ */
+static void unescape_octal_inplace(char *s) {
+	char *r = s;
+	char *w = s;
+	while (*r != ' ') {
+		if (r[0] == '\\' &&
+		    r[1] >= '0' && r[1] <= '7' &&
+		    r[2] >= '0' && r[2] <= '7' &&
+		    r[3] >= '0' && r[3] <= '7') {
+			int val = (r[1]-'0')*64 + (r[2]-'0')*8 + (r[3]-'0');
+			*w++ = (char)val;
+			r += 4;
+		} else {
+			*w++ = *r++;
+		}
+	}
+	*w = '\0';
+}
+
+/*
+ * Given a pointer to the beginning of a line from /proc/self/mountinfo,
+ * return a pointer to the mount point (5th space separated field).
+ * The path is not modified, but a NUL is placed at the end of it.
+ * This function assumes the buffer is NUL terminated.
+ * Returns NULL if the line is malformed.
+ */
+static char *get_mount_point(char *s) {
+	char *mnt_point = NULL;
+	int i = 0;
+	while (*s != '\n' && *s != '\0') {
+		if (*s == ' ') {
+			i++;
+			if (i == 4) mnt_point = s + 1;
+			else if (i == 5) {
+				*s = '\0';
+				break;
+			}
+		}
+		s++;
+	}
+	if (i != 5) return NULL;
+	return mnt_point;
+}
+
+/* Populate a buffer with the contents of /proc/self/mountinfo,
+ * and iterate each mount point. For each mount point, open it and
+ * fstatfs() it to see if it is a cgroup2 mount. If so, return
+ * the fd, otherwise continue iteration. If cgroup2 is not found,
+ * return -1.
+ */
+static int open_cgroup2_mount(void)
+{
+#define CGROUP2_SUPER_MAGIC   0x63677270
+	char *buf, *mnt_point, *s;
+	size_t bufsz;
+	int proc_mountinfo_fd, cgroup2_fd, mnt_point_fd;
+	struct statfs fsbuf;
+
+	proc_mountinfo_fd = -1;
+	cgroup2_fd = -1;
+	mnt_point_fd = -1;
+	buf = NULL;
+
+	proc_mountinfo_fd = open("/proc/self/mountinfo", O_RDONLY);
+	if (proc_mountinfo_fd == -1) {
+		qwarn("open /proc/self/mountinfo");
+		goto fail;
+	}
+
+	buf = load_file_nostat(proc_mountinfo_fd, &bufsz);
+	if (buf == NULL) {
+		qwarn("load_file_nostat");
+		goto fail;
+	}
+
+	/* parse the buffer, advancing line by line */
+	s = buf;
+	while ((size_t)(s - buf) < bufsz) {
+		mnt_point = get_mount_point(s);
+		if (mnt_point == NULL) goto advance;
+
+		unescape_octal_inplace(mnt_point);
+		mnt_point_fd = open(mnt_point, O_RDONLY | O_DIRECTORY);
+
+		if ((mnt_point_fd != -1) &&
+		    (0 == fstatfs(mnt_point_fd, &fsbuf)) &&
+		    (fsbuf.f_type == CGROUP2_SUPER_MAGIC)) {
+			/* found one */
+			cgroup2_fd = mnt_point_fd;
+			break;
+		}
+
+	advance:
+		if (mnt_point_fd != -1) {
+			close(mnt_point_fd);
+			mnt_point_fd = -1;
+		}
+
+		/* move to the next line */
+		while (*s != '\n' && (size_t)(s - buf) < bufsz)
+			s++;
+		s++;
+	}
+
+fail:
+	if (proc_mountinfo_fd != -1)
+		close(proc_mountinfo_fd);
+
+	if (buf != NULL)
+		free(buf);
+	return (cgroup2_fd);
+#undef CGROUP2_SUPER_MAGIC
+}
+
 static int
 bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
@@ -741,7 +864,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	}
 
 	if (qq->flags & QQ_DNS) {
-		cgroup_fd = open("/sys/fs/cgroup", O_RDONLY);
+		cgroup_fd = open_cgroup2_mount();
 		if (cgroup_fd == -1) {
 			qwarn("open cgroup");
 			goto fail;
