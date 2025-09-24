@@ -238,6 +238,21 @@ load_file_nostat(int fd, size_t *total)
 	return (buf);
 }
 
+char *
+load_file_path_nostat(const char *path, size_t *total)
+{
+	int	 fd;
+	char	*buf;
+
+	if ((fd = open(path, O_RDONLY)) == -1)
+		return (NULL);
+
+	buf = load_file_nostat(fd, total);
+	close(fd);
+
+	return (buf);
+}
+
 int
 ipv6_supported(void)
 {

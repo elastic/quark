@@ -3,6 +3,7 @@
 
 #include <sys/epoll.h>
 #include <sys/param.h>
+#include <sys/mount.h>
 #include <sys/sysinfo.h>
 
 #include <ctype.h>
@@ -526,6 +527,114 @@ bpf_ringbuf_cb(void *vqq, void *vdata, size_t len)
 	return (0);
 }
 
+/*
+ * Lookup where cgroup2 is mounted, if it's not, try to mount it ourselves, if
+ * so, fill unmount_path with the temporary cgroup2 path that must be unmounted
+ * by calling cgroup2_umount_tmp().
+ */
+static void
+cgroup2_umount_tmp(char **path)
+{
+	if (path == NULL || *path == NULL)
+		return;
+	if (umount(*path) == -1)
+		qwarn("can't umount temporary cgroup2 at %s, "
+		    "mount point will dangle!", *path);
+	else if (rmdir(*path) == -1)
+		qwarn("can't unlink temporary cgroup2 at %s, "
+		    "directory will dangle!", *path);
+	free(*path);
+	*path = NULL;
+}
+
+static int
+cgroup2_open_fd(char **umount_path)
+{
+	char	*save_line, *file_buf;
+	char	*line, *start, *end, *path;
+	int	 fd;
+
+	fd = -1;
+	path = NULL;
+	*umount_path = NULL;
+
+	if ((file_buf = load_file_path_nostat("/proc/mounts", NULL)) == NULL) {
+		qwarn("load_file_path_nostat /proc/mounts");
+		goto fail;
+	}
+
+	for (line = strtok_r(file_buf, " ", &save_line);
+	     line != NULL;
+	     line = strtok_r(NULL, "\n", &save_line)) {
+		if (strncasecmp(line, "cgroup2", strlen("cgroup2")))
+			continue;
+		if ((start = strchr(line, ' ')) == NULL) {
+			qwarn("no space 1");
+			continue;
+		}
+		start++;
+		if ((end = strchr(start, ' ')) == NULL) {
+			qwarn("no space 2");
+			continue;
+		}
+		path = strndup(start, end - start);
+		break;
+	}
+
+	/*
+	 * No cgroup2 mount found, try to mount it ourselves at
+	 * /tmp/quark_cgroup2_mount.XXXXX.
+	 * If we succeed, we must pass the mounting point up to the caller, so
+	 * it can umount after the probes are loaded.
+	 */
+	if (path == NULL) {
+		char template[] = "/tmp/quark_cgroup2_mount.XXXXXX";
+
+		if ((path = mkdtemp(template)) == NULL) {
+			qwarn("mkdtemp %s", template);
+			goto fail;
+		}
+		qwarnx("no cgroup2 mount found, will try mounting it "
+		    "ourselves at %s", path);
+
+		path = strdup(path);
+		if (path == NULL) {
+			qwarn("strdup");
+			goto fail;
+		}
+		if (mount(NULL, path, "cgroup2", 0, NULL) == -1) {
+			qwarn("mount %s", path);
+			goto fail;
+		}
+
+		if ((*umount_path = strdup(path)) == NULL) {
+			qwarn("strdup");
+			goto fail;
+		}
+	}
+
+	if (path == NULL) {
+		qwarnx("no cgroup2 mount");
+		goto fail;
+	}
+
+	if ((fd = open(path, O_RDONLY)) == -1) {
+		qwarn("open %s", path);
+		goto fail;
+	}
+	free(path);
+
+	return (fd);
+
+fail:
+	free(path);
+	if (fd != -1)
+		close(fd);
+	cgroup2_umount_tmp(umount_path);
+
+	return (-1);
+}
+
 static int
 relo_ret(struct btf *btf, int *loc, const char *func)
 {
@@ -590,6 +699,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	struct bpf_probes		*p;
 	struct ring_buffer_opts		 ringbuf_opts;
 	int				 cgroup_fd, i, off, ringbuf_fd;
+	char				*cgroup_umount;
 	struct bpf_prog_skeleton	*ps;
 	struct btf			*btf;
 	struct epoll_event		 ev;
@@ -601,6 +711,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	qq->queue_be = bqq;
 	cgroup_fd = -1;
+	cgroup_umount = NULL;
 	btf = NULL;
 
 	bqq->probes = open_probes();
@@ -741,7 +852,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	}
 
 	if (qq->flags & QQ_DNS) {
-		cgroup_fd = open("/sys/fs/cgroup", O_RDONLY);
+		cgroup_fd = cgroup2_open_fd(&cgroup_umount);
 		if (cgroup_fd == -1) {
 			qwarn("open cgroup");
 			goto fail;
@@ -817,6 +928,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		close(cgroup_fd);
 		cgroup_fd = -1;
 	}
+	cgroup2_umount_tmp(&cgroup_umount);
 
 	if (bpf_probes__attach(p) != 0) {
 		qwarn("bpf_probes__attach");
@@ -855,6 +967,7 @@ fail:
 		close(cgroup_fd);
 		cgroup_fd = -1;
 	}
+	cgroup2_umount_tmp(&cgroup_umount);
 	if (btf != NULL)
 		btf__free(btf);
 
