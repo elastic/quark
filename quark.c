@@ -976,9 +976,9 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	cJSON			*metadata, *name, *namespace, *uid, *labels;
 	cJSON			*spec, *containers, *status, *phase;
 	cJSON			*deletionTimestamp, *containerStatuses, *label;
-	cJSON			*container_json;
+	cJSON			*container_json, *podIPs, *ipobj, *ip;
 	char			*tmp;
-	int			 new_pod;
+	int			 new_pod, ip_found;
 	struct label_node	*node, *node_aux;
 
 	metadata	  = GET(json, "metadata");
@@ -992,6 +992,7 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	status		  = GET(json, "status");
 	phase		  = GET(status, "phase");
 	containerStatuses = GET(status, "containerStatuses");
+	podIPs		  = GET(status, "podIPs");
 
 	if (!cJSON_IsObject(metadata)) {
 		qwarnx("bad metadata");
@@ -1094,6 +1095,37 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	if ((tmp = strdup(phase->valuestring)) != NULL) {
 		free(pod->phase);
 		pod->phase = tmp;
+	}
+
+	/*
+	 * Build addresses, the specification says there is at most only one ip
+	 * for each address family, so consider only the first two we find.
+	 */
+	ip_found = 0;
+	cJSON_ArrayForEach(ipobj, podIPs) {
+		struct quark_sockaddr qsk;
+
+		if (ip_found == 2)
+			break;
+		ip = GET(ipobj, "ip");
+		if (!cJSON_IsString(ip))
+			continue;
+		bzero(&qsk, sizeof(qsk));
+		if (inet_pton(AF_INET, ip->valuestring, &qsk.addr4) == 1) {
+			qsk.af = AF_INET;
+			pod->addr4 = qsk;
+			strlcpy(pod->addr4_a, ip->valuestring, sizeof(pod->addr4_a));
+			ip_found++;
+			continue;
+		}
+		bzero(&qsk, sizeof(qsk));
+		if (inet_pton(AF_INET6, ip->valuestring, qsk.addr6) == 1) {
+			qsk.af = AF_INET6;
+			pod->addr6 = qsk;
+			strlcpy(pod->addr6_a, ip->valuestring, sizeof(pod->addr6_a));
+			ip_found++;
+			continue;
+		}
 	}
 
 	/*

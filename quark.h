@@ -569,6 +569,10 @@ struct quark_pod {
 	char			*name;
 	char			*ns;
 	char			*uid;
+	struct quark_sockaddr	 addr4;
+	char			 addr4_a[INET6_ADDRSTRLEN];
+	struct quark_sockaddr	 addr6;
+	char			 addr6_a[INET6_ADDRSTRLEN];
 	struct label_tree	 labels;
 	struct pod_containers	 containers;
 	char			*phase;

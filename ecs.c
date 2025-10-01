@@ -490,6 +490,17 @@ ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
 		hanson_add_key_value(h, "name", pod->name, &resource_first);
 		hanson_add_key_value(h, "namespace", pod->ns, &resource_first);
 
+		hanson_add_array(h, "ip", &resource_first);
+		{
+			int	ip_first = 1;
+
+			if (*pod->addr4_a != 0)
+				hanson_add_string(h, pod->addr4_a, &ip_first);
+			if (*pod->addr6_a != 0)
+				hanson_add_string(h, pod->addr6_a, &ip_first);
+		}
+		hanson_close_array(h);
+
 		hanson_add_object(h, "label", &resource_first);
 		{
 			int	label_first = 1;
