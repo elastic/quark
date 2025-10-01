@@ -41,7 +41,7 @@ hanson_grow(struct hanson *h)
 }
 
 static inline int
-hanson_add(struct hanson *h, void *data, size_t data_len)
+hanson_add(struct hanson *h, const void *data, size_t data_len)
 {
 again:
 	if (likely(hanson_space_left(h) >= data_len)) {
@@ -104,11 +104,11 @@ is_escape_char(u_char c)
 }
 
 static int
-hanson_add_string_escaped(struct hanson *h, char *s)
+hanson_add_string_escaped(struct hanson *h, const char *s)
 {
-	int	 r = 0, len, c;
-	char	*p;
-	char	 unicode_buf[16];
+	int		 r = 0, len, c;
+	const char	*p;
+	char		 unicode_buf[16];
 
 	for (p = s; *p != 0; p++) {
 		c = is_escape_char(*p);
@@ -158,7 +158,7 @@ hanson_add_string_escaped(struct hanson *h, char *s)
 }
 
 static int
-hanson_add_string_lead(struct hanson *h, char *s, char *lead)
+hanson_add_string_lead(struct hanson *h, const char *s, char *lead)
 {
 	int	r = 0;
 
@@ -175,12 +175,12 @@ hanson_add_ascii(struct hanson *h, char c)
 }
 
 int
-hanson_add_string(struct hanson *h, char *s, int *first)
+hanson_add_string(struct hanson *h, const char *s, int *first)
 {
-	int	 r = 0;
-	char	*p;
-	int	 need_escape;
-	size_t	 len;
+	int		 r = 0;
+	const char	*p;
+	int		 need_escape;
+	size_t		 len;
 
 	r |= hanson_maybe_first(h, first);
 	r |= hanson_add_ascii_inline(h, '"');
@@ -247,7 +247,7 @@ hanson_add_boolean(struct hanson *h, int v, int *first)
 }
 
 int
-hanson_add_key_value(struct hanson *h, char *k, char *v, int *first)
+hanson_add_key_value(struct hanson *h, const char *k, const char *v, int *first)
 {
 	int	r = 0;
 
@@ -259,7 +259,7 @@ hanson_add_key_value(struct hanson *h, char *k, char *v, int *first)
 }
 
 int
-hanson_add_key_value_int(struct hanson *h, char *k, int64_t v, int *first)
+hanson_add_key_value_int(struct hanson *h, const char *k, int64_t v, int *first)
 {
 	int	r = 0;
 
@@ -271,7 +271,7 @@ hanson_add_key_value_int(struct hanson *h, char *k, int64_t v, int *first)
 }
 
 int
-hanson_add_key_value_bool(struct hanson *h, char *k, int v, int *first)
+hanson_add_key_value_bool(struct hanson *h, const char *k, int v, int *first)
 {
 	int	r = 0;
 
@@ -283,7 +283,7 @@ hanson_add_key_value_bool(struct hanson *h, char *k, int v, int *first)
 }
 
 int
-hanson_add_array(struct hanson *h, char *name, int *first)
+hanson_add_array(struct hanson *h, const char *name, int *first)
 {
 	int	r = 0;
 
@@ -300,7 +300,7 @@ hanson_close_array(struct hanson *h)
 }
 
 int
-hanson_add_object(struct hanson *h, char *name, int *first)
+hanson_add_object(struct hanson *h, const char *name, int *first)
 {
 	int	r = 0;
 
