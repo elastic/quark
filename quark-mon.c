@@ -117,7 +117,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-BbDeFkMNSstv] "
-	    "[-K kubeconfig] [-C filename ] [-l maxlength] [-m maxnodes] [-P ppid]\n",
+	    "[-C filename ] [-K kubeconfig] [-l maxlength] [-m maxnodes] [-P ppid]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
 

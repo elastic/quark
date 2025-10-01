@@ -8,6 +8,7 @@
 .Nm quark-mon
 .Op Fl BbDEeFkMNSstv
 .Op Fl C Ar filename
+.Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
 .Op Fl P Ar ppid
@@ -71,6 +72,11 @@ Use minimal aggregation, fork, exec and exit will
 be aggregated.
 .It Fl h
 Display this manpage.
+.It Fl K Ar kubeconfig
+Enrich events with kubernetes metadata, requires quark-kube-talker.
+.Ar kubeconfig
+is the path to the kubernetes configuration, usually
+.Pa $HOME/.kube/config .
 .It Fl k
 Attempt kprobe as the backend.
 .It Fl l Ar maxlength
