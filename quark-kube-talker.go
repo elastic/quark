@@ -119,6 +119,6 @@ func forward(f *os.File, pod *v1.Pod) {
 	if err != nil {
 		panic(err.Error())
 	}
-	// pretty, _ := json.MarshalIndent(obj, "", "  ")
-	// fmt.Printf("%s\n", pretty)
+	// pretty, _ := json.MarshalIndent(pod, "", "  ")
+	// fmt.Fprintf(os.Stderr, "%s\n", pretty)
 }
