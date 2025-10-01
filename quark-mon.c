@@ -124,12 +124,32 @@ usage(void)
 	exit(1);
 }
 
+static void
+print_dump(struct quark_queue *qq, const struct quark_event *qev)
+{
+	quark_event_dump(qev, stdout);
+}
+
+static void
+print_ecs(struct quark_queue *qq, const struct quark_event *qev)
+{
+	char	*ecs_buf;
+	size_t	 ecs_buf_len;
+
+	if (quark_event_to_ecs(qq, qev, &ecs_buf, &ecs_buf_len) == -1)
+		qwarnx("quark_event_to_ecs");
+	else {
+		printf("%s\n", ecs_buf);
+		fflush(stdout);
+		free(ecs_buf);
+	}
+}
 
 int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes;
-	int				 do_priv_drop, do_snap, do_ecs;
+	int				 do_priv_drop, do_snap;
 	int				 benchmark, lflag;
 	u32				 filter_ppid;
 	struct quark_queue		*qq;
@@ -140,6 +160,7 @@ main(int argc, char *argv[])
 	struct timespec			 bench_stamp, now;
 	pid_t				 kube_talker_pid;
 	const char			*kube_config;
+	void 				(*print_event)(struct quark_queue *, const struct quark_event *);
 
 	quark_queue_default_attr(&qa);
 	qa.flags &= ~QQ_ALL_BACKENDS;
@@ -151,7 +172,7 @@ main(int argc, char *argv[])
 	lflag = 0;
 	benchmark = 0;
 	kube_config = NULL;
-	do_ecs = 0;
+	print_event = print_dump;
 
 	while ((ch = getopt(argc, argv, "BbC:DEeFghK:kl:Mm:NP:tSsvV")) != -1) {
 		const char *errstr;
@@ -175,7 +196,7 @@ main(int argc, char *argv[])
 			qa.flags |= QQ_ENTRY_LEADER;
 			break;
 		case 'E':
-			do_ecs = 1;
+			print_event = print_ecs;
 			break;
 		case 'F':
 			qa.flags |= QQ_FILE;
@@ -316,7 +337,7 @@ main(int argc, char *argv[])
 		quark_process_iter_init(&qi, qq);
 
 		while ((fake_ev.process = quark_process_iter_next(&qi)) != NULL)
-			quark_event_dump(&fake_ev, stdout);
+			print_event(qq, &fake_ev);
 	}
 
 	/*
@@ -358,19 +379,7 @@ main(int argc, char *argv[])
 		/*
 		 * Finally print it to stdout
 		 */
-		if (do_ecs) {
-			char	*ecs_buf;
-			size_t	 ecs_buf_len;
-
-			if (quark_event_to_ecs(qq, qev, &ecs_buf, &ecs_buf_len) == -1)
-				qwarnx("quark_event_to_ecs");
-			else {
-				printf("%s\n", ecs_buf);
-				fflush(stdout);
-				free(ecs_buf);
-			}
-		} else
-			quark_event_dump(qev, stdout);
+		print_event(qq, qev);
 	}
 
 	if (graph_by_pidtime != NULL && graph_by_time != NULL) {
