@@ -25,8 +25,9 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-mon</code></td>
-    <td>[<code class="Fl">-BbDeFkMNSstv</code>] [<code class="Fl">-C</code>
-      <var class="Ar">filename</var>] [<code class="Fl">-l</code>
+    <td>[<code class="Fl">-BbDEeFkMNSstv</code>] [<code class="Fl">-C</code>
+      <var class="Ar">filename</var>] [<code class="Fl">-K</code>
+      <var class="Ar">kubeconfig</var>] [<code class="Fl">-l</code>
       <var class="Ar">maxlength</var>] [<code class="Fl">-m</code>
       <var class="Ar">maxnodes</var>] [<code class="Fl">-P</code>
       <var class="Ar">ppid</var>]</td>
@@ -78,6 +79,8 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
   <dt id="D"><a class="permalink" href="#D"><code class="Fl">-D</code></a></dt>
   <dd>Drop priviledges to nobody and chroot to /var/empty, useful to show how
       quark can run without priviledges.</dd>
+  <dt id="E"><a class="permalink" href="#E"><code class="Fl">-E</code></a></dt>
+  <dd>Output ECS JSON to stdout (experimental).</dd>
   <dt id="e"><a class="permalink" href="#e"><code class="Fl">-e</code></a></dt>
   <dd>Include
       <a class="permalink" href="#proc_entry_leader"><i class="Em" id="proc_entry_leader">proc_entry_leader</i></a>
@@ -95,6 +98,11 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
       aggregated.</dd>
   <dt id="h"><a class="permalink" href="#h"><code class="Fl">-h</code></a></dt>
   <dd>Display this manpage.</dd>
+  <dt id="K"><a class="permalink" href="#K"><code class="Fl">-K</code></a>
+    <var class="Ar">kubeconfig</var></dt>
+  <dd>Enrich events with kubernetes metadata, requires quark-kube-talker.
+      <var class="Ar">kubeconfig</var> is the path to the kubernetes
+      configuration, usually <span class="Pa">$HOME/.kube/config</span>.</dd>
   <dt id="k"><a class="permalink" href="#k"><code class="Fl">-k</code></a></dt>
   <dd>Attempt kprobe as the backend.</dd>
   <dt id="l"><a class="permalink" href="#l"><code class="Fl">-l</code></a>
@@ -197,7 +205,7 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">June 26, 2025</td>
+    <td class="foot-date">October 1, 2025</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
