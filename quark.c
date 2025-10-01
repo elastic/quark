@@ -2,9 +2,14 @@
 /* Copyright (c) 2024 Elastic NV */
 
 #include <sys/epoll.h>
+#include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 
+#include <netpacket/packet.h>
+
+#include <netinet/ether.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 
@@ -14,6 +19,7 @@
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
+#include <ifaddrs.h>
 #include <fcntl.h>
 #include <fts.h>
 #include <grp.h>
@@ -698,6 +704,9 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 	free(container->name);
 	free(container->image);
 	free(container->image_id);
+	free(container->image_name);
+	free(container->image_tag);
+	free(container->image_hash);
 	free(container);
 }
 
@@ -778,7 +787,7 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	 */
 	while ((container = RB_ROOT(&pod->containers)) != NULL) {
 		if (container->pod != pod) {
-			qwarnx("BUG: corrupted pod<>containter, leaking data");
+			qwarnx("BUG: corrupted pod<>container, leaking data");
 			return;
 		}
 		container_delete(qq, container);
@@ -815,17 +824,51 @@ debug_json(cJSON *json)
 }
 
 static int
+demux_image(struct quark_container *container)
+{
+	const char *tag, *tag_base, *hash;
+	/*
+	 * "image": "registry.k8s.io/e2e-test-images/agnhost:2.39",
+	 *                                 image_name^       ^tag
+	 * "imageID": "docker-pullable://registry.k8s.io/e2e-test-images/agnhost@sha256:7e8bdd271312fd25fc5ff5a8f04727be84044eb3d7d8d03611972a6752e2e11e",
+	 */
+	if ((tag_base = safe_basename(container->image)) != NULL &&
+	    (tag = strchr(tag_base, ':')) != NULL &&
+	    tag[1] != 0) {
+		container->image_name = strndup(tag_base, tag - tag_base);
+		if (container->image_name == NULL)
+			return (-1);
+		tag++;		/* skip : */
+		container->image_tag = strdup(tag);
+		if (container->image_tag == NULL)
+			return (-1);
+	}
+
+	if ((hash = safe_basename(container->image_id)) != NULL &&
+	    (hash = strchr(hash, '@')) != NULL &&
+	    hash[1] != 0) {
+		hash++;		/* skip @ */
+		container->image_hash = strdup(hash);
+		if (container->image_hash == NULL)
+			return (-1);
+	}
+
+	return (0);
+}
+
+static int
 process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *container_json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_kube	*qkube = qq->qkube;
-	cJSON			*name, *image, *state;
+	cJSON			*name, *image, *imageID, *state;
 	cJSON			*waiting, *running, *terminated;
 	cJSON			*containerID;
 	struct quark_container	*container, *col;
 
 	name	    = GET(container_json, "name");
 	image	    = GET(container_json, "image");
+	imageID     = GET(container_json, "imageID");
 	state	    = GET(container_json, "state");
 	waiting	    = GET(state, "waiting");
 	running	    = GET(state, "running");
@@ -843,6 +886,10 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 	}
 	if (!cJSON_IsString(image)) {
 		qwarnx("bad image name, ignoring");
+		return (-1);
+	}
+	if (!cJSON_IsString(imageID)) {
+		qwarnx("bad imageID, ignoring");
 		return (-1);
 	}
 	if (!cJSON_IsObject(state)) {
@@ -875,6 +922,15 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 		}
 		container->image = strdup(image->valuestring);
 		if (container->image == NULL) {
+			container_delete(qq, container);
+			return (-1);
+		}
+		container->image_id = strdup(imageID->valuestring);
+		if (container->image_id == NULL) {
+			container_delete(qq, container);
+			return (-1);
+		}
+		if (demux_image(container) == -1) {
 			container_delete(qq, container);
 			return (-1);
 		}
@@ -1248,13 +1304,13 @@ read_kube_events(struct quark_queue *qq)
 int
 parse_kube_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
 {
-	char		*name, *dot, *id;
+	char		*dot;
+	const char	*name, *id;
 	const char	*lookup_prefix;
 	int		 r, id_skip;
 
-	if ((name = strrchr(cgroup, '/')) == NULL)
+	if ((name = safe_basename(cgroup)) == NULL)
 		return (-1);
-	name++;
 
 	/*
 	 * Atm we only accept the systemd format, foo-<id>.scope
@@ -3140,6 +3196,271 @@ bad:
 	return (-1);
 }
 
+static int
+quark_sysinfo_os_release(struct quark_sysinfo *si)
+{
+	FILE	*f;
+	ssize_t	 n;
+	size_t	 line_len;
+	char	*line, *k, *v, *aux;
+
+	if ((f = fopen("/etc/os-release", "r")) == NULL) {
+		qwarn("fopen /etc/os-release");
+		return (-1);
+	}
+
+	line_len = 0;
+	line = NULL;
+	while ((n = getline(&line, &line_len, f)) != -1) {
+		if (n == 0 || line[n - 1] != '\n') {
+			qwarnx("bad line");
+			continue;
+		}
+		line[n - 1] = 0;
+		k = line;
+		if (*k == 0 || *k == '#')
+			continue;
+		v = strchr(line, '=');
+		if (v == NULL) {
+			qwarnx("bad line, no separator");
+			continue;
+		}
+		*v++ = 0;
+		if (*v == 0) {
+			qwarnx("bad line, no value");
+			continue;
+		}
+		if (*v == '"') {
+			v++;
+			aux = strchr(v, '"');
+			if (aux == NULL) {
+				qwarnx("unterminated line");
+				continue;
+			}
+			*aux = 0;
+		}
+		if (!strcasecmp(k, "name"))
+			si->os_name = strdup(v);
+		else if (!strcasecmp(k, "version"))
+			si->os_version = strdup(v);
+		else if (!strcasecmp(k, "release_type"))
+			si->os_release_type = strdup(v);
+		else if (!strcasecmp(k, "id"))
+			si->os_id = strdup(v);
+		else if (!strcasecmp(k, "version_id"))
+			si->os_version_id = strdup(v);
+		else if (!strcasecmp(k, "version_codename"))
+			si->os_version_codename = strdup(v);
+		else if (!strcasecmp(k, "pretty_name"))
+			si->os_pretty_name = strdup(v);
+	}
+	free(line);
+	fclose(f);
+
+	return (0);
+}
+
+static int
+quark_sysinfo_ifaddrs(struct quark_sysinfo *si)
+{
+	struct ifaddrs		 *ifa, *ifaddrs;
+	int			  af;
+	size_t			  i;
+	char			  buf[INET6_ADDRSTRLEN];
+	char			**tmp, *buf_copy;
+
+	if (getifaddrs(&ifaddrs) == -1) {
+		qwarn("getifaddrs");
+
+		return (-1);
+	}
+
+	/*
+	 * Look for all addresses that have an ip adress
+	 */
+	si->ip_addrs_len = si->mac_addrs_len = 0;
+	for (ifa = ifaddrs; ifa != NULL; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr == NULL)
+			continue;
+		af = ifa->ifa_addr->sa_family;
+		if (af == AF_INET) {
+			struct sockaddr_in	 *sin;
+
+			sin = (struct sockaddr_in *)ifa->ifa_addr;
+			if (inet_ntop(af, &sin->sin_addr, buf, sizeof(buf)) == NULL) {
+				qwarn("inet_ntop ifname %s", ifa->ifa_name);
+				continue;
+			}
+		}
+		if (af == AF_INET6) {
+			struct sockaddr_in6	 *sin6;
+
+			sin6 = (struct sockaddr_in6 *)ifa->ifa_addr;
+			if (inet_ntop(af, &sin6->sin6_addr,
+			    buf, sizeof(buf)) == NULL) {
+				qwarn("inet_ntop ifname %s", ifa->ifa_name);
+				continue;
+			}
+		}
+		if (af == AF_INET || af == AF_INET6) {
+			/* Check if unique */
+			for (i = 0; i < si->ip_addrs_len; i++) {
+				if (!strcmp(buf, si->ip_addrs[i]))
+					goto next;
+			}
+			tmp = reallocarray(si->ip_addrs,
+			    si->ip_addrs_len + 1, sizeof(char *));
+			if (tmp == NULL) {
+				qwarn("reallocarray");
+				continue;
+			}
+			buf_copy = strdup(buf);
+			if (buf_copy == NULL) {
+				qwarn("strdup");
+				free(tmp);
+				continue;
+			}
+			si->ip_addrs = tmp;
+			si->ip_addrs[si->ip_addrs_len] = buf_copy;
+			si->ip_addrs_len++;
+		}
+		if (af == AF_PACKET) {
+			struct sockaddr_ll	*sll;
+			struct ether_addr	*ether, zero_ether;
+			char			 eth_buf[32];
+
+			bzero(eth_buf, sizeof(eth_buf));
+			sll = (struct sockaddr_ll *)ifa->ifa_addr;
+			if (sll->sll_halen != 6)
+				continue;
+			ether = (struct ether_addr *)sll->sll_addr;
+			bzero(&zero_ether, sizeof(zero_ether));
+			if (!memcmp(&zero_ether, ether, 6))
+				continue;
+			if ((ether_ntoa_r(ether, eth_buf)) == NULL) {
+				qwarn("ether_ntoa ifname %s", ifa->ifa_name);
+				continue;
+			}
+			/* Check if unique */
+			for (i = 0; i < si->ip_addrs_len; i++) {
+				if (!strcmp(eth_buf, si->ip_addrs[i]))
+					goto next;
+			}
+			tmp = reallocarray(si->mac_addrs,
+			    si->mac_addrs_len + 1, sizeof(char *));
+			if (tmp == NULL) {
+				qwarn("reallocarray");
+				continue;
+			}
+			buf_copy = strdup(eth_buf);
+			if (buf_copy == NULL) {
+				qwarn("strdup");
+				free(tmp);
+			}
+			si->mac_addrs = tmp;
+			si->mac_addrs[si->mac_addrs_len] = buf_copy;
+			si->mac_addrs_len++;
+		}
+next:
+		; /* GCC 4.8.x will freak without a statement after a label */
+	}
+	freeifaddrs(ifaddrs);
+
+	return (0);
+}
+
+static void
+quark_sysinfo_delete(struct quark_sysinfo *si)
+{
+	size_t i;
+
+	free(si->boot_id);
+	si->boot_id = NULL;
+	free(si->hostname);
+	si->hostname = NULL;
+	/* ip_addrs */
+	for (i = 0; i < si->ip_addrs_len; i++)
+		free(si->ip_addrs[i]);
+	free(si->ip_addrs);
+	si->ip_addrs = NULL;
+	si->ip_addrs_len = 0;
+	/* mac_addrs */
+	for (i = 0; i < si->mac_addrs_len; i++)
+		free(si->mac_addrs[i]);
+	free(si->mac_addrs);
+	si->mac_addrs = NULL;
+	si->mac_addrs_len = 0;
+	/* uts_* */
+	free(si->uts_sysname);
+	si->uts_sysname = NULL;
+	free(si->uts_nodename);
+	si->uts_nodename = NULL;
+	free(si->uts_release);
+	si->uts_release = NULL;
+	free(si->uts_version);
+	si->uts_version = NULL;
+	free(si->uts_machine);
+	si->uts_machine = NULL;
+	/* os_* */
+	free(si->os_name);
+	si->os_name = NULL;
+	free(si->os_version);
+	si->os_version = NULL;
+	free(si->os_release_type);
+	si->os_release_type = NULL;
+	free(si->os_id);
+	si->os_id = NULL;
+	free(si->os_version_id);
+	si->os_version_id = NULL;
+	free(si->os_version_codename);
+	si->os_version_codename = NULL;
+	free(si->os_pretty_name);
+	si->os_pretty_name = NULL;
+}
+
+static int
+quark_sysinfo_init(struct quark_sysinfo *si)
+{
+	struct utsname	uts;
+	int		r = 0;
+	size_t		len;
+	char		hostname[MAXHOSTNAMELEN];
+
+	bzero(hostname, sizeof(hostname));
+	if (gethostname(hostname, sizeof(hostname)) == -1)
+		r = -1;
+	else {
+		hostname[sizeof(hostname) - 1] = 0;
+		si->hostname = strdup(hostname);
+	}
+
+	si->boot_id =
+	    load_file_path_nostat("/proc/sys/kernel/random/boot_id", &len);
+	if (si->boot_id == NULL || len < 2) {
+		free(si->boot_id);
+		si->boot_id = NULL;
+		r = -1;
+	} else if (si->boot_id[len - 1] == '\n') /* chomp \n */
+		si->boot_id[len - 1] = 0;
+
+	if (uname(&uts) == -1)
+		r = -1;
+	else {
+		si->uts_sysname = strdup(uts.sysname);
+		si->uts_nodename = strdup(uts.nodename);
+		si->uts_release = strdup(uts.release);
+		si->uts_version = strdup(uts.version);
+		si->uts_machine = strdup(uts.machine);
+	}
+
+	if (quark_sysinfo_os_release(si) == -1)
+		r = -1;
+
+	if (quark_sysinfo_ifaddrs(si) == -1)
+		r = -1;
+
+	return (r);
+}
 
 /*
  * Aggregation is a relationship between a parent event and a child event. In a
@@ -3649,6 +3970,12 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (quark_group_populate(&qq->group_by_gid) == -1)
 		qwarn("Can't build group database, not fatal");
 
+	/*
+	 * Build quark_sysinfo, really only used for ECS for now, not fatal
+	 */
+	if (quark_sysinfo_init(&qq->sysinfo) == -1)
+		qwarn("Can't init quark_sysinfo, not fatal");
+
 	return (0);
 
 fail:
@@ -3710,6 +4037,8 @@ quark_queue_close(struct quark_queue *qq)
 		free(qgrp->name);
 		free(qgrp);
 	}
+	/* Clean up sysinfo */
+	quark_sysinfo_delete(&qq->sysinfo);
 	/* Close epollfd */
 	if (qq->epollfd != -1) {
 		if (close(qq->epollfd) == -1)

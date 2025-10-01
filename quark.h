@@ -102,18 +102,19 @@ struct qstr {
 	char	 small[64];
 };
 
-ssize_t	 qread(int, void *, size_t);
-int	 qwrite(int, const void *, size_t);
-ssize_t	 qreadlinkat(int, const char *, char *, size_t);
-int	 qclosefrom(int, int);
-int	 isnumber(const char *);
-ssize_t	 readlineat(int, const char *, char *, size_t);
-int	 strtou64(u64 *, const char *, int);
-char	*find_line(FILE *, const char *);
-char	*find_line_p(const char *, const char *);
-char	*load_file_nostat(int, size_t *);
-char	*load_file_path_nostat(const char *, size_t *);
-int	 ipv6_supported(void);
+ssize_t		 qread(int, void *, size_t);
+int		 qwrite(int, const void *, size_t);
+ssize_t		 qreadlinkat(int, const char *, char *, size_t);
+int		 qclosefrom(int, int);
+int		 isnumber(const char *);
+ssize_t		 readlineat(int, const char *, char *, size_t);
+int		 strtou64(u64 *, const char *, int);
+char		*find_line(FILE *, const char *);
+char		*find_line_p(const char *, const char *);
+char		*load_file_nostat(int, size_t *);
+char		*load_file_path_nostat(const char *, size_t *);
+int		 ipv6_supported(void);
+const char	*safe_basename(const char *);
 
 enum quark_verbosity_levels {
 	QUARK_VL_SILENT,
@@ -546,7 +547,10 @@ struct quark_container {
 	struct quark_pod		*pod;		/* backpointer to owner */
 	char				*name;
 	char				*image;
-	char				*image_id;	/* do we want this? */
+	char				*image_id;
+	char				*image_name;
+	char				*image_tag;
+	char				*image_hash;
 };
 
 /*
@@ -613,6 +617,32 @@ struct quark_group {
 	char			*name;
 };
 
+/*
+ * General system information, static and stored in quark_queue.
+ */
+struct quark_sysinfo {
+	char	 *boot_id;
+	char	 *hostname;
+	char	**ip_addrs;	/* Solely for ECS generation */
+	size_t	  ip_addrs_len;
+	char	**mac_addrs;	/* Solely for ECS generation */
+	size_t	  mac_addrs_len;
+	/* uname(2) */
+	char	 *uts_sysname;
+	char	 *uts_nodename;
+	char	 *uts_release;
+	char	 *uts_version;
+	char	 *uts_machine;
+	/* /etc/os-release */
+	char	 *os_name;
+	char	 *os_version;
+	char	 *os_release_type;
+	char	 *os_id;
+	char	 *os_version_id;
+	char	 *os_version_codename;
+	char	 *os_pretty_name;
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
@@ -663,6 +693,7 @@ struct quark_queue {
 	struct socket_by_src_dst	 socket_by_src_dst;
 	struct passwd_by_uid		 passwd_by_uid;
 	struct group_by_gid		 group_by_gid;
+	struct quark_sysinfo		 sysinfo;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
 	const u8			(*agg_matrix)[RAW_NUM_TYPES];

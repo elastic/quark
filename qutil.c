@@ -302,3 +302,16 @@ qlog_func(int pri, int do_errno, const char *func, int lineno,
 
 	va_end(ap);
 }
+
+const char *
+safe_basename(const char *path)
+{
+	char	*p;
+
+	p = strrchr(path, '/');
+
+	if (p != NULL && p[1] != 0)
+		return (p + 1);
+
+	return (NULL);
+}
