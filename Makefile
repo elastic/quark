@@ -186,12 +186,16 @@ DOCS_HTML:= $(patsubst %.3,docs/%.3.html,$(wildcard *.3))
 DOCS_HTML+= $(patsubst %.7,docs/%.7.html,$(wildcard *.7))
 DOCS_HTML+= $(patsubst %.8,docs/%.8.html,$(wildcard *.8))
 
-all:	$(LIBQUARK_TARGET)		\
-	quark-mon			\
-	quark-btf			\
-	quark-test			\
-	quark-kube-talker		\
-	hanson-bench
+ALL_TARGETS+=$(LIBQUARK_TARGET)
+ALL_TARGETS+=quark-mon
+ALL_TARGETS+=quark-btf
+ALL_TARGETS+=quark-test
+ALL_TARGETS+=hanson-bench
+ifndef NO_KUBE_TALKER
+ALL_TARGETS+=quark-kube-talker
+endif
+
+all: $(ALL_TARGETS)
 
 $(ZLIB_STATIC): $(ZLIB_FILES)
 	$(call assert_no_syslib)
@@ -252,7 +256,7 @@ DOCKER_RUN_ARGS=$(QDOCKER)				\
 
 docker: docker-image clean-all
 	$(call msg,DOCKER-RUN,Dockerfile)
-	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) $(SHELL) -c "make -C $(PWD) all initramfs.gz"
+	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) $(SHELL) -c "make -C $(PWD) $(ALL_TARGETS) initramfs.gz"
 
 docker-cross-arm64: clean-all docker-image manpages.h
 	$(call msg,DOCKER-RUN,Dockerfile)
@@ -263,7 +267,7 @@ docker-cross-arm64: clean-all docker-image manpages.h
 		-e AR=aarch64-linux-gnu-ar		\
 		-e GOARCH=arm64				\
 		$(DOCKER_RUN_ARGS)			\
-		$(SHELL) -c "make -C $(PWD) all initramfs.gz"
+		$(SHELL) -c "make -C $(PWD) $(ALL_TARGETS) initramfs.gz"
 
 docker-image: clean-all
 	$(call msg,DOCKER-IMAGE,Dockerfile)
@@ -284,17 +288,26 @@ CENTOS7_RUN_ARGS=$(QDOCKER)				\
 		-e CENTOS7=y				\
 		centos7-quark-builder
 
+# These are targets that we can't build on centos7 since it's too old
+# We build them in the ubuntu24 docker container first, and then
+# continue with the rest of the build on centos7.
+CENTOS7_BORROW_TARGETS+=bpf_probes.o
+CENTOS7_BORROW_TARGETS+=bpf_probes_skel.h
+ifndef NO_KUBE_TALKER
+CENTOS7_BORROW_TARGETS+=quark-kube-talker
+endif
+
 centos7: clean-all docker-image centos7-image
 	# We first make only bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
 	# in the modern Ubuntu image, we can't make those on centos7.
 	$(DOCKER) run					\
 		$(DOCKER_RUN_ARGS)			\
-		$(SHELL) -c "make -C $(PWD) bpf_probes.o bpf_probes_skel.h quark-kube-talker"
+		$(SHELL) -c "make -C $(PWD) $(CENTOS7_BORROW_TARGETS)"
 	# Now we build the rest of the suite as it won't try to rebuild
 	# bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
 	$(DOCKER) run					\
 		$(CENTOS7_RUN_ARGS)			\
-		$(SHELL) -c "make -j1 -C $(PWD)"
+		$(SHELL) -c "make -j1 -C $(PWD) $(ALL_TARGETS)"
 
 centos7-image: clean-all
 	$(call msg,DOCKER-IMAGE,Dockerfile.centos7)
@@ -317,7 +330,7 @@ alpine: alpine-image clean-all
 	$(call msg,ALPINE-DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run 				\
 		$(ALPINE_RUN_ARGS) $(SHELL)		\
-		-c "make -C $(PWD) all initramfs.gz"
+		-c "make -C $(PWD) $(ALL_TARGETS) initramfs.gz"
 
 alpine-image: clean-all
 	$(call msg,ALPINE-IMAGE,Dockerfile.alpine)
