@@ -157,33 +157,13 @@ hanson_add_string_escaped(struct hanson *h, const char *s)
 	return (r);
 }
 
-static int
-hanson_add_string_lead(struct hanson *h, const char *s, char *lead)
-{
-	int	r = 0;
-
-	r |= hanson_add_string(h, s, NULL);
-	r |= hanson_add(h, lead, strlen(lead));
-
-	return (r);
-}
-
-int
-hanson_add_ascii(struct hanson *h, char c)
-{
-	return (hanson_add_ascii_inline(h, c));
-}
-
-int
-hanson_add_string(struct hanson *h, const char *s, int *first)
+static inline int
+hanson_add_escaped_inline(struct hanson *h, const char *s)
 {
 	int		 r = 0;
 	const char	*p;
 	int		 need_escape;
 	size_t		 len;
-
-	r |= hanson_maybe_first(h, first);
-	r |= hanson_add_ascii_inline(h, '"');
 
 	need_escape = 0;
 	for (p = s, len = 0; *p != 0; p++, len++) {
@@ -198,6 +178,40 @@ hanson_add_string(struct hanson *h, const char *s, int *first)
 	else
 		r |= hanson_add(h, s, len);
 
+	return (r);
+}
+
+static int
+hanson_add_string_lead(struct hanson *h, const char *s, char *lead)
+{
+	int	r = 0;
+
+	r |= hanson_add_string(h, s, NULL);
+	r |= hanson_add(h, lead, strlen(lead));
+
+	return (r);
+}
+
+int
+hanson_add_escaped(struct hanson *h, const char *s)
+{
+	return (hanson_add_escaped_inline(h, s));
+}
+
+int
+hanson_add_ascii(struct hanson *h, char c)
+{
+	return (hanson_add_ascii_inline(h, c));
+}
+
+int
+hanson_add_string(struct hanson *h, const char *s, int *first)
+{
+	int	r = 0;
+
+	r |= hanson_maybe_first(h, first);
+	r |= hanson_add_ascii_inline(h, '"');
+	r |= hanson_add_escaped_inline(h, s);
 	r |= hanson_add_ascii_inline(h, '"');
 
 	return (r);

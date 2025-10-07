@@ -589,22 +589,38 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 		hanson_add_key_value(h, "executable", qp->filename, first);
 
 	if (qp->flags & QUARK_F_CMDLINE) {
-		int	count = 0;
+		int				 count;
+		struct quark_cmdline_iter	 qcmdi;
+		const char			*arg;
 
+		/* process.args */
 		hanson_add_array(h, "args", first);
 		{
-			struct quark_cmdline_iter	 qcmdi;
-			const char			*arg;
-			int				 cmdline_first = 1;
+			int	args_first = 1;
 
 			quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
+			count = 0;
 			while ((arg = quark_cmdline_iter_next(&qcmdi)) != NULL) {
-				hanson_add_string(h, arg, &cmdline_first);
+				hanson_add_string(h, arg, &args_first);
 				count++;
 			}
 		}
 		hanson_close_array(h);
 		hanson_add_key_value_int(h, "args_count", count, first);
+
+		/* process.command_line */
+		hanson_add_string(h, "command_line", first);
+		hanson_add_ascii(h, ':');
+		hanson_add_ascii(h, '"');
+		quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
+		count = 0;
+		while ((arg = quark_cmdline_iter_next(&qcmdi)) != NULL) {
+			if (count > 0)
+				hanson_add_ascii(h, ' ');
+			hanson_add_escaped(h, arg);
+			count++;
+		}
+		hanson_add_ascii(h, '"');
 	}
 
 	if (qp->flags & QUARK_F_CWD)

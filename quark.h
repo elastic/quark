@@ -135,6 +135,7 @@ void	 qlog_func(int, int, const char *, int, const char *, ...) __attribute__((f
 /* hanson.c */
 struct hanson;
 int	 hanson_add_ascii(struct hanson *, char);
+int	 hanson_add_escaped(struct hanson *, const char *);
 int	 hanson_add_string(struct hanson *, const char *, int *);
 int	 hanson_add_integer(struct hanson *, int64_t, int *);
 int	 hanson_add_boolean(struct hanson *h, int, int *);
