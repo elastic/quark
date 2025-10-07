@@ -235,6 +235,29 @@ ecs_thread(struct quark_queue *qq, struct hanson *h,
 	return (r);
 }
 
+static const char *
+ecs_entry_leader_type(int type)
+{
+	switch (type) {
+	case QUARK_ELT_INIT:
+		return "init";
+	case QUARK_ELT_KTHREAD:
+		return "kthread";
+	case QUARK_ELT_SSHD:
+		return "sshd";
+	case QUARK_ELT_SSM:
+		return "ssm";
+	case QUARK_ELT_CONTAINER:
+		return "container";
+	case QUARK_ELT_TERM:
+		return "terminal";
+	case QUARK_ELT_CONSOLE:
+		return "console";
+	default:
+		return "unknown";
+	}
+}
+
 static int
 ecs_process_user(struct quark_queue *qq, struct hanson *h,
     const struct quark_process *qp, int *first)
@@ -518,10 +541,26 @@ ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
 	return (0);
 }
 
+enum ecs_process_kind {
+	ECS_PROC_TOP_LEVEL,
+	ECS_PROC_PARENT,
+	ECS_PROC_LEADER,	/* group_leader, session_leader, or entry_leader */
+};
+
+/*
+ * process.* where qp is the actual process we are filling, and orig_qp is the
+ * top level process, this is only relevant for session view, where we must
+ * compare pids and add same_as_process: bool. Kind expresses what kind of
+ * process we are dealing it, TOP_LEVEL being the top level.
+ */
 static int
 ecs_process(struct quark_queue *qq, struct hanson *h,
-    const struct quark_process *qp, int do_parent, int *first)
+    const struct quark_process *qp, int kind, int *first)
 {
+	const struct quark_process	*group_leader;
+	const struct quark_process	*session_leader;
+	const struct quark_process	*entry_leader;
+
 	hanson_add_key_value_int(h, "pid", qp->pid, first);
 
 	if (qp->flags & QUARK_F_PROC) {
@@ -536,23 +575,11 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 		    first);
 		/* process.user.* */
 		ecs_process_user(qq, h, qp, first);
-		/* thread.* */
-		ecs_thread(qq, h, qp, first);
 		/* process.tty.* */
 		ecs_process_tty(h, qp, first);
-
-		/* process.parent */
-		if (do_parent) {
-			hanson_add_object(h, "parent", first);
-			{
-				int				 parent_first = 1;
-				const struct quark_process	*parent;
-
-				if ((parent = quark_process_lookup(qq, qp->proc_ppid)) != NULL)
-					ecs_process(qq, h, parent, 0, &parent_first);
-			}
-			hanson_close_object(h);
-		}
+		/* process.thread.* */
+		if (kind == ECS_PROC_TOP_LEVEL)
+			ecs_thread(qq, h, qp, first);
 	}
 
 	if (qp->flags & QUARK_F_COMM)
@@ -590,6 +617,84 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 		hanson_add_key_value(h, "end", end_time, first);
 
 		hanson_add_key_value_int(h, "exit_code", qp->exit_code, first);
+	}
+
+	/* Done if no QUARK_F_PROC */
+	if ((qp->flags & QUARK_F_PROC) == 0)
+		return (0);
+
+	/* Done if we're not top level */
+	if (kind != ECS_PROC_TOP_LEVEL)
+		return (0);
+
+	/* process.parent.* */
+	hanson_add_object(h, "parent", first);
+	{
+		int				 parent_first = 1;
+		const struct quark_process	*parent;
+
+		if ((parent = quark_process_lookup(qq, qp->proc_ppid)) != NULL)
+			ecs_process(qq, h, parent,
+			    ECS_PROC_PARENT, &parent_first);
+	}
+	hanson_close_object(h);
+
+	/* Done if entry leader hasn't been opted in */
+	if ((qq->flags & QQ_ENTRY_LEADER) == 0)
+		return (0);
+
+	group_leader = quark_process_lookup(qq, qp->proc_pgid);
+	session_leader = quark_process_lookup(qq, qp->proc_sid);
+	entry_leader = quark_process_lookup(qq, qp->proc_entry_leader);
+
+	/* process.group_leader.* */
+	if (group_leader != NULL) {
+		hanson_add_object(h, "group_leader", first);
+		{
+			int	group_leader_first = 1;
+
+			ecs_process(qq, h, group_leader,
+			    ECS_PROC_LEADER, &group_leader_first);
+			hanson_add_key_value_bool(h, "same_as_process",
+			    group_leader->pid == qp->pid, &group_leader_first);
+		}
+		hanson_close_object(h);
+	}
+	/* process.session_leader.* */
+	if (session_leader != NULL) {
+		hanson_add_object(h, "session_leader", first);
+		{
+			int	session_leader_first = 1;
+
+			ecs_process(qq, h, session_leader,
+			    ECS_PROC_LEADER, &session_leader_first);
+			hanson_add_key_value_bool(h, "same_as_process",
+			    session_leader->pid == qp->pid, &session_leader_first);
+		}
+		hanson_close_object(h);
+	}
+	/* process.entry_leader.* */
+	if (entry_leader != NULL) {
+		hanson_add_object(h, "entry_leader", first);
+		{
+			int	entry_leader_first = 1;
+
+			ecs_process(qq, h, entry_leader,
+			    ECS_PROC_LEADER, &entry_leader_first);
+			hanson_add_key_value_bool(h, "same_as_process",
+			    entry_leader->pid == qp->pid, &entry_leader_first);
+			/* process.entry_leader.entry_meta.* */
+			hanson_add_object(h, "entry_meta", &entry_leader_first);
+			{
+				int		 entry_meta_first = 1;
+				const char	*type;
+
+				type = ecs_entry_leader_type(qp->proc_entry_leader_type);
+				hanson_add_key_value(h, "type", type, &entry_meta_first);
+			}
+			hanson_close_object(h);
+		}
+		hanson_close_object(h);
 	}
 
 	return (0);
@@ -803,7 +908,8 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 		{
 			int	process_first = 1;
 
-			ecs_process(qq, &h, qev->process, 1, &process_first);
+			ecs_process(qq, &h, qev->process,
+			    ECS_PROC_TOP_LEVEL, &process_first);
 		}
 		hanson_close_object(&h);
 
