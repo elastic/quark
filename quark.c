@@ -4413,7 +4413,6 @@ int
 quark_start_kube_talker(const char *kube_config, pid_t *pid)
 {
 	int	pipefd[2];
-	char	fdbuf[16];
 
 	if (kube_config == NULL || pid == NULL)
 		return (errno = EINVAL, -1);
@@ -4437,16 +4436,16 @@ quark_start_kube_talker(const char *kube_config, pid_t *pid)
 
 	/* child */
 	close(pipefd[0]);
+	if (dup2(pipefd[1], STDOUT_FILENO) == -1)
+		err(1, "dup2");
 
-	if (qclosefrom(3, pipefd[1]) == -1) {
+	if (qclosefrom(3, -1) == -1) {
 		qwarn("qclosefrom");
 		qwarnx("not closing child descriptors");
 	}
 
-	snprintf(fdbuf, sizeof(fdbuf), "%d", pipefd[1]);
-
 	if (execl("quark-kube-talker", "quark-kube-talker",
-	    kube_config, fdbuf, (char *)NULL) == -1)
+	    "-m", "-K", kube_config, (char *)NULL) == -1)
 		err(1, "execl");
 
 	return (0);		/* NOTREACHED */
