@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
-	"syscall"
 
+	getopt "github.com/pborman/getopt/v2"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -16,30 +15,46 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+var (
+	addMsgLen  bool
+	helpFlag   bool
+	configPath string
+)
+
+func fatal(v any) {
+	fmt.Fprintf(os.Stderr, "quark-kube-talker: fatal: %v\n", v)
+	os.Exit(1)
+}
+
 func main() {
-	if len(os.Args) != 3 {
-		panic("usage: quark-kube-talker kube_config_path fd_number")
+	var err error
+
+	getopt.Flag(&helpFlag, 'h', "print this help")
+	getopt.Flag(&addMsgLen, 'm', "prefix messages with binary length")
+	getopt.Flag(&configPath, 'K', "kubeconfig path")
+	getopt.SetParameters("")
+	getopt.Parse()
+
+	if helpFlag || len(getopt.Args()) != 0 {
+		getopt.Usage()
+		os.Exit(1)
 	}
 
-	configPath := os.Args[1]
-	fd, err := strconv.Atoi(os.Args[2])
-	if err != nil {
-		panic(err.Error())
+	if configPath == "" {
+		if configPath, err = os.UserHomeDir(); err != nil {
+			fatal(err)
+		}
+		configPath += "/.kube/config"
 	}
-	err = syscall.SetNonblock(fd, true)
-	if err != nil {
-		panic("can't set non block")
-	}
-	file := os.NewFile(uintptr(fd), "")
 
 	config, err := clientcmd.BuildConfigFromFlags("", configPath)
 	if err != nil {
-		panic(err.Error())
+		fatal(err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		panic(err.Error())
+		fatal(err)
 	}
 
 	factory := informers.NewSharedInformerFactory(clientset, 0)
@@ -54,7 +69,7 @@ func main() {
 				pod.Status.Phase == v1.PodPending {
 				return
 			}
-			forward(file, pod)
+			forward(pod)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			oldPod := oldObj.(*v1.Pod)
@@ -70,11 +85,11 @@ func main() {
 				return
 			}
 
-			forward(file, newPod)
+			forward(newPod)
 		},
 		DeleteFunc: func(obj interface{}) {
 			if pod, ok := obj.(*v1.Pod); ok {
-				forward(file, pod)
+				forward(pod)
 			} else {
 				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
@@ -82,7 +97,7 @@ func main() {
 					return
 				}
 				if pod, ok := tombstone.Obj.(*v1.Pod); ok {
-					forward(file, pod)
+					forward(pod)
 				} else {
 					fmt.Fprintf(os.Stderr, "Error decoding object when deleting pod, tombstone contained non-Pod object: %#v\n", tombstone.Obj)
 				}
@@ -98,26 +113,31 @@ func main() {
 	<-stopCh
 }
 
-func forward(f *os.File, pod *v1.Pod) {
+func forward(pod *v1.Pod) {
 	// Golang doesn't export a WriteV, so we have to stash it in a buffer :/
-	var buffer bytes.Buffer
 
 	j, err := json.Marshal(pod)
 	if err != nil {
-		panic(err.Error())
+		fatal(err)
 	}
 
-	err = binary.Write(&buffer, binary.NativeEndian, uint32(len(j)))
-	if err != nil {
-		panic(err.Error())
-	}
-	_, err = buffer.Write(j)
-	if err != nil {
-		panic(err.Error())
-	}
-	_, err = f.Write(buffer.Bytes())
-	if err != nil {
-		panic(err.Error())
+	if addMsgLen {
+		var buffer bytes.Buffer
+
+		err = binary.Write(&buffer, binary.NativeEndian, uint32(len(j)))
+		if err != nil {
+			fatal(err)
+		}
+		_, err = buffer.Write(j)
+		if err != nil {
+			fatal(err)
+		}
+		_, err = os.Stdout.Write(buffer.Bytes())
+		if err != nil {
+			fatal(err)
+		}
+	} else {
+		os.Stdout.Write(j)
 	}
 	// pretty, _ := json.MarshalIndent(pod, "", "  ")
 	// fmt.Fprintf(os.Stderr, "%s\n", pretty)

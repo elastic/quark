@@ -5,6 +5,7 @@ go 1.24.0
 toolchain go1.24.5
 
 require (
+	github.com/pborman/getopt/v2 v2.1.0
 	k8s.io/api v0.33.3
 	k8s.io/client-go v0.33.3
 )
