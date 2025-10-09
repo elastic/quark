@@ -584,6 +584,15 @@ struct quark_pod {
  */
 RB_HEAD(pod_by_uid, quark_pod);
 
+struct quark_kube_node {
+	char	*name;
+	char	*uid;
+	char	*zone;		/* might be NULL */
+	char	*region;	/* might be NULL */
+	char	*provider;	/* might be NULL */
+	char	*project;	/* might be NULL */
+};
+
 /*
  * The state for all kubernetes metadata.
  */
@@ -595,6 +604,7 @@ struct quark_kube {
 	size_t			 buf_w;			/* write pointer */
 	size_t			 buf_r;			/* read pointer */
 	size_t			 buf_len;		/* total length */
+	struct quark_kube_node	 node;			/* node we're running on */
 	struct pod_by_uid	 pod_by_uid;		/* uid comes from json */
 	struct container_by_id	 container_by_id;	/* in containerID format from json */
 };

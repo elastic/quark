@@ -174,6 +174,40 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
+ecs_cloud(struct hanson *h, struct quark_kube *qkube, int *first)
+{
+	struct quark_kube_node *node = &qkube->node;
+
+	if (node->provider != NULL)
+		hanson_add_key_value(h, "provider", node->provider, first);
+	if (node->zone != NULL)
+		hanson_add_key_value(h, "availability_zone", node->zone, first);
+	if (node->region != NULL)
+		hanson_add_key_value(h, "region", node->region, first);
+	hanson_add_object(h, "instance", first);
+	{
+		int	instance_first = 1;
+
+		hanson_add_key_value(h, "name", node->name, &instance_first);
+	}
+	hanson_close_object(h);
+
+	if (node->project != NULL) {
+		hanson_add_object(h, "project", first);
+		{
+			int	project_first = 1;
+
+			hanson_add_key_value(h, "name", node->project, &project_first);
+		}
+		hanson_close_object(h);
+	}
+
+	/* missing project.id, account.name and account.id */
+
+	return (0);
+}
+
+static int
 ecs_capabilities(struct quark_queue *qq, struct hanson *h, u64 caps, int *first)
 {
 	int		 c, bit;
@@ -422,19 +456,11 @@ container_runtime(struct quark_container *container)
 }
 
 static int
-ecs_container(struct hanson *h, const struct quark_event *qev, int *first)
+ecs_container(struct hanson *h, struct quark_container *container, int *first)
 {
-	const struct quark_process	*qp;
-	struct quark_container		*container;
-	struct quark_pod		*pod;
-	struct label_node		*label;
+	struct quark_pod	*pod;
+	struct label_node	*label;
 
-	if (qev->process == NULL || qev->process->container == NULL ||
-	    qev->process->container->pod == NULL)
-		return (-1);
-
-	qp = qev->process;
-	container = qp->container;
 	pod = container->pod;
 
 	hanson_add_key_value(h, "id", container->container_id, first);
@@ -442,15 +468,17 @@ ecs_container(struct hanson *h, const struct quark_event *qev, int *first)
 	hanson_add_key_value(h, "runtime", container_runtime(container), first);
 
 	/* container.label.* */
-	hanson_add_object(h, "labels", first);
-	{
-		int	label_first = 1;
+	if (pod != NULL) {
+		hanson_add_object(h, "labels", first);
+		{
+			int	label_first = 1;
 
-		RB_FOREACH(label, label_tree, &pod->labels) {
-			hanson_add_key_value(h, label->key, label->value, &label_first);
+			RB_FOREACH(label, label_tree, &pod->labels) {
+				hanson_add_key_value(h, label->key, label->value, &label_first);
+			}
 		}
+		hanson_close_object(h);
 	}
-	hanson_close_object(h);
 
 	/* container image */
 	hanson_add_object(h, "image", first);
@@ -490,20 +518,9 @@ ecs_container(struct hanson *h, const struct quark_event *qev, int *first)
 }
 
 static int
-ecs_orchestrator(struct hanson *h, const struct quark_event *qev, int *first)
+ecs_orchestrator(struct hanson *h, struct quark_pod *pod, int *first)
 {
-	const struct quark_process	*qp;
-	struct quark_container		*container;
-	struct quark_pod		*pod;
-	struct label_node		*label;
-
-	if (qev->process == NULL || qev->process->container == NULL ||
-	    qev->process->container->pod == NULL)
-		return (-1);
-
-	qp = qev->process;
-	container = qp->container;
-	pod = container->pod;
+	struct label_node	*label;
 
 	hanson_add_key_value(h, "namespace", pod->ns, first);
 
@@ -919,7 +936,41 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 	}
 	hanson_close_object(&h);
 
+
+	if (qq->qkube != NULL) {
+		hanson_add_object(&h, "cloud", &top_first);
+		{
+			int	cloud_first = 1;
+
+			ecs_cloud(&h, qq->qkube, &cloud_first);
+		}
+		hanson_close_object(&h);
+	}
+
 	if (qev->process != NULL) {
+		if (qev->process->container != NULL) {
+			hanson_add_object(&h, "container", &top_first);
+			{
+				int	container_first = 1;
+
+				ecs_container(&h, qev->process->container,
+				    &container_first);
+			}
+			hanson_close_object(&h);
+
+			if (qev->process->container->pod != NULL) {
+				hanson_add_object(&h, "orchestrator", &top_first);
+				{
+					int	orchestrator_first = 1;
+
+					ecs_orchestrator(&h,
+					    qev->process->container->pod,
+					    &orchestrator_first);
+				}
+				hanson_close_object(&h);
+			}
+		}
+
 		hanson_add_object(&h, "process", &top_first);
 		{
 			int	process_first = 1;
@@ -928,24 +979,6 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 			    ECS_PROC_TOP_LEVEL, &process_first);
 		}
 		hanson_close_object(&h);
-
-		if (qev->process->container != NULL) {
-			hanson_add_object(&h, "container", &top_first);
-			{
-				int	container_first = 1;
-
-				ecs_container(&h, qev, &container_first);
-			}
-			hanson_close_object(&h);
-
-			hanson_add_object(&h, "orchestrator", &top_first);
-			{
-				int	orchestrator_first = 1;
-
-				ecs_orchestrator(&h, qev, &orchestrator_first);
-			}
-			hanson_close_object(&h);
-		}
 	}
 
 	if (qev->socket != NULL)

@@ -819,7 +819,7 @@ debug_json(cJSON *json)
 	char *debug;
 
 	debug = cJSON_Print(json);
-	printf("printing cJSON\n%s\n", debug);
+	fprintf(stderr, "printing cJSON\n%s\n", debug);
 	free(debug);
 }
 
@@ -969,7 +969,7 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 }
 
 static int
-process_kube_event(struct quark_queue *qq, cJSON *json)
+process_kube_pod_event(struct quark_queue *qq, cJSON *json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_pod	*pod;
@@ -1008,10 +1008,6 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	}
 	if (!cJSON_IsString(uid)) {
 		qwarnx("bad uid");
-		return (-1);
-	}
-	if (!cJSON_IsObject(labels)) {
-		qwarnx("bad labels");
 		return (-1);
 	}
 	if (!cJSON_IsObject(spec)) {
@@ -1203,6 +1199,100 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 #undef GET
 }
 
+/*
+ * gce://elastic-security-dev/us-east1-b/gke-demo-quark-cluster-default-pool-725cecaa-05m5"
+ *  ^provider   ^project
+ */
+static void
+parse_provider_id(struct quark_kube_node *node, const char *provider_id)
+{
+	char	*sep, *project_end;
+
+	if ((sep = strstr(provider_id, "://")) == NULL)
+		return;
+	node->provider = strndup(provider_id, sep - provider_id);
+	if (node->provider && !strcmp(node->provider, "gce")) {
+		node->provider[1] = 'k';
+		node->provider[2] = 'e';
+	}
+	sep += 3;
+	if ((project_end = strchr(sep, '/')) == NULL)
+		return;
+	node->project = strndup(sep, project_end - sep);
+}
+
+static int
+process_kube_node_event(struct quark_queue *qq, cJSON *json)
+{
+#define GET cJSON_GetObjectItemCaseSensitive
+	struct quark_kube_node	*node = &qq->qkube->node;
+	cJSON			*metadata, *name, *uid;
+	cJSON			*labels, *zone, *region;	/* optionals */
+	cJSON			*spec, *providerID;		/* optionals */
+
+	metadata = GET(json, "metadata");
+	name	 = GET(metadata, "name");
+	uid	 = GET(metadata, "uid");
+	labels	 = GET(metadata, "labels");
+	spec	 = GET(json, "spec");
+
+	if (!cJSON_IsObject(metadata)) {
+		qwarnx("bad metadata");
+		return (-1);
+	}
+	if (!cJSON_IsString(name)) {
+		qwarnx("bad name");
+		return (-1);
+	}
+	if (!cJSON_IsString(uid)) {
+		qwarnx("bad uid");
+		return (-1);
+	}
+
+	/*
+	 * Ignore updates
+	 */
+	if (node->name != NULL)
+		return (0);
+
+	/*
+	 * First message
+	 */
+	node->name = strdup(name->valuestring);
+	node->uid = strdup(uid->valuestring);
+	if (node->name == NULL || node->uid == NULL) {
+		free(node->name);
+		free(node->uid);
+		node->name = NULL;
+		node->uid = NULL;
+		return (-1);
+	}
+
+	/*
+	 * Optional values
+	 */
+	zone = GET(labels, "topology.kubernetes.io/zone");
+	/* try old zone key */
+	if (!cJSON_IsString(zone))
+		zone = GET(labels, "failure-domain.beta.kubernetes.io/zone");
+	region = GET(labels, "topology.kubernetes.io/region");
+	/* try old region key */
+	if (!cJSON_IsString(region))
+		region = GET(labels, "failure-domain.beta.kubernetes.io/region");
+	/* finally commit */
+	if (cJSON_IsString(zone))
+		node->zone = strdup(zone->valuestring);
+	if (cJSON_IsString(region))
+		node->region = strdup(region->valuestring);
+	/* Fetch provider and project from providerID */
+	providerID = GET(spec, "providerID");
+	if (cJSON_IsString(providerID))
+		parse_provider_id(node, providerID->valuestring);
+
+	return (0);
+#undef GET
+}
+
 static void
 stop_kube(struct quark_queue *qq)
 {
@@ -1224,11 +1314,12 @@ stop_kube(struct quark_queue *qq)
 static int
 parse_kube_events(struct quark_queue *qq)
 {
+#define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_kube	*qkube = qq->qkube;
 	size_t			 left_toread;
 	char			*ev;
 	u32			 ev_len;
-	cJSON			*json;
+	cJSON			*json, *kind;
 
 	left_toread = qkube->buf_w - qkube->buf_r;
 	/* In the middle of the 4byte len */
@@ -1269,10 +1360,20 @@ parse_kube_events(struct quark_queue *qq)
 		qwarnx("can't create json of event (len=%d)", ev_len);
 		return (1);
 	}
-	process_kube_event(qq, json);
+	kind = GET(json, "kind");
+	if (!cJSON_IsString(kind))
+		qwarnx("invalid object kind");
+	else if (!strcmp("Pod", kind->valuestring))
+		process_kube_pod_event(qq, json);
+	else if (!strcmp("Node", kind->valuestring))
+		process_kube_node_event(qq, json);
+	else
+		qwarnx("unhandled object kind %s", kind->valuestring);
+
 	cJSON_Delete(json);
 
 	return (1);
+#undef GET
 }
 
 static void
@@ -1433,7 +1534,7 @@ prime_kube(struct quark_queue *qq)
 	pfd.events = POLLIN;
 
 	qwarnx("priming kube events...");
-	deadline = now64() + (u64)MS_TO_NS(2000);
+	deadline = now64() + (u64)MS_TO_NS(3000);
 	do {
 		if ((r = poll(&pfd, 1, 25)) == -1) {
 			qwarn("poll");
@@ -1443,7 +1544,21 @@ prime_kube(struct quark_queue *qq)
 			continue;
 		qkube->try_read = 1;
 		read_kube_events(qq);
+		/*
+		 * If read_kube_events failed at any point, fd is -1, so bail.
+		 */
+		if (qkube->fd == -1)
+			break;
 	} while (now64() < deadline);
+
+	/*
+	 * We must have received at least the node information.
+	 */
+	if (qkube->node.name == NULL) {
+		errno = EREMOTEIO;
+		qwarn("no node received by quark-kube-talker");
+		return (-1);
+	}
 
 	return (0);
 }
@@ -4053,6 +4168,12 @@ quark_queue_close(struct quark_queue *qq)
 		stop_kube(qq);
 		while ((pod = RB_ROOT(&qq->qkube->pod_by_uid)) != NULL)
 			pod_delete(qq, pod);
+		free(qq->qkube->node.name);
+		free(qq->qkube->node.uid);
+		free(qq->qkube->node.zone);
+		free(qq->qkube->node.region);
+		free(qq->qkube->node.provider);
+		free(qq->qkube->node.project);
 		free(qq->qkube->buf);
 		free(qq->qkube);
 		qq->qkube = NULL;
@@ -4444,9 +4565,9 @@ quark_start_kube_talker(const char *kube_config, pid_t *pid)
 		qwarnx("not closing child descriptors");
 	}
 
-	if (execl("quark-kube-talker", "quark-kube-talker",
+	if (execlp("quark-kube-talker", "quark-kube-talker",
 	    "-m", "-K", kube_config, (char *)NULL) == -1)
-		err(1, "execl");
+		err(1, "execlp quark-kube-talker");
 
 	return (0);		/* NOTREACHED */
 }
