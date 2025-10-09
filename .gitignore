@@ -12,6 +12,7 @@ quark-test-static
 quark-kube-talker
 init
 true
+hanson-bench
 libquark.a
 libquark_big.a
 bpf_probes_skel.h

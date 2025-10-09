@@ -6,19 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	getopt "github.com/pborman/getopt/v2"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
-)
-
-var (
-	addMsgLen  bool
-	helpFlag   bool
-	configPath string
 )
 
 func fatal(v any) {
@@ -26,12 +23,51 @@ func fatal(v any) {
 	os.Exit(1)
 }
 
+func fetchConfig(Kflag string) (*rest.Config, error) {
+	var configPath string
+
+	// Try only ENV
+	if Kflag == "ENV" {
+		return rest.InClusterConfig()
+	}
+
+	// Try ENV first, fallback to config path otherwise
+	if Kflag == "" {
+		config, err := rest.InClusterConfig()
+		if err == nil {
+			return config, nil
+		}
+		// config, err := clientcmd.BuildConfigFromFlags("", configPath)
+		// rest.InClusterConfig()
+		if configPath, err = os.UserHomeDir(); err != nil {
+			return nil, err
+		}
+		configPath += "/.kube/config"
+
+		config, err = clientcmd.BuildConfigFromFlags("", configPath)
+		return config, err
+	}
+
+	// Treat Kflag as configPath
+	configPath = Kflag
+	return clientcmd.BuildConfigFromFlags("", configPath)
+}
+
 func main() {
 	var err error
+	var addMsgLen bool
+	var Kflag string
+	var helpFlag bool
+	var nodeName string
+	var clusterConfig bool
+	var config *rest.Config
+	var gotNode bool
 
+	getopt.Flag(&clusterConfig, 'C', "use cluster config")
 	getopt.Flag(&helpFlag, 'h', "print this help")
 	getopt.Flag(&addMsgLen, 'm', "prefix messages with binary length")
-	getopt.Flag(&configPath, 'K', "kubeconfig path")
+	getopt.Flag(&nodeName, 'n', "kubernetes node name")
+	getopt.Flag(&Kflag, 'K', "kubeconfig path")
 	getopt.SetParameters("")
 	getopt.Parse()
 
@@ -40,14 +76,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if configPath == "" {
-		if configPath, err = os.UserHomeDir(); err != nil {
-			fatal(err)
-		}
-		configPath += "/.kube/config"
+	if nodeName == "" {
+		nodeName = os.Getenv("QUARK_NODE_NAME")
+	}
+	if nodeName == "" {
+		fatal("can't fetch kubernetes node name")
 	}
 
-	config, err := clientcmd.BuildConfigFromFlags("", configPath)
+	config, err = fetchConfig(Kflag)
 	if err != nil {
 		fatal(err)
 	}
@@ -57,9 +93,41 @@ func main() {
 		fatal(err)
 	}
 
-	factory := informers.NewSharedInformerFactory(clientset, 0)
-	podInformer := factory.Core().V1().Pods().Informer()
+	nodeOptions := func(options *metav1.ListOptions) {
+		options.FieldSelector = "metadata.name=" + nodeName
+	}
+	nodeFactory := informers.NewSharedInformerFactoryWithOptions(clientset, 0,
+		informers.WithTweakListOptions(nodeOptions))
+	nodeInformer := nodeFactory.Core().V1().Nodes().Informer()
+	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			node := obj.(*v1.Node)
+			fmt.Fprintf(os.Stderr, "ADD NODE %s kind=%v\n", node.Name, node.Kind)
+			// pretty, _ := json.MarshalIndent(node, "", "  ")
+			// fmt.Fprintf(os.Stderr, "%s\n", pretty)
 
+			forwardNode(node, addMsgLen)
+			gotNode = true
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			// oldNode := oldObj.(*v1.Pod)
+			newNode := newObj.(*v1.Node)
+			fmt.Fprintf(os.Stderr, "UPDATE NODE %s\n", newNode.Name)
+			forwardNode(newNode, addMsgLen)
+		},
+		DeleteFunc: func(obj interface{}) {
+			node := obj.(*v1.Node)
+			fmt.Fprintf(os.Stderr, "DELETE NODE %s\n", node.Name)
+			forwardNode(node, addMsgLen)
+		},
+	})
+
+	podOptions := func(options *metav1.ListOptions) {
+		options.FieldSelector = "spec.nodeName=" + nodeName
+	}
+	podFactory := informers.NewSharedInformerFactoryWithOptions(clientset, 0,
+		informers.WithTweakListOptions(podOptions))
+	podInformer := podFactory.Core().V1().Pods().Informer()
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*v1.Pod)
@@ -69,7 +137,7 @@ func main() {
 				pod.Status.Phase == v1.PodPending {
 				return
 			}
-			forward(pod)
+			forwardPod(pod, addMsgLen)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			oldPod := oldObj.(*v1.Pod)
@@ -85,11 +153,11 @@ func main() {
 				return
 			}
 
-			forward(newPod)
+			forwardPod(newPod, addMsgLen)
 		},
 		DeleteFunc: func(obj interface{}) {
 			if pod, ok := obj.(*v1.Pod); ok {
-				forward(pod)
+				forwardPod(pod, addMsgLen)
 			} else {
 				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
@@ -97,7 +165,7 @@ func main() {
 					return
 				}
 				if pod, ok := tombstone.Obj.(*v1.Pod); ok {
-					forward(pod)
+					forwardPod(pod, addMsgLen)
 				} else {
 					fmt.Fprintf(os.Stderr, "Error decoding object when deleting pod, tombstone contained non-Pod object: %#v\n", tombstone.Obj)
 				}
@@ -108,15 +176,35 @@ func main() {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	factory.Start(stopCh)
+	podFactory.Start(stopCh)
+	nodeFactory.Start(stopCh)
+
+	// Wait for an Add(node) for up to 5 seconds
+	go func() {
+		for i := 0; i < 5; i++ {
+			if gotNode {
+				return
+			}
+			time.Sleep(time.Second)
+		}
+		fatal("didn't receive node")
+	}()
 
 	<-stopCh
 }
 
-func forward(pod *v1.Pod) {
-	// Golang doesn't export a WriteV, so we have to stash it in a buffer :/
+func forwardNode(node *v1.Node, addMsgLen bool) {
+	node.TypeMeta.Kind = "Node"
+	forwardAny(node, addMsgLen)
+}
 
-	j, err := json.Marshal(pod)
+func forwardPod(pod *v1.Pod, addMsgLen bool) {
+	pod.TypeMeta.Kind = "Pod"
+	forwardAny(pod, addMsgLen)
+}
+
+func forwardAny(obj interface{}, addMsgLen bool) {
+	j, err := json.Marshal(obj)
 	if err != nil {
 		fatal(err)
 	}
@@ -124,6 +212,7 @@ func forward(pod *v1.Pod) {
 	if addMsgLen {
 		var buffer bytes.Buffer
 
+		// Golang doesn't export a WriteV, so we have to stash it in a buffer :/
 		err = binary.Write(&buffer, binary.NativeEndian, uint32(len(j)))
 		if err != nil {
 			fatal(err)
@@ -132,13 +221,16 @@ func forward(pod *v1.Pod) {
 		if err != nil {
 			fatal(err)
 		}
-		_, err = os.Stdout.Write(buffer.Bytes())
+		_, err := os.Stdout.Write(buffer.Bytes())
 		if err != nil {
 			fatal(err)
 		}
 	} else {
-		os.Stdout.Write(j)
+		_, err = os.Stdout.Write(j)
+		if err != nil {
+			fatal(err)
+		}
 	}
-	// pretty, _ := json.MarshalIndent(pod, "", "  ")
+	// pretty, _ := json.MarshalIndent(obj, "", "  ")
 	// fmt.Fprintf(os.Stderr, "%s\n", pretty)
 }
