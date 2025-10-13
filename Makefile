@@ -400,10 +400,10 @@ true: true.c
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
 
-hanson-bench: hanson-bench.c $(LIBQUARK_TARGET)
+hanson-bench: hanson-bench.c hanson.o compat.o quark.h
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
-		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
+		-o $@ $< hanson.o compat.o $(EXTRA_LDFLAGS)
 
 quark-mon: quark-mon.c manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)

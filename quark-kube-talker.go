@@ -59,11 +59,8 @@ func main() {
 	var Kflag string
 	var helpFlag bool
 	var nodeName string
-	var clusterConfig bool
 	var config *rest.Config
-	var gotNode bool
 
-	getopt.Flag(&clusterConfig, 'C', "use cluster config")
 	getopt.Flag(&helpFlag, 'h', "print this help")
 	getopt.Flag(&addMsgLen, 'm', "prefix messages with binary length")
 	getopt.Flag(&nodeName, 'n', "kubernetes node name")
@@ -93,6 +90,9 @@ func main() {
 		fatal(err)
 	}
 
+	gotNode := false
+	gotNodeChan := make(chan struct{})
+
 	nodeOptions := func(options *metav1.ListOptions) {
 		options.FieldSelector = "metadata.name=" + nodeName
 	}
@@ -102,22 +102,18 @@ func main() {
 	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			node := obj.(*v1.Node)
-			fmt.Fprintf(os.Stderr, "ADD NODE %s kind=%v\n", node.Name, node.Kind)
-			// pretty, _ := json.MarshalIndent(node, "", "  ")
-			// fmt.Fprintf(os.Stderr, "%s\n", pretty)
-
 			forwardNode(node, addMsgLen)
-			gotNode = true
+			if !gotNode {
+				gotNode = true
+				gotNodeChan <- struct{}{}
+			}
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
-			// oldNode := oldObj.(*v1.Pod)
 			newNode := newObj.(*v1.Node)
-			fmt.Fprintf(os.Stderr, "UPDATE NODE %s\n", newNode.Name)
 			forwardNode(newNode, addMsgLen)
 		},
 		DeleteFunc: func(obj interface{}) {
 			node := obj.(*v1.Node)
-			fmt.Fprintf(os.Stderr, "DELETE NODE %s\n", node.Name)
 			forwardNode(node, addMsgLen)
 		},
 	})
@@ -181,13 +177,11 @@ func main() {
 
 	// Wait for an Add(node) for up to 5 seconds
 	go func() {
-		for i := 0; i < 5; i++ {
-			if gotNode {
-				return
-			}
-			time.Sleep(time.Second)
+		select {
+		case <-gotNodeChan:
+		case <-time.After(5 * time.Second):
+			fatal("didn't receive node")
 		}
-		fatal("didn't receive node")
 	}()
 
 	<-stopCh
@@ -221,7 +215,7 @@ func forwardAny(obj interface{}, addMsgLen bool) {
 		if err != nil {
 			fatal(err)
 		}
-		_, err := os.Stdout.Write(buffer.Bytes())
+		_, err = os.Stdout.Write(buffer.Bytes())
 		if err != nil {
 			fatal(err)
 		}
