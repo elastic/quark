@@ -580,6 +580,7 @@ cgroup2_open_fd(char **umount_path)
 		path = strndup(start, end - start);
 		break;
 	}
+	free(file_buf);
 
 	/*
 	 * No cgroup2 mount found, try to mount it ourselves at
