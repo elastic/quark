@@ -375,6 +375,8 @@ test-valgrind: quark-test
 		valgrind						\
 		--trace-children=no					\
 		--child-silent-after-fork=yes				\
+		--leak-check=full					\
+		--error-exitcode=1					\
 		./quark-test -1						\
 		2>&1
 # | grep -v "^--.*WARNING: unhandled eBPF command"
