@@ -28,8 +28,8 @@ dump_stats(struct quark_queue *qq)
 	struct quark_queue_stats	s;
 
 	quark_queue_get_stats(qq, &s);
-	putchar('\n');
-	printf(
+	fputc('\n', stderr);
+	fprintf(stderr,
 	    "%14s"
 	    "%14s"
 	    "%14s"
@@ -43,8 +43,8 @@ dump_stats(struct quark_queue *qq)
 	    "lost",
 	    "gc-cols"
 	);
-	putchar('\n');
-	printf(
+	fputc('\n', stderr);
+	fprintf(stderr,
 	    "%14llu"
 	    "%14llu"
 	    "%14llu"
@@ -53,7 +53,7 @@ dump_stats(struct quark_queue *qq)
 	    "%14llu",
 	    s.insertions, s.removals, s.aggregations,
 	    s.non_aggregations, s.lost, s.garbage_collections);
-	putchar('\n');
+	fputc('\n', stderr);
 }
 
 static const char *
