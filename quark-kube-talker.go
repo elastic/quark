@@ -2,10 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	getopt "github.com/pborman/getopt/v2"
@@ -18,9 +23,66 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+var (
+	outputMutex sync.Mutex
+	addMsgLen   bool
+)
+
 func fatal(v any) {
 	fmt.Fprintf(os.Stderr, "quark-kube-talker: fatal: %v\n", v)
 	os.Exit(1)
+}
+
+func fetchClusterVersion(ctx context.Context, clientset *kubernetes.Clientset) error {
+	version, err := clientset.Discovery().ServerVersion()
+	if err != nil {
+		return err
+	}
+	data := map[string]string{
+		"kind":    "ClusterVersion",
+		"version": version.String(),
+	}
+	forwardAny(data)
+
+	return nil
+}
+
+func fetchGCP(ctx context.Context) error {
+	uri := url.URL{
+		Scheme:   "http",
+		Host:     "169.254.169.254",
+		Path:     "/computeMetadata/v1",
+		RawQuery: "recursive=true&alt=json",
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", uri.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Add("Metadata-Flavor", "Google")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP GET error: %s", resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	// Add kind
+	var data map[string]interface{}
+	err = json.Unmarshal(body, &data)
+	if err != nil {
+		return err
+	}
+	data["kind"] = "GcpMeta"
+	forwardAny(data)
+
+	return nil
 }
 
 func fetchConfig(Kflag string) (*rest.Config, error) {
@@ -55,7 +117,6 @@ func fetchConfig(Kflag string) (*rest.Config, error) {
 
 func main() {
 	var err error
-	var addMsgLen bool
 	var Kflag string
 	var helpFlag bool
 	var nodeName string
@@ -90,6 +151,11 @@ func main() {
 		fatal(err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go fetchClusterVersion(ctx, clientset)
+	go fetchGCP(ctx)
+
 	gotNode := false
 	gotNodeChan := make(chan struct{})
 
@@ -102,7 +168,7 @@ func main() {
 	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			node := obj.(*v1.Node)
-			forwardNode(node, addMsgLen)
+			forwardNode(node)
 			if !gotNode {
 				gotNode = true
 				gotNodeChan <- struct{}{}
@@ -110,11 +176,11 @@ func main() {
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			newNode := newObj.(*v1.Node)
-			forwardNode(newNode, addMsgLen)
+			forwardNode(newNode)
 		},
 		DeleteFunc: func(obj interface{}) {
 			node := obj.(*v1.Node)
-			forwardNode(node, addMsgLen)
+			forwardNode(node)
 		},
 	})
 
@@ -133,7 +199,7 @@ func main() {
 				pod.Status.Phase == v1.PodPending {
 				return
 			}
-			forwardPod(pod, addMsgLen)
+			forwardPod(pod)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			oldPod := oldObj.(*v1.Pod)
@@ -149,11 +215,11 @@ func main() {
 				return
 			}
 
-			forwardPod(newPod, addMsgLen)
+			forwardPod(newPod)
 		},
 		DeleteFunc: func(obj interface{}) {
 			if pod, ok := obj.(*v1.Pod); ok {
-				forwardPod(pod, addMsgLen)
+				forwardPod(pod)
 			} else {
 				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
@@ -161,7 +227,7 @@ func main() {
 					return
 				}
 				if pod, ok := tombstone.Obj.(*v1.Pod); ok {
-					forwardPod(pod, addMsgLen)
+					forwardPod(pod)
 				} else {
 					fmt.Fprintf(os.Stderr, "Error decoding object when deleting pod, tombstone contained non-Pod object: %#v\n", tombstone.Obj)
 				}
@@ -187,17 +253,17 @@ func main() {
 	<-stopCh
 }
 
-func forwardNode(node *v1.Node, addMsgLen bool) {
+func forwardNode(node *v1.Node) {
 	node.TypeMeta.Kind = "Node"
-	forwardAny(node, addMsgLen)
+	forwardAny(node)
 }
 
-func forwardPod(pod *v1.Pod, addMsgLen bool) {
+func forwardPod(pod *v1.Pod) {
 	pod.TypeMeta.Kind = "Pod"
-	forwardAny(pod, addMsgLen)
+	forwardAny(pod)
 }
 
-func forwardAny(obj interface{}, addMsgLen bool) {
+func forwardAny(obj interface{}) {
 	j, err := json.Marshal(obj)
 	if err != nil {
 		fatal(err)
@@ -215,12 +281,16 @@ func forwardAny(obj interface{}, addMsgLen bool) {
 		if err != nil {
 			fatal(err)
 		}
+		outputMutex.Lock()
 		_, err = os.Stdout.Write(buffer.Bytes())
+		outputMutex.Unlock()
 		if err != nil {
 			fatal(err)
 		}
 	} else {
+		outputMutex.Lock()
 		_, err = os.Stdout.Write(j)
+		outputMutex.Unlock()
 		if err != nil {
 			fatal(err)
 		}

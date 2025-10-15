@@ -587,10 +587,14 @@ RB_HEAD(pod_by_uid, quark_pod);
 struct quark_kube_node {
 	char	*name;
 	char	*uid;
-	char	*zone;		/* might be NULL */
-	char	*region;	/* might be NULL */
-	char	*provider;	/* might be NULL */
-	char	*project;	/* might be NULL */
+	char	*zone;			/* might be NULL */
+	char	*region;		/* might be NULL */
+	char	*provider;		/* might be NULL */
+	char	*project;		/* might be NULL */
+	char	*project_id;		/* might be NULL */
+	char	*cluster_name;		/* might be NULL */
+	char	*cluster_uid;		/* might be NULL */
+	char	*cluster_version;	/* might be NULL */
 };
 
 /*

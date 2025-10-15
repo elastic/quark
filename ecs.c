@@ -198,6 +198,21 @@ ecs_cloud(struct hanson *h, struct quark_kube *qkube, int *first)
 			int	project_first = 1;
 
 			hanson_add_key_value(h, "name", node->project, &project_first);
+			if (node->project_id != NULL)
+				hanson_add_key_value(h, "id", node->project_id,
+				    &project_first);
+		}
+		hanson_close_object(h);
+
+		/* Account is identical to project apparently */
+		hanson_add_object(h, "account", first);
+		{
+			int	account_first = 1;
+
+			hanson_add_key_value(h, "name", node->project, &account_first);
+			if (node->project_id != NULL)
+				hanson_add_key_value(h, "id", node->project_id,
+				    &account_first);
 		}
 		hanson_close_object(h);
 	}
@@ -518,9 +533,34 @@ ecs_container(struct hanson *h, struct quark_container *container, int *first)
 }
 
 static int
-ecs_orchestrator(struct hanson *h, struct quark_pod *pod, int *first)
+ecs_orchestrator(struct quark_kube *qkube, struct hanson *h, struct quark_pod *pod, int *first)
 {
 	struct label_node	*label;
+	char			*cluster_name, *cluster_uid, *cluster_version;
+
+	cluster_name = qkube->node.cluster_name;
+	cluster_uid = qkube->node.cluster_uid;
+	cluster_version = qkube->node.cluster_version;
+
+	if (cluster_name != NULL ||
+	    cluster_uid != NULL ||
+	    cluster_version != NULL) {
+		hanson_add_object(h, "cluster", first);
+		{
+			int	cluster_first = 1;
+
+			if (cluster_name != NULL)
+				hanson_add_key_value(h, "name", cluster_name,
+				    &cluster_first);
+			if (cluster_uid != NULL)
+				hanson_add_key_value(h, "id", cluster_uid,
+				    &cluster_first);
+			if (cluster_version != NULL)
+				hanson_add_key_value(h, "version", cluster_version,
+				    &cluster_first);
+		}
+		hanson_close_object(h);
+	}
 
 	hanson_add_key_value(h, "namespace", pod->ns, first);
 
@@ -963,7 +1003,7 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 				{
 					int	orchestrator_first = 1;
 
-					ecs_orchestrator(&h,
+					ecs_orchestrator(qq->qkube, &h,
 					    qev->process->container->pod,
 					    &orchestrator_first);
 				}
