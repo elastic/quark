@@ -354,13 +354,13 @@ hanson_close(struct hanson *h, char **buf, size_t *buf_len)
 	int	r = 0;
 
 	r |= hanson_add_ascii_inline(h, '}');
-	r |= hanson_add_ascii_inline(h, 0);
+	r |= hanson_add_ascii_inline(h, 0); /* NUL, not included in len */
 	if (h->error) {
 		free(h->buf);
 		r = -1;
 	} else {
 		*buf = h->buf;
-		*buf_len = h->buf_w - h->buf;
+		*buf_len = h->buf_w - h->buf - 1; /* -1 don't include NUL */
 	}
 	h->buf = NULL;
 	h->buf_w = NULL;
