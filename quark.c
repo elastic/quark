@@ -1293,6 +1293,57 @@ process_kube_node_event(struct quark_queue *qq, cJSON *json)
 #undef GET
 }
 
+/*
+ * There is only a single gcpmeta event
+ */
+static int
+process_kube_gcpmeta_event(struct quark_queue *qq, cJSON *json)
+{
+#define GET cJSON_GetObjectItemCaseSensitive
+	struct quark_kube_node	*node = &qq->qkube->node;
+	cJSON			*instance, *attributes;
+	cJSON			*cluster_name, *cluster_uid;
+	cJSON			*project, *numericProjectId;
+
+	instance	 = GET(json, "instance");
+	attributes	 = GET(instance, "attributes");
+	cluster_name	 = GET(attributes, "cluster-name");
+	cluster_uid	 = GET(attributes, "cluster-uid");
+	project		 = GET(json, "project");
+	numericProjectId = GET(project, "numericProjectId");
+
+	if (cJSON_IsString(cluster_name))
+		node->cluster_name = strdup(cluster_name->valuestring);
+	if (cJSON_IsString(cluster_uid))
+		node->cluster_uid = strdup(cluster_uid->valuestring);
+	if (cJSON_IsNumber(numericProjectId)) {
+		char buf[32];
+
+		snprintf(buf, sizeof(buf), "%lld",
+		    (s64)numericProjectId->valuedouble);
+		node->project_id = strdup(buf);
+	}
+
+	return (0);
+#undef GET
+}
+
+static int
+process_kube_cluster_version_event(struct quark_queue *qq, cJSON *json)
+{
+#define GET cJSON_GetObjectItemCaseSensitive
+	struct quark_kube_node	*node = &qq->qkube->node;
+	cJSON			*version;
+
+	version	= GET(json, "version");
+
+	if (cJSON_IsString(version))
+		node->cluster_version = strdup(version->valuestring);
+
+	return (0);
+#undef GET
+}
+
 static void
 stop_kube(struct quark_queue *qq)
 {
@@ -1367,6 +1418,10 @@ parse_kube_events(struct quark_queue *qq)
 		process_kube_pod_event(qq, json);
 	else if (!strcmp("Node", kind->valuestring))
 		process_kube_node_event(qq, json);
+	else if (!strcmp("GcpMeta", kind->valuestring))
+		process_kube_gcpmeta_event(qq, json);
+	else if (!strcmp("ClusterVersion", kind->valuestring))
+		process_kube_cluster_version_event(qq, json);
 	else
 		qwarnx("unhandled object kind %s", kind->valuestring);
 
@@ -4174,6 +4229,10 @@ quark_queue_close(struct quark_queue *qq)
 		free(qq->qkube->node.region);
 		free(qq->qkube->node.provider);
 		free(qq->qkube->node.project);
+		free(qq->qkube->node.project_id);
+		free(qq->qkube->node.cluster_name);
+		free(qq->qkube->node.cluster_uid);
+		free(qq->qkube->node.cluster_version);
 		free(qq->qkube->buf);
 		free(qq->qkube);
 		qq->qkube = NULL;
