@@ -1252,7 +1252,7 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	for (i = 0; cases[i].in != NULL; i++) {
 		bzero(cid, sizeof(cid));
 
-		r = parse_kube_cgroup(cases[i].in, cid, sizeof(cid));
+		r = kube_parse_cgroup(cases[i].in, cid, sizeof(cid));
 		assert(r == cases[i].expected_ret);
 		if (r == 0)
 			assert(!strcmp(cid, cases[i].out));

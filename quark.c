@@ -857,7 +857,7 @@ demux_image(struct quark_container *container)
 }
 
 static int
-process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *container_json)
+kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *container_json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_kube	*qkube = qq->qkube;
@@ -969,7 +969,7 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 }
 
 static int
-process_kube_pod_event(struct quark_queue *qq, cJSON *json)
+kube_handle_pod(struct quark_queue *qq, cJSON *json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_pod	*pod;
@@ -1182,8 +1182,8 @@ process_kube_pod_event(struct quark_queue *qq, cJSON *json)
 	 * Build containers
 	 */
 	cJSON_ArrayForEach(container_json, containerStatuses) {
-		if (process_kube_container(qq, pod, container_json) == -1)
-			qwarnx("process_kube_containers failed");
+		if (kube_handle_container(qq, pod, container_json) == -1)
+			qwarnx("kube_handle_containers failed");
 	}
 
 	/*
@@ -1211,10 +1211,8 @@ parse_provider_id(struct quark_kube_node *node, const char *provider_id)
 	if ((sep = strstr(provider_id, "://")) == NULL)
 		return;
 	node->provider = strndup(provider_id, sep - provider_id);
-	if (node->provider && !strcmp(node->provider, "gce")) {
-		node->provider[1] = 'k';
-		node->provider[2] = 'e';
-	}
+	if (node->provider && !strcmp(node->provider, "gce"))
+		node->provider[2] = 'p';
 	sep += 3;
 	if ((project_end = strchr(sep, '/')) == NULL)
 		return;
@@ -1222,7 +1220,7 @@ parse_provider_id(struct quark_kube_node *node, const char *provider_id)
 }
 
 static int
-process_kube_node_event(struct quark_queue *qq, cJSON *json)
+kube_handle_node(struct quark_queue *qq, cJSON *json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_kube_node	*node = &qq->qkube->node;
@@ -1297,7 +1295,7 @@ process_kube_node_event(struct quark_queue *qq, cJSON *json)
  * There is only a single gcpmeta event
  */
 static int
-process_kube_gcpmeta_event(struct quark_queue *qq, cJSON *json)
+kube_handle_gcpmeta(struct quark_queue *qq, cJSON *json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_kube_node	*node = &qq->qkube->node;
@@ -1329,7 +1327,7 @@ process_kube_gcpmeta_event(struct quark_queue *qq, cJSON *json)
 }
 
 static int
-process_kube_cluster_version_event(struct quark_queue *qq, cJSON *json)
+kube_handle_cluster_version(struct quark_queue *qq, cJSON *json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_kube_node	*node = &qq->qkube->node;
@@ -1345,7 +1343,7 @@ process_kube_cluster_version_event(struct quark_queue *qq, cJSON *json)
 }
 
 static void
-stop_kube(struct quark_queue *qq)
+kube_stop(struct quark_queue *qq)
 {
 	struct quark_kube	*qkube = qq->qkube;
 
@@ -1363,7 +1361,7 @@ stop_kube(struct quark_queue *qq)
  * Returns 0 if there's nothing else to parse, 1 otherwise
  */
 static int
-parse_kube_events(struct quark_queue *qq)
+kube_parse_events(struct quark_queue *qq)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_kube	*qkube = qq->qkube;
@@ -1382,7 +1380,7 @@ parse_kube_events(struct quark_queue *qq)
 		    "kubernetes events will stop",
 		    ev_len, qkube->buf_len - sizeof(ev_len));
 
-		stop_kube(qq);
+		kube_stop(qq);
 		return (0);
 	}
 	/* Partial event */
@@ -1415,13 +1413,13 @@ parse_kube_events(struct quark_queue *qq)
 	if (!cJSON_IsString(kind))
 		qwarnx("invalid object kind");
 	else if (!strcmp("Pod", kind->valuestring))
-		process_kube_pod_event(qq, json);
+		kube_handle_pod(qq, json);
 	else if (!strcmp("Node", kind->valuestring))
-		process_kube_node_event(qq, json);
+		kube_handle_node(qq, json);
 	else if (!strcmp("GcpMeta", kind->valuestring))
-		process_kube_gcpmeta_event(qq, json);
+		kube_handle_gcpmeta(qq, json);
 	else if (!strcmp("ClusterVersion", kind->valuestring))
-		process_kube_cluster_version_event(qq, json);
+		kube_handle_cluster_version(qq, json);
 	else
 		qwarnx("unhandled object kind %s", kind->valuestring);
 
@@ -1432,7 +1430,7 @@ parse_kube_events(struct quark_queue *qq)
 }
 
 static void
-read_kube_events(struct quark_queue *qq)
+kube_read_events(struct quark_queue *qq)
 {
 	struct quark_kube	*qkube = qq->qkube;
 	ssize_t			 n;
@@ -1458,7 +1456,7 @@ read_kube_events(struct quark_queue *qq)
 	left_towrite = qkube->buf_len - qkube->buf_w;
 	if (left_towrite == 0) {
 		qwarnx("BUG: no more space in buffer, kubernetes events will stop");
-		stop_kube(qq);
+		kube_stop(qq);
 		return;
 	}
 	n = qread(qkube->fd, qkube->buf + qkube->buf_w, left_towrite);
@@ -1468,16 +1466,16 @@ read_kube_events(struct quark_queue *qq)
 		if (errno == EAGAIN)
 			return;
 		qwarn("unexpected error reading kube pipe, kubernetes events will stop");
-		stop_kube(qq);
+		kube_stop(qq);
 		return;
 	} else if (n == 0) {
 		qwarnx("unexpected EOF from kubefd pipe, kubernetes events will stop");
-		stop_kube(qq);
+		kube_stop(qq);
 		return;
 	}
 	qkube->buf_w += n;
 
-	while (parse_kube_events(qq)) {
+	while (kube_parse_events(qq)) {
 		;		/* NADA */
 	}
 }
@@ -1490,7 +1488,7 @@ read_kube_events(struct quark_queue *qq)
  * Keep this function non static so we can test it.
  */
 int
-parse_kube_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
+kube_parse_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
 {
 	char		*dot;
 	const char	*name, *id;
@@ -1559,7 +1557,7 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 		return;
 	if (!(qp->flags & QUARK_F_CGROUP))
 		return;
-	if (parse_kube_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
+	if (kube_parse_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
 		return;
 	if ((container = container_lookup(qq, cid)) == NULL)
 		return;
@@ -1574,7 +1572,7 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
  * we then enrich them into all our running processes.
  */
 static int
-prime_kube(struct quark_queue *qq)
+kube_prime(struct quark_queue *qq)
 {
 	struct pollfd		 pfd;
 	int			 r;
@@ -1598,7 +1596,7 @@ prime_kube(struct quark_queue *qq)
 		if (r == 0)
 			continue;
 		qkube->try_read = 1;
-		read_kube_events(qq);
+		kube_read_events(qq);
 		/*
 		 * If read_kube_events failed at any point, fd is -1, so bail.
 		 */
@@ -4114,7 +4112,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		/*
 		 * Prime our cache
 		 */
-		if (prime_kube(qq) == -1) {
+		if (kube_prime(qq) == -1) {
 			qwarn("can't prime kubernetes metadata");
 			goto fail;
 		}
@@ -4220,7 +4218,7 @@ quark_queue_close(struct quark_queue *qq)
 		qq->queue_ops->close(qq);
 	/* Clean up qkube */
 	if (qq->qkube != NULL) {
-		stop_kube(qq);
+		kube_stop(qq);
 		while ((pod = RB_ROOT(&qq->qkube->pod_by_uid)) != NULL)
 			pod_delete(qq, pod);
 		free(qq->qkube->node.name);
@@ -4545,7 +4543,7 @@ quark_queue_get_event(struct quark_queue *qq)
 	const struct quark_event	*qev;
 
 	if (qq->qkube != NULL)
-		read_kube_events(qq);
+		kube_read_events(qq);
 
 	if (qq->flags & QQ_BYPASS)
 		return (get_bypass_event(qq));

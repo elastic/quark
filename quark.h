@@ -65,7 +65,7 @@ struct quark_passwd *quark_passwd_lookup(struct quark_queue *, uid_t);
 struct quark_group *quark_group_lookup(struct quark_queue *, gid_t);
 
 /* quark.c: These are exported for testing only */
-int	 parse_kube_cgroup(const char *, char *, size_t);
+int	 kube_parse_cgroup(const char *, char *, size_t);
 
 /* btf.c */
 struct quark_btf_target {
