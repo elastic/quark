@@ -959,7 +959,7 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert((pid_t)qev->process->pid == child);
 	assert(qev->socket != NULL);
 	assert(qev->socket->established_time > 0);
-	assert(qev->socket->from_scrape == 0);
+	assert(qev->socket->conn_origin == SOCK_CONN_CONNECT);
 	assert((pid_t)qev->socket->pid_origin == child);
 	assert((pid_t)qev->socket->pid_last_use == child);
 	assert(qev->socket->local.af == AF_INET);
@@ -977,7 +977,7 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert((pid_t)qev->process->pid == child);
 	assert(qev->socket != NULL);
 	assert(qev->socket->established_time > 0);
-	assert(qev->socket->from_scrape == 0);
+	assert(qev->socket->conn_origin == SOCK_CONN_CONNECT);
 	assert((pid_t)qev->socket->pid_origin == child);
 	assert((pid_t)qev->socket->pid_last_use == child);
 	assert(qev->socket->local.af == AF_INET);
