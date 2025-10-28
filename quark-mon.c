@@ -116,7 +116,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDeFkMNSstv] "
+	fprintf(stderr, "usage: %s [-BbDeFkMNSsTtv] "
 	    "[-C filename ] [-K kubeconfig] [-l maxlength] [-m maxnodes] [-P ppid]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
@@ -174,7 +174,7 @@ main(int argc, char *argv[])
 	kube_config = NULL;
 	print_event = print_dump;
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFghK:kl:Mm:NP:tSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DEeFghK:kl:Mm:NP:TtSsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -257,6 +257,9 @@ main(int argc, char *argv[])
 			break;
 		case 'S':
 			qa.flags |= QQ_SOCK_CONN;
+			break;
+		case 'T':
+			qa.flags |= QQ_PTRACE;
 			break;
 		case 't':
 			qa.flags |= QQ_THREAD_EVENTS;
