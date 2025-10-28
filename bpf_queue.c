@@ -283,6 +283,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 			break;
 		case EBPF_EVENT_NETWORK_CONNECTION_CLOSED:
 			raw->sock_conn.conn = SOCK_CONN_CLOSE;
+			raw->sock_conn.bytes_received = net->net.tcp.close.bytes_received;
+			raw->sock_conn.bytes_sent = net->net.tcp.close.bytes_sent;
 			break;
 		default:
 			goto bad;
