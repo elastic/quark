@@ -333,9 +333,6 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		}
 		break;
 	}
-	case EBPF_EVENT_FILE_SHMEM_OPEN:
-		goto drop;
-		break;
 	case EBPF_EVENT_FILE_CREATE: /* FALLTHROUGH */
 	case EBPF_EVENT_FILE_DELETE: /* FALLTHROUGH */
 	case EBPF_EVENT_FILE_MODIFY: /* FALLTHROUGH */
@@ -563,6 +560,109 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_PROCESS_SHMGET: {
+		struct ebpf_process_shmget_event	*shm;
+		struct quark_shm			*qshm;
+
+		shm = (struct ebpf_process_shmget_event *)ev;
+		if ((raw = raw_event_alloc(RAW_SHM)) == NULL)
+			goto bad;
+
+		raw->pid = shm->pids.tgid;
+		raw->time = ev->ts;
+
+		if ((qshm = calloc(1, sizeof(*qshm))) == NULL)
+			goto bad;
+		qshm->kind = QUARK_SHM_SHMGET;
+		qshm->shmget_key = shm->key;
+		qshm->shmget_size = shm->size;
+		qshm->shmget_shmflg = shm->shmflg;
+		raw->shm.quark_shm = qshm;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_MEMFD_CREATE: {
+		struct ebpf_process_memfd_create_event	*memfd;
+		struct quark_shm			*qshm;
+		char					*path;
+
+		memfd = (struct ebpf_process_memfd_create_event *)ev;
+		if ((raw = raw_event_alloc(RAW_SHM)) == NULL)
+			goto bad;
+
+		raw->pid = memfd->pids.tgid;
+		raw->time = ev->ts;
+
+		path = NULL;
+		FOR_EACH_VARLEN_FIELD(memfd->vl_fields, field) {
+			if (field->type == EBPF_VL_FIELD_FILENAME &&
+			    field->size > 0) {
+				path = strndup(field->data, field->size);
+				break;
+			}
+		}
+		if (path == NULL) {
+			qwarnx("invalid memfd_create event");
+			goto bad;
+		}
+
+		if ((qshm = calloc(1, sizeof(*qshm))) == NULL) {
+			free(path);
+			goto bad;
+		}
+		qshm->kind = QUARK_SHM_MEMFD_CREATE;
+		qshm->memfd_create_flags = memfd->flags;
+		qshm->path = path;
+		raw->shm.quark_shm = qshm;
+
+		break;
+	}
+	case EBPF_EVENT_FILE_SHMEM_OPEN: /* FALLTHROUGH */
+	case EBPF_EVENT_FILE_MEMFD_OPEN: {
+		struct ebpf_file_create_event	*create;
+		struct quark_shm		*qshm;
+		char				*path;
+
+		/*
+		 * Path from MEMFD_OPEN is broken, see:
+		 * https://github.com/elastic/quark/issues/255
+		 */
+		if (ev->type == EBPF_EVENT_FILE_MEMFD_OPEN)
+			goto bad;
+
+		create = (struct ebpf_file_create_event *)ev;
+		if ((raw = raw_event_alloc(RAW_SHM)) == NULL)
+			goto bad;
+
+		raw->pid = create->pids.tgid;
+		raw->time = ev->ts;
+
+		path = NULL;
+		FOR_EACH_VARLEN_FIELD(create->vl_fields, field) {
+			if (field->type == EBPF_VL_FIELD_PATH &&
+			    field->size > 0) {
+				path = strndup(field->data, field->size);
+				break;
+			}
+		}
+		if (path == NULL) {
+			qwarnx("invalid {shmem,memfd}_create event");
+			goto bad;
+		}
+
+		if ((qshm = calloc(1, sizeof(*qshm))) == NULL) {
+			free(path);
+			goto bad;
+		}
+		if (ev->type == EBPF_EVENT_FILE_SHMEM_OPEN)
+			qshm->kind = QUARK_SHM_SHM_OPEN;
+		else if (ev->type == EBPF_EVENT_FILE_MEMFD_OPEN)
+			qshm->kind = QUARK_SHM_MEMFD_OPEN;
+		qshm->path = path;
+		raw->shm.quark_shm = qshm;
+
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;
@@ -575,7 +675,6 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 	return (raw);
 
-drop:
 bad:
 	if (raw != NULL)
 		raw_event_free(raw);
@@ -944,7 +1043,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.recvmsg4, 1);
 	}
 
-	if (qq->flags & QQ_MEMFD) {
+	if (qq->flags & QQ_SHM) {
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_memfd_create, 1);
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_shmget, 1);
 	}

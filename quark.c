@@ -128,6 +128,7 @@ raw_event_alloc(int type)
 	case RAW_FILE:		/* caller allocates */
 	case RAW_PTRACE:	/* nada */
 	case RAW_MODULE_LOAD:	/* caller allocates */
+	case RAW_SHM:		/* caller allocates */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -181,6 +182,12 @@ raw_event_free(struct raw_event *raw)
 		free(qml);
 		break;
 	}
+	case RAW_SHM:
+		if (raw->shm.quark_shm != NULL) {
+			free(raw->shm.quark_shm->path);
+			free(raw->shm.quark_shm);
+		}
+		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
 		break;
@@ -374,6 +381,11 @@ event_storage_clear(struct quark_queue *qq)
 		free(qq->event_storage.module_load->src_version);
 		free(qq->event_storage.module_load);
 		qq->event_storage.module_load = NULL;
+	}
+	if (qq->event_storage.shm != NULL) {
+		free(qq->event_storage.shm->path);
+		free(qq->event_storage.shm);
+		qq->event_storage.shm = NULL;
 	}
 }
 
@@ -1699,6 +1711,8 @@ event_type_str(u64 event)
 		return "PTRACE";
 	case QUARK_EV_MODULE_LOAD:
 		return "MODULE_LOAD";
+	case QUARK_EV_SHM:
+		return "SHM";
 	default:
 		return "?";
 	}
@@ -4063,9 +4077,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qa->max_length = 1;
 	}
 	/*
-	 * QQ_{MEMFD,TTY} needs QQ_BYPASS for now
+	 * QQ_TTY needs QQ_BYPASS for now
 	 */
-	if ((qa->flags & (QQ_MEMFD|QQ_TTY)) && !(qa->flags & QQ_BYPASS))
+	if ((qa->flags & QQ_TTY) && !(qa->flags & QQ_BYPASS))
 		return (errno = EINVAL, -1);
 
 	if ((qa->flags & QQ_ALL_BACKENDS) == 0 ||
@@ -4602,6 +4616,22 @@ raw_event_module_load(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static const struct quark_event *
+raw_event_shm(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_SHM;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	/* Steal it */
+	qev->shm = raw->shm.quark_shm;
+	raw->shm.quark_shm = NULL;
+
+	return (qev);
+}
+
+static const struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
@@ -4660,6 +4690,9 @@ quark_queue_get_event(struct quark_queue *qq)
 			break;
 		case RAW_MODULE_LOAD:
 			qev = raw_event_module_load(qq, raw);
+			break;
+		case RAW_SHM:
+			qev = raw_event_shm(qq, raw);
 			break;
 		default:
 			qwarnx("unhandled raw->type: %d", raw->type);

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Copyright (c) 2024 Elastic NV */
 
+#include <sys/ipc.h>
 #include <sys/mman.h>
 #include <sys/select.h>
+#include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -899,19 +901,144 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
-/* XXX Only probe loading for now */
 static int
 t_memfd(const struct test *t, struct quark_queue_attr *qa)
 {
+#ifdef NO_MEMFD
+	warnx("%s: compiled with NO_MEMFD, skipping", __func__);
+#else
 	struct quark_queue		 qq;
-
-	qa->flags &= ~QQ_ENTRY_LEADER;
-	qa->flags |= QQ_BYPASS | QQ_MEMFD;
+	const struct quark_event	*qev;
+	const struct quark_shm		*qshm;
+	int				 fd;
+#if 0
+	int				 fd2;
+	char				 buf[1024];
+#endif
+	/*
+	 * MEMFD_OPEN still requires QQ_FILE for now
+	 */
+	qa->flags |= QQ_SHM | QQ_FILE;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
+	/*
+	 * Test MEMFD_CREATE
+	 */
+	if ((fd = memfd_create("t_memfd-glorious-test", MFD_CLOEXEC)) == -1) {
+		if (errno == ENOTSUP) {
+			warn("old kernel, skipping memfd_create");
+			quark_queue_close(&qq);
+
+			return (0);
+		}
+		err(1, "memfd_create");
+	}
+	qev = drain_for_pid(&qq, getpid());
+
+	assert(qev->events & QUARK_EV_SHM);
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
+	assert(qshm->memfd_create_flags == MFD_CLOEXEC);
+	assert(!strcmp(qshm->path, "t_memfd-glorious-test"));
+
+#if 0
+	/*
+	 * XXX MEMFD_OPEN is broken, hence the test is disabled, see
+	 * https://github.com/elastic/quark/issues/255
+	 */
+	snprintf(buf, sizeof(buf), "/proc/self/fd/%d", fd);
+	if ((fd2 = open(buf, O_RDWR)) == -1)
+		err(1, "open");
+
+	qev = drain_for_pid(&qq, getpid());
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_MEMFD_OPEN);
+	assert(!strcmp(qshm->path, "t_memfd-glorious-test"));
+	close(fd2);
+#endif
+
+	close(fd);
 	quark_queue_close(&qq);
+#endif	/* NO_MEMFD */
+
+	return (0);
+}
+
+static int
+t_shmget(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_shm		*qshm;
+	int				 id;
+
+	qa->flags |= QQ_SHM;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((id = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0600)) == -1)
+		err(1, "shmget");
+	qev = drain_for_pid(&qq, getpid());
+
+	assert(qev->events & QUARK_EV_SHM);
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_SHMGET);
+	assert(qshm->shmget_key == IPC_PRIVATE);
+	assert(qshm->shmget_shmflg == (IPC_CREAT | 0600));
+	assert(qshm->shmget_size == 4096);
+
+	if (shmctl(id, IPC_RMID, NULL) == -1)
+		err(1, "shmctl");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_shm_open(const struct test *t, struct quark_queue_attr *qa)
+{
+#ifdef NO_SHM_OPEN
+	warnx("%s: compiled without SHM_OPEN", __func__);
+#else
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_shm		*qshm;
+	int				 fd, fd2;
+
+	qa->flags |= QQ_SHM | QQ_FILE;
+
+	/*
+	 * Probes are bugged, a O_CREAT that actually creates a file, shows up
+	 * as a FILE events, not a SHM_OPEN.
+	 * See https://github.com/elastic/quark/issues/256
+	 */
+	if ((fd = shm_open("/shm_open-ohmyohmy", O_CREAT | O_RDWR, 0600)) == -1)
+		err(1, "shm_open");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd2 = shm_open("/shm_open-ohmyohmy", O_RDWR, 0600)) == -1)
+		err(1, "shm_open");
+
+	qev = drain_for_pid(&qq, getpid());
+	qshm = qev->shm;
+
+	assert(qev->events & QUARK_EV_SHM);
+	assert(qshm->kind == QUARK_SHM_SHM_OPEN);
+	assert(!strcmp(qshm->path, "/dev/shm/shm_open-ohmyohmy"));
+
+	close(fd2);
+	close(fd);
+	if (shm_unlink("/shm_open-ohmyohmy") == -1)
+		err(1, "shm_unlink");
+
+	quark_queue_close(&qq);
+#endif	/* NO_SHM_OPEN */
 
 	return (0);
 }
@@ -1370,6 +1497,8 @@ struct test all_tests[] = {
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
+	T_EBPF(t_shmget),
+	T_EBPF(t_shm_open),
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),

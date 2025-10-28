@@ -198,6 +198,7 @@ enum raw_types {
 	RAW_FILE,
 	RAW_PTRACE,
 	RAW_MODULE_LOAD,
+	RAW_SHM,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -350,6 +351,27 @@ struct raw_module_load {
 	struct quark_module_load	*quark_module_load;
 };
 
+enum shm_kind {
+	QUARK_SHM_INVALID,
+	QUARK_SHM_SHMGET,	/* sysv shmget */
+	QUARK_SHM_SHM_OPEN,	/* posix shared memory */
+	QUARK_SHM_MEMFD_CREATE,	/* linux's memfd */
+	QUARK_SHM_MEMFD_OPEN,	/* an open(2) on a memfd descriptor */
+};
+
+struct quark_shm {
+	enum shm_kind	 kind;
+	s64		 shmget_key;		/* QUARK_SHM_SHMGET */
+	u64		 shmget_size;		/* QUARK_SHM_SHMGET */
+	s64		 shmget_shmflg;		/* QUARK_SHM_SHMGET */
+	u32		 memfd_create_flags;	/* QUARK_SHM_MEMFD_CREATE */
+	char		*path;			/* NULL for QUARK_SHM_SHMGET */
+};
+
+struct raw_shm {
+	struct quark_shm	*quark_shm;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -371,6 +393,7 @@ struct raw_event {
 		struct raw_file			file;
 		struct raw_ptrace		ptrace;
 		struct raw_module_load		module_load;
+		struct raw_shm			shm;
 	};
 };
 
@@ -400,6 +423,7 @@ struct quark_event {
 #define QUARK_EV_FILE			(1 << 8)
 #define QUARK_EV_PTRACE			(1 << 9)
 #define QUARK_EV_MODULE_LOAD		(1 << 10)
+#define QUARK_EV_SHM			(1 << 11)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
@@ -408,6 +432,7 @@ struct quark_event {
 	struct quark_file		*file;
 	struct quark_ptrace		 ptrace;
 	struct quark_module_load	*module_load;
+	struct quark_shm		*shm;
 };
 
 /*
@@ -724,7 +749,7 @@ struct quark_queue_attr {
 #define QQ_DNS			(1 << 6)
 #define QQ_BYPASS		(1 << 7)
 #define QQ_FILE			(1 << 8)
-#define QQ_MEMFD		(1 << 9)
+#define QQ_SHM			(1 << 9)
 #define QQ_TTY			(1 << 10)
 #define QQ_PTRACE		(1 << 11)
 #define QQ_MODULE_LOAD		(1 << 12)

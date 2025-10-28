@@ -47,7 +47,7 @@ endef
 
 CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
 ifdef CENTOS7
-CFLAGS+= -std=gnu99 -DNO_PUSH_PRAGMA
+CFLAGS+= -std=gnu99 -DNO_PUSH_PRAGMA -DNO_MEMFD -DNO_SHM_OPEN
 endif
 
 CPPFLAGS+= -D_GNU_SOURCE
