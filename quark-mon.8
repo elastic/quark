@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDEeFkMNSsTtv
+.Op Fl BbDEeFHhkMNSsTtv
 .Op Fl C Ar filename
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
@@ -70,6 +70,8 @@ Enable file events (experimental).
 Use minimal aggregation, fork, exec and exit will
 .Em not
 be aggregated.
+.It Fl H
+Enable SHMGET events.
 .It Fl h
 Display this manpage.
 .It Fl K Ar kubeconfig

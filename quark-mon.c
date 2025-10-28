@@ -116,7 +116,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDeFkLMNSsTtv] "
+	fprintf(stderr, "usage: %s [-BbDeFHhkLMNSsTtv] "
 	    "[-C filename ] [-K kubeconfig] [-l maxlength] [-m maxnodes] [-P ppid]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
@@ -174,7 +174,7 @@ main(int argc, char *argv[])
 	kube_config = NULL;
 	print_event = print_dump;
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFghK:kLl:Mm:NP:TtSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DEeFgHhK:kLl:Mm:NP:TtSsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -203,6 +203,9 @@ main(int argc, char *argv[])
 			break;
 		case 'g':
 			qa.flags |= QQ_MIN_AGG;
+			break;
+		case 'H':
+			qa.flags |= QQ_SHM;
 			break;
 		case 'h':
 			if (isatty(STDOUT_FILENO))
