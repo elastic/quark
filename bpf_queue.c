@@ -432,7 +432,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 					old_path = field->data;
 					old_path_len = tmp_len + 1; /* with NUL */
 				}
-				continue;
+				break;
 			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH: /* ignored */
 				break;
 			default:
@@ -506,6 +506,60 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		qptrace->request = ptrace->request;
 		qptrace->addr = ptrace->addr;
 		qptrace->data = ptrace->data;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_LOAD_MODULE: {
+		struct ebpf_process_load_module_event *module;
+		struct quark_module_load	*qml;
+		char				*filename, *version, *src_version;
+
+		module = (struct ebpf_process_load_module_event *)ev;
+		if ((raw = raw_event_alloc(RAW_MODULE_LOAD)) == NULL)
+			goto bad;
+
+		raw->pid = module->pids.tgid;
+		raw->time = ev->ts;
+
+		filename = version = src_version = NULL;
+		FOR_EACH_VARLEN_FIELD(module->vl_fields, field) {
+			switch (field->type) {
+			case EBPF_VL_FIELD_FILENAME:
+				if (field->size > 0)
+					filename = strndup(field->data, field->size);
+				break;
+			case EBPF_VL_FIELD_MOD_VERSION:
+				if (field->size > 0)
+					version = strndup(field->data, field->size);
+				break;
+			case EBPF_VL_FIELD_MOD_SRCVERSION:
+				if (field->size > 0)
+					src_version = strndup(field->data, field->size);
+				break;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				free(filename);
+				free(version);
+				free(src_version);
+				goto bad;
+			}
+		}
+
+		qml = calloc(1, sizeof(*qml));
+		if (qml == NULL || filename == NULL ||
+		    version == NULL || src_version == NULL) {
+			free(qml);
+			free(filename);
+			free(version);
+			free(src_version);
+			qwarn("alloc module load event");
+			goto bad;
+		}
+
+		qml->name = filename;
+		qml->version = version;
+		qml->src_version = src_version;
+		raw->module_load.quark_module_load = qml;
 
 		break;
 	}
@@ -893,7 +947,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_MEMFD) {
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_memfd_create, 1);
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_shmget, 1);
-		bpf_program__set_autoload(p->progs.module_load, 1);
 	}
 
 	if (qq->flags & QQ_TTY) {
@@ -907,6 +960,9 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.kprobe__arch_ptrace, 1);
 		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
 	}
+
+	if (qq->flags & QQ_MODULE_LOAD)
+		bpf_program__set_autoload(p->progs.module_load, 1);
 
 	/*
 	 * These are probes that are not attached to a feature and not currently

@@ -127,6 +127,7 @@ raw_event_alloc(int type)
 	case RAW_PACKET:	/* caller allocates */
 	case RAW_FILE:		/* caller allocates */
 	case RAW_PTRACE:	/* nada */
+	case RAW_MODULE_LOAD:	/* caller allocates */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -168,6 +169,18 @@ raw_event_free(struct raw_event *raw)
 	case RAW_FILE:
 		free(raw->file.quark_file);
 		break;
+	case RAW_MODULE_LOAD: {
+		struct quark_module_load *qml;
+
+		qml = raw->module_load.quark_module_load;
+		if (qml == NULL)
+			break;
+		free(qml->name);
+		free(qml->version);
+		free(qml->src_version);
+		free(qml);
+		break;
+	}
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
 		break;
@@ -355,6 +368,13 @@ event_storage_clear(struct quark_queue *qq)
 	free(qq->event_storage.file);
 	qq->event_storage.file = NULL;
 	bzero(&qq->event_storage.ptrace, sizeof(qq->event_storage.ptrace));
+	if (qq->event_storage.module_load != NULL) {
+		free(qq->event_storage.module_load->name);
+		free(qq->event_storage.module_load->version);
+		free(qq->event_storage.module_load->src_version);
+		free(qq->event_storage.module_load);
+		qq->event_storage.module_load = NULL;
+	}
 }
 
 static void
@@ -1677,6 +1697,8 @@ event_type_str(u64 event)
 		return "FILE";
 	case QUARK_EV_PTRACE:
 		return "PTRACE";
+	case QUARK_EV_MODULE_LOAD:
+		return "MODULE_LOAD";
 	default:
 		return "?";
 	}
@@ -4564,6 +4586,22 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static const struct quark_event *
+raw_event_module_load(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_MODULE_LOAD;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	/* Steal it */
+	qev->module_load = raw->module_load.quark_module_load;
+	raw->module_load.quark_module_load = NULL;
+
+	return (qev);
+}
+
+static const struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
@@ -4619,6 +4657,9 @@ quark_queue_get_event(struct quark_queue *qq)
 			break;
 		case RAW_PTRACE:
 			qev = raw_event_ptrace(qq, raw);
+			break;
+		case RAW_MODULE_LOAD:
+			qev = raw_event_module_load(qq, raw);
 			break;
 		default:
 			qwarnx("unhandled raw->type: %d", raw->type);
