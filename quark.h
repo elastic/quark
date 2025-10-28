@@ -197,6 +197,7 @@ enum raw_types {
 	RAW_PACKET,
 	RAW_FILE,
 	RAW_PTRACE,
+	RAW_MODULE_LOAD,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -339,6 +340,16 @@ struct raw_ptrace {
 	struct quark_ptrace quark_ptrace;
 };
 
+struct quark_module_load {
+	char *name;
+	char *version;
+	char *src_version;
+};
+
+struct raw_module_load {
+	struct quark_module_load	*quark_module_load;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -359,6 +370,7 @@ struct raw_event {
 		struct raw_packet		packet;
 		struct raw_file			file;
 		struct raw_ptrace		ptrace;
+		struct raw_module_load		module_load;
 	};
 };
 
@@ -387,6 +399,7 @@ struct quark_event {
 #define QUARK_EV_BYPASS			(1 << 7)
 #define QUARK_EV_FILE			(1 << 8)
 #define QUARK_EV_PTRACE			(1 << 9)
+#define QUARK_EV_MODULE_LOAD		(1 << 10)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
@@ -394,6 +407,7 @@ struct quark_event {
 	const void			*bypass;
 	struct quark_file		*file;
 	struct quark_ptrace		 ptrace;
+	struct quark_module_load	*module_load;
 };
 
 /*
@@ -713,6 +727,7 @@ struct quark_queue_attr {
 #define QQ_MEMFD		(1 << 9)
 #define QQ_TTY			(1 << 10)
 #define QQ_PTRACE		(1 << 11)
+#define QQ_MODULE_LOAD		(1 << 12)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;
