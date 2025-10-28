@@ -552,7 +552,7 @@ socket_cache_lookup(struct quark_queue *qq,
 
 static struct quark_socket *
 socket_alloc_and_insert(struct quark_queue *qq, struct quark_sockaddr *local,
-    struct quark_sockaddr *remote, u32 pid_origin, u64 est_time)
+    struct quark_sockaddr *remote, enum sock_conn conn, u32 pid_origin, u64 est_time)
 {
 	struct quark_socket *qsk, *col;
 
@@ -563,6 +563,7 @@ socket_alloc_and_insert(struct quark_queue *qq, struct quark_sockaddr *local,
 	qsk->remote = *remote;
 	qsk->pid_origin = qsk->pid_last_use = pid_origin;
 	qsk->established_time = est_time;
+	qsk->conn_origin = conn;
 
 	col = RB_INSERT(socket_by_src_dst, &qq->socket_by_src_dst, qsk);
 	if (col) {
@@ -2849,12 +2850,11 @@ sproc_pid_sockets(struct quark_queue *qq,
 			continue;
 
 		qsk = socket_alloc_and_insert(qq, &ss->socket.local,
-		    &ss->socket.remote,  pid, now64());
+		    &ss->socket.remote, SOCK_CONN_SCRAPE, pid, now64());
 		if (qsk == NULL) {
 			qwarn("socket_alloc");
 			continue;
 		}
-		qsk->from_scrape = 1;
 
 		qdebugx("pid %d fd %s -> %s (inode=%lu, ss=%p)", pid,
 		    d->d_name, buf, inode, ss);
@@ -4402,7 +4402,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 			/*
 			 * If we learned it by scraping, supress it.
 			 */
-			if (qsk->pid_origin == raw->pid && qsk->from_scrape) {
+			if (qsk->pid_origin == raw->pid && qsk->conn_origin == SOCK_CONN_SCRAPE) {
 				qsk->pid_last_use = qsk->pid_origin;
 				return (NULL);
 			}
@@ -4417,7 +4417,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 		}
 
 		qsk = socket_alloc_and_insert(qq, &conn->local, &conn->remote,
-		    raw->pid, raw->time);
+		    conn->conn, raw->pid, raw->time);
 		if (qsk == NULL) {
 			qwarn("socket_alloc");
 			return (NULL);
@@ -4432,7 +4432,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 		 */
 		if (qsk == NULL) {
 			qsk = socket_alloc_and_insert(qq, &conn->local, &conn->remote,
-			    raw->pid, raw->time);
+			    conn->conn, raw->pid, raw->time);
 			if (qsk == NULL) {
 				qwarn("socket_alloc");
 				return (NULL);

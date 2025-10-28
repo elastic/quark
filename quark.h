@@ -268,6 +268,7 @@ enum sock_conn {
 	SOCK_CONN_CLOSE,
 	SOCK_CONN_ACCEPT,
 	SOCK_CONN_CONNECT,
+	SOCK_CONN_SCRAPE,
 };
 
 struct raw_sock_conn {
@@ -515,7 +516,7 @@ struct quark_socket {
 	u32			pid_last_use;
 	u64			established_time;
 	u64			close_time;
-	int			from_scrape;
+	enum sock_conn		conn_origin;
 };
 
 struct quark_socket_iter {
