@@ -969,6 +969,8 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert(qev->socket->remote.addr4 == htonl(INADDR_LOOPBACK));
 	assert(qev->socket->remote.port == htons(18888));
 	assert(qev->socket->close_time == 0);
+	assert(qev->socket->bytes_received == 0);
+	assert(qev->socket->bytes_sent == 0);
 
 	/* SOCK_CONN_CLOSED */
 	qev = drain_for_pid(&qq, child);
@@ -987,6 +989,8 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert(qev->socket->remote.addr4 == htonl(INADDR_LOOPBACK));
 	assert(qev->socket->remote.port == htons(18888));
 	assert(qev->socket->close_time > 0);
+	assert(qev->socket->bytes_received == 0);
+	assert(qev->socket->bytes_sent == strlen(PATTERN));
 
 	/* QUARK_EV_EXIT */
 	qev = drain_for_pid(&qq, child);
