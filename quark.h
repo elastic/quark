@@ -196,6 +196,7 @@ enum raw_types {
 	RAW_SOCK_CONN,
 	RAW_PACKET,
 	RAW_FILE,
+	RAW_PTRACE,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -327,6 +328,17 @@ struct raw_file {
 	struct quark_file	*quark_file;
 };
 
+struct quark_ptrace {
+	u32	child_pid;
+	s64	request;
+	u64	addr;
+	u64	data;
+};
+
+struct raw_ptrace {
+	struct quark_ptrace quark_ptrace;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -346,6 +358,7 @@ struct raw_event {
 		struct raw_sock_conn		sock_conn;
 		struct raw_packet		packet;
 		struct raw_file			file;
+		struct raw_ptrace		ptrace;
 	};
 };
 
@@ -373,12 +386,14 @@ struct quark_event {
 #define QUARK_EV_PACKET			(1 << 6)
 #define QUARK_EV_BYPASS			(1 << 7)
 #define QUARK_EV_FILE			(1 << 8)
+#define QUARK_EV_PTRACE			(1 << 9)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
 	struct quark_packet		*packet;
 	const void			*bypass;
 	struct quark_file		*file;
+	struct quark_ptrace		 ptrace;
 };
 
 /*
@@ -697,6 +712,7 @@ struct quark_queue_attr {
 #define QQ_FILE			(1 << 8)
 #define QQ_MEMFD		(1 << 9)
 #define QQ_TTY			(1 << 10)
+#define QQ_PTRACE		(1 << 11)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int	flags;
 	int	max_length;

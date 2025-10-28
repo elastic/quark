@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDEeFkMNSstv
+.Op Fl BbDEeFkMNSsTtv
 .Op Fl C Ar filename
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
@@ -108,6 +108,8 @@ Display only events where parent pid is
 Enable socket events (experimental).
 .It Fl s
 Don't send the initial snapshot of existing processes.
+.It Fl T
+Enable ptrace event tracing.
 .It Fl t
 Don't supress thread events, this is only useful for debugging and will likely
 be zapped in the future.

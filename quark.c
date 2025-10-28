@@ -126,6 +126,7 @@ raw_event_alloc(int type)
 	case RAW_SOCK_CONN:	/* nada */
 	case RAW_PACKET:	/* caller allocates */
 	case RAW_FILE:		/* caller allocates */
+	case RAW_PTRACE:	/* nada */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -159,6 +160,7 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
+	case RAW_PTRACE:	/* nada */
 		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
@@ -352,6 +354,7 @@ event_storage_clear(struct quark_queue *qq)
 	qq->event_storage.packet = NULL;
 	free(qq->event_storage.file);
 	qq->event_storage.file = NULL;
+	bzero(&qq->event_storage.ptrace, sizeof(qq->event_storage.ptrace));
 }
 
 static void
@@ -1672,6 +1675,8 @@ event_type_str(u64 event)
 		return "BYPASS";
 	case QUARK_EV_FILE:
 		return "FILE";
+	case QUARK_EV_PTRACE:
+		return "PTRACE";
 	default:
 		return "?";
 	}
@@ -2020,6 +2025,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_file		*file;
 	const struct quark_pod		*pod;
 	const struct quark_container	*container;
+	const struct quark_ptrace	*ptrace;
 	int				 pid;
 
 	if (qev->events == QUARK_EV_BYPASS) {
@@ -2093,6 +2099,16 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    file->mode, file->uid, file->gid, file->size, file->inode);
 		PF(fl, "atime=%llu mtime=%llu ctime=%llu\n",
 		    file->atime, file->mtime, file->ctime);
+	}
+
+	if (qev->events & QUARK_EV_PTRACE) {
+		fl = "PTRACE";
+
+		ptrace = &qev->ptrace;
+
+		PF(fl, "pid=%d request=0x%llx addr=0x%llx data=0x%llx\n",
+		    ptrace->child_pid, ptrace->request,
+		    ptrace->addr, ptrace->data);
 	}
 
 	if (qp == NULL)
@@ -4534,6 +4550,20 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static const struct quark_event *
+raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_PTRACE;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->ptrace = raw->ptrace.quark_ptrace;
+
+	return (qev);
+}
+
+static const struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
@@ -4586,6 +4616,9 @@ quark_queue_get_event(struct quark_queue *qq)
 			break;
 		case RAW_FILE:
 			qev = raw_event_file(qq, raw);
+			break;
+		case RAW_PTRACE:
+			qev = raw_event_ptrace(qq, raw);
 			break;
 		default:
 			qwarnx("unhandled raw->type: %d", raw->type);

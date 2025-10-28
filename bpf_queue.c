@@ -490,8 +490,32 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_PROCESS_PTRACE: {
+		struct ebpf_process_ptrace_event *ptrace;
+		struct quark_ptrace *qptrace;
+
+		ptrace = (struct ebpf_process_ptrace_event *)ev;
+		if ((raw = raw_event_alloc(RAW_PTRACE)) == NULL)
+			goto bad;
+
+		raw->pid = ptrace->pids.tgid;
+		raw->time = ev->ts;
+
+		qptrace = &raw->ptrace.quark_ptrace;
+		qptrace->child_pid = ptrace->child_pid;
+		qptrace->request = ptrace->request;
+		qptrace->addr = ptrace->addr;
+		qptrace->data = ptrace->data;
+
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
+		goto bad;
+	}
+
+	if (unlikely(raw->pid == 0)) {
+		qwarnx("raw->pid is not set, did you forget me :( ?");
 		goto bad;
 	}
 
@@ -870,8 +894,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_memfd_create, 1);
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_shmget, 1);
 		bpf_program__set_autoload(p->progs.module_load, 1);
-		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
-		bpf_program__set_autoload(p->progs.kprobe__arch_ptrace, 1);
 	}
 
 	if (qq->flags & QQ_TTY) {
@@ -879,6 +901,11 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.fentry__tty_write, 1);
 		else
 			bpf_program__set_autoload(p->progs.kprobe__tty_write, 1);
+	}
+
+	if (qq->flags & QQ_PTRACE) {
+		bpf_program__set_autoload(p->progs.kprobe__arch_ptrace, 1);
+		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
 	}
 
 	/*
