@@ -221,15 +221,12 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				/* filename might still be NULL */
 				break;
 			case EBPF_VL_FIELD_ARGV:
-				raw->exec.ext.args_len = field->size;
-				if (raw->exec.ext.args_len == 0) {
-					raw->exec.ext.args = NULL;
+				if (field->size == 0)
 					break;
-				}
-
 				raw->exec.ext.args = malloc(field->size);
 				if (raw->exec.ext.args == NULL)
 					break;
+				raw->exec.ext.args_len = field->size;
 				memcpy(raw->exec.ext.args, field->data,
 				    field->size);
 				raw->exec.ext.args[field->size - 1] = 0;
