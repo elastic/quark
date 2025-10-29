@@ -240,8 +240,15 @@ raw_event_target_age(struct quark_queue *qq)
 	if (qq->length < (qq->max_length / 10))
 		v = qq->hold_time;
 	else if (qq->length < ((qq->max_length / 10) * 9)) {
-		v = qq->hold_time -
-		    (qq->length / (qq->max_length / qq->hold_time)) + 1;
+		if (qq->max_length > qq->hold_time)
+			v = qq->hold_time -
+			    (qq->length / (qq->max_length / qq->hold_time)) + 1;
+		else
+			v = qq->hold_time -
+			    (qq->length * (qq->hold_time / qq->max_length)) + 1;
+
+		if (unlikely(v < 0))
+			v = 0;
 	} else
 		v = 0;
 
