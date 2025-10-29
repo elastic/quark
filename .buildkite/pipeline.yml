@@ -255,7 +255,7 @@ steps:
 
   - label: "quark-test on rhel 8.5 (no file)"
     key: test_rhel_8_5
-    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file"
+    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open"
     depends_on:
       - make_docker
     agents:
@@ -266,7 +266,7 @@ steps:
 
   - label: "quark-test on rhel 8.6 (no file)"
     key: test_rhel_8_6
-    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file"
+    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open"
     depends_on:
       - make_docker
     agents:
@@ -277,7 +277,7 @@ steps:
 
   - label: "quark-test on rhel 8.7 (no file)"
     key: test_rhel_8_7
-    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file"
+    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open"
     depends_on:
       - make_docker
     agents:
@@ -352,9 +352,9 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 9.3"
+  - label: "quark-test on rhel 9.3 (memfd+shmget broken)"
     key: test_rhel_9_3
-    command: "./.buildkite/runtest_distro.sh rhel 9.3"
+    command: "./.buildkite/runtest_distro.sh rhel 9.3 -x t_memfd -x t_shmget"
     depends_on:
       - make_docker
     agents:

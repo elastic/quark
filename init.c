@@ -105,6 +105,12 @@ main(int argc, char *argv[])
 	if (pid == 0) {
 		if (setenv("PATH", "/bin", 1) != 0)
 			err(1, "setenv PATH");
+
+		if (mount("devtmpfs", "/dev", "devtmpfs", 0, NULL) == -1)
+			err(1, "mount /dev");
+
+		if (mkdir("/dev/shm", 0777) == -1)
+			err(1, "mkdir /dev/shm");
 		if (mkdir("/tmp", 0777) == -1)
 			err(1, "mkdir /tmp");
 		if (mkdir("/proc", 0666) == -1)
@@ -112,13 +118,15 @@ main(int argc, char *argv[])
 		if (mkdir("/sys", 0666) == -1)
 			err(1, "mkdir /sys");
 
-		if (mount(NULL, "/tmp", "tmpfs", 0, NULL) == -1)
+		if (mount("tmpfs", "/dev/shm", "tmpfs", MS_NODEV, NULL) == -1)
+			err(1, "mount /dev/shm");
+		if (mount("tmpfs", "/tmp", "tmpfs", 0, NULL) == -1)
 			err(1, "mount /tmp");
 		if (mount("proc", "/proc", "proc", 0, NULL) == -1)
 			err(1, "mount /proc");
-		if (mount(NULL, "/sys", "sysfs", 0, NULL) == -1)
+		if (mount("sysfs", "/sys", "sysfs", 0, NULL) == -1)
 			err(1, "mount /sys");
-		if (mount(NULL, "/sys/kernel/tracing", "tracefs",
+		if (mount("tracefs", "/sys/kernel/tracing", "tracefs",
 		    0, NULL) == -1) {
 			warn("mount /sys/kernel/tracing");
 			warnx("trying debugfs...");
@@ -128,7 +136,7 @@ main(int argc, char *argv[])
 				errx(1, "couldn't mount tracefs or debugfs");
 			}
 		}
-		if (mount(NULL, "/sys/fs/cgroup", "cgroup2", 0, NULL) == -1)
+		if (mount("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, NULL) == -1)
 			err(1, "mount /sys/fs/cgroup");
 
 		net_up();
