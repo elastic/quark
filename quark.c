@@ -3512,16 +3512,16 @@ quark_sysinfo_ifaddrs(struct quark_sysinfo *si)
 				if (!strcmp(buf, si->ip_addrs[i]))
 					goto next;
 			}
-			tmp = reallocarray(si->ip_addrs,
-			    si->ip_addrs_len + 1, sizeof(char *));
-			if (tmp == NULL) {
-				qwarn("reallocarray");
-				continue;
-			}
 			buf_copy = strdup(buf);
 			if (buf_copy == NULL) {
 				qwarn("strdup");
-				free(tmp);
+				continue;
+			}
+			tmp = reallocarray(si->ip_addrs,
+			    si->ip_addrs_len + 1, sizeof(char *));
+			if (tmp == NULL) {
+				free(buf_copy);
+				qwarn("reallocarray");
 				continue;
 			}
 			si->ip_addrs = tmp;
@@ -3550,16 +3550,17 @@ quark_sysinfo_ifaddrs(struct quark_sysinfo *si)
 				if (!strcmp(eth_buf, si->ip_addrs[i]))
 					goto next;
 			}
-			tmp = reallocarray(si->mac_addrs,
-			    si->mac_addrs_len + 1, sizeof(char *));
-			if (tmp == NULL) {
-				qwarn("reallocarray");
-				continue;
-			}
 			buf_copy = strdup(eth_buf);
 			if (buf_copy == NULL) {
 				qwarn("strdup");
-				free(tmp);
+				continue;
+			}
+			tmp = reallocarray(si->mac_addrs,
+			    si->mac_addrs_len + 1, sizeof(char *));
+			if (tmp == NULL) {
+				free(buf_copy);
+				qwarn("reallocarray");
+				continue;
 			}
 			si->mac_addrs = tmp;
 			si->mac_addrs[si->mac_addrs_len] = buf_copy;
