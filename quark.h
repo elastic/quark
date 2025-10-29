@@ -275,6 +275,8 @@ struct raw_sock_conn {
 	struct quark_sockaddr	local;
 	struct quark_sockaddr	remote;
 	enum sock_conn		conn;
+	u64	bytes_received;
+	u64	bytes_sent;
 };
 
 enum quark_packet_direction {
@@ -517,6 +519,8 @@ struct quark_socket {
 	u64			established_time;
 	u64			close_time;
 	enum sock_conn		conn_origin;
+	u64			bytes_received;
+	u64			bytes_sent;
 };
 
 struct quark_socket_iter {

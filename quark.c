@@ -552,7 +552,8 @@ socket_cache_lookup(struct quark_queue *qq,
 
 static struct quark_socket *
 socket_alloc_and_insert(struct quark_queue *qq, struct quark_sockaddr *local,
-    struct quark_sockaddr *remote, enum sock_conn conn, u32 pid_origin, u64 est_time)
+    struct quark_sockaddr *remote, enum sock_conn conn, u64 received, u64 sent,
+    u32 pid_origin, u64 est_time)
 {
 	struct quark_socket *qsk, *col;
 
@@ -564,6 +565,8 @@ socket_alloc_and_insert(struct quark_queue *qq, struct quark_sockaddr *local,
 	qsk->pid_origin = qsk->pid_last_use = pid_origin;
 	qsk->established_time = est_time;
 	qsk->conn_origin = conn;
+	qsk->bytes_received = received;
+	qsk->bytes_sent = sent;
 
 	col = RB_INSERT(socket_by_src_dst, &qq->socket_by_src_dst, qsk);
 	if (col) {
@@ -2046,9 +2049,10 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    remote, sizeof(remote)) == NULL)
 			strlcpy(remote, "bad address", sizeof(remote));
 
-		PF(fl, "local=%s:%d remote=%s:%d\n",
+		PF(fl, "local=%s:%d remote=%s:%d received=%llu sent=%llu\n",
 		    local, ntohs(qsk->local.port),
-		    remote, ntohs(qsk->remote.port));
+		    remote, ntohs(qsk->remote.port),
+		    qsk->bytes_received, qsk->bytes_sent);
 	}
 
 	if (qev->events & QUARK_EV_PACKET) {
@@ -2850,7 +2854,7 @@ sproc_pid_sockets(struct quark_queue *qq,
 			continue;
 
 		qsk = socket_alloc_and_insert(qq, &ss->socket.local,
-		    &ss->socket.remote, SOCK_CONN_SCRAPE, pid, now64());
+		    &ss->socket.remote, SOCK_CONN_SCRAPE, 0, 0, pid, now64());
 		if (qsk == NULL) {
 			qwarn("socket_alloc");
 			continue;
@@ -4417,7 +4421,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 		}
 
 		qsk = socket_alloc_and_insert(qq, &conn->local, &conn->remote,
-		    conn->conn, raw->pid, raw->time);
+		    conn->conn, 0, 0, raw->pid, raw->time);
 		if (qsk == NULL) {
 			qwarn("socket_alloc");
 			return (NULL);
@@ -4432,14 +4436,19 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 		 */
 		if (qsk == NULL) {
 			qsk = socket_alloc_and_insert(qq, &conn->local, &conn->remote,
-			    conn->conn, raw->pid, raw->time);
+			    conn->conn, conn->bytes_received, conn->bytes_sent,
+			    raw->pid, raw->time);
 			if (qsk == NULL) {
 				qwarn("socket_alloc");
 				return (NULL);
 			}
 		}
+
 		if (qsk->close_time == 0)
 			qsk->close_time = raw->time;
+		qsk->bytes_received = conn->bytes_received;
+		qsk->bytes_sent = conn->bytes_sent;
+
 		gc_mark(qq, &qsk->gc, GC_SOCKET);
 		qev->events = QUARK_EV_SOCK_CONN_CLOSED;
 
