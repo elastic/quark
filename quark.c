@@ -2627,7 +2627,7 @@ sproc_stat(struct quark_process *qp, int dfd)
 		qp->proc_time_boot =
 		    quark.boottime +
 		    ((starttime / (u64)quark.hz) * NS_PER_S) +
-		    (((starttime % (u64)quark.hz) * NS_PER_S) / 100);
+		    (((starttime % (u64)quark.hz) * NS_PER_S) / (u64)quark.hz);
 
 		ret = 0;
 	}
