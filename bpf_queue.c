@@ -565,7 +565,7 @@ cgroup2_open_fd(char **umount_path)
 		goto fail;
 	}
 
-	for (line = strtok_r(file_buf, " ", &save_line);
+	for (line = strtok_r(file_buf, "\n", &save_line);
 	     line != NULL;
 	     line = strtok_r(NULL, "\n", &save_line)) {
 		if (strncasecmp(line, "cgroup2", strlen("cgroup2")))
