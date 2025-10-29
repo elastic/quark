@@ -1014,6 +1014,7 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	struct bpf_queue	*bqq  = qq->queue_be;
 	struct ebpf_event_stats	 pcpu_ees[libbpf_num_possible_cpus()];
 	u32			 zero = 0;
+	u64			 lost;
 	int			 i;
 
 	/* valgrind doesn't track that this will be updated below */
@@ -1023,8 +1024,9 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	    sizeof(zero), pcpu_ees, sizeof(pcpu_ees), 0) != 0)
 		return (-1);
 
-	for (i = 0; i < libbpf_num_possible_cpus(); i++)
-		qq->stats.lost = pcpu_ees[i].lost;
+	for (i = 0, lost = 0; i < libbpf_num_possible_cpus(); i++)
+		lost += pcpu_ees[i].lost;
+	qq->stats.lost = lost;
 
 	return (0);
 }
