@@ -357,6 +357,11 @@ include: $(LIBBPF_DEPS) cJSON.h
 
 svg: $(SVGS)
 
+scan:
+	@echo "NOTE! Expect a bunch of false positives."
+	@echo "clang doesn't understand TAILQ_REMOVE and friends."
+	scan-build -o /tmp/quark-scan make
+
 test: quark-test
 	$(SUDO) ./quark-test
 
@@ -556,6 +561,7 @@ clean-docs:
 	docker-image		\
 	docker-shell		\
 	eebpf-sync		\
+	scan			\
 	test			\
 	test-kernel		\
 	test-valgrind
@@ -571,6 +577,7 @@ clean-docs:
 	docker-image		\
 	docker-shell		\
 	initramfs.gz		\
+	scan			\
 	test			\
 	test-kernel		\
 	test-valgrind

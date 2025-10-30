@@ -3323,12 +3323,14 @@ quark_passwd_populate(struct passwd_by_uid *by_uid)
 	return (0);
 
 bad:
+	if (buf != NULL) {
 #ifdef HAVE_EXPLICIT_BZERO
-	explicit_bzero(buf, buf_size);
+		explicit_bzero(buf, buf_size);
 #else
-	bzero(buf, buf_size);
+		bzero(buf, buf_size);
 #endif
-	free(buf);
+		free(buf);
+	}
 	while ((qpw = RB_ROOT(by_uid)) != NULL) {
 		RB_REMOVE(passwd_by_uid, by_uid, qpw);
 		free(qpw->name);
@@ -3444,12 +3446,14 @@ quark_group_populate(struct group_by_gid *by_gid)
 	return (0);
 
 bad:
+	if (buf != NULL) {
 #ifdef HAVE_EXPLICIT_BZERO
-	explicit_bzero(buf, buf_size);
+		explicit_bzero(buf, buf_size);
 #else
-	bzero(buf, buf_size);
+		bzero(buf, buf_size);
 #endif
-	free(buf);
+		free(buf);
+	}
 	while ((qgrp = RB_ROOT(by_gid)) != NULL) {
 		RB_REMOVE(group_by_gid, by_gid, qgrp);
 		free(qgrp->name);

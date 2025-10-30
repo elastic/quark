@@ -185,6 +185,8 @@ main(int argc, char *argv[])
 			qa.flags |= QQ_EBPF;
 			break;
 		case 'C':
+			if (graph_cache != NULL)
+				usage();
 			graph_cache = fopen(optarg, "w");
 			if (graph_cache == NULL)
 				err(1, "fopen %s", optarg);
@@ -232,7 +234,8 @@ main(int argc, char *argv[])
 			lflag = 1;
 			break;
 		case 'm':
-			if (optarg == NULL)
+			if (optarg == NULL || graph_by_time != NULL ||
+			    graph_by_pidtime != NULL)
 				usage();
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);
 			if (errstr != NULL)

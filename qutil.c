@@ -158,7 +158,8 @@ find_line(FILE *f, const char *needle)
 	old_pos = ftell(f);
 	if (old_pos == -1)
 		return (NULL);
-	rewind(f);
+	if (fseek(f, 0, SEEK_SET) == -1)
+		return (NULL);
 	line = NULL;
 	line_len = 0;
 	found = NULL;
