@@ -998,7 +998,7 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 			}
 			hanson_close_object(&h);
 
-			if (qev->process->container->pod != NULL) {
+			if (qq->qkube != NULL && qev->process->container->pod != NULL) {
 				hanson_add_object(&h, "orchestrator", &top_first);
 				{
 					int	orchestrator_first = 1;
