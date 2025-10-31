@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Copyright (c) 2024 Elastic NV */
 
+#include <asm/termbits.h>
+
+#include <sys/ioctl.h>
 #include <sys/ipc.h>
 #include <sys/mman.h>
 #include <sys/select.h>
@@ -1056,17 +1059,76 @@ t_shm_open(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
-/* XXX Only probe loading for now */
+static int
+t_tty_load(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+
+	qa->flags |= QQ_TTY;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_tty(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_tty		*qtty;
+	pid_t				 pid;
+	struct winsize			 winsize;
+	const char			*data	  = "oh hai from the tty test ";
+	size_t				 data_len = strlen(data);
+	int				 status;
 
-	qa->flags &= ~QQ_ENTRY_LEADER;
-	qa->flags |= QQ_BYPASS | QQ_TTY;
+	if (!isatty(STDOUT_FILENO)) {
+		warnx("stdout is not a tty, skipping");
+		return (0);
+	}
+
+	if (getenv("QUARK_INITRAMFS") != NULL) {
+		warnx("no tty events in initramfs, skipping");
+		return (0);
+	}
+
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &winsize) == -1)
+		err(1, "ioctl TIOCGWINSZ");
+
+	qa->flags |= QQ_TTY;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
+
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+
+	/* child */
+	if (pid == 0) {
+		fputs(data, stdout);
+		exit(0);
+	}
+
+	/* parent */
+	if (waitpid(pid, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "tty child didn't exit cleanly");
+
+	qev = drain_for_pid(&qq, pid); /* FORK */
+	qev = drain_for_pid(&qq, pid); /* TTY */
+
+	assert(qev->events == QUARK_EV_TTY);
+	qtty = qev->tty;
+	assert(qtty->cols == winsize.ws_col);
+	assert(qtty->rows == winsize.ws_row);
+	assert(qtty->data_len == data_len);
+	assert(!memcmp(qtty->data, data, data_len));
+	assert(qtty->truncated == 0);
 
 	quark_queue_close(&qq);
 
@@ -1512,6 +1574,7 @@ struct test all_tests[] = {
 	T_EBPF(t_memfd),
 	T_EBPF(t_shmget),
 	T_EBPF(t_shm_open),
+	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),

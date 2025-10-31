@@ -689,6 +689,60 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_PROCESS_TTY_WRITE: {
+		struct ebpf_process_tty_write_event	*tty;
+		struct quark_tty			*qtty;
+		size_t					 alloc_len, data_len;
+		void					*data;
+
+		tty = (struct ebpf_process_tty_write_event *)ev;
+		if ((raw = raw_event_alloc(RAW_TTY)) == NULL)
+			goto bad;
+
+		data = NULL;
+		data_len = 0;
+		FOR_EACH_VARLEN_FIELD(tty->vl_fields, field) {
+			if (field->type == EBPF_VL_FIELD_TTY_OUT &&
+			    field->size > 0) {
+				data = field->data;
+				data_len = field->size;
+				break;
+			}
+		}
+		if (data == NULL) {
+			qwarnx("tty write without data");
+			goto bad;
+		}
+
+		raw->pid = tty->pids.tgid;
+		raw->time = ev->ts;
+
+		/*
+		 * A tty_write doesn't necessarily end with a NUL, but we will
+		 * add one anyway for users that screw up.
+		 */
+		alloc_len = sizeof(*qtty) + data_len + 1; /* extra for NUL */
+		if ((qtty = malloc(alloc_len)) == NULL)
+			goto bad;
+
+		qtty->major = tty->tty.major;
+		qtty->minor = tty->tty.minor;
+		qtty->cols = tty->tty.winsize.cols;
+		qtty->rows = tty->tty.winsize.rows;
+		qtty->cflag = tty->tty.termios.c_cflag;
+		qtty->iflag = tty->tty.termios.c_iflag;
+		qtty->lflag = tty->tty.termios.c_lflag;
+		qtty->oflag = tty->tty.termios.c_oflag;
+		qtty->truncated = tty->tty_out_truncated;
+
+		qtty->data_len = data_len;
+		memcpy(qtty->data, data, data_len);
+		qtty->data[data_len] = 0;
+
+		raw->tty.quark_tty = qtty;
+
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;

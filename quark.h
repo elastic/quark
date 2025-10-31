@@ -199,6 +199,7 @@ enum raw_types {
 	RAW_PTRACE,
 	RAW_MODULE_LOAD,
 	RAW_SHM,
+	RAW_TTY,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -374,6 +375,24 @@ struct raw_shm {
 	struct quark_shm	*quark_shm;
 };
 
+struct quark_tty {
+	u16	major;
+	u16	minor;
+	u16	cols;
+	u16	rows;
+	u32	cflag;
+	u32	iflag;
+	u32	lflag;
+	u32	oflag;
+	size_t	truncated;	/* how many bytes were truncated (lost) */
+	size_t	data_len;
+	char	data[];
+};
+
+struct raw_tty {
+	struct quark_tty	*quark_tty;
+};
+
 struct raw_event {
 	RB_ENTRY(raw_event)			entry_by_time;
 	RB_ENTRY(raw_event)			entry_by_pidtime;
@@ -396,6 +415,7 @@ struct raw_event {
 		struct raw_ptrace		ptrace;
 		struct raw_module_load		module_load;
 		struct raw_shm			shm;
+		struct raw_tty			tty;
 	};
 };
 
@@ -426,6 +446,7 @@ struct quark_event {
 #define QUARK_EV_PTRACE			(1 << 9)
 #define QUARK_EV_MODULE_LOAD		(1 << 10)
 #define QUARK_EV_SHM			(1 << 11)
+#define QUARK_EV_TTY			(1 << 12)
 	u64				 events;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
@@ -435,6 +456,7 @@ struct quark_event {
 	struct quark_ptrace		 ptrace;
 	struct quark_module_load	*module_load;
 	struct quark_shm		*shm;
+	struct quark_tty		*tty;
 };
 
 /*
