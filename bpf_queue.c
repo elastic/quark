@@ -727,33 +727,35 @@ static int
 cgroup2_open_fd(char **umount_path)
 {
 	char	*save_line, *file_buf;
-	char	*line, *start, *end, *path;
-	int	 fd;
+	char	*line, *path, path_buf[MAXPATHLEN], fs[256];
+	int	 fd, did_mount, did_mkdir;
+
+	if (umount_path == NULL) {
+		qwarnx("no umount_path, bailing");
+		return (-1);
+	}
 
 	fd = -1;
 	path = NULL;
 	*umount_path = NULL;
+	did_mount = did_mkdir = 0;
 
 	if ((file_buf = load_file_path_nostat("/proc/mounts", NULL)) == NULL) {
 		qwarn("load_file_path_nostat /proc/mounts");
 		goto fail;
 	}
 
+	/*
+	 * Search for the cgroup2 mount, if found, point path to mount point.
+	 */
 	for (line = strtok_r(file_buf, "\n", &save_line);
 	     line != NULL;
 	     line = strtok_r(NULL, "\n", &save_line)) {
-		if (strncasecmp(line, "cgroup2", strlen("cgroup2")))
+		if (sscanf(line, "%*s %s %s", path_buf, fs) != 2)
 			continue;
-		if ((start = strchr(line, ' ')) == NULL) {
-			qwarn("no space 1");
+		if (strcmp(fs, "cgroup2"))
 			continue;
-		}
-		start++;
-		if ((end = strchr(start, ' ')) == NULL) {
-			qwarn("no space 2");
-			continue;
-		}
-		path = strndup(start, end - start);
+		path = path_buf;
 		break;
 	}
 	free(file_buf);
@@ -771,43 +773,47 @@ cgroup2_open_fd(char **umount_path)
 			qwarn("mkdtemp %s", template);
 			goto fail;
 		}
+		did_mkdir = 1;
 		qwarnx("no cgroup2 mount found, will try mounting it "
 		    "ourselves at %s", path);
 
-		path = strdup(path);
-		if (path == NULL) {
-			qwarn("strdup");
-			goto fail;
-		}
 		if (mount(NULL, path, "cgroup2", 0, NULL) == -1) {
 			qwarn("mount %s", path);
 			goto fail;
 		}
+		did_mount = 1;
 
+		/*
+		 * Dup the mounting point so that our caller can unmount it
+		 * after it used the file descriptor.
+		 */
 		if ((*umount_path = strdup(path)) == NULL) {
 			qwarn("strdup");
 			goto fail;
 		}
 	}
 
-	if (path == NULL) {
-		qwarnx("no cgroup2 mount");
-		goto fail;
-	}
-
 	if ((fd = open(path, O_RDONLY)) == -1) {
 		qwarn("open %s", path);
 		goto fail;
 	}
-	free(path);
 
 	return (fd);
 
 fail:
-	free(path);
 	if (fd != -1)
 		close(fd);
-	cgroup2_umount_tmp(umount_path);
+	if (*umount_path != NULL) {
+		free(*umount_path);
+		*umount_path = NULL;
+	}
+	if (did_mount && umount(path) == -1)
+		qwarn("can't umount temporary cgroup2 at %s, "
+		    "mount point will dangle!", path);
+	/* NOTE rmdir will fail if umount failed, we don't care */
+	if (did_mkdir && rmdir(path) == -1)
+		qwarn("can't unlink temporary cgroup2 at %s, "
+		    "directory will dangle!", path);
 
 	return (-1);
 }
