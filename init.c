@@ -143,6 +143,9 @@ main(int argc, char *argv[])
 
 		display_banner(argv);
 
+		if (setenv("QUARK_INITRAMFS", "1", 1) == -1)
+			err(1, "setenv");
+
 		return (execv(argv[0], argv));
 	}
 

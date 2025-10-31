@@ -129,6 +129,7 @@ raw_event_alloc(int type)
 	case RAW_PTRACE:	/* nada */
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
+	case RAW_TTY:		/* caller allocates */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -187,6 +188,9 @@ raw_event_free(struct raw_event *raw)
 			free(raw->shm.quark_shm->path);
 			free(raw->shm.quark_shm);
 		}
+		break;
+	case RAW_TTY:
+		free(raw->tty.quark_tty);
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -388,6 +392,8 @@ event_storage_clear(struct quark_queue *qq)
 		free(qq->event_storage.shm);
 		qq->event_storage.shm = NULL;
 	}
+	free(qq->event_storage.tty);
+	qq->event_storage.tty = NULL;
 }
 
 static void
@@ -1717,6 +1723,8 @@ event_type_str(u64 event)
 		return "MODULE_LOAD";
 	case QUARK_EV_SHM:
 		return "SHM";
+	case QUARK_EV_TTY:
+		return "TTY";
 	default:
 		return "?";
 	}
@@ -4138,11 +4146,6 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		 */
 		qa->max_length = 1;
 	}
-	/*
-	 * QQ_TTY needs QQ_BYPASS for now
-	 */
-	if ((qa->flags & QQ_TTY) && !(qa->flags & QQ_BYPASS))
-		return (errno = EINVAL, -1);
 
 	if ((qa->flags & QQ_ALL_BACKENDS) == 0 ||
 	    qa->max_length <= 0 ||
@@ -4695,6 +4698,31 @@ raw_event_shm(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static const struct quark_event *
+raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	if (raw->tty.quark_tty == NULL) {
+		qwarnx("quark_tty is null");
+
+		return (NULL);
+	}
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_TTY;
+	qev->process = quark_process_lookup(qq, raw->pid);
+
+	/* TODO: TTY aggregation */
+
+	/* Steal it */
+	qev->tty = raw->tty.quark_tty;
+	raw->tty.quark_tty = NULL;
+
+	return (qev);
+}
+
+static const struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
@@ -4756,6 +4784,9 @@ quark_queue_get_event(struct quark_queue *qq)
 			break;
 		case RAW_SHM:
 			qev = raw_event_shm(qq, raw);
+			break;
+		case RAW_TTY:
+			qev = raw_event_tty(qq, raw);
 			break;
 		default:
 			qwarnx("unhandled raw->type: %d", raw->type);
