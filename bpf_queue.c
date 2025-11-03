@@ -79,10 +79,12 @@ struct ebpf_ctx {
 	struct ebpf_namespace_info	*ns;
 	char				*cwd;
 	char				*cgroup;
+	char				*env;
+	size_t				 env_len;
 };
 
 static void
-ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
+ebpf_ctx_to_task(struct quark_queue *qq, struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 {
 	task->cap_inheritable = 0; /* unavailable */
 	task->cap_permitted = ebpf_ctx->creds->cap_permitted;
@@ -111,10 +113,22 @@ ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 	if (ebpf_ctx->cgroup != NULL)
 		task->cgroup = strdup(ebpf_ctx->cgroup);
 	strlcpy(task->comm, ebpf_ctx->comm, sizeof(task->comm));
+	if (ebpf_ctx->env != NULL && ebpf_ctx->env_len > 0) {
+		size_t	env_len;
+
+		env_len = ebpf_ctx->env_len > qq->max_env ?
+		    qq->max_env : ebpf_ctx->env_len;
+
+		if ((task->env = malloc(env_len)) != NULL) {
+			memcpy(task->env, ebpf_ctx->env, env_len);
+			task->env_len = env_len;
+			task->env[task->env_len - 1] = 0;
+		}
+	}
 }
 
 static struct raw_event *
-ebpf_events_to_raw(struct ebpf_event_header *ev)
+ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 {
 	struct raw_event		*raw;
 	struct ebpf_varlen_field	*field;
@@ -139,6 +153,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.ns = &fork->ns;
 		ebpf_ctx.cwd = NULL;
 		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
 		/* the macro doesn't take a pointer so we can't pass down :) */
 		FOR_EACH_VARLEN_FIELD(fork->vl_fields, field) {
 			switch (field->type) {
@@ -153,7 +169,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				break;
 			}
 		}
-		ebpf_ctx_to_task(&ebpf_ctx, &raw->task);
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
 
 		break;
 	}
@@ -172,6 +188,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.ns = &exit->ns;
 		ebpf_ctx.cwd = NULL;
 		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
 
 		FOR_EACH_VARLEN_FIELD(exit->vl_fields, field) {
 			switch (field->type) {
@@ -186,7 +204,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		raw->task.exit_code = exit->exit_code;
 		raw->task.exit_time_event = raw->time;
-		ebpf_ctx_to_task(&ebpf_ctx, &raw->task);
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
 
 		break;
 	}
@@ -206,6 +224,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.ns = &exec->ns;
 		ebpf_ctx.cwd = NULL;
 		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
 
 		FOR_EACH_VARLEN_FIELD(exec->vl_fields, field) {
 			switch (field->type) {
@@ -231,11 +251,17 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				    field->size);
 				raw->exec.ext.args[field->size - 1] = 0;
 				break;
+			case EBPF_VL_FIELD_ENV:
+				if (field->size == 0)
+					break;
+				ebpf_ctx.env = field->data;
+				ebpf_ctx.env_len = field->size;
+				break;
 			default:
 				break;
 			}
 		}
-		ebpf_ctx_to_task(&ebpf_ctx, &raw->exec.ext.task);
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->exec.ext.task);
 
 		break;
 	}
@@ -695,7 +721,7 @@ bpf_ringbuf_cb(void *vqq, void *vdata, size_t len)
 		qev->bypass = ev;
 		qev->events = QUARK_EV_BYPASS;
 	} else {
-		raw = ebpf_events_to_raw(ev);
+		raw = ebpf_events_to_raw(qq, ev);
 		if (raw != NULL && raw_event_insert(qq, raw) == -1)
 			raw_event_free(raw);
 	}

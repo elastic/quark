@@ -330,11 +330,11 @@ fork_exec_nop_rel(int relative)
 
 	if ((child = fork()) == -1)
 		err(1, "fork");
+	/* child */
 	else if (child == 0) {
 		struct stat	 st;
 		char		*true_path, *true_dir;
 
-		/* child */
 		if (stat("/usr/bin/true", &st) == 0) {
 			true_path = "/usr/bin/true";
 			true_dir = "/usr/bin";
@@ -344,6 +344,9 @@ fork_exec_nop_rel(int relative)
 			true_dir = "/bin";
 		} else
 			errx(1, "can't find true binary");
+
+		if (setenv("IM_A_QUARK_TEST_CHILD", "OHYES", 1) == -1)
+			err(1, "setenv");
 
 		if (!relative)
 			return (execv(true_path, argv));
@@ -735,6 +738,16 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	if (qa->flags & QQ_EBPF) {
 		sproc_cgroup_of_pid(getpid(), path, sizeof(path));
 		assert(!strcmp(path, qp->cgroup));
+	}
+
+	/*
+	 * Check env, we should have set IM_A_QUARK_TEST_CHILD=OHYES
+	 */
+	if (qa->flags & QQ_EBPF) {
+		const char *needle = "IM_A_QUARK_TEST_CHILD=OHYES";
+
+		assert(qp->flags & QUARK_F_ENV);
+		assert(memmem(qp->env, qp->env_len, needle, strlen(needle)) != NULL);
 	}
 
 	quark_queue_close(&qq);
@@ -1738,11 +1751,13 @@ run_tests(int argc, char *argv[])
 	bpf_attr.flags &= ~QQ_ALL_BACKENDS;
 	bpf_attr.flags |= QQ_EBPF | QQ_ENTRY_LEADER;
 	bpf_attr.hold_time = 100;
+	bpf_attr.max_env = 32768;
 
 	quark_queue_default_attr(&kprobe_attr);
 	kprobe_attr.flags &= ~QQ_ALL_BACKENDS;
 	kprobe_attr.flags |= QQ_KPROBE | QQ_ENTRY_LEADER;
 	kprobe_attr.hold_time = 100;
+	kprobe_attr.max_env = 32768;
 
 	failed = 0;
 	if (argc == 0) {
