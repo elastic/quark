@@ -233,6 +233,8 @@ struct raw_task {
 	char	*cwd;
 	char	*cgroup;
 	char	 comm[16];
+	char	*env;
+	size_t	 env_len;
 };
 
 struct raw_exec {
@@ -507,6 +509,7 @@ struct quark_process {
 #define QUARK_F_CWD		(1 << 5)
 #define QUARK_F_CGROUP		(1 << 6)
 #define QUARK_F_CONTAINER	(1 << 7)
+#define QUARK_F_ENV		(1 << 8)
 	u64	 flags;
 
 	/* QUARK_F_PROC */
@@ -550,6 +553,9 @@ struct quark_process {
 	char	*cgroup;
 	/* QUARK_F_CONTAINER */
 	struct quark_container *container;
+	/* QUARK_F_ENV */
+	char	*env;
+	size_t	 env_len;
 };
 
 struct quark_process_iter {
@@ -758,6 +764,7 @@ struct quark_queue_attr {
 	int	max_length;
 	int	cache_grace_time;	/* in ms */
 	int	hold_time;		/* in ms */
+	size_t	max_env;		/* max process environment in bytes */
 	int	kubefd;			/* quark-kube-talker pipe, -1 disables */
 };
 
@@ -782,6 +789,7 @@ struct quark_queue {
 	int				 max_length;
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
+	size_t				 max_env;		/* max process environment in bytes */
 	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
 	/* Backend related state */

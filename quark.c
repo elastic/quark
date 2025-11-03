@@ -196,6 +196,7 @@ raw_event_free(struct raw_event *raw)
 	if (task != NULL) {
 		free(task->cwd);
 		free(task->cgroup);
+		free(task->env);
 	}
 
 	while ((aux = TAILQ_FIRST(&raw->agg_queue)) != NULL) {
@@ -451,6 +452,7 @@ process_free(struct quark_process *qp)
 	free(qp->cwd);
 	free(qp->cmdline);
 	free(qp->cgroup);
+	free(qp->env);
 	free(qp);
 }
 
@@ -1680,6 +1682,8 @@ event_flag_str(u64 flag)
 		return "CWD";
 	case QUARK_F_CGROUP:
 		return "CGRP";
+	case QUARK_F_ENV:
+		return "ENV";
 	default:
 		return "?";
 	}
@@ -2209,6 +2213,10 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		fl = event_flag_str(QUARK_F_FILENAME);
 		PF(fl, "filename=%s\n", qp->filename);
 	}
+	if (qp->flags & QUARK_F_ENV) {
+		fl = event_flag_str(QUARK_F_ENV);
+		PF(fl, "env_len=%zd\n", qp->env_len);
+	}
 	if (qp->flags & QUARK_F_CGROUP) {
 		fl = event_flag_str(QUARK_F_CGROUP);
 		PF(fl, "cgroup=%s\n", qp->cgroup);
@@ -2491,6 +2499,15 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 			free(qp->cgroup);
 			qp->cgroup = raw_task->cgroup;
 			raw_task->cgroup = NULL;
+		}
+
+		if (raw_task->env != NULL) {
+			qp->flags |= QUARK_F_ENV;
+			free(qp->env);
+			qp->env = raw_task->env;
+			qp->env_len = raw_task->env_len;
+			raw_task->env = NULL;
+			raw_task->env_len = 0;
 		}
 
 		/* Depends on QUARK_F_PROC, idempotent */
@@ -2819,6 +2836,43 @@ bad:
 	return (-1);
 }
 
+static int
+sproc_env(struct quark_queue *qq, struct quark_process *qp, int dfd)
+{
+	int	 fd, ret;
+	char	*buf, *env;
+	size_t	 buf_len, env_len;
+
+	ret = -1;
+	env = NULL;
+
+	if (qq->max_env == 0)
+		return (0);
+	if ((fd = openat(dfd, "environ", O_RDONLY)) == -1) {
+		qwarn("open environ");
+		return (-1);
+	}
+	buf = load_file_nostat(fd, &buf_len);
+	if (buf == NULL || buf_len == 0)
+		goto cleanup;
+	env_len = buf_len > qq->max_env ? qq->max_env : buf_len;
+	if ((env = malloc(env_len)) == NULL)
+		goto cleanup;
+	memcpy(env, buf, env_len);
+	env[env_len - 1] = 0;
+
+	qp->env = env;
+	qp->env_len = env_len;
+	env = NULL;
+	ret = 0;
+cleanup:
+	free(env);
+	free(buf);
+	close(fd);
+
+	return (ret);
+}
+
 /*
  * Note that defunct processes can return ENOENT on the actual link
  */
@@ -2973,6 +3027,9 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	/* QUARK_F_CGROUP */
 	if (sproc_cgroup(qp, dfd) == 0)
 		qp->flags |= QUARK_F_CGROUP;
+	/* QUARK_F_ENV */
+	if (sproc_env(qq, qp, dfd) == 0)
+		qp->flags |= QUARK_F_ENV;
 	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */
 	if (by_inode != NULL)
 		return (sproc_pid_sockets(qq, by_inode, pid, dfd));
@@ -4032,6 +4089,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->max_length = 10000;
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
+	qa->max_env = 4096;		/* one page per process */
 	qa->kubefd = -1;		/* disabled */
 }
 
@@ -4108,6 +4166,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->max_length = qa->max_length;
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
 	qq->hold_time = qa->hold_time;
+	qq->max_env = qa->max_env;
 	qq->length = 0;
 	qq->epollfd = -1;
 	if (qq->flags & QQ_MIN_AGG)
