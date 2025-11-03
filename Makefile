@@ -31,14 +31,15 @@ EXTRA_LDFLAGS+= -lfts
 endif
 
 ifeq ($(V),1)
-	Q =
-	msg =
-	QDOCKER =
+	Q=
+	msg=
+	QDOCKER=
+	EXTRA_OPTIONS+= V=1
 else
-	Q = @
-	msg = @printf '  %-8s %s%s\n' "$(1)" "$(2)" "$(if $(3), $(3))";
-	QREDIR = > /dev/null
-	QDOCKER = -q
+	Q= @
+	msg= @printf '  %-8s %s%s\n' "$(1)" "$(2)" "$(if $(3), $(3))";
+	QREDIR= > /dev/null
+	QDOCKER= -q
 endif
 
 define assert_no_syslib
@@ -58,6 +59,10 @@ endif
 ifndef CENTOS7
 CPPFLAGS+= -DHAVE_EXPLICIT_BZERO
 CPPFLAGS+= -DHAVE_REALLOCARRAY
+endif
+ifdef WITH_BTFHUB
+CPPFLAGS+= -DWITH_BTFHUB
+EXTRA_OPTIONS+= WITH_BTFHUB=$(WITH_BTFHUB)
 endif
 ifndef SYSLIB
 CPPFLAGS+= -Iinclude
@@ -256,7 +261,8 @@ DOCKER_RUN_ARGS=$(QDOCKER)				\
 
 docker: docker-image clean-all
 	$(call msg,DOCKER-RUN,Dockerfile)
-	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) $(SHELL) -c "make -C $(PWD) $(ALL_TARGETS) initramfs.gz"
+	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS)		\
+		$(SHELL) -c "make $(EXTRA_OPTIONS) -C $(PWD) $(ALL_TARGETS) initramfs.gz"
 
 docker-cross-arm64: clean-all docker-image manpages.h
 	$(call msg,DOCKER-RUN,Dockerfile)
@@ -307,7 +313,7 @@ centos7: clean-all docker-image centos7-image
 	# bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
 	$(DOCKER) run					\
 		$(CENTOS7_RUN_ARGS)			\
-		$(SHELL) -c "make -j1 -C $(PWD) $(ALL_TARGETS)"
+		$(SHELL) -c "make -j1 $(EXTRA_OPTIONS) -C $(PWD) $(ALL_TARGETS)"
 
 centos7-image: clean-all
 	$(call msg,DOCKER-IMAGE,Dockerfile.centos7)
@@ -330,7 +336,7 @@ alpine: alpine-image clean-all
 	$(call msg,ALPINE-DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run 				\
 		$(ALPINE_RUN_ARGS) $(SHELL)		\
-		-c "make -C $(PWD) $(ALL_TARGETS) initramfs.gz"
+		-c "make $(EXTRA_OPTIONS) -C $(PWD) $(ALL_TARGETS) initramfs.gz"
 
 alpine-image: clean-all
 	$(call msg,ALPINE-IMAGE,Dockerfile.alpine)
