@@ -373,6 +373,7 @@ tty_type(int major, int minor)
 static void
 event_storage_clear(struct quark_queue *qq)
 {
+	qq->event_storage.time = 0;
 	qq->event_storage.process = NULL;
 	qq->event_storage.socket = NULL;
 	free(qq->event_storage.packet);
@@ -4547,7 +4548,7 @@ quark_queue_pop_raw(struct quark_queue *qq)
 	return (min);
 }
 
-static const struct quark_event *
+static struct quark_event *
 raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -4632,7 +4633,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
-static const struct quark_event *
+static struct quark_event *
 raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -4655,7 +4656,7 @@ raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
-static const struct quark_event *
+static struct quark_event *
 raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -4691,7 +4692,7 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
-static const struct quark_event *
+static struct quark_event *
 raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -4705,7 +4706,7 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
-static const struct quark_event *
+static struct quark_event *
 raw_event_module_load(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -4721,7 +4722,7 @@ raw_event_module_load(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
-static const struct quark_event *
+static struct quark_event *
 raw_event_shm(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -4737,7 +4738,7 @@ raw_event_shm(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
-static const struct quark_event *
+static struct quark_event *
 raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -4796,8 +4797,8 @@ get_bypass_event(struct quark_queue *qq)
 const struct quark_event *
 quark_queue_get_event(struct quark_queue *qq)
 {
-	struct raw_event		*raw;
-	const struct quark_event	*qev;
+	struct raw_event	*raw;
+	struct quark_event	*qev;
 
 	if (qq->qkube != NULL)
 		kube_read_events(qq);
@@ -4844,6 +4845,8 @@ quark_queue_get_event(struct quark_queue *qq)
 			break;
 		}
 
+		if (qev != NULL)
+			qev->time = quark.boottime + raw->time;
 		raw_event_free(raw);
 	}
 
