@@ -450,6 +450,7 @@ struct quark_event {
 #define QUARK_EV_SHM			(1 << 11)
 #define QUARK_EV_TTY			(1 << 12)
 	u64				 events;
+	u64				 time;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
 	struct quark_packet		*packet;
