@@ -1110,6 +1110,11 @@ t_tty(const struct test *t, struct quark_queue_attr *qa)
 	/* child */
 	if (pid == 0) {
 		fputs(data, stdout);
+		fflush(stdout);
+		fputs(data, stdout);
+		fflush(stdout);
+		fputs(data, stdout);
+		fflush(stdout);
 		exit(0);
 	}
 
@@ -1126,8 +1131,12 @@ t_tty(const struct test *t, struct quark_queue_attr *qa)
 	qtty = qev->tty;
 	assert(qtty->cols == winsize.ws_col);
 	assert(qtty->rows == winsize.ws_row);
+	assert(qtty->total_len == 3 * data_len);
 	assert(qtty->data_len == data_len);
 	assert(!memcmp(qtty->data, data, data_len));
+	assert(!memcmp(qtty->next->data, data, data_len));
+	assert(!memcmp(qtty->next->next->data, data, data_len));
+	assert(qtty->next->next->next == NULL);
 	assert(qtty->truncated == 0);
 
 	quark_queue_close(&qq);
