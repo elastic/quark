@@ -2864,10 +2864,12 @@ sproc_env(struct quark_queue *qq, struct quark_process *qp, int dfd)
 	ret = -1;
 	env = NULL;
 
+	if (qp->pid == 2 || qp->proc_ppid == 2)
+		return (-1);
 	if (qq->max_env == 0)
-		return (0);
+		return (-1);
 	if ((fd = openat(dfd, "environ", O_RDONLY)) == -1) {
-		qwarn("open environ");
+		qwarn("open environ pid %d", qp->pid);
 		return (-1);
 	}
 	buf = load_file_nostat(fd, &buf_len);
