@@ -376,17 +376,19 @@ struct raw_shm {
 };
 
 struct quark_tty {
-	u16	major;
-	u16	minor;
-	u16	cols;
-	u16	rows;
-	u32	cflag;
-	u32	iflag;
-	u32	lflag;
-	u32	oflag;
-	size_t	truncated;	/* how many bytes were truncated (lost) */
-	size_t	data_len;
-	char	data[];
+	struct quark_tty	*next;
+	size_t			 total_len;	/* total bytes in the agg chain: next */
+	u16			 major;
+	u16			 minor;
+	u16			 cols;
+	u16			 rows;
+	u32			 cflag;
+	u32			 iflag;
+	u32			 lflag;
+	u32			 oflag;
+	size_t			 truncated;	/* how many bytes were truncated (lost) */
+	size_t			 data_len;
+	char			 data[];
 };
 
 struct raw_tty {

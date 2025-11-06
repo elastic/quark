@@ -392,6 +392,16 @@ event_storage_clear(struct quark_queue *qq)
 		free(qq->event_storage.shm);
 		qq->event_storage.shm = NULL;
 	}
+
+	if (qq->event_storage.tty != NULL) {
+		struct quark_tty *current;
+		struct quark_tty *next = qq->event_storage.tty->next;
+		while (next != NULL) {
+			current = next;
+			next = current->next;
+			free(current);
+		}
+	}
 	free(qq->event_storage.tty);
 	qq->event_storage.tty = NULL;
 }
@@ -3797,7 +3807,7 @@ quark_sysinfo_init(struct quark_sysinfo *si)
 
 /*
  * Aggregation is a relationship between a parent event and a child event. In a
- * fork+exec cenario, fork is the parent, exec is the child.
+ * fork+exec scenario, fork is the parent, exec is the child.
  * Aggregation can be confiured as AGG_SINGLE or AGG_MULTI.
  *
  * AGG_SINGLE aggregate a single child: fork+exec+exec would result
@@ -3828,6 +3838,7 @@ const u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
 	[RAW_COMM][RAW_EXIT_THREAD]			= AGG_SINGLE,
 
 	[RAW_FILE][RAW_FILE]				= AGG_CUSTOM,
+	[RAW_TTY][RAW_TTY]				= AGG_CUSTOM,
 };
 
 /* used if qq->flags & QQ_MIN_AGG */
@@ -4410,6 +4421,31 @@ can_aggregate_file(struct quark_queue *qq, struct raw_event *p, struct raw_event
 }
 
 static int
+can_aggregate_tty(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
+{
+	struct quark_tty	*pt, *ct;
+
+	pt = p->tty.quark_tty;
+	ct = c->tty.quark_tty;
+
+	if (pt->major != ct->major)
+		return (0);
+
+	if (pt->minor != ct->minor)
+		return (0);
+
+	if (pt->truncated || ct->truncated)
+		return (0);
+
+	if ((pt->total_len + ct->data_len) < 4096) {
+		pt->total_len += ct->data_len;
+		return (1);
+	}
+
+	return (0);
+}
+
+static int
 can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 {
 	int			 kind;
@@ -4441,6 +4477,8 @@ can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 	case AGG_CUSTOM:
 		if (p->type == RAW_FILE && c->type == RAW_FILE)
 			return (can_aggregate_file(qq, p, c));
+		else if (p->type == RAW_TTY && c->type == RAW_TTY)
+			return (can_aggregate_tty(qq, p, c));
 		return (0);
 	default:
 		qwarnx("unhandle agg kind %d", kind);
@@ -4701,6 +4739,7 @@ static const struct quark_event *
 raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
+	struct raw_event	*agg, *next;
 
 	if (raw->tty.quark_tty == NULL) {
 		qwarnx("quark_tty is null");
@@ -4713,7 +4752,17 @@ raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 	qev->events = QUARK_EV_TTY;
 	qev->process = quark_process_lookup(qq, raw->pid);
 
-	/* TODO: TTY aggregation */
+	/* Link raw (our head) to the first chunk in tha agg queue */
+	next = TAILQ_FIRST(&raw->agg_queue);
+	if (next != NULL)
+		raw->tty.quark_tty->next = next->tty.quark_tty;
+
+	/* Link the remaining chunks */
+	TAILQ_FOREACH_SAFE(agg, &raw->agg_queue, agg_entry, next) {
+		if (next != NULL)
+			agg->tty.quark_tty->next = next->tty.quark_tty;
+		agg->tty.quark_tty = NULL;
+	}
 
 	/* Steal it */
 	qev->tty = raw->tty.quark_tty;

@@ -735,6 +735,8 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		qtty->oflag = tty->tty.termios.c_oflag;
 		qtty->truncated = tty->tty_out_truncated;
 
+		qtty->next = NULL;
+		qtty->total_len = data_len;
 		qtty->data_len = data_len;
 		memcpy(qtty->data, data, data_len);
 		qtty->data[data_len] = 0;
