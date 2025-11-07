@@ -451,9 +451,9 @@ quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
-quark-kube-talker: quark-kube-talker.go go.mod
+quark-kube-talker: $(shell find go/)
 	$(call msg,GO,$@)
-	$(Q)$(GO) build -o $@ quark-kube-talker.go $(QREDIR)
+	$(Q)$(GO) build -C go/$@ -o $(PWD)/$@ $(QREDIR)
 
 man-embedder: man-embedder.c
 	$(call msg,CC,$@)
