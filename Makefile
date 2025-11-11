@@ -182,6 +182,10 @@ ifndef SYSLIB
 BPFPROG_DEPS+= $(LIBBPF_DEPS) $(EEBPF_FILES) include
 endif
 
+# Go files
+GO_FILES:= $(shell find go/)
+QUARK_GO_DEPS:= $(LIBQUARK_DEPS) $(LIBQUARK_STATIC_BIG) $(GO_FILES)
+
 # SVGS
 SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
 
@@ -196,8 +200,9 @@ ALL_TARGETS+=quark-mon
 ALL_TARGETS+=quark-btf
 ALL_TARGETS+=quark-test
 ALL_TARGETS+=hanson-bench
-ifndef NO_KUBE_TALKER
+ifndef NO_GO
 ALL_TARGETS+=quark-kube-talker
+ALL_TARGETS+=quark-go-test
 endif
 
 all: $(ALL_TARGETS)
@@ -299,7 +304,7 @@ CENTOS7_RUN_ARGS=$(QDOCKER)				\
 # continue with the rest of the build on centos7.
 CENTOS7_BORROW_TARGETS+=bpf_probes.o
 CENTOS7_BORROW_TARGETS+=bpf_probes_skel.h
-ifndef NO_KUBE_TALKER
+ifndef NO_GO
 CENTOS7_BORROW_TARGETS+=quark-kube-talker
 endif
 
@@ -370,6 +375,9 @@ scan:
 
 test: quark-test
 	$(SUDO) ./quark-test
+
+test-go: quark-go-test
+	$(SUDO) ./quark-go-test -test.v
 
 test-kernel: initramfs.gz
 	./ktest-all.sh
@@ -459,9 +467,14 @@ quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
-quark-kube-talker: $(shell find go/)
+# kube-talker does not use quark-go
+quark-kube-talker: $(GO_FILES)
 	$(call msg,GO,$@)
 	$(Q)$(GO) build -C go/$@ -o $(PWD)/$@ $(QREDIR)
+
+quark-go-test: $(QUARK_GO_DEPS)
+	$(call msg,GO,$@)
+	$(Q)cd go/quark && go test -c -o ../../quark-go-test
 
 man-embedder: man-embedder.c
 	$(call msg,CC,$@)
@@ -541,6 +554,7 @@ clean:
 		quark-test		\
 		quark-test-static	\
 		quark-kube-talker	\
+		quark-go-test		\
 		true			\
 		btf_prog_skel.h		\
 		init
@@ -577,6 +591,7 @@ clean-docs:
 	eebpf-sync		\
 	scan			\
 	test			\
+	test-go			\
 	test-kernel		\
 	test-valgrind
 
@@ -593,6 +608,7 @@ clean-docs:
 	initramfs.gz		\
 	scan			\
 	test			\
+	test-go			\
 	test-kernel		\
 	test-valgrind
 

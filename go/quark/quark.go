@@ -32,9 +32,12 @@ import "C"
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"net/netip"
 	"strings"
 	"syscall"
 	"unsafe"
+	//	"encoding/binary"
 )
 
 // Proc carries data on the state of the process. Only vaid if `Valid` is set.
@@ -84,11 +87,93 @@ type Process struct {
 	Cgroup   string   // QUARK_F_CGROUP
 }
 
+// Socket represents a connection between two endpoints
+type Socket struct {
+	Local           netip.AddrPort
+	Remote          netip.AddrPort
+	PidOrigin       uint32
+	PidLastUse      uint32
+	EstablishedTime uint64
+	CloseTime       uint64
+	BytesSent       uint64
+	BytesReceived   uint64
+}
+
+type Packet struct {
+	Direction int
+	Origin    int
+	OrigLen   int
+}
+
+type File struct {
+	Path      string
+	OldPath   string
+	SymTarget string
+	Inode     uint64
+	Atime     uint64
+	Mtime     uint64
+	Ctime     uint64
+	Size      uint64
+	Mode      uint32
+	Uid       uint32
+	Gid       uint32
+	OpMask    uint32
+}
+
+type Ptrace struct {
+	ChildPid uint32
+	Request  int64
+	Addr     uint64
+	Data     uint64
+}
+
+type ModuleLoad struct {
+	Name       string
+	Version    string
+	SrcVersion string
+}
+
+type ShmGet struct {
+	Key    int64
+	Size   uint64
+	Shmflg int64
+}
+
+type MemFd struct {
+	Flags uint32
+	Path  string
+	Kind  int
+}
+
+type ShmOpen struct {
+	Path string
+}
+
+type Tty struct {
+	Major     uint16
+	Minor     uint16
+	Cols      uint16
+	Rows      uint16
+	Cflag     uint32
+	Iflag     uint32
+	Lflag     uint32
+	Oflag     uint32
+	Truncated uint64
+	Data      [][]byte
+}
+
 // Events is a bitmask of QUARK_EV_* and expresses what triggered this
 // event, Process is the context of the Event.
 type Event struct {
-	Events  uint64
-	Process Process
+	Events     uint64
+	Process    Process
+	Socket     *Socket
+	Packet     *Packet
+	File       *File
+	Ptrace     *Ptrace
+	ModuleLoad *ModuleLoad
+	Shm        *any // ShmGet, MemFd or ShmOpen
+	Tty        *Tty
 }
 
 // Queue holds the state of a quark instance.
@@ -137,6 +222,25 @@ const (
 	QUARK_ELT_CONTAINER = int(C.QUARK_ELT_CONTAINER)
 	QUARK_ELT_TERM      = int(C.QUARK_ELT_TERM)
 	QUARK_ELT_CONSOLE   = int(C.QUARK_ELT_CONSOLE)
+
+	// File.OpMask
+	QUARK_FILE_OP_CREATE = uint32(C.QUARK_FILE_OP_CREATE)
+	QUARK_FILE_OP_MODIFY = uint32(C.QUARK_FILE_OP_MODIFY)
+	QUARK_FILE_OP_REMOVE = uint32(C.QUARK_FILE_OP_REMOVE)
+	QUARK_FILE_OP_MOVE   = uint32(C.QUARK_FILE_OP_MOVE)
+
+	// MemFd.Kind
+	QUARK_SHM_MEMFD_CREATE = int(C.QUARK_SHM_MEMFD_CREATE)
+	QUARK_SHM_MEMFD_OPEN   = int(C.QUARK_SHM_MEMFD_OPEN)
+
+	// Packet.Direction
+	QUARK_PACKET_DIR_INVALID = int(C.QUARK_PACKET_DIR_INVALID)
+	QUARK_PACKET_DIR_EGRESS  = int(C.QUARK_PACKET_DIR_EGRESS)
+	QUARK_PACKET_DIR_INGRESS = int(C.QUARK_PACKET_DIR_INGRESS)
+
+	// Packet.Origin
+	QUARK_PACKET_ORIGIN_INVALID = int(C.QUARK_PACKET_ORIGIN_INVALID)
+	QUARK_PACKET_ORIGIN_DNS     = int(C.QUARK_PACKET_ORIGIN_DNS)
 )
 
 // QueueAttr defines the attributes for the Quark queue.
@@ -224,15 +328,44 @@ func (queue *Queue) Close() {
 }
 
 func (queue *Queue) GetEvent() (Event, bool) {
+	var event Event
+
 	cev := C.quark_queue_get_event(queue.quarkQueue)
 	if cev == nil || cev.process == nil {
-		return Event{}, false
+		return event, false
 	}
 
-	return Event{
-		Events:  uint64(cev.events),
-		Process: processToGo(cev.process),
-	}, true
+	event.Events = uint64(cev.events)
+	event.Process = processFromC(cev.process)
+	if cev.socket != nil {
+		socket := socketFromC(cev.socket)
+		event.Socket = &socket
+	}
+	if cev.file != nil {
+		file := fileFromC(cev.file)
+		event.File = &file
+	}
+	if event.Events&QUARK_EV_PTRACE != 0 {
+		ptrace := ptraceFromC(&cev.ptrace)
+		event.Ptrace = &ptrace
+	}
+	if cev.module_load != nil {
+		ml := moduleLoadFromC(cev.module_load)
+		event.ModuleLoad = &ml
+	}
+	if cev.shm != nil {
+		shm, err := shmFromC(cev.shm)
+		if err != nil {
+			return event, false
+		}
+		event.Shm = &shm
+	}
+	if cev.tty != nil {
+		tty := ttyFromC(cev.tty)
+		event.Tty = &tty
+	}
+
+	return event, true
 }
 
 // Lookup looks up for the Process associated with PID in quark's internal cache.
@@ -243,7 +376,7 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 		return Process{}, false
 	}
 
-	return processToGo(process), true
+	return processFromC(process), true
 }
 
 // Block blocks until there are events or an undefined timeout
@@ -265,7 +398,7 @@ func (queue *Queue) Snapshot() []Process {
 
 	C.quark_process_iter_init(&iter, queue.quarkQueue)
 	for qp = C.quark_process_iter_next(&iter); qp != nil; qp = C.quark_process_iter_next(&iter) {
-		processes = append(processes, processToGo(qp))
+		processes = append(processes, processFromC(qp))
 	}
 
 	return processes
@@ -293,8 +426,8 @@ func SetVerbose(level int) {
 	C.quark_verbose = C.int(level)
 }
 
-// processToGo converts the C process structure to a go process.
-func processToGo(cProcess *C.struct_quark_process) Process {
+// processFromC converts the C process structure to a go process.
+func processFromC(cProcess *C.struct_quark_process) Process {
 	var process Process
 
 	if cProcess == nil {
@@ -357,4 +490,143 @@ func processToGo(cProcess *C.struct_quark_process) Process {
 	}
 
 	return process
+}
+
+func addrPortFromQuarkSockaddr(csa *C.struct_quark_sockaddr) netip.AddrPort {
+	var addr netip.Addr
+
+	if csa.af == C.AF_INET {
+		var addr4 [4]byte
+
+		addr4[0] = csa.u[0]
+		addr4[1] = csa.u[1]
+		addr4[2] = csa.u[2]
+		addr4[3] = csa.u[3]
+		addr = netip.AddrFrom4(addr4)
+	} else if csa.af == C.AF_INET6 {
+		addr = netip.AddrFrom16(csa.u)
+	}
+
+	port := uint16(csa.port)>>8 | uint16(csa.port)<<8
+
+	return netip.AddrPortFrom(addr, port)
+}
+
+func socketFromC(cSocket *C.struct_quark_socket) Socket {
+	var socket Socket
+
+	socket.Local = addrPortFromQuarkSockaddr(&cSocket.local)
+	socket.Remote = addrPortFromQuarkSockaddr(&cSocket.remote)
+	socket.PidOrigin = uint32(cSocket.pid_origin)
+	socket.PidLastUse = uint32(cSocket.pid_last_use)
+	socket.EstablishedTime = uint64(cSocket.established_time)
+	socket.CloseTime = uint64(cSocket.close_time)
+	socket.BytesSent = uint64(cSocket.bytes_sent)
+	socket.BytesReceived = uint64(cSocket.bytes_received)
+
+	return socket
+}
+
+func packetFromC(cPacket *C.struct_quark_packet) Packet {
+	var packet Packet
+
+	packet.Direction = int(cPacket.direction)
+	packet.Origin = int(cPacket.origin)
+	packet.OrigLen = int(cPacket.orig_len)
+
+	return packet
+}
+
+func fileFromC(cFile *C.struct_quark_file) File {
+	var file File
+
+	file.Path = C.GoString(cFile.path)
+	file.OldPath = C.GoString(cFile.old_path)
+	file.SymTarget = C.GoString(cFile.sym_target)
+	file.Inode = uint64(cFile.inode)
+	file.Atime = uint64(cFile.atime)
+	file.Mtime = uint64(cFile.mtime)
+	file.Ctime = uint64(cFile.ctime)
+	file.Size = uint64(cFile.size)
+	file.Mode = uint32(cFile.mode)
+	file.Uid = uint32(cFile.uid)
+	file.Gid = uint32(cFile.gid)
+	file.OpMask = uint32(cFile.op_mask)
+
+	return file
+}
+
+func ptraceFromC(cPtrace *C.struct_quark_ptrace) Ptrace {
+	var ptrace Ptrace
+
+	ptrace.ChildPid = uint32(cPtrace.child_pid)
+	ptrace.Request = int64(cPtrace.request)
+	ptrace.Addr = uint64(cPtrace.addr)
+	ptrace.Data = uint64(cPtrace.data)
+
+	return ptrace
+}
+
+func moduleLoadFromC(cM *C.struct_quark_module_load) ModuleLoad {
+	var ml ModuleLoad
+
+	ml.Name = C.GoString(cM.name)
+	ml.Version = C.GoString(cM.version)
+	ml.SrcVersion = C.GoString(cM.src_version)
+
+	return ml
+}
+
+func shmFromC(cShm *C.struct_quark_shm) (any, error) {
+	switch cShm.kind {
+	case C.QUARK_SHM_SHMGET:
+		var shmget ShmGet
+
+		shmget.Key = int64(cShm.shmget_key)
+		shmget.Shmflg = int64(cShm.shmget_shmflg)
+		shmget.Size = uint64(cShm.shmget_size)
+
+		return shmget, nil
+	case C.QUARK_SHM_SHM_OPEN:
+		var shmopen ShmOpen
+
+		shmopen.Path = C.GoString(cShm.path)
+
+		return shmopen, nil
+	case C.QUARK_SHM_MEMFD_CREATE:
+		fallthrough
+	case C.QUARK_SHM_MEMFD_OPEN:
+		var memfd MemFd
+
+		memfd.Flags = uint32(cShm.memfd_create_flags)
+		memfd.Kind = int(cShm.kind)
+		memfd.Path = C.GoString(cShm.path)
+
+		return memfd, nil
+	}
+
+	return nil, fmt.Errorf("invalid shm kind")
+}
+
+func ttyFromC(cTty *C.struct_quark_tty) Tty {
+	var tty Tty
+	var t *C.struct_quark_tty
+
+	tty.Major = uint16(cTty.major)
+	tty.Minor = uint16(cTty.minor)
+	tty.Cols = uint16(cTty.cols)
+	tty.Rows = uint16(cTty.rows)
+	tty.Cflag = uint32(cTty.cflag)
+	tty.Iflag = uint32(cTty.iflag)
+	tty.Lflag = uint32(cTty.lflag)
+	tty.Oflag = uint32(cTty.oflag)
+	tty.Truncated = uint64(cTty.truncated)
+
+	for t = cTty; t != nil; t = t.next {
+		data := unsafe.Pointer(uintptr(unsafe.Pointer(t)) + unsafe.Sizeof(*t))
+		chunk := C.GoBytes(data, C.int(t.data_len))
+		tty.Data = append(tty.Data, chunk)
+	}
+
+	return tty
 }

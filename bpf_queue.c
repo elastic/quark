@@ -368,16 +368,16 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		if (net->net.family == EBPF_NETWORK_EVENT_AF_INET) {
 			conn->local.af = AF_INET;
-			memcpy(&conn->local.addr4, net->net.saddr, 4);
+			memcpy(&conn->local.u, net->net.saddr, 4);
 
 			conn->remote.af = AF_INET;
-			memcpy(&conn->remote.addr4, net->net.daddr, 4);
+			memcpy(&conn->remote.u, net->net.daddr, 4);
 		} else if (net->net.family == EBPF_NETWORK_EVENT_AF_INET6) {
 			conn->local.af = AF_INET6;
-			memcpy(conn->local.addr6, net->net.saddr6, 16);
+			memcpy(&conn->local.u, net->net.saddr6, 16);
 
 			conn->remote.af = AF_INET6;
-			memcpy(conn->remote.addr6, net->net.daddr6, 16);
+			memcpy(&conn->remote.u, net->net.daddr6, 16);
 		} else
 			goto bad;
 

@@ -786,7 +786,7 @@ ecs_socket(struct hanson *h, const struct quark_event *qev, int *first)
 	{
 		int	source_first = 1;
 
-		if (inet_ntop(qsk->local.af, &qsk->local.addr6,
+		if (inet_ntop(qsk->local.af, &qsk->local.u,
 		    buf, sizeof(buf)) != NULL) {
 			hanson_add_key_value(h, "address", buf, &source_first);
 			hanson_add_key_value(h, "ip", buf, &source_first);
@@ -800,7 +800,7 @@ ecs_socket(struct hanson *h, const struct quark_event *qev, int *first)
 	{
 		int	destination_first = 1;
 
-		if (inet_ntop(qsk->remote.af, &qsk->remote.addr6,
+		if (inet_ntop(qsk->remote.af, &qsk->remote.u,
 		    buf, sizeof(buf)) != NULL) {
 			hanson_add_key_value(h, "address", buf, &destination_first);
 			hanson_add_key_value(h, "ip", buf, &destination_first);
