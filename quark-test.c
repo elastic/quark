@@ -1287,10 +1287,10 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert((pid_t)qev->socket->pid_origin == child);
 	assert((pid_t)qev->socket->pid_last_use == child);
 	assert(qev->socket->local.af == AF_INET);
-	assert(qev->socket->local.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->local.u.addr4 == htonl(INADDR_LOOPBACK));
 	assert(qev->socket->local.port == bound_port);
 	assert(qev->socket->remote.af == AF_INET);
-	assert(qev->socket->remote.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->remote.u.addr4 == htonl(INADDR_LOOPBACK));
 	assert(qev->socket->remote.port == htons(18888));
 	assert(qev->socket->close_time == 0);
 	assert(qev->socket->bytes_received == 0);
@@ -1307,10 +1307,10 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert((pid_t)qev->socket->pid_origin == child);
 	assert((pid_t)qev->socket->pid_last_use == child);
 	assert(qev->socket->local.af == AF_INET);
-	assert(qev->socket->local.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->local.u.addr4 == htonl(INADDR_LOOPBACK));
 	assert(qev->socket->local.port == bound_port);
 	assert(qev->socket->remote.af == AF_INET);
-	assert(qev->socket->remote.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->remote.u.addr4 == htonl(INADDR_LOOPBACK));
 	assert(qev->socket->remote.port == htons(18888));
 	assert(qev->socket->close_time > 0);
 	assert(qev->socket->bytes_received == 0);

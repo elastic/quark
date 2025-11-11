@@ -1,7 +1,7 @@
 steps:
   - label: "build amd64 in docker"
     key: make_docker
-    command: "make docker NO_KUBE_TALKER=y WITH_BTFHUB=y"
+    command: "make docker NO_GO=y WITH_BTFHUB=y"
     artifact_paths:
       - "initramfs.gz"
     agents:
@@ -11,7 +11,7 @@ steps:
 
   - label: "build amd64 in a centos7 container"
     key: make_centos7
-    command: "make centos7 NO_KUBE_TALKER=y WITH_BTFHUB=y"
+    command: "make centos7 NO_GO=y WITH_BTFHUB=y"
     artifact_paths:
       - "quark-test"
     agents:
@@ -21,7 +21,7 @@ steps:
 
   - label: "build arm64 cross-compiled in docker"
     key: make_docker_cross_arm64
-    command: "make docker-cross-arm64 NO_KUBE_TALKER=y WITH_BTFHUB=y"
+    command: "make docker-cross-arm64 NO_GO=y WITH_BTFHUB=y"
     agents:
       image: family/core-ubuntu-2404
       provider: gcp
@@ -29,7 +29,7 @@ steps:
 
   - label: "build amd64 in an alpine container"
     key: make_alpine
-    command: "make alpine NO_KUBE_TALKER=y WITH_BTFHUB=y"
+    command: "make alpine NO_GO=y WITH_BTFHUB=y"
     agents:
       image: family/core-ubuntu-2404
       provider: gcp
@@ -53,6 +53,16 @@ steps:
       image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-highcpu-8
+      enableNestedVirtualization: true
+
+  - label: "test-go"
+    key: test_go
+    # we trigger a full rebuild to make sure dependencies for go are correct
+    command: "./.buildkite/runtestgo.sh"
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
       enableNestedVirtualization: true
 
   - label: "quark-test on fedora 28 (no bpf)"

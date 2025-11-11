@@ -267,7 +267,7 @@ struct quark_sockaddr {
 	union {
 		u32	addr4;
 		u8	addr6[16];
-	};
+	} u;
 
 	u16	port;
 };

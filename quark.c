@@ -678,12 +678,12 @@ socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
 		return (1);
 
 	cmplen = a->remote.af == AF_INET ? 4 : 16;
-	r = memcmp(&a->remote.addr6, &b->remote.addr6, cmplen);
+	r = memcmp(&a->remote.u, &b->remote.u, cmplen);
 	if (r != 0)
 		return (r);
 
 	cmplen = a->local.af == AF_INET ? 4 : 16;
-	r = memcmp(&a->local.addr6, &b->local.addr6, cmplen);
+	r = memcmp(&a->local.u, &b->local.u, cmplen);
 
 	return (r);
 }
@@ -1176,7 +1176,7 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 		if (!cJSON_IsString(ip))
 			continue;
 		bzero(&qsk, sizeof(qsk));
-		if (inet_pton(AF_INET, ip->valuestring, &qsk.addr4) == 1) {
+		if (inet_pton(AF_INET, ip->valuestring, &qsk.u) == 1) {
 			qsk.af = AF_INET;
 			pod->addr4 = qsk;
 			strlcpy(pod->addr4_a, ip->valuestring, sizeof(pod->addr4_a));
@@ -1184,7 +1184,7 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 			continue;
 		}
 		bzero(&qsk, sizeof(qsk));
-		if (inet_pton(AF_INET6, ip->valuestring, qsk.addr6) == 1) {
+		if (inet_pton(AF_INET6, ip->valuestring, &qsk.u) == 1) {
 			qsk.af = AF_INET6;
 			pod->addr6 = qsk;
 			strlcpy(pod->addr6_a, ip->valuestring, sizeof(pod->addr6_a));
@@ -2119,11 +2119,11 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		if (qsk == NULL)
 			return (-1);
 
-		if (inet_ntop(qsk->local.af, &qsk->local.addr6,
+		if (inet_ntop(qsk->local.af, &qsk->local.u,
 		    local, sizeof(local)) == NULL)
 			strlcpy(local, "bad address", sizeof(local));
 
-		if (inet_ntop(qsk->remote.af, &qsk->remote.addr6,
+		if (inet_ntop(qsk->remote.af, &qsk->remote.u,
 		    remote, sizeof(remote)) == NULL)
 			strlcpy(remote, "bad address", sizeof(remote));
 
@@ -3103,18 +3103,18 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 
 		if (af == AF_INET) {
 			ss->socket.local.af = AF_INET;
-			ss->socket.local.addr4 = local_addr4;
+			ss->socket.local.u.addr4 = local_addr4;
 
 			ss->socket.remote.af = AF_INET;
-			ss->socket.remote.addr4 = remote_addr4;
+			ss->socket.remote.u.addr4 = remote_addr4;
 		}
 
 		if (af == AF_INET6) {
 			ss->socket.local.af = AF_INET6;
-			memcpy(ss->socket.local.addr6, local_addr6, 16);
+			memcpy(ss->socket.local.u.addr6, local_addr6, 16);
 
 			ss->socket.remote.af = AF_INET6;
-			memcpy(ss->socket.remote.addr6, remote_addr6, 16);
+			memcpy(ss->socket.remote.u.addr6, remote_addr6, 16);
 		}
 
 		col = RB_INSERT(sproc_socket_by_inode, by_inode, ss);
