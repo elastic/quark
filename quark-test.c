@@ -65,6 +65,7 @@ enum {
 static int	noforkflag;	/* don't fork on each test */
 static int	bflag;		/* run bpf tests */
 static int	kflag;		/* run kprobe tests */
+static u64	boottime;
 
 static int
 fancy_tty(void)
@@ -156,6 +157,17 @@ spin(void)
 
 	printf("%c\b", ch);
 	fflush(stdout);
+}
+
+static u64
+ns_since_epoch(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
+		err(1, "clock_gettime");
+
+	return boottime + ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
 }
 
 static u32
@@ -628,17 +640,22 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	size_t				 expected_args_len;
 	int				 argc;
 	char				 path[PATH_MAX];
+	u64				 before, after;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
+	before = ns_since_epoch();
 	child = fork_exec_nop_rel(relative);
 	qev = drain_for_pid(&qq, child);
+	after = ns_since_epoch();
 
 	/* check qev.events */
 	assert(qev->events & QUARK_EV_FORK);
 	assert(qev->events & QUARK_EV_EXEC);
 	assert(qev->events & QUARK_EV_EXIT);
+	assert(qev->time >= before);
+	assert(qev->time <= after);
 	/* check qev.process */
 	qp = qev->process;
 	assert(qp != NULL);
@@ -810,14 +827,17 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	struct stat			 st;
 	char				 path[] = "/tmp/quark-test.XXXXXX";
 	int				 fd;
+	u64				 before, after;
 
 	qa->flags |= QQ_FILE;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
+	before = ns_since_epoch();
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
+	after = ns_since_epoch();
 	assert(write(fd, "1", 1) == 1);
 	assert(write(fd, "2", 1) == 1);
 	assert(write(fd, "3", 1) == 1);
@@ -837,6 +857,8 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 
 	qev = drain_for_pid(&qq, getpid());
 	assert(qev->events == QUARK_EV_FILE);
+	assert(qev->time >= before);
+	assert(qev->time <= after);
 	qf = qev->file;
 	assert(qf != NULL);
 	assert(qf->op_mask & QUARK_FILE_OP_CREATE);
@@ -1895,6 +1917,8 @@ main(int argc, char *argv[])
 			usage();
 		}
 	}
+
+	boottime = fetch_boottime();
 
 	if (!bflag && !kflag)
 		bflag = kflag = 1;
