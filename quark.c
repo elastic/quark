@@ -3318,25 +3318,6 @@ done:
 	return (r);
 }
 
-static u64
-fetch_boottime(void)
-{
-	char		*line;
-	const char	*errstr, *needle;
-	u64		 btime;
-
-	needle = "btime ";
-	line = find_line_p("/proc/stat", needle);
-	if (line == NULL)
-		return (0);
-	btime = strtonum(line + strlen(needle), 1, LLONG_MAX, &errstr);
-	free(line);
-	if (errstr != NULL)
-		qwarnx("can't parse btime: %s", errstr);
-
-	return (btime * NS_PER_S);
-}
-
 static int
 quark_passwd_populate(struct passwd_by_uid *by_uid)
 {
