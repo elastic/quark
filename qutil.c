@@ -316,3 +316,22 @@ safe_basename(const char *path)
 
 	return (NULL);
 }
+
+u64
+fetch_boottime(void)
+{
+	char		*line;
+	const char	*errstr, *needle;
+	u64		 btime;
+
+	needle = "btime ";
+	line = find_line_p("/proc/stat", needle);
+	if (line == NULL)
+		return (0);
+	btime = strtonum(line + strlen(needle), 1, LLONG_MAX, &errstr);
+	free(line);
+	if (errstr != NULL)
+		qwarnx("can't parse btime: %s", errstr);
+
+	return (btime * NS_PER_S);
+}
