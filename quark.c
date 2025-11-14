@@ -2343,139 +2343,64 @@ quark_cmdline_iter_next(struct quark_cmdline_iter *qcmdi)
 	return (arg);
 }
 
-static struct quark_event *
-raw_event_process(struct quark_queue *qq, struct raw_event *src)
+static void
+raw_event_process1(struct quark_queue *qq, struct raw_event *src,
+    struct quark_process *qp, u64 *all_events)
 {
-	struct quark_process		*qp;
-	struct quark_event		*dst;
-	struct raw_event		*agg;
-	struct raw_task			*raw_fork, *raw_exit, *raw_task;
-	struct raw_comm			*raw_comm;
-	struct raw_exec			*raw_exec;
-	struct raw_exec_connector	*raw_exec_connector;
-	char				*comm;
-	char				*cwd;
-	char				*args;
-	size_t				 args_len;
-	u64				 events;
+	struct raw_task	*raw_task;
+	char		*comm;
+	char		*filename;
+	char		*args;
+	size_t		 args_len;
 
-	dst = &qq->event_storage;
-	raw_fork = NULL;
-	raw_exit = NULL;
 	raw_task = NULL;
-	raw_comm = NULL;
-	raw_exec = NULL;
-	raw_exec_connector = NULL;
-	comm = NULL;
-	cwd = NULL;
-	args = NULL;
+	comm	 = NULL;
+	filename = NULL;
+	args	 = NULL;
 	args_len = 0;
-
-	/* XXX pass if this is a fork down, so we can evict the old one XXX */
-	qp = process_cache_get(qq, src->pid, 1);
-	if (qp == NULL)
-		return (NULL);
-
-	events = 0;
 
 	switch (src->type) {
 	case RAW_WAKE_UP_NEW_TASK:
-		events |= QUARK_EV_FORK;
-		raw_fork = &src->task;
+		*all_events |= QUARK_EV_FORK;
+		raw_task = &src->task;
+		process_cache_inherit(qq, qp, raw_task->ppid);
 		break;
 	case RAW_EXEC:
-		events |= QUARK_EV_EXEC;
-		raw_exec = &src->exec;
+		*all_events |= QUARK_EV_EXEC;
+		filename = src->exec.filename;
+		src->exec.filename = NULL;
+		if (src->exec.flags & RAW_EXEC_F_EXT) {
+			raw_task = &src->exec.ext.task;
+			args = src->exec.ext.args;
+			args_len = src->exec.ext.args_len;
+			src->exec.ext.args = NULL;
+			src->exec.ext.args_len = 0;
+		}
 		break;
 	case RAW_EXIT_THREAD:
-		events |= QUARK_EV_EXIT;
-		raw_exit = &src->task;
+		*all_events |= QUARK_EV_EXIT;
+		raw_task = &src->task;
+		qp->flags |= QUARK_F_EXIT;
+		qp->exit_code = raw_task->exit_code;
+		if (src->task.exit_time_event)
+			qp->exit_time_event = quark.boottime + raw_task->exit_time_event;
 		break;
 	case RAW_COMM:
-		events |= QUARK_EV_SETPROCTITLE;
-		raw_comm = &src->comm;
+		*all_events |= QUARK_EV_SETPROCTITLE;
+		comm = src->comm.comm;
 		break;
 	case RAW_EXEC_CONNECTOR:
-		events |= QUARK_EV_EXEC;
-		raw_exec_connector = &src->exec_connector;
+		*all_events |= QUARK_EV_EXEC;
+		args = src->exec_connector.args;
+		args_len = src->exec_connector.args_len;
+		src->exec_connector.args = NULL;
+		src->exec_connector.args_len = 0;
 		break;
 	default:
-		return (NULL);
-		break;		/* NOTREACHED */
+		qwarnx("unhandled raw_event type %d", src->type);
+		return;
 	};
 
-	TAILQ_FOREACH(agg, &src->agg_queue, agg_entry) {
-		switch (agg->type) {
-		case RAW_WAKE_UP_NEW_TASK:
-			raw_fork = &agg->task;
-			events |= QUARK_EV_FORK;
-			break;
-		case RAW_EXEC:
-			events |= QUARK_EV_EXEC;
-			raw_exec = &agg->exec;
-			break;
-		case RAW_EXIT_THREAD:
-			events |= QUARK_EV_EXIT;
-			raw_exit = &agg->task;
-			break;
-		case RAW_COMM:
-			events |= QUARK_EV_SETPROCTITLE;
-			raw_comm = &agg->comm;
-			break;
-		case RAW_EXEC_CONNECTOR:
-			events |= QUARK_EV_EXEC;
-			raw_exec_connector = &agg->exec_connector;
-			break;
-		default:
-			break;
-		}
-	}
-
-	/* QUARK_F_PROC */
-	if (raw_fork != NULL) {
-		process_cache_inherit(qq, qp, raw_fork->ppid);
-		raw_task = raw_fork;
-		free(cwd);
-		cwd = raw_task->cwd;
-		raw_task->cwd = NULL;
-	}
-	if (raw_exit != NULL) {
-		qp->flags |= QUARK_F_EXIT;
-
-		qp->exit_code = raw_exit->exit_code;
-		if (raw_exit->exit_time_event)
-			qp->exit_time_event = quark.boottime + raw_exit->exit_time_event;
-		raw_task = raw_exit;
-		/* cwd is invalid, don't collect */
-		/* NOTE: maybe there are more things we _don't_ want from exit */
-	}
-	if (raw_exec != NULL) {
-		qp->flags |= QUARK_F_FILENAME;
-
-		free(qp->filename);
-		qp->filename = raw_exec->filename;
-		raw_exec->filename = NULL;
-		if (raw_exec->flags & RAW_EXEC_F_EXT) {
-			free(args);
-			args = raw_exec->ext.args;
-			raw_exec->ext.args = NULL;
-			args_len = raw_exec->ext.args_len;
-			raw_task = &raw_exec->ext.task;
-			free(cwd);
-			cwd = raw_task->cwd;
-			raw_task->cwd = NULL;
-		}
-	}
-	if (raw_exec_connector != NULL) {
-		free(args);
-		args = raw_exec_connector->args;
-		raw_exec_connector->args = NULL;
-		args_len = raw_exec_connector->args_len;
-		raw_task = &raw_exec_connector->task;
-		free(cwd);
-		cwd = raw_task->cwd;
-		raw_task->cwd = NULL;
-	}
 	if (raw_task != NULL) {
 		qp->flags |= QUARK_F_PROC;
 
@@ -2510,16 +2435,13 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 		qp->proc_mnt_inonum = raw_task->mnt_inonum;
 		qp->proc_net_inonum = raw_task->net_inonum;
 
-		/* Don't set cwd as it's not valid on exit */
-		comm = raw_task->comm;
-
 		if (raw_task->cgroup != NULL) {
 			qp->flags |= QUARK_F_CGROUP;
 			free(qp->cgroup);
 			qp->cgroup = raw_task->cgroup;
 			raw_task->cgroup = NULL;
-		}
 
+		}
 		if (raw_task->env != NULL) {
 			qp->flags |= QUARK_F_ENV;
 			free(qp->env);
@@ -2528,16 +2450,35 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 			raw_task->env = NULL;
 			raw_task->env_len = 0;
 		}
+		/*
+		 * Fetch cwd only if not an exit, an exit doesn't have a cwd.
+		 */
+		if (src->type != RAW_EXIT_THREAD && raw_task->cwd != NULL) {
+			qp->flags |= QUARK_F_CWD;
+
+			free(qp->cwd);
+			qp->cwd = raw_task->cwd;
+			raw_task->cwd = NULL;
+		}
 
 		/* Depends on QUARK_F_PROC, idempotent */
 		process_entity_id(qp);
+
+		comm = raw_task->comm;
 	}
-	if (raw_comm != NULL)
-		comm = raw_comm->comm; /* raw_comm always overrides */
-	/*
-	 * Field pointer checking, stuff the block above sets so we save some
-	 * code.
-	 */
+	if (comm != NULL) {
+		qp->flags |= QUARK_F_COMM;
+
+		strlcpy(qp->comm, comm, sizeof(qp->comm));
+		comm = NULL;
+	}
+	if (filename != NULL) {
+		qp->flags |= QUARK_F_FILENAME;
+
+		free(qp->filename);
+		qp->filename = filename;
+		filename = NULL;
+	}
 	if (args != NULL) {
 		qp->flags |= QUARK_F_CMDLINE;
 
@@ -2549,35 +2490,43 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 		args = NULL;
 		args_len = 0;
 	}
-	if (comm != NULL) {
-		qp->flags |= QUARK_F_COMM;
-
-		strlcpy(qp->comm, comm, sizeof(qp->comm));
-	}
-	if (cwd != NULL) {
-		qp->flags |= QUARK_F_CWD;
-
-		free(qp->cwd);
-		qp->cwd = cwd;
-		cwd = NULL;
-	}
-
-	if (qp->flags == 0)
-		qwarnx("no flags");
-
-	if (events & (QUARK_EV_FORK | QUARK_EV_EXEC)) {
+	if (src->type == RAW_WAKE_UP_NEW_TASK ||
+	    src->type == RAW_EXEC ||
+	    src->type == RAW_EXEC_CONNECTOR) {
 		if (entry_leader_compute(qq, qp) == -1)
 			qwarnx("unknown entry_leader for pid %d", qp->pid);
 	}
-
 	/*
 	 * On the very unlikely case that pids get re-used, we might
 	 * see an old qp for a new process, which could prompt us in
 	 * trying to remove it twice. In other words, gc_time guards
 	 * presence in the TAILQ.
 	 */
-	if (raw_exit != NULL)
+	if (src->type == RAW_EXIT_THREAD)
 		gc_mark(qq, &qp->gc, GC_PROCESS);
+}
+
+static struct quark_event *
+raw_event_process(struct quark_queue *qq, struct raw_event *src)
+{
+	struct quark_process	*qp;
+	struct quark_event	*dst;
+	struct raw_event	*agg;
+	u64			 events;
+
+	dst = &qq->event_storage;
+	events = 0;
+
+	/* XXX pass if this is a fork down, so we can evict the old one XXX */
+	if ((qp = process_cache_get(qq, src->pid, 1)) == NULL)
+		return (NULL);
+
+	raw_event_process1(qq, src, qp, &events);
+
+	TAILQ_FOREACH(agg, &src->agg_queue, agg_entry) {
+		raw_event_process1(qq, agg, qp, &events);
+	}
+
 	dst->events = events;
 	dst->process = qp;
 
