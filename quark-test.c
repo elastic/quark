@@ -159,6 +159,24 @@ spin(void)
 	fflush(stdout);
 }
 
+static void
+hide_cursor(void)
+{
+	if (!fancy_tty())
+		return;
+	printf("\e[?25l");
+	fflush(stdout);
+}
+
+static void
+show_cursor(void)
+{
+	if (!fancy_tty())
+		return;
+	printf("\e[?25h");
+	fflush(stdout);
+}
+
 static u64
 ns_since_epoch(void)
 {
@@ -1755,6 +1773,7 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 	/*
 	 * Drain the pipe until EOF, meaning the child exited
 	 */
+	hide_cursor();
 	for (;;) {
 		fd_set		rfds;
 		struct timeval	tv;
@@ -1792,6 +1811,7 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 		if (feof(child_stream))
 			errx(1, "fwrite got EOF");
 	}
+	show_cursor();
 
 	/*
 	 * We only get here when we get an EOF from the child pipe, so it
@@ -1876,11 +1896,19 @@ run_tests(int argc, char *argv[])
 	return (failed);
 }
 
+static void
+sigint_handler(int sig)
+{
+	show_cursor();
+	raise(sig);
+}
+
 int
 main(int argc, char *argv[])
 {
-	int		  ch, failed, x;
-	struct test	 *t;
+	int			 ch, failed, x;
+	struct test		*t;
+	struct sigaction	 sigact;
 
 	while ((ch = getopt(argc, argv, "1bhklvVx:")) != -1) {
 		switch (ch) {
@@ -1925,6 +1953,12 @@ main(int argc, char *argv[])
 
 	argc -= optind;
 	argv += optind;
+
+	bzero(&sigact, sizeof(sigact));
+	sigact.sa_flags = SA_RESTART | SA_RESETHAND;
+	sigact.sa_handler = &sigint_handler;
+	if (sigaction(SIGINT, &sigact, NULL) == -1)
+		warn("sigaction");
 
 	failed = run_tests(argc, argv);
 
