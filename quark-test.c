@@ -654,6 +654,34 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_os_release(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_sysinfo	*si;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	si = &qq.sysinfo;
+
+	assert(si->os_name != NULL);
+
+	if (getenv("QUARK_INITRAMFS") != NULL) {
+		assert(!strcmp(si->os_name, "quark kernel testing"));
+		assert(!strcmp(si->os_version, "1.23.4 iota"));
+		assert(!strcmp(si->os_release_type, "testing"));
+		assert(!strcmp(si->os_id, "quark"));
+		assert(!strcmp(si->os_version_id, "1.23.4"));
+		assert(!strcmp(si->os_version_codename, "iota"));
+		assert(!strcmp(si->os_pretty_name, "Quark kernel testing initramfs"));
+	}
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
 fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 {
 	struct quark_queue		 qq;
@@ -1659,6 +1687,7 @@ t_hanson_escape(const struct test *t, struct quark_queue_attr *qa)
 #define S(_x)		#_x
 struct test all_tests[] = {
 	T(t_probe),
+	T(t_os_release),
 	T(t_fork_exec_exit),
 	T_EBPF(t_fork_exec_exit_rel),
 	T_EBPF(t_id_change),
