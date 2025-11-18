@@ -278,6 +278,10 @@ int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
     event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
     ebpf_pid_info__fill(&event->pids, task);
+    ebpf_cred_info__fill(&event->creds, task);
+    ebpf_ctty__fill(&event->ctty, task);
+    ebpf_comm__fill(event->comm, sizeof(event->comm), task);
+    ebpf_ns__fill(&event->ns, task);
 
     bpf_ringbuf_submit(event, 0);
 
@@ -521,6 +525,10 @@ static int commit_creds__enter(struct cred *new)
         event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
         ebpf_pid_info__fill(&event->pids, task);
+        ebpf_cred_info__fill(&event->creds, task);
+        ebpf_ctty__fill(&event->ctty, task);
+        ebpf_comm__fill(event->comm, sizeof(event->comm), task);
+        ebpf_ns__fill(&event->ns, task);
 
         // The legacy kprobe/tracefs implementation reports the gid even if
         // this is a UID change and vice-versa, so we have new_[r,e]gid fields
@@ -547,6 +555,10 @@ static int commit_creds__enter(struct cred *new)
         event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
         ebpf_pid_info__fill(&event->pids, task);
+        ebpf_cred_info__fill(&event->creds, task);
+        ebpf_ctty__fill(&event->ctty, task);
+        ebpf_comm__fill(event->comm, sizeof(event->comm), task);
+        ebpf_ns__fill(&event->ns, task);
 
         event->new_rgid = BPF_CORE_READ(new, gid.val);
         event->new_egid = BPF_CORE_READ(new, egid.val);

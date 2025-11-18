@@ -192,6 +192,7 @@ enum raw_types {
 	RAW_EXEC,
 	RAW_WAKE_UP_NEW_TASK,
 	RAW_EXIT_THREAD,
+	RAW_ID_CHANGE,
 	RAW_COMM,
 	RAW_EXEC_CONNECTOR,
 	RAW_SOCK_CONN,
@@ -237,6 +238,7 @@ struct raw_task {
 	char	 comm[16];
 	char	*env;
 	size_t	 env_len;
+	u32	 id_change;
 };
 
 struct raw_exec {
@@ -440,16 +442,17 @@ struct quark_event {
 #define QUARK_EV_FORK			(1 << 0)
 #define QUARK_EV_EXEC			(1 << 1)
 #define QUARK_EV_EXIT			(1 << 2)
-#define QUARK_EV_SETPROCTITLE		(1 << 3)
-#define QUARK_EV_SOCK_CONN_ESTABLISHED	(1 << 4)
-#define QUARK_EV_SOCK_CONN_CLOSED	(1 << 5)
-#define QUARK_EV_PACKET			(1 << 6)
-#define QUARK_EV_BYPASS			(1 << 7)
-#define QUARK_EV_FILE			(1 << 8)
-#define QUARK_EV_PTRACE			(1 << 9)
-#define QUARK_EV_MODULE_LOAD		(1 << 10)
-#define QUARK_EV_SHM			(1 << 11)
-#define QUARK_EV_TTY			(1 << 12)
+#define QUARK_EV_ID_CHANGE		(1 << 3)
+#define QUARK_EV_SETPROCTITLE		(1 << 4)
+#define QUARK_EV_SOCK_CONN_ESTABLISHED	(1 << 5)
+#define QUARK_EV_SOCK_CONN_CLOSED	(1 << 6)
+#define QUARK_EV_PACKET			(1 << 7)
+#define QUARK_EV_BYPASS			(1 << 8)
+#define QUARK_EV_FILE			(1 << 9)
+#define QUARK_EV_PTRACE			(1 << 10)
+#define QUARK_EV_MODULE_LOAD		(1 << 11)
+#define QUARK_EV_SHM			(1 << 12)
+#define QUARK_EV_TTY			(1 << 13)
 	u64				 events;
 	u64				 time;
 	const struct quark_process	*process;
@@ -461,6 +464,10 @@ struct quark_event {
 	struct quark_module_load	*module_load;
 	struct quark_shm		*shm;
 	struct quark_tty		*tty;
+#define QUARK_ID_CHANGE_SETSID		(1 << 0)
+#define QUARK_ID_CHANGE_SETUID		(1 << 1)
+#define QUARK_ID_CHANGE_SETGID		(1 << 2)
+	u32				 id_change;
 };
 
 /*
