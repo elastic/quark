@@ -545,7 +545,7 @@ clean-all: clean
 	$(Q)rm -f initramfs.gz
 	$(Q)make -C $(LIBBPF_SRC) clean NO_PKG_CONFIG=y
 	$(Q)make -C $(ELFTOOLCHAIN_SRC)/libelf clean
-	$(Q)make -C $(ZLIB_SRC) clean || true
+	$(Q)test -f $(ZLIB_SRC)/Makefile && make -C $(ZLIB_SRC) clean || true
 	$(Q)rm -f $(ZLIB_SRC)/{Makefile,zconf.h,configure.log}
 
 clean-docs:
