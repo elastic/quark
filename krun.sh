@@ -22,7 +22,7 @@ function qemu {
 	case "$(file -b "$kernel" | awk '{print $3}')" in
 	x86)
 		kvm=""
-		if grep -qw vmx /proc/cpuinfo && [ -e /dev/kvm ]; then
+		if grep -qwE 'vmx|svm' /proc/cpuinfo && [ -e /dev/kvm ]; then
 			kvm="-enable-kvm"
 		fi
 		qemu-system-x86_64						\
