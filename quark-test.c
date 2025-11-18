@@ -349,7 +349,7 @@ usage(void)
 }
 
 static pid_t
-fork_exec_nop_rel(int relative)
+fork_exec_nop1(int relative, uid_t id)
 {
 	pid_t		child;
 	int		status;
@@ -380,7 +380,14 @@ fork_exec_nop_rel(int relative)
 
 		if (setenv("IM_A_QUARK_TEST_CHILD", "OHYES", 1) == -1)
 			err(1, "setenv");
-
+		if (id != 0) {
+			if (setresgid(id, id, id) == -1)
+				err(1, "setresgid");
+			if (setresuid(id, id, id) == -1)
+				err(1, "setresuid");
+			if (setsid() == -1)
+				err(1, "setsid");
+		}
 		if (!relative)
 			return (execv(true_path, argv));
 
@@ -406,7 +413,7 @@ fork_exec_nop_rel(int relative)
 static pid_t
 fork_exec_nop(void)
 {
-	return (fork_exec_nop_rel(0));
+	return (fork_exec_nop1(0, 0));
 }
 
 static int
@@ -664,7 +671,7 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 		err(1, "quark_queue_open");
 
 	before = ns_since_epoch();
-	child = fork_exec_nop_rel(relative);
+	child = fork_exec_nop1(relative, 0);
 	qev = drain_for_pid(&qq, child);
 	after = ns_since_epoch();
 
@@ -803,6 +810,44 @@ static int
 t_fork_exec_exit_rel(const struct test *t, struct quark_queue_attr *qa)
 {
 	return (fork_exec_exit(t, qa, 1));
+}
+
+static int
+t_id_change(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+	uid_t				 id;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	id = 4242;
+	child = fork_exec_nop1(0, id);
+	qev = drain_for_pid(&qq, child);
+
+	/* EXEC and EXIT must _not_ have been aggregated */
+	assert(qev->events == (QUARK_EV_FORK | QUARK_EV_ID_CHANGE));
+	assert(qev->id_change == (QUARK_ID_CHANGE_SETSID |
+	    QUARK_ID_CHANGE_SETUID | QUARK_ID_CHANGE_SETGID));
+
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->proc_uid == id);
+	assert(qp->proc_gid == id);
+	assert(qp->proc_suid == id);
+	assert(qp->proc_sgid == id);
+	assert(qp->proc_euid == id);
+	assert(qp->proc_egid == id);
+	/* make sure pgid and sid changed */
+	assert((pid_t)qp->proc_pgid != getpgid(0));
+	assert((pid_t)qp->proc_sid != getsid(0));
+
+	quark_queue_close(&qq);
+
+	return (0);
 }
 
 /* Make sure an exit comes from tgid, not tid */
@@ -1616,6 +1661,7 @@ struct test all_tests[] = {
 	T(t_probe),
 	T(t_fork_exec_exit),
 	T_EBPF(t_fork_exec_exit_rel),
+	T_EBPF(t_id_change),
 	T(t_exit_tgid),
 	T_EBPF(t_file),
 	T_EBPF(t_bypass),

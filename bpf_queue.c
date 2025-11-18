@@ -265,6 +265,93 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_PROCESS_SETSID: {
+		struct ebpf_process_setsid_event	*sid;
+
+		sid = (struct ebpf_process_setsid_event *)ev;
+		if ((raw = raw_event_alloc(RAW_ID_CHANGE)) == NULL)
+			goto bad;
+		raw->pid = sid->pids.tgid;
+		raw->time = ev->ts;
+		ebpf_ctx.pids = &sid->pids;
+		ebpf_ctx.creds = &sid->creds;
+		ebpf_ctx.ctty = &sid->ctty;
+		ebpf_ctx.comm = sid->comm;
+		ebpf_ctx.ns = &sid->ns;
+		ebpf_ctx.cwd = NULL;
+		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
+
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
+		raw->task.id_change = QUARK_ID_CHANGE_SETSID;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_SETGID: {
+		struct ebpf_process_setgid_event	*gid;
+
+		gid = (struct ebpf_process_setgid_event *)ev;
+		if ((raw = raw_event_alloc(RAW_ID_CHANGE)) == NULL)
+			goto bad;
+		raw->pid = gid->pids.tgid;
+		raw->time = ev->ts;
+		ebpf_ctx.pids = &gid->pids;
+		ebpf_ctx.creds = &gid->creds;
+		ebpf_ctx.ctty = &gid->ctty;
+		ebpf_ctx.comm = gid->comm;
+		ebpf_ctx.ns = &gid->ns;
+		ebpf_ctx.cwd = NULL;
+		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
+
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
+		raw->task.id_change = QUARK_ID_CHANGE_SETGID;
+
+		/*
+		 * We get the SETGID event before it took place, but after it
+		 * succeeded. So copy the new ones into the task.
+		 */
+		raw->task.euid = gid->new_euid;
+		raw->task.egid = gid->new_egid;
+		raw->task.gid = gid->new_rgid;
+		raw->task.uid = gid->new_ruid;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_SETUID: {
+		struct ebpf_process_setuid_event	*uid;
+
+		uid = (struct ebpf_process_setuid_event *)ev;
+		if ((raw = raw_event_alloc(RAW_ID_CHANGE)) == NULL)
+			goto bad;
+		raw->pid = uid->pids.tgid;
+		raw->time = ev->ts;
+		ebpf_ctx.pids = &uid->pids;
+		ebpf_ctx.creds = &uid->creds;
+		ebpf_ctx.ctty = &uid->ctty;
+		ebpf_ctx.comm = uid->comm;
+		ebpf_ctx.ns = &uid->ns;
+		ebpf_ctx.cwd = NULL;
+		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
+
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
+		raw->task.id_change = QUARK_ID_CHANGE_SETUID;
+
+		/*
+		 * We get the SETUID event before it took place, but after it
+		 * succeeded. So copy the new ones into the task.
+		 */
+		raw->task.euid = uid->new_euid;
+		raw->task.egid = uid->new_egid;
+		raw->task.gid = uid->new_rgid;
+		raw->task.uid = uid->new_ruid;
+
+		break;
+	}
 	case EBPF_EVENT_NETWORK_CONNECTION_ACCEPTED:
 	case EBPF_EVENT_NETWORK_CONNECTION_ATTEMPTED:
 	case EBPF_EVENT_NETWORK_CONNECTION_CLOSED: {
@@ -1013,11 +1100,15 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 */
 	bpf_program__set_autoload(p->progs.sched_process_fork, 1);
 	bpf_program__set_autoload(p->progs.sched_process_exec, 1);
+	bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_setsid, 1);
 
-	if (use_fentry)
+	if (use_fentry) {
 		bpf_program__set_autoload(p->progs.fentry__disassociate_ctty, 1);
-	else
+		bpf_program__set_autoload(p->progs.fentry__commit_creds, 1);
+	} else {
 		bpf_program__set_autoload(p->progs.kprobe__disassociate_ctty, 1);
+		bpf_program__set_autoload(p->progs.kprobe__commit_creds, 1);
+	}
 
 	/* Used in process probes, so always on */
 	if (relo_member(btf, &off, "iov_iter", "__iov") != -1)
@@ -1150,14 +1241,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
-
-	/*
-	 * These are probes that are not attached to a feature and not currently
-	 * used in quark, but we need to maintain compatibility in BYPASS.
-	 */
-	if (qq->flags & QQ_BYPASS) {
-		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_setsid, 1);
-	}
 
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {

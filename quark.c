@@ -118,6 +118,7 @@ raw_event_alloc(int type)
 	switch (raw->type) {
 	case RAW_WAKE_UP_NEW_TASK: /* FALLTHROUGH */
 	case RAW_EXIT_THREAD:
+	case RAW_ID_CHANGE:
 		raw->task.exit_code = -1;
 		break;
 	case RAW_EXEC:		/* nada */
@@ -150,6 +151,7 @@ raw_event_free(struct raw_event *raw)
 	switch (raw->type) {
 	case RAW_WAKE_UP_NEW_TASK:
 	case RAW_EXIT_THREAD:
+	case RAW_ID_CHANGE:
 		task = &raw->task;
 		break;
 	case RAW_EXEC:
@@ -373,6 +375,7 @@ tty_type(int major, int minor)
 static void
 event_storage_clear(struct quark_queue *qq)
 {
+	qq->event_storage.events = 0;
 	qq->event_storage.time = 0;
 	qq->event_storage.process = NULL;
 	qq->event_storage.socket = NULL;
@@ -405,6 +408,7 @@ event_storage_clear(struct quark_queue *qq)
 	}
 	free(qq->event_storage.tty);
 	qq->event_storage.tty = NULL;
+	qq->event_storage.id_change = 0;
 }
 
 static void
@@ -1716,6 +1720,8 @@ event_type_str(u64 event)
 		return "EXEC";
 	case QUARK_EV_EXIT:
 		return "EXIT";
+	case QUARK_EV_ID_CHANGE:
+		return "ID_CHANGE";
 	case QUARK_EV_SETPROCTITLE:
 		return "SETPROCTITLE";
 	case QUARK_EV_SOCK_CONN_ESTABLISHED:
@@ -2345,14 +2351,16 @@ quark_cmdline_iter_next(struct quark_cmdline_iter *qcmdi)
 
 static void
 raw_event_process1(struct quark_queue *qq, struct raw_event *src,
-    struct quark_process *qp, u64 *all_events)
+    struct quark_event *dst)
 {
-	struct raw_task	*raw_task;
-	char		*comm;
-	char		*filename;
-	char		*args;
-	size_t		 args_len;
+	struct quark_process	*qp;
+	struct raw_task		*raw_task;
+	char			*comm;
+	char			*filename;
+	char			*args;
+	size_t			 args_len;
 
+	qp	 = (struct quark_process *)dst->process;
 	raw_task = NULL;
 	comm	 = NULL;
 	filename = NULL;
@@ -2361,12 +2369,12 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 
 	switch (src->type) {
 	case RAW_WAKE_UP_NEW_TASK:
-		*all_events |= QUARK_EV_FORK;
+		dst->events |= QUARK_EV_FORK;
 		raw_task = &src->task;
 		process_cache_inherit(qq, qp, raw_task->ppid);
 		break;
 	case RAW_EXEC:
-		*all_events |= QUARK_EV_EXEC;
+		dst->events |= QUARK_EV_EXEC;
 		filename = src->exec.filename;
 		src->exec.filename = NULL;
 		if (src->exec.flags & RAW_EXEC_F_EXT) {
@@ -2378,7 +2386,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		}
 		break;
 	case RAW_EXIT_THREAD:
-		*all_events |= QUARK_EV_EXIT;
+		dst->events |= QUARK_EV_EXIT;
 		raw_task = &src->task;
 		qp->flags |= QUARK_F_EXIT;
 		qp->exit_code = raw_task->exit_code;
@@ -2386,15 +2394,20 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 			qp->exit_time_event = quark.boottime + raw_task->exit_time_event;
 		break;
 	case RAW_COMM:
-		*all_events |= QUARK_EV_SETPROCTITLE;
+		dst->events |= QUARK_EV_SETPROCTITLE;
 		comm = src->comm.comm;
 		break;
 	case RAW_EXEC_CONNECTOR:
-		*all_events |= QUARK_EV_EXEC;
+		dst->events |= QUARK_EV_EXEC;
 		args = src->exec_connector.args;
 		args_len = src->exec_connector.args_len;
 		src->exec_connector.args = NULL;
 		src->exec_connector.args_len = 0;
+		break;
+	case RAW_ID_CHANGE:
+		dst->events |= QUARK_EV_ID_CHANGE;
+		raw_task = &src->task;
+		dst->id_change |= raw_task->id_change;
 		break;
 	default:
 		qwarnx("unhandled raw_event type %d", src->type);
@@ -2509,26 +2522,20 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 static struct quark_event *
 raw_event_process(struct quark_queue *qq, struct raw_event *src)
 {
-	struct quark_process	*qp;
 	struct quark_event	*dst;
 	struct raw_event	*agg;
-	u64			 events;
 
 	dst = &qq->event_storage;
-	events = 0;
 
 	/* XXX pass if this is a fork down, so we can evict the old one XXX */
-	if ((qp = process_cache_get(qq, src->pid, 1)) == NULL)
+	if ((dst->process = process_cache_get(qq, src->pid, 1)) == NULL)
 		return (NULL);
 
-	raw_event_process1(qq, src, qp, &events);
+	raw_event_process1(qq, src, dst);
 
 	TAILQ_FOREACH(agg, &src->agg_queue, agg_entry) {
-		raw_event_process1(qq, agg, qp, &events);
+		raw_event_process1(qq, agg, dst);
 	}
-
-	dst->events = events;
-	dst->process = qp;
 
 	return (dst);
 }
@@ -3758,9 +3765,10 @@ enum agg_kind {
 };
 		     /* parent */   /* child */
 const u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= AGG_SINGLE,
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= AGG_SINGLE,
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= AGG_CUSTOM,
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= AGG_CUSTOM,
 	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
+	[RAW_WAKE_UP_NEW_TASK][RAW_ID_CHANGE]		= AGG_MULTI,
 	[RAW_WAKE_UP_NEW_TASK][RAW_EXIT_THREAD]		= AGG_SINGLE,
 
 	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= AGG_SINGLE,
@@ -3769,6 +3777,8 @@ const u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
 
 	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
 	[RAW_COMM][RAW_EXIT_THREAD]			= AGG_SINGLE,
+
+	[RAW_ID_CHANGE][RAW_ID_CHANGE]			= AGG_MULTI,
 
 	[RAW_FILE][RAW_FILE]				= AGG_CUSTOM,
 	[RAW_TTY][RAW_TTY]				= AGG_CUSTOM,
@@ -3783,6 +3793,8 @@ const u8 agg_matrix_min[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
 	[RAW_EXEC][RAW_COMM]				= AGG_MULTI,
 
 	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
+
+	[RAW_ID_CHANGE][RAW_ID_CHANGE]			= AGG_MULTI,
 };
 
 static int
@@ -4332,6 +4344,23 @@ quark_queue_close(struct quark_queue *qq)
 }
 
 static int
+can_aggregate_fork_exec(struct quark_queue *qq, struct raw_event *fork, struct raw_event *exec)
+{
+	struct raw_event        *agg;
+
+	TAILQ_FOREACH(agg, &fork->agg_queue, agg_entry) {
+		/* If there is an exec, we can't */
+		if (agg->type == exec->type)
+			return (0);
+		/* If there is a ID_CHANGE, we can't */
+		if (agg->type == RAW_ID_CHANGE)
+			return (0);
+	}
+
+	return (1);
+}
+
+static int
 can_aggregate_file(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 {
 	struct quark_file	*pf, *cf;
@@ -4408,7 +4437,10 @@ can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 		}
 		return (1);
 	case AGG_CUSTOM:
-		if (p->type == RAW_FILE && c->type == RAW_FILE)
+		if (p->type == RAW_WAKE_UP_NEW_TASK &&
+		    (c->type == RAW_EXEC || c->type == RAW_EXEC_CONNECTOR))
+			return (can_aggregate_fork_exec(qq, p, c));
+		else if (p->type == RAW_FILE && c->type == RAW_FILE)
 			return (can_aggregate_file(qq, p, c));
 		else if (p->type == RAW_TTY && c->type == RAW_TTY)
 			return (can_aggregate_tty(qq, p, c));
@@ -4745,6 +4777,7 @@ quark_queue_get_event(struct quark_queue *qq)
 		case RAW_EXEC:			/* FALLTHROUGH */
 		case RAW_WAKE_UP_NEW_TASK:	/* FALLTHROUGH */
 		case RAW_EXIT_THREAD:		/* FALLTHROUGH */
+		case RAW_ID_CHANGE:		/* FALLTHROUGH */
 		case RAW_COMM:			/* FALLTHROUGH */
 		case RAW_EXEC_CONNECTOR:
 			qev = raw_event_process(qq, raw);

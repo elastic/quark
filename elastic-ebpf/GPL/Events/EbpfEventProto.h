@@ -279,11 +279,19 @@ struct ebpf_process_exit_event {
 struct ebpf_process_setsid_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
+    struct ebpf_cred_info creds;
+    struct ebpf_tty_dev ctty;
+    char comm[TASK_COMM_LEN];
+    struct ebpf_namespace_info ns;
 } __attribute__((packed));
 
 struct ebpf_process_setuid_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
+    struct ebpf_cred_info creds;
+    struct ebpf_tty_dev ctty;
+    char comm[TASK_COMM_LEN];
+    struct ebpf_namespace_info ns;
     uint32_t new_ruid;
     uint32_t new_euid;
     uint32_t new_rgid;
@@ -309,6 +317,10 @@ struct ebpf_process_tty_write_event {
 struct ebpf_process_setgid_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
+    struct ebpf_cred_info creds;
+    struct ebpf_tty_dev ctty;
+    char comm[TASK_COMM_LEN];
+    struct ebpf_namespace_info ns;
     uint32_t new_rgid;
     uint32_t new_egid;
     uint32_t new_ruid;
