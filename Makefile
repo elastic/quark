@@ -394,6 +394,14 @@ test-valgrind: quark-test
 
 initramfs:
 	mkdir -p initramfs/bin
+	mkdir -p initramfs/etc
+	echo "NAME=\"quark kernel testing\"" > initramfs/etc/os-release
+	echo "VERSION=\"1.23.4 iota\"" >> initramfs/etc/os-release
+	echo "RELEASE_TYPE=\"testing\"" >> initramfs/etc/os-release
+	echo "ID=\"quark\"" >> initramfs/etc/os-release
+	echo "VERSION_ID=\"1.23.4\"" >> initramfs/etc/os-release
+	echo "VERSION_CODENAME=\"iota\"" >> initramfs/etc/os-release
+	echo "PRETTY_NAME=\"Quark kernel testing initramfs\"" >> initramfs/etc/os-release
 
 initramfs.gz: init quark-mon-static quark-btf-static quark-test-static true initramfs
 	$(call assert_no_syslib)
