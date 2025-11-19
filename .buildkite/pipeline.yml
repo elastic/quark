@@ -220,6 +220,17 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
+  - label: "quark-test on fedora 43"
+    key: test_fedora_43
+    command: "./.buildkite/runtest_distro.sh fedora 43"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
   - label: "quark-test on rhel 8"
     key: test_rhel_8
     command: "./.buildkite/runtest_distro.sh rhel 8"
