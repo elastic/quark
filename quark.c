@@ -4762,6 +4762,9 @@ quark_queue_get_event(struct quark_queue *qq)
 	struct raw_event	*raw;
 	struct quark_event	*qev;
 
+	/* GC all processes and sockets that exited after some grace time */
+	gc_collect(qq);
+
 	if (qq->qkube != NULL)
 		kube_read_events(qq);
 
@@ -4815,9 +4818,6 @@ quark_queue_get_event(struct quark_queue *qq)
 
 	if (qev != NULL && qq->qkube != NULL)
 		link_kube_data(qq, (struct quark_process *)qev->process);
-
-	/* GC all processes and sockets that exited after some grace time */
-	gc_collect(qq);
 
 	return (qev);
 }
