@@ -37,32 +37,40 @@ struct quark_sockaddr;
 struct quark_queue;
 struct quark_queue_attr;
 struct quark_queue_stats;
-struct raw_event *raw_event_alloc(int);
-void	 raw_event_free(struct raw_event *);
-int	 raw_event_insert(struct quark_queue *, struct raw_event *);
-void	 quark_queue_default_attr(struct quark_queue_attr *);
-int	 quark_queue_open(struct quark_queue *, struct quark_queue_attr *);
-void	 quark_queue_close(struct quark_queue *);
-int	 quark_queue_populate(struct quark_queue *);
-int	 quark_queue_block(struct quark_queue *);
+struct raw_event	*raw_event_alloc(int);
+void			 raw_event_free(struct raw_event *);
+int			 raw_event_insert(struct quark_queue *,
+			     struct raw_event *);
+void			 quark_queue_default_attr(struct quark_queue_attr *);
+int			 quark_queue_open(struct quark_queue *,
+			     struct quark_queue_attr *);
+void			 quark_queue_close(struct quark_queue *);
+int			 quark_queue_populate(struct quark_queue *);
+int			 quark_queue_block(struct quark_queue *);
 const struct quark_event *quark_queue_get_event(struct quark_queue *);
-int	 quark_queue_get_epollfd(struct quark_queue *);
-void	 quark_queue_get_stats(struct quark_queue *, struct quark_queue_stats *);
-int	 quark_start_kube_talker(const char *, pid_t *);
-int	 quark_dump_process_cache_graph(struct quark_queue *, FILE *);
-int	 quark_dump_raw_event_graph(struct quark_queue *, FILE *, FILE *);
-int	 quark_event_dump(const struct quark_event *, FILE *);
-void	 quark_process_iter_init(struct quark_process_iter *, struct quark_queue *);
+int			 quark_queue_get_epollfd(struct quark_queue *);
+void			 quark_queue_get_stats(struct quark_queue *,
+			     struct quark_queue_stats *);
+int			 quark_start_kube_talker(const char *, pid_t *);
+int			 quark_dump_process_cache_graph(struct quark_queue *,
+			     FILE *);
+int			 quark_dump_raw_event_graph(struct quark_queue *,
+			     FILE *, FILE *);
+int			 quark_event_dump(const struct quark_event *, FILE *);
+void			 quark_process_iter_init(struct quark_process_iter *,
+			     struct quark_queue *);
 const struct quark_process *quark_process_iter_next(struct quark_process_iter *);
 const struct quark_process *quark_process_lookup(struct quark_queue *, int);
-void	 quark_cmdline_iter_init(struct quark_cmdline_iter *, const char *, size_t);
-const char *quark_cmdline_iter_next(struct quark_cmdline_iter *);
-void	 quark_socket_iter_init(struct quark_socket_iter *, struct quark_queue *);
+void			 quark_cmdline_iter_init(struct quark_cmdline_iter *,
+			     const char *, size_t);
+const char		*quark_cmdline_iter_next(struct quark_cmdline_iter *);
+void			 quark_socket_iter_init(struct quark_socket_iter *,
+			     struct quark_queue *);
 const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
 const struct quark_socket *quark_socket_lookup(struct quark_queue *,
-    struct quark_sockaddr *, struct quark_sockaddr *);
-struct quark_passwd *quark_passwd_lookup(struct quark_queue *, uid_t);
-struct quark_group *quark_group_lookup(struct quark_queue *, gid_t);
+			     struct quark_sockaddr *, struct quark_sockaddr *);
+struct quark_passwd	*quark_passwd_lookup(struct quark_queue *, uid_t);
+struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
 
 /* quark.c: These are exported for testing only */
 int	 kube_parse_cgroup(const char *, char *, size_t);
@@ -86,8 +94,10 @@ ssize_t			 quark_btf_offset(struct quark_btf *, const char *);
 struct btf;
 s32			btf_root_offset(struct btf *, const char *, int);
 int			btf_number_of_params(struct btf *, const char *);
-int			btf_number_of_params_of_ptr(struct btf *, const char *, const char *);
-int			btf_index_of_param(struct btf *, const char *, const char *);
+int			btf_number_of_params_of_ptr(struct btf *,
+			    const char *, const char *);
+int			btf_index_of_param(struct btf *, const char *,
+			    const char *);
 
 /* bpf_queue.c */
 int			 bpf_queue_open(struct quark_queue *);
@@ -131,7 +141,8 @@ enum quark_verbosity_levels {
 #define	 qwarnx(fmt, ...) qlog(QUARK_VL_WARN, 0, fmt, ##__VA_ARGS__)
 #define	 qdebug(fmt, ...) qlog(QUARK_VL_DEBUG, 1, fmt, ##__VA_ARGS__)
 #define	 qdebugx(fmt, ...) qlog(QUARK_VL_DEBUG, 0, fmt, ##__VA_ARGS__)
-void	 qlog_func(int, int, const char *, int, const char *, ...) __attribute__((format(printf, 5,6)));
+void	 qlog_func(int, int, const char *, int, const char *, ...)
+	     __attribute__((format(printf, 5,6)));
 
 /* hanson.c */
 struct hanson;
@@ -158,7 +169,8 @@ struct hanson {
 };
 
 /* ecs.c */
-int	quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev, char **, size_t *);
+int	quark_event_to_ecs(struct quark_queue *qq,
+	    const struct quark_event *qev, char **, size_t *);
 
 /*
  * Time helpers
