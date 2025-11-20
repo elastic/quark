@@ -12,6 +12,7 @@
 
 #include <netinet/in.h>
 
+#include <limits.h>
 #include <stdio.h>
 
 /* Compat, tree.h, queue.h */
@@ -37,6 +38,8 @@ struct quark_sockaddr;
 struct quark_queue;
 struct quark_queue_attr;
 struct quark_queue_stats;
+struct quark_ruleset;
+struct quark_rule;
 struct raw_event	*raw_event_alloc(int);
 void			 raw_event_free(struct raw_event *);
 int			 raw_event_insert(struct quark_queue *,
@@ -71,6 +74,17 @@ const struct quark_socket *quark_socket_lookup(struct quark_queue *,
 			     struct quark_sockaddr *, struct quark_sockaddr *);
 struct quark_passwd	*quark_passwd_lookup(struct quark_queue *, uid_t);
 struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
+void			 quark_ruleset_init(struct quark_ruleset *);
+void			 quark_ruleset_clear(struct quark_ruleset *);
+struct quark_rule	*quark_ruleset_append_rule(struct quark_ruleset *, int);
+int			 quark_rule_append_pid(struct quark_rule *, u32);
+int			 quark_rule_append_ppid(struct quark_rule *, u32);
+int			 quark_rule_append_file_path(struct quark_rule *,
+			     const char *);
+int			 quark_rule_append_process_filename(struct quark_rule *,
+			     const char *);
+struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
+			     struct quark_event *);
 
 /* quark.c: These are exported for testing only */
 int	 kube_parse_cgroup(const char *, char *, size_t);
@@ -746,6 +760,44 @@ struct quark_group {
 	char			*name;
 };
 
+enum rule_field_code {
+	RF_NONE,
+	RF_PROCESS_PID,
+	RF_PROCESS_PPID,
+	RF_PROCESS_FILENAME,
+	RF_FILE_PATH,
+	RF_MAX,
+};
+
+struct rule_field {
+	enum rule_field_code	code;
+	int			flags;
+	size_t			wildcard_len;
+	union {
+		u32		pid;
+		char		path[PATH_MAX];
+	};
+};
+
+enum quark_rule_action {
+	RA_INVALID,
+	RA_DROP,
+	RA_PASS,
+};
+
+struct quark_rule {
+	struct rule_field	*fields;
+	size_t			 n_fields;
+	int			 action;
+	u64			 evals;
+	u64			 hits;
+};
+
+struct quark_ruleset {
+	struct quark_rule	*rules;
+	size_t			 n_rules;
+};
+
 /*
  * General system information, static and stored in quark_queue.
  */
@@ -805,12 +857,13 @@ struct quark_queue_attr {
 #define QQ_PTRACE		(1 << 11)
 #define QQ_MODULE_LOAD		(1 << 12)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
-	int	flags;
-	int	max_length;
-	int	cache_grace_time;	/* in ms */
-	int	hold_time;		/* in ms */
-	size_t	max_env;		/* max process environment in bytes */
-	int	kubefd;			/* quark-kube-talker pipe, -1 disables */
+	int			 flags;
+	int			 max_length;
+	int			 cache_grace_time;	/* in ms */
+	int			 hold_time;		/* in ms */
+	size_t			 max_env;		/* max process environment in bytes */
+	int			 kubefd;		/* quark-kube-talker pipe, -1 disables */
+	struct quark_ruleset	*ruleset;		/* active ruleset */
 };
 
 /*
@@ -828,6 +881,7 @@ struct quark_queue {
 	struct quark_sysinfo		 sysinfo;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
+	struct quark_ruleset		*ruleset;
 	const u8			(*agg_matrix)[RAW_NUM_TYPES];
 	int				 flags;
 	int				 length;

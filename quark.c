@@ -4055,6 +4055,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->hold_time = 1000;		/* one second */
 	qa->max_env = 4096;		/* one page per process */
 	qa->kubefd = -1;		/* disabled */
+	qa->ruleset = NULL;		/* no rules */
 }
 
 int
@@ -4126,6 +4127,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
 	qq->hold_time = qa->hold_time;
 	qq->max_env = qa->max_env;
+	qq->ruleset = qa->ruleset;
 	qq->length = 0;
 	qq->epollfd = -1;
 	if (qq->flags & QQ_MIN_AGG)
@@ -4736,6 +4738,217 @@ raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
+void
+quark_ruleset_init(struct quark_ruleset *ruleset)
+{
+	ruleset->rules = NULL;
+	ruleset->n_rules = 0;
+}
+
+void
+quark_ruleset_clear(struct quark_ruleset *ruleset)
+{
+	struct quark_rule	*rule;
+	size_t			 i;
+
+	for (i = 0; i < ruleset->n_rules; i++) {
+		rule = ruleset->rules + i;
+		free(rule->fields);
+	}
+
+	free(ruleset->rules);
+	ruleset->rules = NULL;
+	ruleset->n_rules = 0;
+}
+
+static int
+path_match(struct rule_field *field, const char *a)
+{
+	if (field->wildcard_len == 0)
+		return (!strcmp(field->path, a));
+	else
+		return (!strncmp(field->path, a, field->wildcard_len));
+}
+
+/* 1 for match, 0 for non match */
+static int
+rule_field_match(struct quark_rule *rule, struct rule_field *field,
+    struct quark_event *qev)
+{
+	switch (field->code) {
+	case RF_PROCESS_PID:
+		if (qev->process != NULL)
+			return (qev->process->pid == field->pid);
+		break;
+	case RF_PROCESS_PPID:
+		if (qev->process != NULL)
+			return (qev->process->proc_ppid == field->pid);
+		break;
+	case RF_PROCESS_FILENAME:
+		if (qev->process != NULL &&
+		    (qev->process->flags & QUARK_F_FILENAME) &&
+		    qev->process->filename != NULL)
+			return (path_match(field, qev->process->filename));
+		break;
+	case RF_FILE_PATH:
+		if (qev->file != NULL)
+			return (path_match(field, qev->file->path));
+		break;
+	default:
+		break;
+	}
+
+	return (0);
+}
+
+struct quark_rule *
+quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
+{
+	struct quark_rule	*rule;
+	struct rule_field	*field;
+	size_t			 i, j;
+
+	for (i = 0; i < ruleset->n_rules; i++) {
+		rule = ruleset->rules + i;
+		rule->evals++;
+		for (j = 0; j < rule->n_fields; j++) {
+			field = rule->fields + j;
+			if (!rule_field_match(rule, field, qev))
+				break;
+		}
+		/* All fields matched, this is the rule! */
+		if (j == rule->n_fields) {
+			rule->hits++;
+			return (rule);
+		}
+	}
+
+	return (NULL);
+}
+
+struct quark_rule *
+quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action)
+{
+	struct quark_rule	*new_rules, *rule;
+	size_t			 new_n_rules;
+
+	if (action != RA_DROP && action != RA_PASS)
+		return (errno = EINVAL, NULL);
+	new_n_rules = ruleset->n_rules + 1;
+	new_rules = reallocarray(ruleset->rules, new_n_rules,
+	    sizeof(*ruleset->rules));
+	if (new_rules == NULL)
+		return (NULL);
+
+	ruleset->rules = new_rules;
+	ruleset->n_rules = new_n_rules;
+
+	rule = &ruleset->rules[ruleset->n_rules - 1];
+	rule->fields = NULL;
+	rule->n_fields = 0;
+	rule->action = action;
+	rule->evals = 0;
+	rule->hits = 0;
+
+	return (rule);
+}
+
+static int
+quark_rule_append_field(struct quark_rule *rule, struct rule_field *rf)
+{
+	struct rule_field	*new_fields;
+	size_t			 new_n_fields;
+
+	switch (rf->code) {
+	case RF_PROCESS_PID:		/* FALLTHROUGH */
+	case RF_PROCESS_PPID:
+		if (rf->pid == 0)
+			goto inval;
+		break;
+	case RF_PROCESS_FILENAME:	/* FALLTHROUGH */
+	case RF_FILE_PATH:
+		if (*rf->path == 0)
+			goto inval;
+		if (rf->path[sizeof(rf->path) - 1] != 0)
+			goto inval;
+		break;
+	default:
+		goto inval;
+	}
+
+	new_n_fields = rule->n_fields + 1;
+	new_fields = reallocarray(rule->fields, new_n_fields,
+	    sizeof(*rule->fields));
+	if (new_fields == NULL)
+		return (-1);
+
+	rule->fields = new_fields;
+	rule->n_fields = new_n_fields;
+	rule->fields[rule->n_fields - 1] = *rf;
+
+	return (0);
+
+inval:
+	errno = EINVAL;
+	return (-1);
+}
+
+static int
+quark_rule_append_any_pid(struct quark_rule *rule, u32 pid,
+    enum rule_field_code code)
+{
+	struct rule_field	rf;
+
+	bzero(&rf, sizeof(rf));
+	rf.code = code;
+	rf.pid = pid;
+
+	return (quark_rule_append_field(rule, &rf));
+}
+
+int
+quark_rule_append_pid(struct quark_rule *rule, u32 pid)
+{
+	return (quark_rule_append_any_pid(rule, pid, RF_PROCESS_PID));
+}
+
+int
+quark_rule_append_ppid(struct quark_rule *rule, u32 pid)
+{
+	return (quark_rule_append_any_pid(rule, pid, RF_PROCESS_PPID));
+}
+
+static int
+quark_rule_append_any_path(struct quark_rule *rule, const char *path,
+    enum rule_field_code code)
+{
+	struct rule_field	 rf;
+	char			*p;
+
+	if (strlen(path) >= PATH_MAX)
+		return (errno = EINVAL, -1);
+
+	bzero(&rf, sizeof(rf));
+	rf.code = code;
+	strlcpy(rf.path, path, sizeof(rf.path));
+	if ((p = strchr(rf.path, '*')) != NULL)
+		rf.wildcard_len = p - rf.path;
+
+	return (quark_rule_append_field(rule, &rf));
+}
+
+int
+quark_rule_append_file_path(struct quark_rule *rule, const char *path)
+{
+	return (quark_rule_append_any_path(rule, path, RF_FILE_PATH));
+}
+
+int
+quark_rule_append_process_filename(struct quark_rule *rule, const char *path)
+{
+	return (quark_rule_append_any_path(rule, path, RF_PROCESS_FILENAME));
+}
+
 static const struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
@@ -4761,13 +4974,16 @@ quark_queue_get_event(struct quark_queue *qq)
 {
 	struct raw_event	*raw;
 	struct quark_event	*qev;
+	struct quark_rule	*rule;
 
 	/* GC all processes and sockets that exited after some grace time */
 	gc_collect(qq);
 
+	/* Read from the kube pipe */
 	if (qq->qkube != NULL)
 		kube_read_events(qq);
 
+	/* Bypass skips everything */
 	if (qq->flags & QQ_BYPASS)
 		return (get_bypass_event(qq));
 
@@ -4816,8 +5032,21 @@ quark_queue_get_event(struct quark_queue *qq)
 		raw_event_free(raw);
 	}
 
-	if (qev != NULL && qq->qkube != NULL)
-		link_kube_data(qq, (struct quark_process *)qev->process);
+	/* No event, bail early */
+	if (qev == NULL)
+		return (NULL);
+
+	/* Try to correlate kubernetes metadata */
+	if (qq->qkube != NULL)
+		link_kube_data(qq,
+		    (struct quark_process *)qev->process);
+
+	/* Run ruleset, if it's a drop, nulify qev */
+	if (qq->ruleset != NULL) {
+		rule = quark_ruleset_match(qq->ruleset, qev);
+		if (rule != NULL && rule->action == RA_DROP)
+			qev = NULL;
+	}
 
 	return (qev);
 }
