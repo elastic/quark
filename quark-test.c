@@ -1678,6 +1678,65 @@ t_hanson_escape(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_rule(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*rule;
+	char				 path1[] = "/tmp/quark-test-path1.XXXXXX";
+	char				 path2[] = "/tmp/quark-test-path2.XXXXXX";
+	int				 fd1, fd2;
+
+	if ((fd1 = mkstemp(path1)) == -1)
+		err(1, "mkstemp");
+	if ((fd2 = mkstemp(path2)) == -1)
+		err(1, "mkstemp");
+
+	/*
+	 * Make a rule that will drop file events to path1 from ourselves.
+	 * We then write to both path1 and path2, we should see only the path2
+	 * write.
+	 */
+	quark_ruleset_init(&ruleset);
+	rule = quark_ruleset_append_rule(&ruleset, RA_DROP);
+	assert(rule != NULL);
+	assert(!quark_rule_append_pid(rule, getpid()));
+	assert(!quark_rule_append_file_path(rule, "/tmp/quark-test-path1*"));
+	assert(rule->action == RA_DROP);
+	assert(rule->n_fields == 2);
+
+	qa->ruleset = &ruleset;
+	qa->flags |= QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Write to a path1 */
+	assert(write(fd1, "1", 1) == 1);
+	close(fd1);
+	if (unlink(path1) == -1)
+		err(1, "unlink");
+	/* Write to a path2 */
+	assert(write(fd2, "1", 1) == 1);
+	close(fd2);
+	if (unlink(path2) == -1)
+		err(1, "unlink");
+	/* Fetch the path2 event */
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_FILE);
+	assert(!strcmp(qev->file->path, path2));
+	/* Make sure it hits the rule once */
+	assert(rule->hits == 1);
+	assert(rule->evals > rule->hits);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  */
@@ -1709,6 +1768,7 @@ struct test all_tests[] = {
 	T(t_stats),
 	T_EBPF(t_hanson),
 	T_EBPF(t_hanson_escape),
+	T_EBPF(t_rule),
 	{ NULL,	NULL, 0, 0 }
 };
 #undef S
