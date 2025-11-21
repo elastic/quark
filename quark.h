@@ -76,13 +76,14 @@ struct quark_passwd	*quark_passwd_lookup(struct quark_queue *, uid_t);
 struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
 void			 quark_ruleset_init(struct quark_ruleset *);
 void			 quark_ruleset_clear(struct quark_ruleset *);
-struct quark_rule	*quark_ruleset_append_rule(struct quark_ruleset *, int);
+struct quark_rule	*quark_ruleset_append_rule(struct quark_ruleset *, int, u64);
 int			 quark_rule_append_pid(struct quark_rule *, u32);
 int			 quark_rule_append_ppid(struct quark_rule *, u32);
 int			 quark_rule_append_file_path(struct quark_rule *,
 			     const char *);
 int			 quark_rule_append_process_filename(struct quark_rule *,
 			     const char *);
+int			 quark_rule_append_poison(struct quark_rule *, u64);
 struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
 			     struct quark_event *);
 
@@ -573,6 +574,8 @@ struct quark_process {
 #define QUARK_F_ENV		(1 << 8)
 	u64	 flags;
 
+	u64	 poison_tag;	/* valid if != 0 */
+
 	/* QUARK_F_PROC */
 	u64	 proc_cap_inheritable;
 	u64	 proc_cap_permitted;
@@ -768,6 +771,7 @@ enum rule_field_code {
 	RF_PROCESS_PPID,
 	RF_PROCESS_FILENAME,
 	RF_FILE_PATH,
+	RF_POISON,
 	RF_MAX,
 };
 
@@ -777,6 +781,7 @@ struct rule_field {
 	size_t			wildcard_len;
 	union {
 		u32		pid;
+		u64		poison_tag;
 		char		path[PATH_MAX];
 	};
 };
@@ -785,12 +790,14 @@ enum quark_rule_action {
 	RA_INVALID,
 	RA_DROP,
 	RA_PASS,
+	RA_POISON,
 };
 
 struct quark_rule {
 	struct rule_field	*fields;
 	size_t			 n_fields;
 	int			 action;
+	u64			 poison_tag;
 	u64			 evals;
 	u64			 hits;
 };

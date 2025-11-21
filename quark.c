@@ -516,6 +516,9 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 	if ((parent = process_cache_get(qq, ppid, 0)) == NULL)
 		return;
 
+	/* Poison tag always propagates down */
+	qp->poison_tag = parent->poison_tag;
+
 	/* Ignore QUARK_F_PROC? as we always have it all on fork */
 
 	if (parent->flags & QUARK_F_COMM) {
@@ -4802,6 +4805,10 @@ rule_field_match(struct quark_rule *rule, struct rule_field *field,
 		if (qev->file != NULL)
 			return (path_match(field, qev->file->path));
 		break;
+	case RF_POISON:
+		if (qev->process != NULL)
+			return (qev->process->poison_tag == field->poison_tag);
+		break;
 	default:
 		break;
 	}
@@ -4815,6 +4822,7 @@ quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 	struct quark_rule	*rule;
 	struct rule_field	*field;
 	size_t			 i, j;
+	struct quark_process	*qp;
 
 	for (i = 0; i < ruleset->n_rules; i++) {
 		rule = ruleset->rules + i;
@@ -4827,7 +4835,13 @@ quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 		/* All fields matched, this is the rule! */
 		if (j == rule->n_fields) {
 			rule->hits++;
-			return (rule);
+			/* Poison rules continue to evaluate, others are done */
+			if (rule->action != RA_POISON)
+				return (rule);
+			/* Poison this process */
+			qp = (struct quark_process *)qev->process;
+			if (qp != NULL)
+				qp->poison_tag = rule->poison_tag;
 		}
 	}
 
@@ -4835,12 +4849,12 @@ quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 }
 
 struct quark_rule *
-quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action)
+quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_tag)
 {
 	struct quark_rule	*new_rules, *rule;
 	size_t			 new_n_rules;
 
-	if (action != RA_DROP && action != RA_PASS)
+	if (action != RA_DROP && action != RA_PASS && action != RA_POISON)
 		return (errno = EINVAL, NULL);
 	new_n_rules = ruleset->n_rules + 1;
 	new_rules = reallocarray(ruleset->rules, new_n_rules,
@@ -4857,6 +4871,10 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action)
 	rule->action = action;
 	rule->evals = 0;
 	rule->hits = 0;
+	if (action == RA_POISON)
+		rule->poison_tag = poison_tag;
+	else
+		rule->poison_tag = 0;
 
 	return (rule);
 }
@@ -4878,6 +4896,10 @@ quark_rule_append_field(struct quark_rule *rule, struct rule_field *rf)
 		if (*rf->path == 0)
 			goto inval;
 		if (rf->path[sizeof(rf->path) - 1] != 0)
+			goto inval;
+		break;
+	case RF_POISON:
+		if (rf->poison_tag == 0)
 			goto inval;
 		break;
 	default:
@@ -4955,6 +4977,18 @@ int
 quark_rule_append_process_filename(struct quark_rule *rule, const char *path)
 {
 	return (quark_rule_append_any_path(rule, path, RF_PROCESS_FILENAME));
+}
+
+int
+quark_rule_append_poison(struct quark_rule *rule, u64 poison_tag)
+{
+	struct rule_field	rf;
+
+	bzero(&rf, sizeof(rf));
+	rf.code = RF_POISON;
+	rf.poison_tag = poison_tag;
+
+	return (quark_rule_append_field(rule, &rf));
 }
 
 static const struct quark_event *
