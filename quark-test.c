@@ -496,6 +496,31 @@ fork_exec_nop(void)
 	return (fork_exec_nop1(0, 0));
 }
 
+static void
+fork_n(int n)
+{
+	pid_t	pid;
+	int	status;
+
+	if (n == 0)
+		return;
+
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+	/* parent */
+	if (pid != 0) {
+		if (waitpid(pid, &status, 0) == -1)
+			err(1, "waitpid");
+		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+			errx(1, "child didn't exit cleanly");
+
+		return;
+	} else {
+		fork_n(--n);
+		exit(0);
+	}
+}
+
 static int
 clone_start(void *nada)
 {
@@ -598,6 +623,12 @@ drain_for_pid(struct quark_queue *qq, pid_t pid)
 	}
 
 	return (qev);
+}
+
+static const struct quark_event *
+drain_any(struct quark_queue *qq)
+{
+	return (drain_for_pid(qq, -1));
 }
 
 static void
@@ -1780,7 +1811,7 @@ t_rule(const struct test *t, struct quark_queue_attr *qa)
 	 * write.
 	 */
 	quark_ruleset_init(&ruleset);
-	rule = quark_ruleset_append_rule(&ruleset, RA_DROP);
+	rule = quark_ruleset_append_rule(&ruleset, RA_DROP, 0);
 	assert(rule != NULL);
 	assert(!quark_rule_append_pid(rule, getpid()));
 	assert(!quark_rule_append_file_path(rule, "/tmp/quark-test-path1*"));
@@ -1810,6 +1841,67 @@ t_rule(const struct test *t, struct quark_queue_attr *qa)
 	/* Make sure it hits the rule once */
 	assert(rule->hits == 1);
 	assert(rule->evals > rule->hits);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+static int
+t_poison(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*rule;
+	u64				 poison_tag;
+	int				 i;
+
+	/*
+	 * We will add 3 rules.
+	 * First rule poisons all our children with poison_tag.
+	 * Second rule PASSes everything with poison_tag.
+	 * Third rule DROPs everything else.
+	 * We then fork children up to gran-gran-children(4 levels) and wait for
+	 * their events.
+	 */
+
+	poison_tag = 1805;
+	quark_ruleset_init(&ruleset);
+
+	/* First add a rule to poison our children BUT THINK OF THE CHILDREN! */
+	rule = quark_ruleset_append_rule(&ruleset, RA_POISON, poison_tag);
+	assert(rule != NULL);
+	assert(!quark_rule_append_ppid(rule, getpid()));
+
+	/* Now add a rule to PASS on our children */
+	rule = quark_ruleset_append_rule(&ruleset, RA_PASS, 0);
+	assert(rule != NULL);
+	assert(!quark_rule_append_poison(rule, poison_tag));
+
+	/* Now block everything else */
+	rule = quark_ruleset_append_rule(&ruleset, RA_DROP, 0);
+	assert(rule != NULL);
+
+	/* Start the ball */
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * Fork up to gran-gran-children, this only returns when they've all
+	 * been waited for by their parents
+	 */
+	fork_n(4);
+
+	/* There should be now exactly 4 events, all with FORK+EXIT */
+	for (i = 0; i < 4; i++) {
+		qev = drain_any(&qq);
+		assert(qev->events == (QUARK_EV_FORK | QUARK_EV_EXIT));
+		assert(qev->process != NULL);
+		assert(qev->process->poison_tag == poison_tag);
+	}
 
 	quark_queue_close(&qq);
 	quark_ruleset_clear(&ruleset);
@@ -1859,6 +1951,7 @@ struct test all_tests[] = {
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule),
+	T_EBPF(t_poison),
 	{ NULL,	NULL, 0, 0 }
 };
 #undef S
