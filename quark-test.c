@@ -43,13 +43,29 @@
 #define MAN_QUARK_TEST
 #include "manpages.h"
 
-#define PATTERN "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+#define PATTERN		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+#define STATUS_LINELEN	32
+#define MAXTESTS	512
 
 struct udphdr {
 	u16 source;
 	u16 dest;
 	u16 len;
 	u16 check;
+};
+
+struct progress {
+	int green;
+	int red;
+	int total;
+	int state[MAXTESTS];
+};
+
+struct test {
+	char	 *name;
+	int	(*func)(const struct test *, struct quark_queue_attr *);
+	int	  backend;
+	int	  excluded;
 };
 
 #define msleep(_x)	usleep((uint64_t)_x * 1000ULL)
@@ -66,9 +82,11 @@ static int	noforkflag;	/* don't fork on each test */
 static int	bflag;		/* run bpf tests */
 static int	kflag;		/* run kprobe tests */
 static u64	boottime;
+static int	fancy_tty;
+static int	in_valgrind;
 
 static int
-fancy_tty(void)
+probe_fancy_tty(void)
 {
 	char	*term = getenv("TERM");
 
@@ -84,7 +102,7 @@ color(int color)
 	static int	 old;
 	int		 ret;
 
-	if (!fancy_tty())
+	if (!fancy_tty)
 		return (SANE);
 
 	ret = old;
@@ -116,7 +134,9 @@ backend_of_attr(struct quark_queue_attr *qa)
 {
 	int	be;
 
-	if (((qa->flags & QQ_ALL_BACKENDS) == QQ_ALL_BACKENDS))
+	if (qa == NULL)
+		return (-1);
+	else if (((qa->flags & QQ_ALL_BACKENDS) == QQ_ALL_BACKENDS))
 		errx(1, "backend must be explicit");
 	else if (qa->flags & QQ_EBPF)
 		be = QQ_EBPF;
@@ -133,7 +153,7 @@ spin(void)
 {
 	static int ch;
 
-	if (!fancy_tty())
+	if (!fancy_tty || in_valgrind)
 		return;
 
 	/* -\|/ */
@@ -159,10 +179,77 @@ spin(void)
 	fflush(stdout);
 }
 
+#define erase_from_cursor()	printf("\033[0K")
+#define cursor_up(_n)		printf("\033[%dA", _n)
+
+static void
+progress_add(struct progress *progress, int state)
+{
+	int	idx;
+
+	idx = progress->green + progress->red;
+	if (idx == MAXTESTS)
+		err(1, "max tests reached! bump MAXTESTS!");
+	if (state == GREEN)
+		progress->green++;
+	else if (state == RED)
+		progress->red++;
+	else
+		err(1, "bad progress state");
+	progress->state[idx] = state;
+}
+
+static void
+progress_print(struct progress *progress)
+{
+	int	i, x, finished;
+
+	if (!fancy_tty || progress->total == 1)
+		return;
+
+	finished = progress->green + progress->red;
+
+	erase_from_cursor();
+	putchar('\n');
+	if (finished != progress->total) {
+		erase_from_cursor();
+		putchar('\n');
+	}
+	putchar('[');
+	for (i = 0; i < finished; i++) {
+		x = color(progress->state[i]);
+		putchar('#');
+		color(x);
+	}
+	for (i = 0; i < (progress->total - finished); i++)
+		putchar(' ');
+	putchar(']');
+	putchar(' ');
+	x = color(GREEN);
+	printf("%d", progress->green);
+	color(x);
+	putchar('/');
+	x = color(RED);
+	printf("%d", progress->red);
+	color(x);
+	putchar('/');
+	printf("%d", progress->total);
+
+	if (finished == progress->total)
+		putchar('\n');
+	else {
+		/* go up two lines*/
+		cursor_up(2);
+		putchar('\r');
+	}
+
+	fflush(stdout);
+}
+
 static void
 hide_cursor(void)
 {
-	if (!fancy_tty())
+	if (!fancy_tty)
 		return;
 	printf("\e[?25l");
 	fflush(stdout);
@@ -171,7 +258,7 @@ hide_cursor(void)
 static void
 show_cursor(void)
 {
-	if (!fancy_tty())
+	if (!fancy_tty)
 		return;
 	printf("\e[?25h");
 	fflush(stdout);
@@ -315,13 +402,6 @@ dump_open_fd(FILE *f)
 	closedir(dirp);		/* closes dfd */
 	fflush(f);
 }
-
-struct test {
-	char	 *name;
-	int	(*func)(const struct test *, struct quark_queue_attr *);
-	int	  backend;
-	int	  excluded;
-};
 
 static void
 display_version(void)
@@ -1739,18 +1819,24 @@ t_rule(const struct test *t, struct quark_queue_attr *qa)
 
 /*
  * Try to order by increasing order of complexity
+ * Use T() for tests that require no queue.
+ * Define the test twice if for KPROBE and EBPF
  */
-#define T(_x)		{ S(_x), _x, QQ_ALL_BACKENDS, 0 }
+#define T(_x)		{ S(_x), _x, 0, 0 }
 #define T_KPROBE(_x)	{ S(_x), _x, QQ_KPROBE, 0 }
 #define T_EBPF(_x)	{ S(_x), _x, QQ_EBPF, 0 }
 #define S(_x)		#_x
 struct test all_tests[] = {
-	T(t_probe),
-	T(t_os_release),
-	T(t_fork_exec_exit),
+	T_EBPF(t_probe),
+	T_KPROBE(t_probe),
+	T_EBPF(t_os_release),
+	T_KPROBE(t_os_release),
+	T_EBPF(t_fork_exec_exit),
+	T_KPROBE(t_fork_exec_exit),
 	T_EBPF(t_fork_exec_exit_rel),
 	T_EBPF(t_id_change),
-	T(t_exit_tgid),
+	T_EBPF(t_exit_tgid),
+	T_KPROBE(t_exit_tgid),
 	T_EBPF(t_file),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
@@ -1762,12 +1848,16 @@ struct test all_tests[] = {
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
 	T_EBPF(t_cgroup_parse),
-	T(t_namespace),
-	T(t_cache_grace),
-	T(t_min_agg),
-	T(t_stats),
-	T_EBPF(t_hanson),
-	T_EBPF(t_hanson_escape),
+	T_EBPF(t_namespace),
+	T_KPROBE(t_namespace),
+	T_EBPF(t_cache_grace),
+	T_KPROBE(t_cache_grace),
+	T_EBPF(t_min_agg),
+	T_KPROBE(t_min_agg),
+	T_EBPF(t_stats),
+	T_KPROBE(t_stats),
+	T(t_hanson),
+	T(t_hanson_escape),
 	T_EBPF(t_rule),
 	{ NULL,	NULL, 0, 0 }
 };
@@ -1785,18 +1875,26 @@ display_tests(void)
 	exit(0);
 }
 
-static struct test *
-lookup_test(const char *name)
+static void
+toggle_test(const char *name, int excluded)
 {
 	struct test	*t;
+	int		 matches;
 
+	matches = 0;
 	for (t = all_tests; t->name != NULL; t++) {
-		if (!strcmp(t->name, name))
-			return (t);
+		if (strcmp(t->name, name))
+			continue;
+		t->excluded = excluded;
+		matches++;
 	}
 
-	return (NULL);
+	if (!matches)
+		errx(1, "no test named %s", name);
 }
+
+#define exclude_test(_n) toggle_test(_n, 1)
+#define include_test(_n) toggle_test(_n, 0)
 
 static int
 run_test_doit(struct test *t, struct quark_queue_attr *qa)
@@ -1808,8 +1906,13 @@ run_test_doit(struct test *t, struct quark_queue_attr *qa)
 	 * Check for FD leaks
 	 */
 	before_nfd = num_open_fd();
-	qa_copy = *qa;
-	r = t->func(t, &qa_copy);
+	if (qa == NULL)
+		qa = NULL;
+	else {
+		qa_copy = *qa;
+		qa = &qa_copy;
+	}
+	r = t->func(t, qa);
 	after_nfd = num_open_fd();
 	if (before_nfd != after_nfd) {
 		fprintf(stderr,
@@ -1826,7 +1929,7 @@ run_test_doit(struct test *t, struct quark_queue_attr *qa)
  * A test runs as a subprocess to avoid contamination.
  */
 static int
-run_test(struct test *t, struct quark_queue_attr *qa)
+run_test(struct progress *progress, struct test *t, struct quark_queue_attr *qa)
 {
 	pid_t		 child;
 	int		 status, x, linepos, be, r;
@@ -1836,28 +1939,23 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 	size_t		 child_buflen;
 	ssize_t		 n;
 
+	progress_print(progress);
+
 	/*
 	 * Figure out if this is ebpf or kprobe
 	 */
 	be = backend_of_attr(qa);
-	if (be != QQ_EBPF && be != QQ_KPROBE)
-		errx(1, "bad backend");
 
-	linepos = printf("%s @ %s", t->name,
-	    be == QQ_EBPF ? "ebpf" : "kprobe");
-	while (++linepos < 32)
+	linepos = printf("%s", t->name);
+	if (be != -1) {
+		linepos += printf(" @ %s",
+		    be == QQ_EBPF ? "ebpf" : "kprobe");
+	}
+
+	while (++linepos < STATUS_LINELEN)
 		putchar('.');
 
 	fflush(stdout);
-
-	if (((t->backend & be) == 0) || t->excluded) {
-		x = color(YELLOW);
-		printf("n/a\n");
-		color(x);
-		fflush(stdout);
-
-		return (0);
-	}
 
 	if (noforkflag) {
 		r = run_test_doit(t, qa);
@@ -1865,10 +1963,12 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 			x = color(GREEN);
 			printf("ok\n");
 			color(x);
+			progress_add(progress, GREEN);
 		} else {
 			x = color(RED);
 			printf("failed\n");
 			color(x);
+			progress_add(progress, RED);
 		}
 		fflush(stdout);
 
@@ -1908,7 +2008,6 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 	/*
 	 * Drain the pipe until EOF, meaning the child exited
 	 */
-	hide_cursor();
 	for (;;) {
 		fd_set		rfds;
 		struct timeval	tv;
@@ -1916,7 +2015,7 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 
 		spin();
 		tv.tv_sec = 0;
-		tv.tv_usec = 25;
+		tv.tv_usec = 100000; /* 100ms */
 
 		FD_ZERO(&rfds);
 		FD_SET(child_stderr[0], &rfds);
@@ -1946,7 +2045,6 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 		if (feof(child_stream))
 			errx(1, "fwrite got EOF");
 	}
-	show_cursor();
 
 	/*
 	 * We only get here when we get an EOF from the child pipe, so it
@@ -1982,8 +2080,12 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 	child_buf = NULL;
 	child_buflen = 0;
 
-	if (WIFEXITED(status))
+	if (WIFEXITED(status)) {
+		progress_add(progress, WEXITSTATUS(status) == 0 ? GREEN : RED);
 		return (WEXITSTATUS(status));
+	}
+
+	progress_add(progress, RED);
 
 	return (-1);
 }
@@ -1995,6 +2097,8 @@ run_tests(int argc, char *argv[])
 	int			 failed, i;
 	struct quark_queue_attr	 bpf_attr;
 	struct quark_queue_attr	 kprobe_attr;
+	struct quark_queue_attr	*attr;
+	struct progress		 progress;
 
 	quark_queue_default_attr(&bpf_attr);
 	bpf_attr.flags &= ~QQ_ALL_BACKENDS;
@@ -2008,25 +2112,54 @@ run_tests(int argc, char *argv[])
 	kprobe_attr.hold_time = 100;
 	kprobe_attr.max_env = 32768;
 
+	bzero(&progress, sizeof(progress));
 	failed = 0;
-	if (argc == 0) {
-		for (t = all_tests; t->name != NULL; t++) {
-			if (bflag && run_test(t, &bpf_attr) != 0)
-				failed++;
-			if (kflag && run_test(t, &kprobe_attr) != 0)
-				failed++;
-		}
-	} else {
-		for (i = 0; i < argc; i++) {
-			t = lookup_test(argv[i]);
-			if (t == NULL)
-				errx(1, "test %s doesn't exist", argv[i]);
-			if (bflag && run_test(t, &bpf_attr) != 0)
-				failed++;
-			if (kflag && run_test(t, &kprobe_attr) != 0)
-				failed++;
-		}
+
+	/*
+	 * If argc != 0, only consider specified tests.
+	 */
+	if (argc != 0) {
+		for (t = all_tests; t->name != NULL; t++)
+			t->excluded = 1;
+		for (i = 0; i < argc; i++)
+			for (t = all_tests; t->name != NULL; t++)
+				if (!strcmp(t->name, argv[i]))
+					include_test(t->name);
 	}
+
+	/*
+	 * Maybe exclude tests depending on the backend
+	 */
+	for (t = all_tests; t->name != NULL; t++) {
+		if ((t->backend == QQ_EBPF && !bflag) ||
+		    (t->backend == QQ_KPROBE && !kflag))
+			t->excluded = 1;
+	}
+
+	for (t = all_tests; t->name != NULL; t++) {
+		if (t->excluded)
+			continue;
+		progress.total++;
+	}
+
+	if (progress.total == 0)
+		errx(1, "nothing to run");
+
+	hide_cursor();
+	for (t = all_tests; t->name != NULL; t++) {
+		if (t->excluded)
+			continue;
+		if (t->backend == QQ_EBPF)
+			attr = &bpf_attr;
+		else if (t->backend == QQ_KPROBE)
+			attr = &kprobe_attr;
+		else
+			attr = NULL;
+		if (run_test(&progress, t, attr) != 0)
+			failed++;
+	}
+	progress_print(&progress);
+	show_cursor();
 
 	return (failed);
 }
@@ -2042,8 +2175,10 @@ int
 main(int argc, char *argv[])
 {
 	int			 ch, failed, x;
-	struct test		*t;
 	struct sigaction	 sigact;
+
+	fancy_tty = probe_fancy_tty();
+	in_valgrind = getenv("VALGRIND") != NULL;
 
 	while ((ch = getopt(argc, argv, "1bhklvVx:")) != -1) {
 		switch (ch) {
@@ -2072,9 +2207,7 @@ main(int argc, char *argv[])
 			display_version();
 			break;	/* NOTREACHED */
 		case 'x':
-			if ((t = lookup_test(optarg)) == NULL)
-				errx(1, "test %s doesn't exist", optarg);
-			t->excluded = 1;
+			exclude_test(optarg);
 			break;
 		default:
 			usage();
