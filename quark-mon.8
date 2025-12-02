@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDEeFHhkMNSsTtv
+.Op Fl BbDEeFGgHhkMNSsTtv
 .Op Fl C Ar filename
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
@@ -66,6 +66,10 @@ Entry leader is how the process entered the system, it is disabled by default as
 it is Elastic/ECS specific.
 .It Fl F
 Enable file events (experimental).
+.It Fl G
+Enables a getpid probe, only for benchmarking,
+.Em don't
+use this otherwise!
 .It Fl g
 Use minimal aggregation, fork, exec and exit will
 .Em not

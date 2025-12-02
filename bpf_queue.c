@@ -265,11 +265,22 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
-	case EBPF_EVENT_PROCESS_SETSID: {
+	case EBPF_EVENT_PROCESS_SETSID: /* FALLTHROUGH */
+	case EBPF_EVENT_PROCESS_GETPID: {
 		struct ebpf_process_setsid_event	*sid;
+		int					 raw_type;
+
+		if (ev->type == EBPF_EVENT_PROCESS_SETSID)
+			raw_type = RAW_ID_CHANGE;
+		else if (ev->type == EBPF_EVENT_PROCESS_GETPID)
+			raw_type = RAW_GETPID;
+		else {
+			qwarnx("unhandled setsid/getpid type");
+			goto bad;
+		}
 
 		sid = (struct ebpf_process_setsid_event *)ev;
-		if ((raw = raw_event_alloc(RAW_ID_CHANGE)) == NULL)
+		if ((raw = raw_event_alloc(raw_type)) == NULL)
 			goto bad;
 		raw->pid = sid->pids.tgid;
 		raw->time = ev->ts;
@@ -284,7 +295,8 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		ebpf_ctx.env_len = 0;
 
 		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
-		raw->task.id_change = QUARK_ID_CHANGE_SETSID;
+		if (raw_type == RAW_ID_CHANGE)
+			raw->task.id_change = QUARK_ID_CHANGE_SETSID;
 
 		break;
 	}
@@ -1241,6 +1253,9 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
+
+	if (qq->flags & QQ_GETPID)
+		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
 
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {

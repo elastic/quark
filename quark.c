@@ -117,8 +117,9 @@ raw_event_alloc(int type)
 
 	switch (raw->type) {
 	case RAW_WAKE_UP_NEW_TASK: /* FALLTHROUGH */
-	case RAW_EXIT_THREAD:
-	case RAW_ID_CHANGE:
+	case RAW_EXIT_THREAD:	   /* FALLTHROUGH */
+	case RAW_ID_CHANGE:	   /* FALLTHROUGH */
+	case RAW_GETPID:
 		raw->task.exit_code = -1;
 		break;
 	case RAW_EXEC:		/* nada */
@@ -149,9 +150,10 @@ raw_event_free(struct raw_event *raw)
 
 	task = NULL;
 	switch (raw->type) {
-	case RAW_WAKE_UP_NEW_TASK:
-	case RAW_EXIT_THREAD:
-	case RAW_ID_CHANGE:
+	case RAW_WAKE_UP_NEW_TASK: /* FALLTHROUGH */
+	case RAW_EXIT_THREAD:	   /* FALLTHROUGH */
+	case RAW_ID_CHANGE:	   /* FALLTHROUGH */
+	case RAW_GETPID:
 		task = &raw->task;
 		break;
 	case RAW_EXEC:
@@ -1742,6 +1744,8 @@ event_type_str(u64 event)
 		return "SHM";
 	case QUARK_EV_TTY:
 		return "TTY";
+	case QUARK_EV_GETPID:
+		return "GETPID";
 	default:
 		return "?";
 	}
@@ -2408,6 +2412,10 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		dst->events |= QUARK_EV_ID_CHANGE;
 		raw_task = &src->task;
 		dst->id_change |= raw_task->id_change;
+		break;
+	case RAW_GETPID:
+		dst->events |= QUARK_EV_GETPID;
+		raw_task = &src->task;
 		break;
 	default:
 		qwarnx("unhandled raw_event type %d", src->type);
@@ -4998,7 +5006,8 @@ quark_queue_get_event(struct quark_queue *qq)
 		case RAW_EXIT_THREAD:		/* FALLTHROUGH */
 		case RAW_ID_CHANGE:		/* FALLTHROUGH */
 		case RAW_COMM:			/* FALLTHROUGH */
-		case RAW_EXEC_CONNECTOR:
+		case RAW_EXEC_CONNECTOR:	/* FALLTHROUGH */
+		case RAW_GETPID:
 			qev = raw_event_process(qq, raw);
 			break;
 		case RAW_SOCK_CONN:

@@ -228,6 +228,7 @@ enum raw_types {
 	RAW_MODULE_LOAD,
 	RAW_SHM,
 	RAW_TTY,
+	RAW_GETPID,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -479,6 +480,7 @@ struct quark_event {
 #define QUARK_EV_MODULE_LOAD		(1 << 11)
 #define QUARK_EV_SHM			(1 << 12)
 #define QUARK_EV_TTY			(1 << 13)
+#define QUARK_EV_GETPID			(1 << 14)
 	u64				 events;
 	u64				 time;
 	const struct quark_process	*process;
@@ -856,6 +858,7 @@ struct quark_queue_attr {
 #define QQ_TTY			(1 << 10)
 #define QQ_PTRACE		(1 << 11)
 #define QQ_MODULE_LOAD		(1 << 12)
+#define QQ_GETPID		(1 << 13)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
 	int			 flags;
 	int			 max_length;

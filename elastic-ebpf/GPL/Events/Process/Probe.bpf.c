@@ -256,24 +256,18 @@ int BPF_KPROBE(kprobe__disassociate_ctty, int on_exit)
     return disassociate_ctty__enter(on_exit);
 }
 
-// tracepoint/syscalls/sys_[enter/exit]_[name] tracepoints are not available
-// with BTF type information, so we must use a non-BTF tracepoint
-SEC("tracepoint/syscalls/sys_exit_setsid")
-int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
+static int setsid__exit(int evtype)
 {
     const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
     if (is_kernel_thread(task))
         goto out;
 
-    if (BPF_CORE_READ(args, ret) < 0)
-        goto out;
-
-    struct ebpf_process_setsid_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+    struct ebpf_process_setsid_event *event = get_event_buffer();
     if (!event)
         goto out;
 
-    event->hdr.type    = EBPF_EVENT_PROCESS_SETSID;
+    event->hdr.type    = evtype;
     event->hdr.ts      = bpf_ktime_get_ns();
     event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
@@ -283,10 +277,30 @@ int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
     ebpf_comm__fill(event->comm, sizeof(event->comm), task);
     ebpf_ns__fill(&event->ns, task);
 
-    bpf_ringbuf_submit(event, 0);
+    ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
 
 out:
     return 0;
+}
+
+// tracepoint/syscalls/sys_[enter/exit]_[name] tracepoints are not available
+// with BTF type information, so we must use a non-BTF tracepoint
+SEC("tracepoint/syscalls/sys_exit_setsid")
+int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
+{
+    if (BPF_CORE_READ(args, ret) < 0)
+        goto out;
+
+    return setsid__exit(EBPF_EVENT_PROCESS_SETSID);
+
+out:
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_getpid")
+int tracepoint_syscalls_sys_exit_getpid(struct syscall_getpid_exit *args)
+{
+    return setsid__exit(EBPF_EVENT_PROCESS_GETPID);
 }
 
 SEC("tp_btf/module_load")
