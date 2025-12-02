@@ -45,6 +45,7 @@ enum ebpf_event_type {
     EBPF_EVENT_PROCESS_PTRACE               = (1 << 18),
     EBPF_EVENT_PROCESS_LOAD_MODULE          = (1 << 19),
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
+    EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
 };
 
 struct ebpf_event_header {
