@@ -4937,13 +4937,13 @@ quark_rule_append_any_pid(struct quark_rule *rule, u32 pid,
 }
 
 int
-quark_rule_append_pid(struct quark_rule *rule, u32 pid)
+quark_rule_match_pid(struct quark_rule *rule, u32 pid)
 {
 	return (quark_rule_append_any_pid(rule, pid, RF_PROCESS_PID));
 }
 
 int
-quark_rule_append_ppid(struct quark_rule *rule, u32 pid)
+quark_rule_match_ppid(struct quark_rule *rule, u32 pid)
 {
 	return (quark_rule_append_any_pid(rule, pid, RF_PROCESS_PPID));
 }
@@ -4968,19 +4968,19 @@ quark_rule_append_any_path(struct quark_rule *rule, const char *path,
 }
 
 int
-quark_rule_append_file_path(struct quark_rule *rule, const char *path)
+quark_rule_match_file_path(struct quark_rule *rule, const char *path)
 {
 	return (quark_rule_append_any_path(rule, path, RF_FILE_PATH));
 }
 
 int
-quark_rule_append_process_filename(struct quark_rule *rule, const char *path)
+quark_rule_match_process_filename(struct quark_rule *rule, const char *path)
 {
 	return (quark_rule_append_any_path(rule, path, RF_PROCESS_FILENAME));
 }
 
 int
-quark_rule_append_poison(struct quark_rule *rule, u64 poison_tag)
+quark_rule_match_poison(struct quark_rule *rule, u64 poison_tag)
 {
 	struct rule_field	rf;
 
