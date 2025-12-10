@@ -77,13 +77,13 @@ struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
 void			 quark_ruleset_init(struct quark_ruleset *);
 void			 quark_ruleset_clear(struct quark_ruleset *);
 struct quark_rule	*quark_ruleset_append_rule(struct quark_ruleset *, int, u64);
-int			 quark_rule_append_pid(struct quark_rule *, u32);
-int			 quark_rule_append_ppid(struct quark_rule *, u32);
-int			 quark_rule_append_file_path(struct quark_rule *,
+int			 quark_rule_match_pid(struct quark_rule *, u32);
+int			 quark_rule_match_ppid(struct quark_rule *, u32);
+int			 quark_rule_match_file_path(struct quark_rule *,
 			     const char *);
-int			 quark_rule_append_process_filename(struct quark_rule *,
+int			 quark_rule_match_process_filename(struct quark_rule *,
 			     const char *);
-int			 quark_rule_append_poison(struct quark_rule *, u64);
+int			 quark_rule_match_poison(struct quark_rule *, u64);
 struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
 			     struct quark_event *);
 

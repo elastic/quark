@@ -1813,8 +1813,8 @@ t_rule(const struct test *t, struct quark_queue_attr *qa)
 	quark_ruleset_init(&ruleset);
 	rule = quark_ruleset_append_rule(&ruleset, RA_DROP, 0);
 	assert(rule != NULL);
-	assert(!quark_rule_append_pid(rule, getpid()));
-	assert(!quark_rule_append_file_path(rule, "/tmp/quark-test-path1*"));
+	assert(!quark_rule_match_pid(rule, getpid()));
+	assert(!quark_rule_match_file_path(rule, "/tmp/quark-test-path1*"));
 	assert(rule->action == RA_DROP);
 	assert(rule->n_fields == 2);
 
@@ -1873,12 +1873,12 @@ t_poison(const struct test *t, struct quark_queue_attr *qa)
 	/* First add a rule to poison our children BUT THINK OF THE CHILDREN! */
 	rule = quark_ruleset_append_rule(&ruleset, RA_POISON, poison_tag);
 	assert(rule != NULL);
-	assert(!quark_rule_append_ppid(rule, getpid()));
+	assert(!quark_rule_match_ppid(rule, getpid()));
 
 	/* Now add a rule to PASS on our children */
 	rule = quark_ruleset_append_rule(&ruleset, RA_PASS, 0);
 	assert(rule != NULL);
-	assert(!quark_rule_append_poison(rule, poison_tag));
+	assert(!quark_rule_match_poison(rule, poison_tag));
 
 	/* Now block everything else */
 	rule = quark_ruleset_append_rule(&ruleset, RA_DROP, 0);
