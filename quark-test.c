@@ -1181,7 +1181,7 @@ t_memfd(const struct test *t, struct quark_queue_attr *qa)
 	qshm = qev->shm;
 	assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
 	assert(qshm->memfd_create_flags == MFD_CLOEXEC);
-	assert(!strcmp(qshm->path, "t_memfd-glorious-test"));
+	assert(!strcmp(qshm->path, "memfd:t_memfd-glorious-test"));
 
 #if 0
 	/*

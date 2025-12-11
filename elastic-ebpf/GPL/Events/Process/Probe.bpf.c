@@ -298,7 +298,7 @@ out:
 }
 
 SEC("tracepoint/syscalls/sys_exit_getpid")
-int tracepoint_syscalls_sys_exit_getpid(struct syscall_getpid_exit *args)
+int tracepoint_syscalls_sys_exit_getpid(struct syscall_trace_exit *args)
 {
     return setsid__exit(EBPF_EVENT_PROCESS_GETPID);
 }
@@ -467,9 +467,6 @@ out:
 SEC("tracepoint/syscalls/sys_enter_memfd_create")
 int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
 {
-    if (ebpf_events_is_trusted_pid())
-        goto out;
-
     // from: /sys/kernel/debug/tracing/events/syscalls/sys_enter_memfd_create/format
     struct memfd_create_args {
         short common_type;
@@ -481,6 +478,21 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
         unsigned long flags;
     };
     struct memfd_create_args *ex_args = (struct memfd_create_args *)ctx;
+
+    struct ebpf_events_state state = {};
+    state.memfd.flags = ex_args->flags;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_MEMFD_CREATE, &state);
+    return 0;
+}
+
+static int alloc_file_pseudo__enter(const char *name)
+{
+    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_MEMFD_CREATE);
+    if (!state)
+        goto out;
+
+    if (ebpf_events_is_trusted_pid())
+        goto out;
 
     const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
@@ -494,7 +506,7 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
     event->hdr.type    = EBPF_EVENT_PROCESS_MEMFD_CREATE;
     event->hdr.ts      = bpf_ktime_get_ns();
     event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
-    event->flags       = ex_args->flags;
+    event->flags       = state->memfd.flags;
 
     ebpf_pid_info__fill(&event->pids, task);
 
@@ -505,7 +517,7 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
 
     // memfd filename
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_FILENAME);
-    size  = bpf_probe_read_user_str(field->data, PATH_MAX, ex_args->uname);
+    size  = bpf_probe_read_kernel_str(field->data, PATH_MAX, name);
     if (size <= 0)
         goto out;
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
@@ -514,6 +526,20 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
 
 out:
     return 0;
+}
+
+SEC("fentry/alloc_file_pseudo")
+int BPF_PROG(fentry__alloc_file_pseudo, struct inode *i, struct vfsmount *v,
+	const char * name, int f, const struct file_operations *ops)
+{
+    return alloc_file_pseudo__enter(name);
+}
+
+SEC("kprobe/alloc_file_pseudo")
+int BPF_KPROBE(kprobe__alloc_file_pseudo, struct inode *i, struct vfsmount *v,
+	const char * name, int f, const struct file_operations *ops)
+{
+    return alloc_file_pseudo__enter(name);
 }
 
 static int commit_creds__enter(struct cred *new)
