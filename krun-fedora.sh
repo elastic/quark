@@ -45,7 +45,7 @@ shift 2
 
 case $FEDORAVER in
 2?|3?|40)	URL="https://archives.fedoraproject.org/pub/archive/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
-43|rawhide)	URL="https://ftp.fau.de/fedora/linux/development/$FEDORAVER/Everything/x86_64/os/Packages/k";;
+rawhide)	URL="https://ftp.fau.de/fedora/linux/development/$FEDORAVER/Everything/x86_64/os/Packages/k";;
 4?)		URL="https://ftp.fau.de/fedora/linux/updates/$FEDORAVER/Everything/x86_64/Packages/k";;
 *)		die "Unsupported Fedora version: $FEDORAVER";;
 esac
