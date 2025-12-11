@@ -4786,20 +4786,28 @@ static int
 rule_field_match(struct quark_rule *rule, struct rule_field *field,
     struct quark_event *qev)
 {
+#define MATCH_PROC_FIELD(_p, _n, _v)					\
+	((_p) != NULL && ((_p)->flags & QUARK_F_PROC) && (_p)->_n == _v)
+
 	switch (field->code) {
 	case RF_PROCESS_PID:
 		if (qev->process != NULL)
 			return (qev->process->pid == field->pid);
 		break;
 	case RF_PROCESS_PPID:
-		if (qev->process != NULL)
-			return (qev->process->proc_ppid == field->pid);
-		break;
+		return (MATCH_PROC_FIELD(qev->process, proc_ppid, field->pid));
 	case RF_PROCESS_FILENAME:
 		if (qev->process != NULL &&
 		    (qev->process->flags & QUARK_F_FILENAME) &&
 		    qev->process->filename != NULL)
 			return (path_match(field, qev->process->filename));
+		break;
+	case RF_PROCESS_UID:
+		return (MATCH_PROC_FIELD(qev->process, proc_uid, field->id));
+	case RF_PROCESS_GID:
+		return (MATCH_PROC_FIELD(qev->process, proc_gid, field->id));
+	case RF_PROCESS_SID:
+		return (MATCH_PROC_FIELD(qev->process, proc_sid, field->id));
 		break;
 	case RF_FILE_PATH:
 		if (qev->file != NULL)
@@ -4814,6 +4822,7 @@ rule_field_match(struct quark_rule *rule, struct rule_field *field,
 	}
 
 	return (0);
+#undef MATCH_PROC_FIELD
 }
 
 struct quark_rule *
@@ -4890,6 +4899,10 @@ quark_rule_append_field(struct quark_rule *rule, struct rule_field *rf)
 	case RF_PROCESS_PPID:
 		if (rf->pid == 0)
 			goto inval;
+		break;
+	case RF_PROCESS_UID:		/* FALLTHROUGH */
+	case RF_PROCESS_GID:		/* FALLTHROUGH */
+	case RF_PROCESS_SID:
 		break;
 	case RF_PROCESS_FILENAME:	/* FALLTHROUGH */
 	case RF_FILE_PATH:
@@ -4989,6 +5002,37 @@ quark_rule_match_poison(struct quark_rule *rule, u64 poison_tag)
 	rf.poison_tag = poison_tag;
 
 	return (quark_rule_append_field(rule, &rf));
+}
+
+static int
+quark_rule_append_any_id(struct quark_rule *rule, u32 id, enum rule_field_code code)
+{
+	struct rule_field	rf;
+
+	bzero(&rf, sizeof(rf));
+
+	rf.code = code;
+	rf.id = id;
+
+	return (quark_rule_append_field(rule, &rf));
+}
+
+int
+quark_rule_match_uid(struct quark_rule *rule, u32 uid)
+{
+	return (quark_rule_append_any_id(rule, uid, RF_PROCESS_UID));
+}
+
+int
+quark_rule_match_gid(struct quark_rule *rule, u32 gid)
+{
+	return (quark_rule_append_any_id(rule, gid, RF_PROCESS_GID));
+}
+
+int
+quark_rule_match_sid(struct quark_rule *rule, u32 sid)
+{
+	return (quark_rule_append_any_id(rule, sid, RF_PROCESS_SID));
 }
 
 static const struct quark_event *
