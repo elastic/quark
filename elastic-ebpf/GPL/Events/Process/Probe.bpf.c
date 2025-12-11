@@ -485,7 +485,7 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
     return 0;
 }
 
-static int alloc_file_pseudo__enter(const char *name)
+static int emit_memfd_create_event(const char *name)
 {
     struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_MEMFD_CREATE);
     if (!state)
@@ -528,18 +528,28 @@ out:
     return 0;
 }
 
-SEC("fentry/alloc_file_pseudo")
-int BPF_PROG(fentry__alloc_file_pseudo, struct inode *i, struct vfsmount *v,
-	const char * name, int f, const struct file_operations *ops)
+SEC("fentry/hugetlb_file_setup")
+int BPF_PROG(fentry__hugetlb_file_setup, const char * name)
 {
-    return alloc_file_pseudo__enter(name);
+    return emit_memfd_create_event(name);
 }
 
-SEC("kprobe/alloc_file_pseudo")
-int BPF_KPROBE(kprobe__alloc_file_pseudo, struct inode *i, struct vfsmount *v,
-	const char * name, int f, const struct file_operations *ops)
+SEC("kprobe/hugetlb_file_setup")
+int BPF_KPROBE(kprobe__hugetlb_file_setup, const char * name)
 {
-    return alloc_file_pseudo__enter(name);
+    return emit_memfd_create_event(name);
+}
+
+SEC("fentry/shmem_file_setup")
+int BPF_PROG(fentry__shmem_file_setup, const char * name)
+{
+    return emit_memfd_create_event(name);
+}
+
+SEC("kprobe/shmem_file_setup")
+int BPF_KPROBE(kprobe__shmem_file_setup, const char * name)
+{
+    return emit_memfd_create_event(name);
 }
 
 static int commit_creds__enter(struct cred *new)
