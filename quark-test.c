@@ -1790,7 +1790,7 @@ t_hanson_escape(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
-t_rule(const struct test *t, struct quark_queue_attr *qa)
+t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
@@ -1849,7 +1849,7 @@ t_rule(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
-t_poison(const struct test *t, struct quark_queue_attr *qa)
+t_rule_poison(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
@@ -1909,6 +1909,68 @@ t_poison(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_rule_id(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*rule;
+	uid_t				 uid;
+	struct timespec			 start, now;
+
+	/*
+	 * We will add 2 rules.
+	 * First rule accepts only events from uid 66666.
+	 * Second rule drops all events.
+	 * We then generate one event from uid 0, and another from 66666, if we
+	 * ever see the one with uid 0, it failed.
+	 */
+
+	uid = 66666;
+	quark_ruleset_init(&ruleset);
+
+	/* Accept events that match uid 66666 */
+	rule = quark_ruleset_append_rule(&ruleset, RA_PASS, 0);
+	assert(rule != NULL);
+	assert(!quark_rule_match_uid(rule, 66666));
+
+	/* Now block everything else */
+	rule = quark_ruleset_append_rule(&ruleset, RA_DROP, 0);
+	assert(rule != NULL);
+
+	/* Start the ball */
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * fork a process in uid 0 followed by uid 66666.
+	 */
+	fork_exec_nop();
+	(void)fork_exec_nop1(0, uid);
+
+	/* There should be now exactly 4 events, all with FORK+EXIT */
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	for (now = start; ;(void)clock_gettime(CLOCK_MONOTONIC, &now)) {
+		if ((now.tv_sec - start.tv_sec) >= 5) {
+			errno = ETIME;
+			err(1, "timed out waiting event");
+		}
+		qev = drain_any(&qq);
+		assert(qev->process != NULL);
+		assert(qev->process->flags & QUARK_F_PROC);
+		assert(qev->process->proc_euid == uid);
+		break;
+	}
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  * Use T() for tests that require no queue.
@@ -1950,8 +2012,9 @@ struct test all_tests[] = {
 	T_KPROBE(t_stats),
 	T(t_hanson),
 	T(t_hanson_escape),
-	T_EBPF(t_rule),
-	T_EBPF(t_poison),
+	T_EBPF(t_rule_path),
+	T_EBPF(t_rule_poison),
+	T_EBPF(t_rule_id),
 	{ NULL,	NULL, 0, 0 }
 };
 #undef S

@@ -84,6 +84,9 @@ int			 quark_rule_match_file_path(struct quark_rule *,
 int			 quark_rule_match_process_filename(struct quark_rule *,
 			     const char *);
 int			 quark_rule_match_poison(struct quark_rule *, u64);
+int			 quark_rule_match_uid(struct quark_rule *, u32);
+int			 quark_rule_match_gid(struct quark_rule *, u32);
+int			 quark_rule_match_sid(struct quark_rule *, u32);
 struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
 			     struct quark_event *);
 
@@ -770,6 +773,9 @@ enum rule_field_code {
 	RF_PROCESS_PID,
 	RF_PROCESS_PPID,
 	RF_PROCESS_FILENAME,
+	RF_PROCESS_UID,
+	RF_PROCESS_GID,
+	RF_PROCESS_SID,
 	RF_FILE_PATH,
 	RF_POISON,
 	RF_MAX,
@@ -783,6 +789,7 @@ struct rule_field {
 		u32		pid;
 		u64		poison_tag;
 		char		path[PATH_MAX];
+		u32		id;
 	};
 };
 
