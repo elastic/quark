@@ -786,10 +786,10 @@ struct rule_field {
 	int			flags;
 	size_t			wildcard_len;
 	union {
-		u32		pid;
-		u64		poison_tag;
-		char		path[PATH_MAX];
-		u32		id;
+		u32	 pid;
+		u64	 poison_tag;
+		char	*path;
+		u32	 id;
 	};
 };
 

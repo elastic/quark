@@ -4760,10 +4760,20 @@ void
 quark_ruleset_clear(struct quark_ruleset *ruleset)
 {
 	struct quark_rule	*rule;
-	size_t			 i;
+	size_t			 i, j;
 
 	for (i = 0; i < ruleset->n_rules; i++) {
 		rule = ruleset->rules + i;
+		for (j = 0; j < rule->n_fields; j++) {
+			switch (rule->fields[j].code) {
+			case RF_FILE_PATH:		/* FALLTHROUGH */
+			case RF_PROCESS_FILENAME:	/* FALLTHROUGH */
+				free(rule->fields[j].path);
+				break;
+			default:
+				break;
+			}
+		}
 		free(rule->fields);
 	}
 
@@ -4908,7 +4918,7 @@ quark_rule_append_field(struct quark_rule *rule, struct rule_field *rf)
 	case RF_FILE_PATH:
 		if (*rf->path == 0)
 			goto inval;
-		if (rf->path[sizeof(rf->path) - 1] != 0)
+		if (rf->path == NULL || strlen(rf->path) == 0)
 			goto inval;
 		break;
 	case RF_POISON:
@@ -4973,7 +4983,8 @@ quark_rule_append_any_path(struct quark_rule *rule, const char *path,
 
 	bzero(&rf, sizeof(rf));
 	rf.code = code;
-	strlcpy(rf.path, path, sizeof(rf.path));
+	if ((rf.path = strdup(path)) == NULL)
+		return (-1);
 	if ((p = strchr(rf.path, '*')) != NULL)
 		rf.wildcard_len = p - rf.path;
 
