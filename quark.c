@@ -4275,6 +4275,21 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (quark_sysinfo_init(&qq->sysinfo) == -1)
 		qwarn("Can't init quark_sysinfo, not fatal");
 
+	/*
+	 * Pass rules on all processes, so we can have match on poison rules
+	 */
+	if (qq->ruleset != NULL) {
+		struct quark_event	 qev;
+		struct quark_process	*qp;
+
+		bzero(&qev, sizeof(qev));
+
+		RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
+			qev.process = qp;
+			quark_ruleset_match(qq->ruleset, &qev);
+		}
+	}
+
 	return (0);
 
 fail:

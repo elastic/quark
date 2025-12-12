@@ -1910,6 +1910,37 @@ t_rule_poison(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_rule_poison_existing(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_process	*qp;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*rule;
+	u64				 poison_tag;
+
+	poison_tag = 1805;
+	quark_ruleset_init(&ruleset);
+
+	/* Add a rule to poison just ourselves */
+	rule = quark_ruleset_append_rule(&ruleset, RA_POISON, poison_tag);
+	assert(rule != NULL);
+	assert(!quark_rule_match_pid(rule, getpid()));
+
+	/* Start the ball, we should be poison even before getting any event */
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	qp = quark_process_lookup(&qq, getpid());
+	assert(qp != NULL);
+	assert(qp->poison_tag == poison_tag);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+static int
 t_rule_id(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
@@ -2014,6 +2045,7 @@ struct test all_tests[] = {
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),
 	T_EBPF(t_rule_poison),
+	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),
 	{ NULL,	NULL, 0, 0 }
 };
