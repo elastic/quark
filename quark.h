@@ -87,6 +87,7 @@ int			 quark_rule_match_poison(struct quark_rule *, u64);
 int			 quark_rule_match_uid(struct quark_rule *, u32);
 int			 quark_rule_match_gid(struct quark_rule *, u32);
 int			 quark_rule_match_sid(struct quark_rule *, u32);
+int			 quark_rule_match_comm(struct quark_rule *, const char *);
 struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
 			     struct quark_event *);
 
@@ -776,6 +777,7 @@ enum rule_field_code {
 	RF_PROCESS_UID,
 	RF_PROCESS_GID,
 	RF_PROCESS_SID,
+	RF_PROCESS_COMM,
 	RF_FILE_PATH,
 	RF_POISON,
 	RF_MAX,
@@ -790,6 +792,7 @@ struct rule_field {
 		u64	 poison_tag;
 		char	*path;
 		u32	 id;
+		char	 comm[16];
 	};
 };
 

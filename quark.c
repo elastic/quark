@@ -4811,43 +4811,52 @@ static int
 rule_field_match(struct quark_rule *rule, struct rule_field *field,
     struct quark_event *qev)
 {
+	const struct quark_process	*qp;
+
+	qp = qev->process;
+
 #define MATCH_PROC_FIELD(_p, _n, _v)					\
 	((_p) != NULL && ((_p)->flags & QUARK_F_PROC) && (_p)->_n == _v)
 
 	switch (field->code) {
 	case RF_PROCESS_PID:
-		if (qev->process != NULL)
-			return (qev->process->pid == field->pid);
+		if (qp != NULL)
+			return (qp->pid == field->pid);
 		break;
 	case RF_PROCESS_PPID:
-		return (MATCH_PROC_FIELD(qev->process, proc_ppid, field->pid));
+		return (MATCH_PROC_FIELD(qp, proc_ppid, field->pid));
 	case RF_PROCESS_FILENAME:
-		if (qev->process != NULL &&
-		    (qev->process->flags & QUARK_F_FILENAME) &&
-		    qev->process->filename != NULL)
-			return (path_match(field, qev->process->filename));
+		if (qp != NULL &&
+		    (qp->flags & QUARK_F_FILENAME) &&
+		    qp->filename != NULL)
+			return (path_match(field, qp->filename));
 		break;
 	case RF_PROCESS_UID:
-		return (MATCH_PROC_FIELD(qev->process, proc_uid, field->id));
+		return (MATCH_PROC_FIELD(qp, proc_uid, field->id));
 	case RF_PROCESS_GID:
-		return (MATCH_PROC_FIELD(qev->process, proc_gid, field->id));
+		return (MATCH_PROC_FIELD(qp, proc_gid, field->id));
 	case RF_PROCESS_SID:
-		return (MATCH_PROC_FIELD(qev->process, proc_sid, field->id));
+		return (MATCH_PROC_FIELD(qp, proc_sid, field->id));
+		break;
+	case RF_PROCESS_COMM:
+		if (qp != NULL && qp->flags & QUARK_F_COMM)
+			return (!strcmp(field->comm, qp->comm));
 		break;
 	case RF_FILE_PATH:
 		if (qev->file != NULL)
 			return (path_match(field, qev->file->path));
 		break;
 	case RF_POISON:
-		if (qev->process != NULL)
-			return (qev->process->poison_tag == field->poison_tag);
+		if (qp != NULL)
+			return (qp->poison_tag == field->poison_tag);
 		break;
 	default:
 		break;
 	}
 
-	return (0);
 #undef MATCH_PROC_FIELD
+
+	return (0);
 }
 
 struct quark_rule *
@@ -4928,6 +4937,10 @@ quark_rule_append_field(struct quark_rule *rule, struct rule_field *rf)
 	case RF_PROCESS_UID:		/* FALLTHROUGH */
 	case RF_PROCESS_GID:		/* FALLTHROUGH */
 	case RF_PROCESS_SID:
+		break;
+	case RF_PROCESS_COMM:
+		if (strlen(rf->comm) == 0)
+			goto inval;
 		break;
 	case RF_PROCESS_FILENAME:	/* FALLTHROUGH */
 	case RF_FILE_PATH:
@@ -5059,6 +5072,20 @@ int
 quark_rule_match_sid(struct quark_rule *rule, u32 sid)
 {
 	return (quark_rule_append_any_id(rule, sid, RF_PROCESS_SID));
+}
+
+int
+quark_rule_match_comm(struct quark_rule *rule, const char *comm)
+{
+	struct rule_field	rf;
+
+	bzero(&rf, sizeof(rf));
+
+	rf.code = RF_PROCESS_COMM;
+	if (strlcpy(rf.comm, comm, sizeof(rf.comm)) >= sizeof(rf.comm))
+		return (errno = EINVAL, -1);
+
+	return (quark_rule_append_field(rule, &rf));
 }
 
 static const struct quark_event *
