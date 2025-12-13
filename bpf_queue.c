@@ -1237,6 +1237,13 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_SHM) {
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_memfd_create, 1);
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_shmget, 1);
+		if (use_fentry) {
+			bpf_program__set_autoload(p->progs.fentry__hugetlb_file_setup, 1);
+			bpf_program__set_autoload(p->progs.fentry__shmem_file_setup, 1);
+		} else {
+			bpf_program__set_autoload(p->progs.kprobe__hugetlb_file_setup, 1);
+			bpf_program__set_autoload(p->progs.kprobe__shmem_file_setup, 1);
+		}
 	}
 
 	if (qq->flags & QQ_TTY) {
