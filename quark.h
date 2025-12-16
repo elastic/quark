@@ -601,20 +601,13 @@ struct quark_process {
 	/* QUARK_F_EXIT */
 	s32	 exit_code;
 	u64	 exit_time_event;
-	/* QUARK_F_COMM */
 	char	 comm[16];
-	/* QUARK_F_FILENAME */
 	char	*filename;
-	/* QUARK_F_CMDLINE */
 	size_t	 cmdline_len;
 	char	*cmdline;
-	/* QUARK_F_CWD */
 	char	*cwd;
-	/* QUARK_F_CGROUP */
 	char	*cgroup;
-	/* QUARK_F_CONTAINER */
 	struct quark_container *container;
-	/* QUARK_F_ENV */
 	char	*env;
 	size_t	 env_len;
 };
