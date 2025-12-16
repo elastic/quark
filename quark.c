@@ -525,11 +525,9 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 		qp->flags |= QUARK_F_COMM;
 		strlcpy(qp->comm, parent->comm, sizeof(qp->comm));
 	}
-	if (parent->flags & QUARK_F_FILENAME) {
+	if (parent->filename != NULL) {
 		free(qp->filename);
 		qp->filename = strdup(parent->filename);
-		if (qp->filename != NULL)
-			qp->flags |= QUARK_F_FILENAME;
 	}
 	/* Do we really want CMDLINE? */
 	if (parent->cmdline != NULL) {
@@ -1696,8 +1694,6 @@ event_flag_str(u64 flag)
 		return "EXIT";
 	case QUARK_F_COMM:
 		return "COMM";
-	case QUARK_F_FILENAME:
-		return "FNAME";
 	default:
 		return "?";
 	}
@@ -1802,7 +1798,7 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 	tty = tty_type(qp->proc_tty_major, qp->proc_tty_minor);
 
 	basename = NULL;
-	if (qp->flags & QUARK_F_FILENAME)
+	if (qp->filename != NULL)
 		basename = strrchr(qp->filename, '/');
 	if (basename == NULL)
 		basename = "";
@@ -1858,7 +1854,7 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 		return (0);
 
 	p_basename = NULL;
-	if (parent->flags & QUARK_F_FILENAME)
+	if (parent->filename != NULL)
 		p_basename = strrchr(parent->filename, '/');
 	if (p_basename == NULL)
 		p_basename = "";
@@ -2228,8 +2224,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		fl = "CWD";
 		PF(fl, "cwd=%s\n", qp->cwd);
 	}
-	if (qp->flags & QUARK_F_FILENAME) {
-		fl = event_flag_str(QUARK_F_FILENAME);
+	if (qp->filename != NULL) {
+		fl = "FNAME";
 		PF(fl, "filename=%s\n", qp->filename);
 	}
 	if (qp->env != NULL) {
@@ -2479,8 +2475,6 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		comm = NULL;
 	}
 	if (filename != NULL) {
-		qp->flags |= QUARK_F_FILENAME;
-
 		free(qp->filename);
 		qp->filename = filename;
 		filename = NULL;
@@ -2980,10 +2974,8 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	if (readlineat(dfd, "comm", qp->comm, sizeof(qp->comm)) > 0)
 		qp->flags |= QUARK_F_COMM;
 	/* QUARK_F_FILENAME */
-	if (qreadlinkat(dfd, "exe", path, sizeof(path)) > 0) {
-		if ((qp->filename = strdup(path)) != NULL)
-			qp->flags |= QUARK_F_FILENAME;
-	}
+	if (qreadlinkat(dfd, "exe", path, sizeof(path)) > 0)
+		qp->filename = strdup(path);
 	/* QUARK_F_CMDLINE */
 	sproc_cmdline(qp, dfd);
 	/* QUARK_F_CWD */
@@ -3956,7 +3948,7 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 		if (color_index >= nitems(color_table)) /* paranoia */
 			color_index = 0;
 
-		if (qp->flags & QUARK_F_FILENAME)
+		if (qp->filename != NULL)
 			name = qp->filename;
 		else if (qp->flags & QUARK_F_COMM)
 			name = qp->comm;
@@ -4803,9 +4795,7 @@ rule_field_match(struct quark_rule *rule, struct rule_field *field,
 	case RF_PROCESS_PPID:
 		return (MATCH_PROC_FIELD(qp, proc_ppid, field->pid));
 	case RF_PROCESS_FILENAME:
-		if (qp != NULL &&
-		    (qp->flags & QUARK_F_FILENAME) &&
-		    qp->filename != NULL)
+		if (qp != NULL && qp->filename != NULL)
 			return (path_match(field, qp->filename));
 		break;
 	case RF_PROCESS_UID:
