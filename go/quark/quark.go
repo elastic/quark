@@ -77,14 +77,14 @@ type Exit struct {
 
 // Process represents a single process.
 type Process struct {
-	Pid      uint32   // Always present
-	Proc     Proc     // Only meaningful if Proc.Valid (QUARK_F_PROC)
-	Exit     Exit     // Only meaningful if Exit.Valid (QUARK_F_EXIT)
-	Comm     string   // QUARK_F_COMM
-	Filename string   // QUARK_F_FILENAME
-	Cmdline  []string // QUARK_F_CMDLINE
-	Cwd      string   // QUARK_F_CWD
-	Cgroup   string   // QUARK_F_CGROUP
+	Pid      uint32 // Always present
+	Proc     Proc   // Only meaningful if Proc.Valid (QUARK_F_PROC)
+	Exit     Exit   // Only meaningful if Exit.Valid (QUARK_F_EXIT)
+	Comm     string
+	Filename string
+	Cmdline  []string
+	Cwd      string
+	Cgroup   string
 }
 
 // Socket represents a connection between two endpoints
@@ -470,22 +470,20 @@ func processFromC(cProcess *C.struct_quark_process) Process {
 			Valid:           true,
 		}
 	}
-	if cProcess.flags&C.QUARK_F_COMM != 0 {
-		process.Comm = C.GoString(&cProcess.comm[0])
-	}
-	if cProcess.flags&C.QUARK_F_FILENAME != 0 {
+	process.Comm = C.GoString(&cProcess.comm[0])
+	if cProcess.filename != nil {
 		process.Filename = C.GoString(cProcess.filename)
 	}
-	if cProcess.flags&C.QUARK_F_CMDLINE != 0 {
+	if cProcess.cmdline != nil && cProcess.cmdline_len > 0 {
 		b := C.GoBytes(unsafe.Pointer(cProcess.cmdline), C.int(cProcess.cmdline_len))
 		nul := string(byte(0))
 		b = bytes.TrimRight(b, nul)
 		process.Cmdline = strings.Split(string(b), nul)
 	}
-	if cProcess.flags&C.QUARK_F_CWD != 0 {
+	if cProcess.cwd != nil {
 		process.Cwd = C.GoString(cProcess.cwd)
 	}
-	if cProcess.flags&C.QUARK_F_CGROUP != 0 {
+	if cProcess.cgroup != nil {
 		process.Cgroup = C.GoString(cProcess.cgroup)
 	}
 
