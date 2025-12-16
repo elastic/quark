@@ -642,7 +642,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 	if (qp->flags & QUARK_F_COMM)
 		hanson_add_key_value(h, "name", qp->comm, first);
 
-	if (qp->flags & QUARK_F_FILENAME)
+	if (qp->filename != NULL)
 		hanson_add_key_value(h, "executable", qp->filename, first);
 
 	if (qp->cmdline != NULL) {
