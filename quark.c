@@ -521,10 +521,7 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 
 	/* Ignore QUARK_F_PROC? as we always have it all on fork */
 
-	if (parent->flags & QUARK_F_COMM) {
-		qp->flags |= QUARK_F_COMM;
-		strlcpy(qp->comm, parent->comm, sizeof(qp->comm));
-	}
+	strlcpy(qp->comm, parent->comm, sizeof(qp->comm));
 	if (parent->filename != NULL) {
 		free(qp->filename);
 		qp->filename = strdup(parent->filename);
@@ -1692,8 +1689,6 @@ event_flag_str(u64 flag)
 		return "PROC";
 	case QUARK_F_EXIT:
 		return "EXIT";
-	case QUARK_F_COMM:
-		return "COMM";
 	default:
 		return "?";
 	}
@@ -2170,8 +2165,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	if (qp == NULL)
 		return (-1);
 
-	if (qp->flags & QUARK_F_COMM) {
-		fl = event_flag_str(QUARK_F_COMM);
+	if (qp->comm[0] != 0) {
+		fl = "COMM";
 		PF(fl, "comm=%s\n", qp->comm);
 	}
 	if (qp->cmdline != NULL) {
@@ -2469,8 +2464,6 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		comm = raw_task->comm;
 	}
 	if (comm != NULL) {
-		qp->flags |= QUARK_F_COMM;
-
 		strlcpy(qp->comm, comm, sizeof(qp->comm));
 		comm = NULL;
 	}
@@ -2971,8 +2964,8 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	process_entity_id(qp);
 
 	/* QUARK_F_COMM */
-	if (readlineat(dfd, "comm", qp->comm, sizeof(qp->comm)) > 0)
-		qp->flags |= QUARK_F_COMM;
+	if (readlineat(dfd, "comm", qp->comm, sizeof(qp->comm)) < 1)
+		qp->comm[0] = 0;
 	/* QUARK_F_FILENAME */
 	if (qreadlinkat(dfd, "exe", path, sizeof(path)) > 0)
 		qp->filename = strdup(path);
@@ -3950,12 +3943,12 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 
 		if (qp->filename != NULL)
 			name = qp->filename;
-		else if (qp->flags & QUARK_F_COMM)
+		else if (qp->comm[0] != 0)
 			name = qp->comm;
 		else
 			name = "<unknown>";
 		P(f, "\"%d\" [label=\"%d\\n%s\\n", qp->pid, qp->pid, name);
-		if (qp->flags & QUARK_F_COMM)
+		if (qp->comm[0] != 0)
 			P(f, "comm %s\\n", qp->comm);
 		if (qp->cwd != NULL)
 			P(f, "cwd %s\\n", qp->cwd);
@@ -4806,7 +4799,7 @@ rule_field_match(struct quark_rule *rule, struct rule_field *field,
 		return (MATCH_PROC_FIELD(qp, proc_sid, field->id));
 		break;
 	case RF_PROCESS_COMM:
-		if (qp != NULL && qp->flags & QUARK_F_COMM)
+		if (qp != NULL)
 			return (!strcmp(field->comm, qp->comm));
 		break;
 	case RF_FILE_PATH:
