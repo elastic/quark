@@ -829,7 +829,7 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	assert(qp->flags & QUARK_F_CMDLINE);
 	assert(qp->flags & QUARK_F_CWD);
 	if (qa->flags & QQ_EBPF)
-		assert(qp->flags & QUARK_F_CGROUP);
+		assert(qp->cgroup != NULL);
 	assert((pid_t)qp->pid == child);
 	assert((pid_t)qp->proc_ppid == getpid());
 	assert(qp->proc_time_boot > 0); /* XXX: improve */
