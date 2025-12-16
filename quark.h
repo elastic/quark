@@ -575,7 +575,6 @@ struct quark_process {
 #define QUARK_F_CWD		(1 << 5)
 #define QUARK_F_CGROUP		(1 << 6)
 #define QUARK_F_CONTAINER	(1 << 7)
-#define QUARK_F_ENV		(1 << 8)
 	u64	 flags;
 
 	u64	 poison_tag;	/* valid if != 0 */

@@ -1708,8 +1708,6 @@ event_flag_str(u64 flag)
 		return "CWD";
 	case QUARK_F_CGROUP:
 		return "CGRP";
-	case QUARK_F_ENV:
-		return "ENV";
 	default:
 		return "?";
 	}
@@ -2245,8 +2243,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		fl = event_flag_str(QUARK_F_FILENAME);
 		PF(fl, "filename=%s\n", qp->filename);
 	}
-	if (qp->flags & QUARK_F_ENV) {
-		fl = event_flag_str(QUARK_F_ENV);
+	if (qp->env != NULL) {
+		fl = "ENV";
 		PF(fl, "env_len=%zd\n", qp->env_len);
 	}
 	if (qp->flags & QUARK_F_CGROUP) {
@@ -2467,7 +2465,6 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 
 		}
 		if (raw_task->env != NULL) {
-			qp->flags |= QUARK_F_ENV;
 			free(qp->env);
 			qp->env = raw_task->env;
 			qp->env_len = raw_task->env_len;
@@ -3015,9 +3012,9 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	/* QUARK_F_CGROUP */
 	if (sproc_cgroup(qp, dfd) == 0)
 		qp->flags |= QUARK_F_CGROUP;
-	/* QUARK_F_ENV */
-	if (sproc_env(qq, qp, dfd) == 0)
-		qp->flags |= QUARK_F_ENV;
+	/* env */
+	if (sproc_env(qq, qp, dfd) == -1)
+		qwarn("can't get env of pid %d", qp->pid);
 	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */
 	if (by_inode != NULL)
 		return (sproc_pid_sockets(qq, by_inode, pid, dfd));
