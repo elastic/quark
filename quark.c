@@ -554,7 +554,6 @@ process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 	if (qp->container) {
 		TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
 		qp->container = NULL;
-		qp->flags &= ~QUARK_F_CONTAINER;
 	}
 	gc_unlink(qq, gc);
 	process_free(qp);
@@ -771,7 +770,6 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 	while ((qp = TAILQ_FIRST(&container->processes)) != NULL) {
 		TAILQ_REMOVE(&container->processes, qp, entry_container);
 		qp->container = NULL;
-		qp->flags &= ~QUARK_F_CONTAINER;
 	}
 
 	free(container->container_id);
@@ -1627,7 +1625,7 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 
 	if (qp == NULL)
 		return;
-	if ((qp->flags & QUARK_F_CONTAINER) || qp->container != NULL)
+	if (qp->container != NULL)
 		return;
 	if (qp->cgroup == NULL)
 		return;
@@ -1638,7 +1636,6 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 
 	qp->container = container;
 	TAILQ_INSERT_TAIL(&container->processes, qp, entry_container);
-	qp->flags |= QUARK_F_CONTAINER;
 }
 
 /*
@@ -2254,10 +2251,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		PF(fl, "exit_code=%d exit_time=%llu\n",
 		    qp->exit_code, qp->exit_time_event);
 	}
-
-	if (qp->flags & QUARK_F_CONTAINER) {
+	if (qp->container != NULL) {
 		container = qp->container;
-		pod = container ? container->pod : NULL;
+		pod = container->pod;
 
 		if (pod != NULL) {
 			int			 first = 1;
