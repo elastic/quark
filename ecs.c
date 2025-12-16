@@ -680,7 +680,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 		hanson_add_ascii(h, '"');
 	}
 
-	if (qp->flags & QUARK_F_CWD)
+	if (qp->cwd != NULL)
 		hanson_add_key_value(h, "working_directory", qp->cwd, first);
 
 	if (qp->flags & QUARK_F_EXIT) {
