@@ -930,7 +930,7 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	if (qa->flags & QQ_EBPF) {
 		const char *needle = "IM_A_QUARK_TEST_CHILD=OHYES";
 
-		assert(qp->flags & QUARK_F_ENV);
+		assert(qp->env != NULL);
 		assert(memmem(qp->env, qp->env_len, needle, strlen(needle)) != NULL);
 	}
 
