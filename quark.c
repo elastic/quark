@@ -2963,23 +2963,21 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	sproc_namespace(qp, "ns/net", &qp->proc_net_inonum, dfd);
 	process_entity_id(qp);
 
-	/* QUARK_F_COMM */
+	/* comm */
 	if (readlineat(dfd, "comm", qp->comm, sizeof(qp->comm)) < 1)
 		qp->comm[0] = 0;
-	/* QUARK_F_FILENAME */
+	/* filename */
 	if (qreadlinkat(dfd, "exe", path, sizeof(path)) > 0)
 		qp->filename = strdup(path);
-	/* QUARK_F_CMDLINE */
+	/* cmdline */
 	sproc_cmdline(qp, dfd);
-	/* QUARK_F_CWD */
+	/* cwd */
 	if (qreadlinkat(dfd, "cwd", path, sizeof(path)) > 0)
 		qp->cwd = strdup(path);
 	/* cgroup */
-	if (sproc_cgroup(qp, dfd) == -1)
-		qwarn("can't get cgroup of pid %d", qp->pid);
+	sproc_cgroup(qp, dfd);
 	/* env */
-	if (sproc_env(qq, qp, dfd) == -1)
-		qwarn("can't get env of pid %d", qp->pid);
+	sproc_env(qq, qp, dfd);
 	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */
 	if (by_inode != NULL)
 		return (sproc_pid_sockets(qq, by_inode, pid, dfd));
