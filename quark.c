@@ -1629,7 +1629,7 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 		return;
 	if ((qp->flags & QUARK_F_CONTAINER) || qp->container != NULL)
 		return;
-	if (!(qp->flags & QUARK_F_CGROUP))
+	if (qp->cgroup == NULL)
 		return;
 	if (kube_parse_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
 		return;
@@ -1706,8 +1706,6 @@ event_flag_str(u64 flag)
 		return "CMDLINE";
 	case QUARK_F_CWD:
 		return "CWD";
-	case QUARK_F_CGROUP:
-		return "CGRP";
 	default:
 		return "?";
 	}
@@ -2247,8 +2245,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		fl = "ENV";
 		PF(fl, "env_len=%zd\n", qp->env_len);
 	}
-	if (qp->flags & QUARK_F_CGROUP) {
-		fl = event_flag_str(QUARK_F_CGROUP);
+	if (qp->cgroup != NULL) {
+		fl = "CGRP";
 		PF(fl, "cgroup=%s\n", qp->cgroup);
 	}
 	if (qp->flags & QUARK_F_EXIT) {
@@ -2458,7 +2456,6 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		qp->proc_net_inonum = raw_task->net_inonum;
 
 		if (raw_task->cgroup != NULL) {
-			qp->flags |= QUARK_F_CGROUP;
 			free(qp->cgroup);
 			qp->cgroup = raw_task->cgroup;
 			raw_task->cgroup = NULL;
@@ -3009,9 +3006,9 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 		if ((qp->cwd = strdup(path)) != NULL)
 			qp->flags |= QUARK_F_CWD;
 	}
-	/* QUARK_F_CGROUP */
-	if (sproc_cgroup(qp, dfd) == 0)
-		qp->flags |= QUARK_F_CGROUP;
+	/* cgroup */
+	if (sproc_cgroup(qp, dfd) == -1)
+		qwarn("can't get cgroup of pid %d", qp->pid);
 	/* env */
 	if (sproc_env(qq, qp, dfd) == -1)
 		qwarn("can't get env of pid %d", qp->pid);
