@@ -824,7 +824,7 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	qp = qev->process;
 	assert(qp != NULL);
 	assert(qp->flags & QUARK_F_EXIT);
-	assert(qp->flags & QUARK_F_COMM);
+	assert(qp->comm[0] != 0);
 	assert(qp->filename != NULL);
 	assert(qp->cmdline != NULL && qp->cmdline_len > 0);
 	assert(qp->cwd != NULL);

@@ -639,7 +639,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 			ecs_thread(qq, h, qp, first);
 	}
 
-	if (qp->flags & QUARK_F_COMM)
+	if (qp->comm[0] != 0)
 		hanson_add_key_value(h, "name", qp->comm, first);
 
 	if (qp->filename != NULL)
