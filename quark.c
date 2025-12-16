@@ -1701,8 +1701,6 @@ event_flag_str(u64 flag)
 		return "FNAME";
 	case QUARK_F_CMDLINE:
 		return "CMDLINE";
-	case QUARK_F_CWD:
-		return "CWD";
 	default:
 		return "?";
 	}
@@ -2230,8 +2228,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    entry_leader_type_str(qp->proc_entry_leader_type),
 		    qp->proc_entry_leader);
 	}
-	if (qp->flags & QUARK_F_CWD) {
-		fl = event_flag_str(QUARK_F_CWD);
+	if (qp->cwd != NULL) {
+		fl = "CWD";
 		PF(fl, "cwd=%s\n", qp->cwd);
 	}
 	if (qp->flags & QUARK_F_FILENAME) {
@@ -2468,8 +2466,6 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		 * Fetch cwd only if not an exit, an exit doesn't have a cwd.
 		 */
 		if (src->type != RAW_EXIT_THREAD && raw_task->cwd != NULL) {
-			qp->flags |= QUARK_F_CWD;
-
 			free(qp->cwd);
 			qp->cwd = raw_task->cwd;
 			raw_task->cwd = NULL;
@@ -2998,10 +2994,8 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	if (sproc_cmdline(qp, dfd) == 0)
 		qp->flags |= QUARK_F_CMDLINE;
 	/* QUARK_F_CWD */
-	if (qreadlinkat(dfd, "cwd", path, sizeof(path)) > 0) {
-		if ((qp->cwd = strdup(path)) != NULL)
-			qp->flags |= QUARK_F_CWD;
-	}
+	if (qreadlinkat(dfd, "cwd", path, sizeof(path)) > 0)
+		qp->cwd = strdup(path);
 	/* cgroup */
 	if (sproc_cgroup(qp, dfd) == -1)
 		qwarn("can't get cgroup of pid %d", qp->pid);
@@ -3978,7 +3972,7 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 		P(f, "\"%d\" [label=\"%d\\n%s\\n", qp->pid, qp->pid, name);
 		if (qp->flags & QUARK_F_COMM)
 			P(f, "comm %s\\n", qp->comm);
-		if (qp->flags & QUARK_F_CWD)
+		if (qp->cwd != NULL)
 			P(f, "cwd %s\\n", qp->cwd);
 		if (qp->flags & QUARK_F_PROC) {
 			P(f, "cap_inh 0x%llx\\n", qp->proc_cap_inheritable);
