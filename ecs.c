@@ -645,7 +645,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 	if (qp->flags & QUARK_F_FILENAME)
 		hanson_add_key_value(h, "executable", qp->filename, first);
 
-	if (qp->flags & QUARK_F_CMDLINE) {
+	if (qp->cmdline != NULL) {
 		int				 count;
 		struct quark_cmdline_iter	 qcmdi;
 		const char			*arg;

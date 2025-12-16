@@ -532,14 +532,13 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 			qp->flags |= QUARK_F_FILENAME;
 	}
 	/* Do we really want CMDLINE? */
-	if (parent->flags & QUARK_F_CMDLINE) {
+	if (parent->cmdline != NULL) {
 		free(qp->cmdline);
 		qp->cmdline_len = 0;
 		qp->cmdline = malloc(parent->cmdline_len);
 		if (qp->cmdline != NULL) {
 			memcpy(qp->cmdline, parent->cmdline, parent->cmdline_len);
 			qp->cmdline_len = parent->cmdline_len;
-			qp->flags |= QUARK_F_CMDLINE;
 		}
 	}
 }
@@ -1699,8 +1698,6 @@ event_flag_str(u64 flag)
 		return "COMM";
 	case QUARK_F_FILENAME:
 		return "FNAME";
-	case QUARK_F_CMDLINE:
-		return "CMDLINE";
 	default:
 		return "?";
 	}
@@ -2181,13 +2178,12 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		fl = event_flag_str(QUARK_F_COMM);
 		PF(fl, "comm=%s\n", qp->comm);
 	}
-
-	if (qp->flags & QUARK_F_CMDLINE) {
+	if (qp->cmdline != NULL) {
 		struct quark_cmdline_iter	 qcmdi;
 		const char			*arg;
 		int				 first = 1;
 
-		fl = event_flag_str(QUARK_F_CMDLINE);
+		fl = "CMDLINE";
 
 		PF(fl, "cmdline=");
 		P("[ ");
@@ -2489,9 +2485,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		qp->filename = filename;
 		filename = NULL;
 	}
-	if (args != NULL) {
-		qp->flags |= QUARK_F_CMDLINE;
-
+	if (args != NULL && args_len > 0) {
 		free(qp->cmdline);
 		qp->cmdline = args;
 		qp->cmdline_len = args_len;
@@ -2991,8 +2985,7 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 			qp->flags |= QUARK_F_FILENAME;
 	}
 	/* QUARK_F_CMDLINE */
-	if (sproc_cmdline(qp, dfd) == 0)
-		qp->flags |= QUARK_F_CMDLINE;
+	sproc_cmdline(qp, dfd);
 	/* QUARK_F_CWD */
 	if (qreadlinkat(dfd, "cwd", path, sizeof(path)) > 0)
 		qp->cwd = strdup(path);

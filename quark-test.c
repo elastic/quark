@@ -826,7 +826,7 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	assert(qp->flags & QUARK_F_EXIT);
 	assert(qp->flags & QUARK_F_COMM);
 	assert(qp->flags & QUARK_F_FILENAME);
-	assert(qp->flags & QUARK_F_CMDLINE);
+	assert(qp->cmdline != NULL && qp->cmdline_len > 0);
 	assert(qp->cwd != NULL);
 	if (qa->flags & QQ_EBPF)
 		assert(qp->cgroup != NULL);
