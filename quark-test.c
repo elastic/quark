@@ -1796,6 +1796,7 @@ t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_event	*qev;
 	struct quark_ruleset		 ruleset;
 	struct quark_rule		*rule;
+	struct quark_rule_field	 	 rf;
 	char				 path1[] = "/tmp/quark-test-path1.XXXXXX";
 	char				 path2[] = "/tmp/quark-test-path2.XXXXXX";
 	int				 fd1, fd2;
@@ -1811,11 +1812,20 @@ t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 	 * write.
 	 */
 	quark_ruleset_init(&ruleset);
-	rule = quark_ruleset_append_rule(&ruleset, RA_DROP, 0);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0);
 	assert(rule != NULL);
-	assert(!quark_rule_match_pid(rule, getpid()));
-	assert(!quark_rule_match_file_path(rule, "/tmp/quark-test-path1*"));
-	assert(rule->action == RA_DROP);
+
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_PROCESS_PID;
+	rf.pid = getpid();
+	assert(!quark_rule_match_field(rule, rf));
+
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_FILE_PATH;
+	rf.path = "/tmp/quark-test-path1*";
+	assert(!quark_rule_match_field(rule, rf));
+
+	assert(rule->action == QUARK_RA_DROP);
 	assert(rule->n_fields == 2);
 
 	qa->ruleset = &ruleset;
@@ -1855,6 +1865,7 @@ t_rule_poison(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_event	*qev;
 	struct quark_ruleset		 ruleset;
 	struct quark_rule		*rule;
+	struct quark_rule_field	 	 rf;
 	u64				 poison_tag;
 	int				 i;
 
@@ -1871,17 +1882,22 @@ t_rule_poison(const struct test *t, struct quark_queue_attr *qa)
 	quark_ruleset_init(&ruleset);
 
 	/* First add a rule to poison our children BUT THINK OF THE CHILDREN! */
-	rule = quark_ruleset_append_rule(&ruleset, RA_POISON, poison_tag);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_POISON, poison_tag);
 	assert(rule != NULL);
-	assert(!quark_rule_match_ppid(rule, getpid()));
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_PROCESS_PPID;
+	rf.pid = getpid();
 
 	/* Now add a rule to PASS on our children */
-	rule = quark_ruleset_append_rule(&ruleset, RA_PASS, 0);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
 	assert(rule != NULL);
-	assert(!quark_rule_match_poison(rule, poison_tag));
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_POISON;
+	rf.poison_tag = poison_tag;
+	assert(!quark_rule_match_field(rule, rf));
 
 	/* Now block everything else */
-	rule = quark_ruleset_append_rule(&ruleset, RA_DROP, 0);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0);
 	assert(rule != NULL);
 
 	/* Start the ball */
@@ -1916,15 +1932,19 @@ t_rule_poison_existing(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_process	*qp;
 	struct quark_ruleset		 ruleset;
 	struct quark_rule		*rule;
+	struct quark_rule_field		 rf;
 	u64				 poison_tag;
 
 	poison_tag = 1805;
 	quark_ruleset_init(&ruleset);
 
 	/* Add a rule to poison just ourselves */
-	rule = quark_ruleset_append_rule(&ruleset, RA_POISON, poison_tag);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_POISON, poison_tag);
 	assert(rule != NULL);
-	assert(!quark_rule_match_pid(rule, getpid()));
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_PROCESS_PID;
+	rf.pid = getpid();
+	assert(!quark_rule_match_field(rule, rf));
 
 	/* Start the ball, we should be poison even before getting any event */
 	qa->ruleset = &ruleset;
@@ -1947,6 +1967,7 @@ t_rule_id(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_event	*qev;
 	struct quark_ruleset		 ruleset;
 	struct quark_rule		*rule;
+	struct quark_rule_field		 rf;
 	uid_t				 uid;
 	struct timespec			 start, now;
 
@@ -1962,12 +1983,15 @@ t_rule_id(const struct test *t, struct quark_queue_attr *qa)
 	quark_ruleset_init(&ruleset);
 
 	/* Accept events that match uid 66666 */
-	rule = quark_ruleset_append_rule(&ruleset, RA_PASS, 0);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
 	assert(rule != NULL);
-	assert(!quark_rule_match_uid(rule, 66666));
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_PROCESS_UID;
+	rf.id = uid;
+	assert(!quark_rule_match_field(rule, rf));
 
 	/* Now block everything else */
-	rule = quark_ruleset_append_rule(&ruleset, RA_DROP, 0);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0);
 	assert(rule != NULL);
 
 	/* Start the ball */

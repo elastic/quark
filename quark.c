@@ -4741,8 +4741,8 @@ quark_ruleset_clear(struct quark_ruleset *ruleset)
 		rule = ruleset->rules + i;
 		for (j = 0; j < rule->n_fields; j++) {
 			switch (rule->fields[j].code) {
-			case RF_FILE_PATH:		/* FALLTHROUGH */
-			case RF_PROCESS_FILENAME:	/* FALLTHROUGH */
+			case QUARK_RF_FILE_PATH:		/* FALLTHROUGH */
+			case QUARK_RF_PROCESS_FILENAME:		/* FALLTHROUGH */
 				free(rule->fields[j].path);
 				break;
 			default:
@@ -4758,7 +4758,7 @@ quark_ruleset_clear(struct quark_ruleset *ruleset)
 }
 
 static int
-path_match(struct rule_field *field, const char *a)
+path_match(struct quark_rule_field *field, const char *a)
 {
 	if (field->wildcard_len == 0)
 		return (!strcmp(field->path, a));
@@ -4768,7 +4768,7 @@ path_match(struct rule_field *field, const char *a)
 
 /* 1 for match, 0 for non match */
 static int
-rule_field_match(struct quark_rule *rule, struct rule_field *field,
+quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
     struct quark_event *qev)
 {
 	const struct quark_process	*qp;
@@ -4779,32 +4779,32 @@ rule_field_match(struct quark_rule *rule, struct rule_field *field,
 	((_p) != NULL && ((_p)->flags & QUARK_F_PROC) && (_p)->_n == _v)
 
 	switch (field->code) {
-	case RF_PROCESS_PID:
+	case QUARK_RF_PROCESS_PID:
 		if (qp != NULL)
 			return (qp->pid == field->pid);
 		break;
-	case RF_PROCESS_PPID:
+	case QUARK_RF_PROCESS_PPID:
 		return (MATCH_PROC_FIELD(qp, proc_ppid, field->pid));
-	case RF_PROCESS_FILENAME:
+	case QUARK_RF_PROCESS_FILENAME:
 		if (qp != NULL && qp->filename != NULL)
 			return (path_match(field, qp->filename));
 		break;
-	case RF_PROCESS_UID:
+	case QUARK_RF_PROCESS_UID:
 		return (MATCH_PROC_FIELD(qp, proc_uid, field->id));
-	case RF_PROCESS_GID:
+	case QUARK_RF_PROCESS_GID:
 		return (MATCH_PROC_FIELD(qp, proc_gid, field->id));
-	case RF_PROCESS_SID:
+	case QUARK_RF_PROCESS_SID:
 		return (MATCH_PROC_FIELD(qp, proc_sid, field->id));
 		break;
-	case RF_PROCESS_COMM:
+	case QUARK_RF_PROCESS_COMM:
 		if (qp != NULL)
 			return (!strcmp(field->comm, qp->comm));
 		break;
-	case RF_FILE_PATH:
+	case QUARK_RF_FILE_PATH:
 		if (qev->file != NULL)
 			return (path_match(field, qev->file->path));
 		break;
-	case RF_POISON:
+	case QUARK_RF_POISON:
 		if (qp != NULL)
 			return (qp->poison_tag == field->poison_tag);
 		break;
@@ -4821,7 +4821,7 @@ struct quark_rule *
 quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 {
 	struct quark_rule	*rule;
-	struct rule_field	*field;
+	struct quark_rule_field		*field;
 	size_t			 i, j;
 	struct quark_process	*qp;
 
@@ -4830,14 +4830,14 @@ quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 		rule->evals++;
 		for (j = 0; j < rule->n_fields; j++) {
 			field = rule->fields + j;
-			if (!rule_field_match(rule, field, qev))
+			if (!quark_rule_field_match(rule, field, qev))
 				break;
 		}
 		/* All fields matched, this is the rule! */
 		if (j == rule->n_fields) {
 			rule->hits++;
 			/* Poison rules continue to evaluate, others are done */
-			if (rule->action != RA_POISON)
+			if (rule->action != QUARK_RA_POISON)
 				return (rule);
 			/* Poison this process */
 			qp = (struct quark_process *)qev->process;
@@ -4855,7 +4855,9 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 	struct quark_rule	*new_rules, *rule;
 	size_t			 new_n_rules;
 
-	if (action != RA_DROP && action != RA_PASS && action != RA_POISON)
+	if (action != QUARK_RA_DROP &&
+	    action != QUARK_RA_PASS &&
+	    action != QUARK_RA_POISON)
 		return (errno = EINVAL, NULL);
 	new_n_rules = ruleset->n_rules + 1;
 	new_rules = reallocarray(ruleset->rules, new_n_rules,
@@ -4872,7 +4874,7 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 	rule->action = action;
 	rule->evals = 0;
 	rule->hits = 0;
-	if (action == RA_POISON)
+	if (action == QUARK_RA_POISON)
 		rule->poison_tag = poison_tag;
 	else
 		rule->poison_tag = 0;
@@ -4880,35 +4882,44 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 	return (rule);
 }
 
-static int
-quark_rule_append_field(struct quark_rule *rule, struct rule_field *rf)
+int
+quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
 {
-	struct rule_field	*new_fields;
+	struct quark_rule_field	*new_fields;
 	size_t			 new_n_fields;
+	char			*path, *p;
 
-	switch (rf->code) {
-	case RF_PROCESS_PID:		/* FALLTHROUGH */
-	case RF_PROCESS_PPID:
-		if (rf->pid == 0)
+	path = NULL;
+
+	switch (rf.code) {
+	case QUARK_RF_PROCESS_PID:		/* FALLTHROUGH */
+	case QUARK_RF_PROCESS_PPID:
+		if (rf.pid == 0)
 			goto inval;
 		break;
-	case RF_PROCESS_UID:		/* FALLTHROUGH */
-	case RF_PROCESS_GID:		/* FALLTHROUGH */
-	case RF_PROCESS_SID:
+	case QUARK_RF_PROCESS_UID:		/* FALLTHROUGH */
+	case QUARK_RF_PROCESS_GID:		/* FALLTHROUGH */
+	case QUARK_RF_PROCESS_SID:
 		break;
-	case RF_PROCESS_COMM:
-		if (strlen(rf->comm) == 0)
+	case QUARK_RF_PROCESS_COMM:
+		if (strlen(rf.comm) == 0)
 			goto inval;
 		break;
-	case RF_PROCESS_FILENAME:	/* FALLTHROUGH */
-	case RF_FILE_PATH:
-		if (*rf->path == 0)
+	case QUARK_RF_PROCESS_FILENAME:		/* FALLTHROUGH */
+	case QUARK_RF_FILE_PATH:
+		if (rf.path == NULL || strlen(rf.path) == 0 ||
+		    strlen(rf.path) >= PATH_MAX)
 			goto inval;
-		if (rf->path == NULL || strlen(rf->path) == 0)
-			goto inval;
+		/* Save path in case we error out and need to free */
+		path = rf.path = strdup(rf.path);
+		if (rf.path == NULL)
+			goto bad;
+		rf.wildcard_len = 0;
+		if ((p = strchr(rf.path, '*')) != NULL)
+			rf.wildcard_len = p - rf.path;
 		break;
-	case RF_POISON:
-		if (rf->poison_tag == 0)
+	case QUARK_RF_POISON:
+		if (rf.poison_tag == 0)
 			goto inval;
 		break;
 	default:
@@ -4919,131 +4930,20 @@ quark_rule_append_field(struct quark_rule *rule, struct rule_field *rf)
 	new_fields = reallocarray(rule->fields, new_n_fields,
 	    sizeof(*rule->fields));
 	if (new_fields == NULL)
-		return (-1);
+		goto bad;
 
 	rule->fields = new_fields;
 	rule->n_fields = new_n_fields;
-	rule->fields[rule->n_fields - 1] = *rf;
+	rule->fields[rule->n_fields - 1] = rf;
 
 	return (0);
 
 inval:
 	errno = EINVAL;
+bad:
+	free(path);
+
 	return (-1);
-}
-
-static int
-quark_rule_append_any_pid(struct quark_rule *rule, u32 pid,
-    enum rule_field_code code)
-{
-	struct rule_field	rf;
-
-	bzero(&rf, sizeof(rf));
-	rf.code = code;
-	rf.pid = pid;
-
-	return (quark_rule_append_field(rule, &rf));
-}
-
-int
-quark_rule_match_pid(struct quark_rule *rule, u32 pid)
-{
-	return (quark_rule_append_any_pid(rule, pid, RF_PROCESS_PID));
-}
-
-int
-quark_rule_match_ppid(struct quark_rule *rule, u32 pid)
-{
-	return (quark_rule_append_any_pid(rule, pid, RF_PROCESS_PPID));
-}
-
-static int
-quark_rule_append_any_path(struct quark_rule *rule, const char *path,
-    enum rule_field_code code)
-{
-	struct rule_field	 rf;
-	char			*p;
-
-	if (strlen(path) >= PATH_MAX)
-		return (errno = EINVAL, -1);
-
-	bzero(&rf, sizeof(rf));
-	rf.code = code;
-	if ((rf.path = strdup(path)) == NULL)
-		return (-1);
-	if ((p = strchr(rf.path, '*')) != NULL)
-		rf.wildcard_len = p - rf.path;
-
-	return (quark_rule_append_field(rule, &rf));
-}
-
-int
-quark_rule_match_file_path(struct quark_rule *rule, const char *path)
-{
-	return (quark_rule_append_any_path(rule, path, RF_FILE_PATH));
-}
-
-int
-quark_rule_match_process_filename(struct quark_rule *rule, const char *path)
-{
-	return (quark_rule_append_any_path(rule, path, RF_PROCESS_FILENAME));
-}
-
-int
-quark_rule_match_poison(struct quark_rule *rule, u64 poison_tag)
-{
-	struct rule_field	rf;
-
-	bzero(&rf, sizeof(rf));
-	rf.code = RF_POISON;
-	rf.poison_tag = poison_tag;
-
-	return (quark_rule_append_field(rule, &rf));
-}
-
-static int
-quark_rule_append_any_id(struct quark_rule *rule, u32 id, enum rule_field_code code)
-{
-	struct rule_field	rf;
-
-	bzero(&rf, sizeof(rf));
-
-	rf.code = code;
-	rf.id = id;
-
-	return (quark_rule_append_field(rule, &rf));
-}
-
-int
-quark_rule_match_uid(struct quark_rule *rule, u32 uid)
-{
-	return (quark_rule_append_any_id(rule, uid, RF_PROCESS_UID));
-}
-
-int
-quark_rule_match_gid(struct quark_rule *rule, u32 gid)
-{
-	return (quark_rule_append_any_id(rule, gid, RF_PROCESS_GID));
-}
-
-int
-quark_rule_match_sid(struct quark_rule *rule, u32 sid)
-{
-	return (quark_rule_append_any_id(rule, sid, RF_PROCESS_SID));
-}
-
-int
-quark_rule_match_comm(struct quark_rule *rule, const char *comm)
-{
-	struct rule_field	rf;
-
-	bzero(&rf, sizeof(rf));
-
-	rf.code = RF_PROCESS_COMM;
-	if (strlcpy(rf.comm, comm, sizeof(rf.comm)) >= sizeof(rf.comm))
-		return (errno = EINVAL, -1);
-
-	return (quark_rule_append_field(rule, &rf));
 }
 
 static const struct quark_event *
@@ -5142,7 +5042,7 @@ quark_queue_get_event(struct quark_queue *qq)
 	/* Run ruleset, if it's a drop, nulify qev */
 	if (qq->ruleset != NULL) {
 		rule = quark_ruleset_match(qq->ruleset, qev);
-		if (rule != NULL && rule->action == RA_DROP)
+		if (rule != NULL && rule->action == QUARK_RA_DROP)
 			qev = NULL;
 	}
 
