@@ -40,6 +40,7 @@ struct quark_queue_attr;
 struct quark_queue_stats;
 struct quark_ruleset;
 struct quark_rule;
+struct quark_rule_field;
 struct raw_event	*raw_event_alloc(int);
 void			 raw_event_free(struct raw_event *);
 int			 raw_event_insert(struct quark_queue *,
@@ -77,17 +78,7 @@ struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
 void			 quark_ruleset_init(struct quark_ruleset *);
 void			 quark_ruleset_clear(struct quark_ruleset *);
 struct quark_rule	*quark_ruleset_append_rule(struct quark_ruleset *, int, u64);
-int			 quark_rule_match_pid(struct quark_rule *, u32);
-int			 quark_rule_match_ppid(struct quark_rule *, u32);
-int			 quark_rule_match_file_path(struct quark_rule *,
-			     const char *);
-int			 quark_rule_match_process_filename(struct quark_rule *,
-			     const char *);
-int			 quark_rule_match_poison(struct quark_rule *, u64);
-int			 quark_rule_match_uid(struct quark_rule *, u32);
-int			 quark_rule_match_gid(struct quark_rule *, u32);
-int			 quark_rule_match_sid(struct quark_rule *, u32);
-int			 quark_rule_match_comm(struct quark_rule *, const char *);
+int			 quark_rule_match_field(struct quark_rule *, struct quark_rule_field);
 struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
 			     struct quark_event *);
 
@@ -755,24 +746,24 @@ struct quark_group {
 	char			*name;
 };
 
-enum rule_field_code {
-	RF_NONE,
-	RF_PROCESS_PID,
-	RF_PROCESS_PPID,
-	RF_PROCESS_FILENAME,
-	RF_PROCESS_UID,
-	RF_PROCESS_GID,
-	RF_PROCESS_SID,
-	RF_PROCESS_COMM,
-	RF_FILE_PATH,
-	RF_POISON,
-	RF_MAX,
+enum quark_rule_field_code {
+	QUARK_RF_NONE,
+	QUARK_RF_PROCESS_PID,
+	QUARK_RF_PROCESS_PPID,
+	QUARK_RF_PROCESS_FILENAME,
+	QUARK_RF_PROCESS_UID,
+	QUARK_RF_PROCESS_GID,
+	QUARK_RF_PROCESS_SID,
+	QUARK_RF_PROCESS_COMM,
+	QUARK_RF_FILE_PATH,
+	QUARK_RF_POISON,
+	QUARK_RF_MAX,
 };
 
-struct rule_field {
-	enum rule_field_code	code;
-	int			flags;
-	size_t			wildcard_len;
+/* Rule Field */
+struct quark_rule_field {
+	enum quark_rule_field_code	code;
+	size_t				wildcard_len;
 	union {
 		u32	 pid;
 		u64	 poison_tag;
@@ -783,14 +774,14 @@ struct rule_field {
 };
 
 enum quark_rule_action {
-	RA_INVALID,
-	RA_DROP,
-	RA_PASS,
-	RA_POISON,
+	QUARK_RA_INVALID,
+	QUARK_RA_DROP,
+	QUARK_RA_PASS,
+	QUARK_RA_POISON,
 };
 
 struct quark_rule {
-	struct rule_field	*fields;
+	struct quark_rule_field	*fields;
 	size_t			 n_fields;
 	int			 action;
 	u64			 poison_tag;
