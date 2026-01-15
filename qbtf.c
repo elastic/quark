@@ -111,6 +111,17 @@ btf_offsetof_rec(struct btf *btf, struct btf_type const *t, const char *member_n
 	struct btf_member	*m;
 	const char		*name;
 
+	/*
+	 * A const struct foo has kind const, not struct, and the struct itself
+	 * is in the type member, so we have to dive in.
+	 * XXX we should probably handle more than const here.
+	 */
+	if (btf_is_const(t)) {
+		t = btf__type_by_id(btf, t->type);
+		if (t == NULL)
+			goto fail;
+	}
+
 	if (!btf_is_struct(t) && !btf_is_union(t)) {
 		errno = EINVAL;
 		goto fail;
@@ -212,7 +223,7 @@ btf_find_member(struct btf *btf, const char *parent_name, const char *member_nam
 static s32
 btf_root_offset2(struct btf *btf, const char *dotname)
 {
-	const char *parent_name, *child_name;
+	const char *root_name, *child_name;
 	struct btf_member *m;
 	const struct btf_type *t;
 	char *last, buf[1024];
@@ -220,23 +231,29 @@ btf_root_offset2(struct btf *btf, const char *dotname)
 
 	if (strlcpy(buf, dotname, sizeof(buf)) >= sizeof(buf))
 		return (-1);
-	parent_name = strtok_r(buf, ".", &last);
-	if (parent_name == NULL)
+	root_name = strtok_r(buf, ".", &last);
+	if (root_name == NULL)
 		return (-1);
 
 	off = 0;
+	t = NULL;
 	while ((child_name = strtok_r(NULL, ".", &last)) != NULL) {
 		m = NULL;
-		off1 = btf_offsetof(btf, parent_name, child_name, &m);
+		/*
+		 * t is NULL when we don't have the first type yet, we're
+		 * looking for the type of root_name.
+		 */
+		if (t != NULL)
+			off1 = btf_offsetof_rec(btf, t, child_name, &m, 0);
+		else
+			off1 = btf_offsetof(btf, root_name, child_name, &m);
+
 		if (off1 == -1 || m == NULL)
 			return (-1);
 		off += off1;
 
 		t = btf__type_by_id(btf, m->type);
 		if (t == NULL)
-			return (-1);
-		parent_name = btf__name_by_offset(btf, t->name_off);
-		if (parent_name == NULL)
 			return (-1);
 	}
 
