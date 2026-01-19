@@ -2,6 +2,7 @@ FROM alpine:3.22
 ENV HOME=/tmp/quark-builder
 RUN apk add 						\
 	bash						\
+	bison						\
 	clang						\
 	bpftool						\
 	gcc						\

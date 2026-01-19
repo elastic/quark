@@ -10,6 +10,7 @@ fi
 
 sudo apt-get update
 sudo apt-get install -y 				\
+	bison						\
 	clang						\
 	cpio						\
 	gcc						\

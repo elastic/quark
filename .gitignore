@@ -21,6 +21,7 @@ bpf_probes_skel.h
 manpages.h
 man-embedder
 manhtml/*.html
+parse.tab.c
 elftoolchain/libelf/libelf_pic.a
 initramfs/
 initramfs.gz

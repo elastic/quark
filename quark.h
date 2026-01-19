@@ -77,8 +77,12 @@ struct quark_passwd	*quark_passwd_lookup(struct quark_queue *, uid_t);
 struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
 void			 quark_ruleset_init(struct quark_ruleset *);
 void			 quark_ruleset_clear(struct quark_ruleset *);
-struct quark_rule	*quark_ruleset_append_rule(struct quark_ruleset *, int, u64);
-int			 quark_rule_match_field(struct quark_rule *, struct quark_rule_field);
+int			 quark_ruleset_parse(struct quark_ruleset *, FILE *,
+			     char *, size_t);
+struct quark_rule	*quark_ruleset_append_rule(struct quark_ruleset *,
+			     int, u64);
+int			 quark_rule_match_field(struct quark_rule *,
+			     struct quark_rule_field);
 struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
 			     struct quark_event *);
 
@@ -750,11 +754,11 @@ enum quark_rule_field_code {
 	QUARK_RF_NONE,
 	QUARK_RF_PROCESS_PID,
 	QUARK_RF_PROCESS_PPID,
-	QUARK_RF_PROCESS_FILENAME,
 	QUARK_RF_PROCESS_UID,
 	QUARK_RF_PROCESS_GID,
 	QUARK_RF_PROCESS_SID,
 	QUARK_RF_PROCESS_COMM,
+	QUARK_RF_PROCESS_FILENAME,
 	QUARK_RF_FILE_PATH,
 	QUARK_RF_POISON,
 	QUARK_RF_MAX,
@@ -792,6 +796,19 @@ struct quark_rule {
 struct quark_ruleset {
 	struct quark_rule	*rules;
 	size_t			 n_rules;
+};
+
+struct quark_parser_ctx {
+	struct quark_ruleset	 *ruleset;		/* parser output */
+	struct quark_rule	 *cur_rule;		/* current rule we're processing */
+	FILE			 *in;			/* input file */
+	char			**allocs;		/* arena for parser allocations */
+	size_t			  n_allocs;		/* size of the arena */
+	int			  sentnl;		/* if we sent nl uppon EOF */
+	u_long			  lineno;		/* line number */
+	u_long			  colno;		/* column number */
+	int			  error;		/* if the parser errored out */
+	char			  errorbuf[1024];	/* the parser error */
 };
 
 /*

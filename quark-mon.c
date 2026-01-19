@@ -116,9 +116,12 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDeFGgHhkLMNSsTtv] "
-	    "[-C filename ] [-K kubeconfig] [-l maxlength] [-m maxnodes] [-P ppid]\n",
+	fprintf(stderr, "usage: %s [-BbDeFGgHhkLMNSsTtv]\n",
 	    program_invocation_short_name);
+	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
+	    "[-l maxlength] [-m maxnodes]\n", ' ');
+	fprintf(stderr, "%16c [-P ppid] "
+	    "[-r rulefile ]\n", ' ');
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
 
 	exit(1);
@@ -156,7 +159,8 @@ main(int argc, char *argv[])
 	struct quark_queue_attr		 qa;
 	const struct quark_event	*qev;
 	struct sigaction		 sigact;
-	FILE				*graph_by_time, *graph_by_pidtime, *graph_cache;
+	FILE				*graph_by_time, *graph_by_pidtime;
+	FILE				*graph_cache;
 	struct timespec			 bench_stamp, now;
 	pid_t				 kube_talker_pid;
 	const char			*kube_config;
@@ -174,7 +178,7 @@ main(int argc, char *argv[])
 	kube_config = NULL;
 	print_event = print_dump;
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NP:TtSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NP:Ttr:SsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -270,6 +274,28 @@ main(int argc, char *argv[])
 		case 'S':
 			qa.flags |= QQ_SOCK_CONN;
 			break;
+		case 'r': {
+			FILE	*rule_in;
+			char	 parse_error[1024];
+
+			if (qa.ruleset != NULL)
+				errx(1, "no multiple rulesets");
+			if (optarg == NULL)
+				usage();
+			if (!strcmp(optarg, "-"))
+				rule_in = stdin;
+			else if ((rule_in = fopen(optarg, "r")) == NULL)
+				err(1, "fopen %s", optarg);
+			if ((qa.ruleset = calloc(1, sizeof(*qa.ruleset))) == NULL)
+				err(1, "calloc");
+			if (quark_ruleset_parse(qa.ruleset, rule_in,
+			    parse_error, sizeof(parse_error)) == -1)
+				errx(1, "can't parse rule file: %s",
+				    parse_error);
+			if (rule_in != stdin)
+				fclose(rule_in);
+			break;
+		}
 		case 'T':
 			qa.flags |= QQ_PTRACE;
 			break;
@@ -416,6 +442,10 @@ main(int argc, char *argv[])
 	quark_queue_close(qq);
 	if (qa.kubefd != -1)
 		close(qa.kubefd);
+	if (qa.ruleset != NULL) {
+		quark_ruleset_clear(qa.ruleset);
+		free(qa.ruleset);
+	}
 	free(qq);
 
 	return (0);
