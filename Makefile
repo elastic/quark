@@ -121,6 +121,7 @@ LIBQUARK_SRCS:=			\
 	ecs.c			\
 	hanson.c		\
 	kprobe_queue.c		\
+	parse.tab.c		\
 	qbtf.c			\
 	quark.c			\
 	qutil.c
@@ -257,6 +258,10 @@ $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 		$(EEBPF_INCLUDES)						\
 		-c bpf_probes.c							\
 		-o $@
+
+parse.tab.c: parse.y quark.h
+	$(call msg,BISON,$@)
+	$(Q)bison parse.y
 
 DOCKER_RUN_ARGS=$(QDOCKER)				\
 		-v $(PWD):$(PWD)			\
@@ -544,6 +549,7 @@ clean:
 	$(Q)rm -f			\
 		*.o			\
 		*.a			\
+		parse.tab.c		\
 		hanson-bench		\
 		man-embedder		\
 		manpages.h		\

@@ -12,6 +12,7 @@
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
 .Op Fl P Ar ppid
+.Op Fl r Ar rulefile
 .Nm quark-mon
 .Fl h
 .Nm quark-mon Fl V
@@ -116,6 +117,12 @@ Display only events where parent pid is
 Enable socket events (experimental).
 .It Fl s
 Don't send the initial snapshot of existing processes.
+.It Fl r Ar rulefile
+Read rules from
+.Ar rulefile ,
+use
+.Em -
+for stdin.
 .It Fl T
 Enable ptrace event tracing.
 .It Fl t

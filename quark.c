@@ -4757,6 +4757,37 @@ quark_ruleset_clear(struct quark_ruleset *ruleset)
 	ruleset->n_rules = 0;
 }
 
+int
+quark_ruleset_parse(struct quark_ruleset *ruleset, FILE *in,
+    char *err_buf, size_t err_buf_len)
+{
+	struct quark_parser_ctx	 ctx;
+	size_t			 i;
+	int			 quark_parse(struct quark_parser_ctx *);
+
+	quark_ruleset_init(ruleset);
+	bzero(&ctx, sizeof(ctx));
+	ctx.in = in;
+	ctx.ruleset = ruleset;
+
+	quark_parse(&ctx);
+
+	/* Free up parser arena */
+	for (i = 0; i < ctx.n_allocs; i++)
+		free(ctx.allocs[i]);
+	free(ctx.allocs);
+
+	if (ctx.error) {
+		quark_ruleset_clear(ctx.ruleset);
+		if (err_buf != NULL)
+			strlcpy(err_buf, ctx.errorbuf, err_buf_len);
+
+		return (-1);
+	}
+
+	return (0);
+}
+
 static int
 path_match(struct quark_rule_field *field, const char *a)
 {

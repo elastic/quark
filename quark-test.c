@@ -249,7 +249,7 @@ progress_print(struct progress *progress)
 static void
 hide_cursor(void)
 {
-	if (!fancy_tty)
+	if (!fancy_tty || noforkflag)
 		return;
 	printf("\e[?25l");
 	fflush(stdout);
@@ -750,6 +750,22 @@ fork_sock_write(u16 port, int type, u16 *bound_port)
 	}
 
 	return (child);
+}
+
+static void
+ruleset_from_string(struct quark_ruleset *ruleset, char *s)
+{
+	FILE	*in;
+	char	 parse_error[1024];
+
+	if ((in = fmemopen(s, strlen(s), "r")) == NULL)
+		err(1, "fmemopen");
+
+	if (quark_ruleset_parse(ruleset, in,
+	    parse_error, sizeof(parse_error)) == -1)
+		errx(1, "can't parse ruleset: %s", parse_error);
+
+	fclose(in);
 }
 
 static int
@@ -1796,10 +1812,10 @@ t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_event	*qev;
 	struct quark_ruleset		 ruleset;
 	struct quark_rule		*rule;
-	struct quark_rule_field	 	 rf;
 	char				 path1[] = "/tmp/quark-test-path1.XXXXXX";
 	char				 path2[] = "/tmp/quark-test-path2.XXXXXX";
 	int				 fd1, fd2;
+	char				*text_ruleset;
 
 	if ((fd1 = mkstemp(path1)) == -1)
 		err(1, "mkstemp");
@@ -1811,20 +1827,16 @@ t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 	 * We then write to both path1 and path2, we should see only the path2
 	 * write.
 	 */
-	quark_ruleset_init(&ruleset);
-	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0);
-	assert(rule != NULL);
 
-	bzero(&rf, sizeof(rf));
-	rf.code = QUARK_RF_PROCESS_PID;
-	rf.pid = getpid();
-	assert(!quark_rule_match_field(rule, rf));
+	if (asprintf(&text_ruleset,
+	    "drop on process.pid %d file.path /tmp/quark-test-path1*",
+	    getpid()) == -1)
+		err(1, "asprintf");
+	ruleset_from_string(&ruleset, text_ruleset);
+	free(text_ruleset);
 
-	bzero(&rf, sizeof(rf));
-	rf.code = QUARK_RF_FILE_PATH;
-	rf.path = "/tmp/quark-test-path1*";
-	assert(!quark_rule_match_field(rule, rf));
-
+	assert(ruleset.n_rules == 1);
+	rule = &ruleset.rules[0];
 	assert(rule->action == QUARK_RA_DROP);
 	assert(rule->n_fields == 2);
 
@@ -1864,8 +1876,7 @@ t_rule_poison(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
 	struct quark_ruleset		 ruleset;
-	struct quark_rule		*rule;
-	struct quark_rule_field	 	 rf;
+	char				*text_ruleset;
 	u64				 poison_tag;
 	int				 i;
 
@@ -1879,26 +1890,15 @@ t_rule_poison(const struct test *t, struct quark_queue_attr *qa)
 	 */
 
 	poison_tag = 1805;
-	quark_ruleset_init(&ruleset);
 
-	/* First add a rule to poison our children BUT THINK OF THE CHILDREN! */
-	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_POISON, poison_tag);
-	assert(rule != NULL);
-	bzero(&rf, sizeof(rf));
-	rf.code = QUARK_RF_PROCESS_PPID;
-	rf.pid = getpid();
-
-	/* Now add a rule to PASS on our children */
-	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
-	assert(rule != NULL);
-	bzero(&rf, sizeof(rf));
-	rf.code = QUARK_RF_POISON;
-	rf.poison_tag = poison_tag;
-	assert(!quark_rule_match_field(rule, rf));
-
-	/* Now block everything else */
-	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0);
-	assert(rule != NULL);
+	if (asprintf(&text_ruleset,
+	    "poison %llu on process.ppid %d\n"
+	    "pass on poison %llu\n"
+	    "drop on any",
+	    poison_tag, getpid(), poison_tag) == -1)
+		err(1, "asprintf");
+	ruleset_from_string(&ruleset, text_ruleset);
+	free(text_ruleset);
 
 	/* Start the ball */
 	qa->ruleset = &ruleset;
