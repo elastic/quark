@@ -46,13 +46,6 @@
 <br/>
 <table class="Nm">
   <tr>
-    <td><code class="Nm">quark-test <code class="Fl">-N</code></code></td>
-    <td></td>
-  </tr>
-</table>
-<br/>
-<table class="Nm">
-  <tr>
     <td><code class="Nm">quark-test <code class="Fl">-V</code></code></td>
     <td></td>
   </tr>
@@ -81,12 +74,6 @@ The <code class="Nm">quark-test</code> program runs tests for
   <dd>Run only KPROBE tests.</dd>
   <dt id="l"><a class="permalink" href="#l"><code class="Fl">-l</code></a></dt>
   <dd>Prints all available tests on stdout.</dd>
-  <dt id="N"><a class="permalink" href="#N"><code class="Fl">-N</code></a></dt>
-  <dd>This is a nop flag, literally, <code class="Nm">quark-test</code> will
-      just exit with 0. Some tests must fork and exec things in order to collect
-      events, this keeps the binary self contained by forking and execing itself
-      as we don't have access to system utilities in
-      <span class="Pa">initramfs.gz</span>.</dd>
   <dt id="v"><a class="permalink" href="#v"><code class="Fl">-v</code></a></dt>
   <dd>Increase
       <a class="permalink" href="#quark_verbose"><i class="Em" id="quark_verbose">quark_verbose</i></a>,
@@ -137,7 +124,7 @@ failed tests 0</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">May 8, 2025</td>
+    <td class="foot-date">January 21, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
