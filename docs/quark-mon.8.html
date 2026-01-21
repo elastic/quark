@@ -25,12 +25,13 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-mon</code></td>
-    <td>[<code class="Fl">-BbDEeFkMNSstv</code>] [<code class="Fl">-C</code>
-      <var class="Ar">filename</var>] [<code class="Fl">-K</code>
-      <var class="Ar">kubeconfig</var>] [<code class="Fl">-l</code>
-      <var class="Ar">maxlength</var>] [<code class="Fl">-m</code>
-      <var class="Ar">maxnodes</var>] [<code class="Fl">-P</code>
-      <var class="Ar">ppid</var>]</td>
+    <td>[<code class="Fl">-BbDEeFGgHhkMNSsTtv</code>]
+      [<code class="Fl">-C</code> <var class="Ar">filename</var>]
+      [<code class="Fl">-K</code> <var class="Ar">kubeconfig</var>]
+      [<code class="Fl">-l</code> <var class="Ar">maxlength</var>]
+      [<code class="Fl">-m</code> <var class="Ar">maxnodes</var>]
+      [<code class="Fl">-P</code> <var class="Ar">ppid</var>]
+      [<code class="Fl">-r</code> <var class="Ar">rulefile</var>]</td>
   </tr>
 </table>
 <br/>
@@ -92,10 +93,16 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
       default as it is Elastic/ECS specific.</dd>
   <dt id="F"><a class="permalink" href="#F"><code class="Fl">-F</code></a></dt>
   <dd>Enable file events (experimental).</dd>
+  <dt id="G"><a class="permalink" href="#G"><code class="Fl">-G</code></a></dt>
+  <dd>Enables a getpid probe, only for benchmarking,
+      <a class="permalink" href="#don't"><i class="Em" id="don't">don't</i></a>
+      use this otherwise!</dd>
   <dt id="g"><a class="permalink" href="#g"><code class="Fl">-g</code></a></dt>
   <dd>Use minimal aggregation, fork, exec and exit will
       <a class="permalink" href="#not"><i class="Em" id="not">not</i></a> be
       aggregated.</dd>
+  <dt id="H"><a class="permalink" href="#H"><code class="Fl">-H</code></a></dt>
+  <dd>Enable SHMGET events.</dd>
   <dt id="h"><a class="permalink" href="#h"><code class="Fl">-h</code></a></dt>
   <dd>Display this manpage.</dd>
   <dt id="K"><a class="permalink" href="#K"><code class="Fl">-K</code></a>
@@ -105,6 +112,8 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
       configuration, usually <span class="Pa">$HOME/.kube/config</span>.</dd>
   <dt id="k"><a class="permalink" href="#k"><code class="Fl">-k</code></a></dt>
   <dd>Attempt kprobe as the backend.</dd>
+  <dt id="L"><a class="permalink" href="#L"><code class="Fl">-L</code></a></dt>
+  <dd>Enable module loading events.</dd>
   <dt id="l"><a class="permalink" href="#l"><code class="Fl">-l</code></a>
     <var class="Ar">maxlength</var></dt>
   <dd>Maximum lenght of the quark queue, essentially how much quark is willing
@@ -130,6 +139,12 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
   <dd>Enable socket events (experimental).</dd>
   <dt id="s"><a class="permalink" href="#s"><code class="Fl">-s</code></a></dt>
   <dd>Don't send the initial snapshot of existing processes.</dd>
+  <dt id="r"><a class="permalink" href="#r"><code class="Fl">-r</code></a>
+    <var class="Ar">rulefile</var></dt>
+  <dd>Read rules from <var class="Ar">rulefile</var>, use <i class="Em">-</i>
+      for stdin.</dd>
+  <dt id="T"><a class="permalink" href="#T"><code class="Fl">-T</code></a></dt>
+  <dd>Enable ptrace event tracing.</dd>
   <dt id="t"><a class="permalink" href="#t"><code class="Fl">-t</code></a></dt>
   <dd>Don't supress thread events, this is only useful for debugging and will
       likely be zapped in the future.</dd>
@@ -205,7 +220,7 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">October 1, 2025</td>
+    <td class="foot-date">January 21, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
