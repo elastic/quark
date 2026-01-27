@@ -752,20 +752,31 @@ fork_sock_write(u16 port, int type, u16 *bound_port)
 	return (child);
 }
 
-static void
-ruleset_from_string(struct quark_ruleset *ruleset, char *s)
+static int
+ruleset_from_string1(struct quark_ruleset *ruleset, char *s,
+    char *err_buf, size_t err_buf_len)
 {
 	FILE	*in;
-	char	 parse_error[1024];
+	int	 r;
 
 	if ((in = fmemopen(s, strlen(s), "r")) == NULL)
 		err(1, "fmemopen");
 
-	if (quark_ruleset_parse(ruleset, in,
-	    parse_error, sizeof(parse_error)) == -1)
-		errx(1, "can't parse ruleset: %s", parse_error);
+	r = quark_ruleset_parse(ruleset, in, err_buf, err_buf_len);
 
 	fclose(in);
+
+	return (r);
+}
+
+static void
+ruleset_from_string(struct quark_ruleset *ruleset, char *s)
+{
+	char	 parse_error[1024];
+
+	if (ruleset_from_string1(ruleset, s,
+	    parse_error, sizeof(parse_error)) != 0)
+		errx(1, "can't parse ruleset: %s", parse_error);
 }
 
 static int
@@ -2026,6 +2037,68 @@ t_rule_id(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset	  ruleset;
+	int			  i;
+	char			**s;
+	char			  parser_error[1024];
+	char *good_cases[] = {
+		"drop on any",
+		"pass on any\n",
+		"drop on process.pid 77\n",
+		"pass on process.ppid 84\n",
+		"drop on process.uid 230000\n",
+		"drop on process.gid 1313\n",
+		"pass on process.sid 11\n",
+		"drop on file.path /foo/bar\n",
+		"pass on file.path foo-bar\n",
+		"drop on process.filename /foo/bar\n",
+		"pass on process.filename foo-bar\n",
+		"drop on process.filename \"foo bar lero\"\n",
+		"pass on process.filename /foo/*\n",
+		"drop on process.filename \"/foo bar/*\"\n",
+		"pass on process.filename \\\nfoo",	/* line split by \ */
+		NULL
+	};
+	char *bad_cases[] = {
+		"pass on pXrocess.pid 77",
+		"pass",
+		"pass\n",
+		"pass on",
+		"foo",
+		"pass on any any",
+		"pass on any process.pid 1\n",
+		"pass on process.pid 1 2",
+		"pass on process.pid \"1 \"2",
+		"drop on process.gid",
+		"drop on foobar\n",
+		"drop on process.filename",
+		"drop on file.name \"foo\n",
+		NULL
+	};
+
+	for (s = good_cases, i = 1; *s != NULL; s++, i++) {
+		parser_error[0] = 0;
+		quark_ruleset_init(&ruleset);
+		if (ruleset_from_string1(&ruleset, *s,
+		    parser_error, sizeof(parser_error)) != 0)
+			errx(1, "rule %d failed: %s\n%s", i, *s, parser_error);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	for (s = bad_cases, i = 1; *s != NULL; s++, i++) {
+		quark_ruleset_init(&ruleset);
+		if (ruleset_from_string1(&ruleset, *s, NULL, 0) == 0)
+			errx(1, "rule %d should have failed: %s", i, *s);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	return (0);
+}
+
+
 /*
  * Try to order by increasing order of complexity
  * Use T() for tests that require no queue.
@@ -2071,6 +2144,7 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_poison),
 	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),
+	T_EBPF(t_rule_parser),
 	{ NULL,	NULL, 0, 0 }
 };
 #undef S
