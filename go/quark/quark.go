@@ -26,6 +26,25 @@ __wrap_fmemopen(void *buf, size_t size, const char *mode)
 	return fmemopen(buf, size, mode);
 }
 
+static int
+get_event_as_ecs(struct quark_queue *qq, char **ecs_buf, size_t *ecs_buf_len)
+{
+	const struct quark_event	*qev;
+
+	*ecs_buf = NULL;
+
+	qev = quark_queue_get_event(qq);
+	if (qev == NULL)
+		return (0);
+
+	if (quark_event_to_ecs(qq, qev, ecs_buf, ecs_buf_len) == -1) {
+		*ecs_buf = NULL;
+		return (-1);
+	}
+
+	return (0);
+
+}
 */
 import "C"
 
@@ -366,6 +385,24 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	}
 
 	return event, true
+}
+
+func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
+	var ecsBuf *C.char
+	var ecsLen C.size_t
+
+	r := C.get_event_as_ecs(queue.quarkQueue, &ecsBuf, &ecsLen)
+
+	if r == -1 {
+		return nil, false, fmt.Errorf("can't make ecs")
+	} else if ecsBuf == nil {
+		return nil, false, nil
+	}
+
+	b := C.GoBytes(unsafe.Pointer(ecsBuf), C.int(ecsLen))
+	C.free(unsafe.Pointer(ecsBuf))
+
+	return b, true, nil
 }
 
 // Lookup looks up for the Process associated with PID in quark's internal cache.
