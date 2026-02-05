@@ -2099,6 +2099,62 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 }
 
 
+static int
+t_qreadlinkat(const struct test *t, struct quark_queue_attr *qa)
+{
+	int		 dfd;
+	char		 buf[512];
+	ssize_t		 n;
+	const char	*target;
+	size_t		 target_len;
+
+	/*
+	 * Test 1: qreadlinkat should return the length of the
+	 * resolved symlink target, not the length of the pathname
+	 * argument. Use /proc/self/exe which is a symlink to our
+	 * binary.
+	 */
+	if ((dfd = open("/proc/self", O_PATH)) == -1)
+		err(1, "open /proc/self");
+	n = qreadlinkat(dfd, "exe", buf, sizeof(buf));
+	if (n == -1)
+		err(1, "qreadlinkat exe");
+
+	target = buf;
+	target_len = strlen(target);
+
+	/*
+	 * The return value must equal the length of the resolved
+	 * target stored in buf, not strlen("exe") == 3.
+	 */
+	assert(n == (ssize_t)target_len);
+	assert(n != (ssize_t)strlen("exe"));
+	assert(n > 3); /* exe paths are always longer than "exe" */
+
+	/*
+	 * Test 2: truncation detection should work.
+	 * Use a buffer too small for the target, then verify
+	 * the return value signals truncation (n >= bufsiz).
+	 */
+	if (target_len > 4) {
+		char		 small[4];
+		ssize_t		 n2;
+
+		n2 = qreadlinkat(dfd, "exe", small, sizeof(small));
+		if (n2 == -1)
+			err(1, "qreadlinkat truncation");
+		/* Must signal truncation: n2 >= sizeof(small) */
+		assert(n2 >= (ssize_t)sizeof(small));
+		/* buf must still be terminated */
+		assert(small[sizeof(small) - 1] == 0 ||
+		    strlen(small) < sizeof(small));
+	}
+
+	close(dfd);
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  * Use T() for tests that require no queue.
@@ -2138,6 +2194,7 @@ struct test all_tests[] = {
 	T_KPROBE(t_min_agg),
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
+	T(t_qreadlinkat),
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),

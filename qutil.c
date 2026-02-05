@@ -52,9 +52,9 @@ qwrite(int fd, const void *buf, size_t count)
 }
 
 /*
- * Safer readlinkat(2), guarantees termination and returns strlen(pathname) so
- * caller can check truncation, like strlcpy(). Compare to >= 0 if truncation is
- * acceptable.
+ * Safer readlinkat(2), guarantees termination and returns the length of the
+ * resolved target so caller can check truncation, like strlcpy(). If the
+ * return value is >= bufsiz, truncation occurred.
  */
 ssize_t
 qreadlinkat(int dfd, const char *pathname, char *buf, size_t bufsiz)
@@ -67,7 +67,7 @@ qreadlinkat(int dfd, const char *pathname, char *buf, size_t bufsiz)
 		return (-1);
 	buf[n] = 0;
 
-	return (strlen(pathname));
+	return (n);
 }
 
 /*
