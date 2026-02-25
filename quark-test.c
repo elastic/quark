@@ -1534,17 +1534,11 @@ t_cache_grace(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
-t_min_agg(const struct test *t, struct quark_queue_attr *qa)
+t_min_agg1(const struct test *t, struct quark_queue *qq)
 {
-	struct quark_queue		 qq;
 	const struct quark_event	*qev;
 	const struct quark_process	*qp;
 	pid_t				 child;
-
-	qa->flags |= QQ_MIN_AGG;
-
-	if (quark_queue_open(&qq, qa) != 0)
-		err(1, "quark_queue_open");
 
 	/*
 	 * Fork a child, since there is no aggregation, we should see 3 events
@@ -1553,7 +1547,7 @@ t_min_agg(const struct test *t, struct quark_queue_attr *qa)
 	child = fork_exec_nop();
 
 	/* Fork */
-	qev = drain_for_pid(&qq, child);
+	qev = drain_for_pid(qq, child);
 	assert(qev->events & QUARK_EV_FORK);
 	assert(!(qev->events & (QUARK_EV_EXEC|QUARK_EV_EXIT)));
 	qp = qev->process;
@@ -1561,12 +1555,12 @@ t_min_agg(const struct test *t, struct quark_queue_attr *qa)
 	assert((pid_t)qp->pid == child);
 	assert(qp->flags & QUARK_F_PROC);
 	/* Exec */
-	qev = drain_for_pid(&qq, child);
+	qev = drain_for_pid(qq, child);
 	assert(qev->events & QUARK_EV_EXEC);
 	assert(!(qev->events & (QUARK_EV_FORK|QUARK_EV_EXIT)));
 	assert((pid_t)qp->pid == child);
 	/* Exit */
-	qev = drain_for_pid(&qq, child);
+	qev = drain_for_pid(qq, child);
 	assert(qev->events & QUARK_EV_EXIT);
 	assert(!(qev->events & (QUARK_EV_FORK|QUARK_EV_EXEC)));
 	qp = qev->process;
@@ -1575,6 +1569,44 @@ t_min_agg(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp->flags & QUARK_F_EXIT);
 	assert(qp->exit_code == 0);
 	assert(qp->exit_time_event > 0);
+
+	return (0);
+}
+
+static int
+t_min_agg(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+
+	qa->flags |= QQ_MIN_AGG;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	assert(!t_min_agg1(t, &qq));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_set_agg_matrix(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	int				 i, j;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Clear all aggregation, so it should behave like QQ_MIN */
+	for (i = 0; i < RAW_NUM_TYPES; i++) {
+		for (j = 0; j < RAW_NUM_TYPES; j++) {
+			assert(!quark_queue_set_agg_matrix(&qq, i, j, AGG_NONE));
+		}
+	}
+
+	assert(!t_min_agg1(t, &qq));
 
 	quark_queue_close(&qq);
 
@@ -2136,6 +2168,7 @@ struct test all_tests[] = {
 	T_KPROBE(t_cache_grace),
 	T_EBPF(t_min_agg),
 	T_KPROBE(t_min_agg),
+	T_EBPF(t_set_agg_matrix),
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
 	T(t_hanson),

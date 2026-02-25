@@ -15,6 +15,7 @@
 
 #include <arpa/inet.h>
 
+#include <assert.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <err.h>
@@ -3716,26 +3717,8 @@ quark_sysinfo_init(struct quark_sysinfo *si)
 	return (r);
 }
 
-/*
- * Aggregation is a relationship between a parent event and a child event. In a
- * fork+exec scenario, fork is the parent, exec is the child.
- * Aggregation can be confiured as AGG_SINGLE or AGG_MULTI.
- *
- * AGG_SINGLE aggregate a single child: fork+exec+exec would result
- * in two events: (fork+exec); (exec).
- *
- * AGG_MULTI just smashes everything together, a fork+comm+comm+comm would
- * result in one event: (fork+comm), the intermediary comm values are lost.
- */
-
-enum agg_kind {
-	AGG_NONE,		/* Can't aggregate, must be zero */
-	AGG_SINGLE,		/* Can aggregate only one value */
-	AGG_MULTI,		/* Can aggregate multiple values */
-	AGG_CUSTOM,		/* Can aggregate depending on data */
-};
 		     /* parent */   /* child */
-const u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
+const u8 base_agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
 	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= AGG_CUSTOM,
 	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= AGG_CUSTOM,
 	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
@@ -3757,7 +3740,7 @@ const u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
 
 /* used if qq->flags & QQ_MIN_AGG */
 			 /* parent */   /* child */
-const u8 agg_matrix_min[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
+const u8 base_agg_matrix_min[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
 	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
 
 	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= AGG_SINGLE,
@@ -3986,6 +3969,24 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 #undef P
 
 int
+quark_queue_set_agg_matrix(struct quark_queue *qq, int parent, int child, int kind)
+{
+	if (parent < 0 || parent >= RAW_NUM_TYPES)
+		goto inval;
+	if (child < 0 || child >= RAW_NUM_TYPES)
+		goto inval;
+	if (kind < 0 || kind >= AGG_MAX)
+		goto inval;
+
+	qq->agg_matrix[parent][child] = kind;
+
+	return (0);
+inval:
+	errno = EINVAL;
+	return (-1);
+}
+
+int
 quark_queue_get_epollfd(struct quark_queue *qq)
 {
 	return (qq->epollfd);
@@ -4101,10 +4102,15 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->ruleset = qa->ruleset;
 	qq->length = 0;
 	qq->epollfd = -1;
+
+#ifdef HAVE_STATIC_ASSERT
+	static_assert(sizeof(base_agg_matrix) == sizeof(base_agg_matrix_min));
+	static_assert(sizeof(qq->agg_matrix) == sizeof(base_agg_matrix));
+#endif
 	if (qq->flags & QQ_MIN_AGG)
-		qq->agg_matrix = agg_matrix_min;
+		memcpy(qq->agg_matrix, base_agg_matrix_min, sizeof(qq->agg_matrix));
 	else
-		qq->agg_matrix = agg_matrix;
+		memcpy(qq->agg_matrix, base_agg_matrix, sizeof(qq->agg_matrix));
 
 	if ((qq->epollfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
 		qwarn("can't create epollfd");
