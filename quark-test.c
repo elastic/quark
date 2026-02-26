@@ -1602,7 +1602,7 @@ t_set_agg_matrix(const struct test *t, struct quark_queue_attr *qa)
 	/* Clear all aggregation, so it should behave like QQ_MIN */
 	for (i = 0; i < RAW_NUM_TYPES; i++) {
 		for (j = 0; j < RAW_NUM_TYPES; j++) {
-			assert(!quark_queue_set_agg_matrix(&qq, i, j, AGG_NONE));
+			assert(!quark_queue_set_agg_matrix(&qq, i, j, NULL));
 		}
 	}
 

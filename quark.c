@@ -3718,37 +3718,37 @@ quark_sysinfo_init(struct quark_sysinfo *si)
 }
 
 		     /* parent */   /* child */
-const u8 base_agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= AGG_CUSTOM,
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= AGG_CUSTOM,
-	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
-	[RAW_WAKE_UP_NEW_TASK][RAW_ID_CHANGE]		= AGG_MULTI,
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXIT_THREAD]		= AGG_SINGLE,
+const quark_can_aggregate_fn base_agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= quark_can_aggregate_fork_exec,
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= quark_can_aggregate_fork_exec,
+	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= quark_can_aggregate_mult,
+	[RAW_WAKE_UP_NEW_TASK][RAW_ID_CHANGE]		= quark_can_aggregate_mult,
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXIT_THREAD]		= quark_can_aggregate_single,
 
-	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= AGG_SINGLE,
-	[RAW_EXEC][RAW_COMM]				= AGG_MULTI,
-	[RAW_EXEC][RAW_EXIT_THREAD]			= AGG_SINGLE,
+	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= quark_can_aggregate_single,
+	[RAW_EXEC][RAW_COMM]				= quark_can_aggregate_mult,
+	[RAW_EXEC][RAW_EXIT_THREAD]			= quark_can_aggregate_single,
 
-	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
-	[RAW_COMM][RAW_EXIT_THREAD]			= AGG_SINGLE,
+	[RAW_COMM][RAW_COMM]				= quark_can_aggregate_mult,
+	[RAW_COMM][RAW_EXIT_THREAD]			= quark_can_aggregate_single,
 
-	[RAW_ID_CHANGE][RAW_ID_CHANGE]			= AGG_MULTI,
+	[RAW_ID_CHANGE][RAW_ID_CHANGE]			= quark_can_aggregate_mult,
 
-	[RAW_FILE][RAW_FILE]				= AGG_CUSTOM,
-	[RAW_TTY][RAW_TTY]				= AGG_CUSTOM,
+	[RAW_FILE][RAW_FILE]				= quark_can_aggregate_file,
+	[RAW_TTY][RAW_TTY]				= quark_can_aggregate_tty,
 };
 
 /* used if qq->flags & QQ_MIN_AGG */
 			 /* parent */   /* child */
-const u8 base_agg_matrix_min[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
-	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
+const quark_can_aggregate_fn base_agg_matrix_min[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
+	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= quark_can_aggregate_mult,
 
-	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= AGG_SINGLE,
-	[RAW_EXEC][RAW_COMM]				= AGG_MULTI,
+	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= quark_can_aggregate_single,
+	[RAW_EXEC][RAW_COMM]				= quark_can_aggregate_mult,
 
-	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
+	[RAW_COMM][RAW_COMM]				= quark_can_aggregate_mult,
 
-	[RAW_ID_CHANGE][RAW_ID_CHANGE]			= AGG_MULTI,
+	[RAW_ID_CHANGE][RAW_ID_CHANGE]			= quark_can_aggregate_mult,
 };
 
 static int
@@ -3969,16 +3969,15 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 #undef P
 
 int
-quark_queue_set_agg_matrix(struct quark_queue *qq, int parent, int child, int kind)
+quark_queue_set_agg_matrix(struct quark_queue *qq,
+    int parent, int child, quark_can_aggregate_fn fn)
 {
 	if (parent < 0 || parent >= RAW_NUM_TYPES)
 		goto inval;
 	if (child < 0 || child >= RAW_NUM_TYPES)
 		goto inval;
-	if (kind < 0 || kind >= AGG_MAX)
-		goto inval;
 
-	qq->agg_matrix[parent][child] = kind;
+	qq->agg_matrix[parent][child] = fn;
 
 	return (0);
 inval:
@@ -4337,8 +4336,30 @@ quark_queue_close(struct quark_queue *qq)
 	}
 }
 
-static int
-can_aggregate_fork_exec(struct quark_queue *qq, struct raw_event *fork, struct raw_event *exec)
+int
+quark_can_aggregate_single(struct quark_queue *qq, struct raw_event *p,
+    struct raw_event *c)
+{
+	struct raw_event	*agg;
+
+	TAILQ_FOREACH(agg, &p->agg_queue, agg_entry) {
+		if (agg->type == c->type)
+			return (0);
+	}
+
+	return (1);
+}
+
+int
+quark_can_aggregate_mult(struct quark_queue *qq, struct raw_event *p,
+    struct raw_event *c)
+{
+	return (1);
+}
+
+int
+quark_can_aggregate_fork_exec(struct quark_queue *qq,
+    struct raw_event *fork, struct raw_event *exec)
 {
 	struct raw_event        *agg;
 
@@ -4354,8 +4375,9 @@ can_aggregate_fork_exec(struct quark_queue *qq, struct raw_event *fork, struct r
 	return (1);
 }
 
-static int
-can_aggregate_file(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
+int
+quark_can_aggregate_file(struct quark_queue *qq,
+    struct raw_event *p, struct raw_event *c)
 {
 	struct quark_file	*pf, *cf;
 
@@ -4376,8 +4398,9 @@ can_aggregate_file(struct quark_queue *qq, struct raw_event *p, struct raw_event
 	return (0);
 }
 
-static int
-can_aggregate_tty(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
+int
+quark_can_aggregate_tty(struct quark_queue *qq,
+    struct raw_event *p, struct raw_event *c)
 {
 	struct quark_tty	*pt, *ct;
 
@@ -4401,11 +4424,26 @@ can_aggregate_tty(struct quark_queue *qq, struct raw_event *p, struct raw_event 
 	return (0);
 }
 
+/*
+ * Aggregation is a relationship between a parent event and a child event. In a
+ * fork+exec scenario, fork is the parent, exec is the child.
+ *
+ * We derive an aggregation callback from the aggregation matrix, if that
+ * returns true we aggregate them.
+ *
+ * quark_can_aggregate_single() aggregates only one child event onto the parent event,
+ * so it will aggregate the first, but not the second, so a fork+exec+exec
+ * becomes: [fork+exec; exec].
+ *
+ * quark_can_agg_mult() joins everything, so a fork+comm+comm+comm will end up
+ * as a fork with the last comm value.
+ *
+ * The user can modify the callbacks via quark_queue_set_agg_matrix().
+ */
 static int
 can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 {
-	int			 kind;
-	struct raw_event	*agg;
+	quark_can_aggregate_fn	 can_agg_fn;
 
 	/* Different pids can't aggregate */
 	if (p->pid != c->pid)
@@ -4417,32 +4455,12 @@ can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 		return (0);
 	}
 
-	kind = qq->agg_matrix[p->type][c->type];
 
-	switch (kind) {
-	case AGG_NONE:
+	can_agg_fn = qq->agg_matrix[p->type][c->type];
+	if (can_agg_fn == NULL)
 		return (0);
-	case AGG_MULTI:
-		return (1);
-	case AGG_SINGLE:
-		TAILQ_FOREACH(agg, &p->agg_queue, agg_entry) {
-			if (agg->type == c->type)
-				return (0);
-		}
-		return (1);
-	case AGG_CUSTOM:
-		if (p->type == RAW_WAKE_UP_NEW_TASK &&
-		    (c->type == RAW_EXEC || c->type == RAW_EXEC_CONNECTOR))
-			return (can_aggregate_fork_exec(qq, p, c));
-		else if (p->type == RAW_FILE && c->type == RAW_FILE)
-			return (can_aggregate_file(qq, p, c));
-		else if (p->type == RAW_TTY && c->type == RAW_TTY)
-			return (can_aggregate_tty(qq, p, c));
-		return (0);
-	default:
-		qwarnx("unhandle agg kind %d", kind);
-		return (0);
-	}
+
+	return (can_agg_fn(qq, p, c));
 }
 
 static void

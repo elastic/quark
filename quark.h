@@ -41,6 +41,8 @@ struct quark_queue_stats;
 struct quark_ruleset;
 struct quark_rule;
 struct quark_rule_field;
+typedef int (*quark_can_aggregate_fn)(struct quark_queue *,
+    struct raw_event *, struct raw_event *);
 struct raw_event	*raw_event_alloc(int);
 void			 raw_event_free(struct raw_event *);
 int			 raw_event_insert(struct quark_queue *,
@@ -52,8 +54,6 @@ void			 quark_queue_close(struct quark_queue *);
 int			 quark_queue_populate(struct quark_queue *);
 int			 quark_queue_block(struct quark_queue *);
 const struct quark_event *quark_queue_get_event(struct quark_queue *);
-int			 quark_queue_set_agg_matrix(struct quark_queue *,
-			     int, int, int);
 int			 quark_queue_get_epollfd(struct quark_queue *);
 void			 quark_queue_get_stats(struct quark_queue *,
 			     struct quark_queue_stats *);
@@ -87,6 +87,23 @@ int			 quark_rule_match_field(struct quark_rule *,
 			     struct quark_rule_field);
 struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
 			     struct quark_event *);
+int			 quark_queue_set_agg_matrix(struct quark_queue *,
+			     int, int, quark_can_aggregate_fn);
+/* Can aggregate only one value (sits alone) */
+int			 quark_can_aggregate_single(struct quark_queue *,
+			     struct raw_event *, struct raw_event *);
+/* Can aggregate multiple values (keeps the last one) */
+int			 quark_can_aggregate_mult(struct quark_queue *,
+			     struct raw_event *, struct raw_event *);
+/* Default aggregation for fork+exec events */
+int			 quark_can_aggregate_fork_exec(struct quark_queue *,
+			     struct raw_event *, struct raw_event *);
+/* Default aggregation for file events */
+int			 quark_can_aggregate_file(struct quark_queue *,
+			     struct raw_event *, struct raw_event *);
+/* Default aggregation for tty events */
+int			 quark_can_aggregate_tty(struct quark_queue *,
+			     struct raw_event *, struct raw_event *);
 
 /* quark.c: These are exported for testing only */
 int	 kube_parse_cgroup(const char *, char *, size_t);
@@ -839,26 +856,6 @@ struct quark_sysinfo {
 	char	 *os_pretty_name;
 };
 
-/*
- * Aggregation is a relationship between a parent event and a child event. In a
- * fork+exec scenario, fork is the parent, exec is the child.
- * Aggregation can be confiured as AGG_SINGLE or AGG_MULTI.
- *
- * AGG_SINGLE aggregate a single child: fork+exec+exec would result
- * in two events: (fork+exec); (exec).
- *
- * AGG_MULTI just smashes everything together, a fork+comm+comm+comm would
- * result in one event: (fork+comm), the intermediary comm values are lost.
- */
-
-enum quark_agg_kind {
-	AGG_NONE,		/* Can't aggregate, must be zero */
-	AGG_SINGLE,		/* Can aggregate only one value */
-	AGG_MULTI,		/* Can aggregate multiple values */
-	AGG_CUSTOM,		/* Can aggregate depending on data */
-	AGG_MAX,		/* Must be last */
-};
-
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
@@ -918,7 +915,7 @@ struct quark_queue {
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
 	struct quark_ruleset		*ruleset;
-	u8				 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES];
+	quark_can_aggregate_fn		 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES];
 	int				 flags;
 	int				 length;
 	int				 max_length;
