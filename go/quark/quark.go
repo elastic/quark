@@ -53,9 +53,12 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"strings"
 	"syscall"
 	"unsafe"
+
+	kubetalker "quark/quark/kubetalker"
 	//	"encoding/binary"
 )
 
@@ -199,6 +202,9 @@ type Event struct {
 type Queue struct {
 	quarkQueue *C.struct_quark_queue // pointer to the queue structure
 	epollFd    int
+	kubeIn     *os.File
+	kubeOut    *os.File
+	handle     *kubetalker.Handle
 }
 
 const (
@@ -268,6 +274,7 @@ type QueueAttr struct {
 	MaxLength      int
 	CacheGraceTime int
 	HoldTime       int
+	Kubernetes     bool
 }
 
 // Documented in https://elastic.github.io/quark/quark_queue_get_stats.3.html.
@@ -328,9 +335,37 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	cattr.max_length = C.int(attr.MaxLength)
 	cattr.cache_grace_time = C.int(attr.CacheGraceTime)
 	cattr.hold_time = C.int(attr.HoldTime)
+
+	if attr.Kubernetes {
+		queue.kubeIn, queue.kubeOut, err = os.Pipe()
+		if err != nil {
+			C.free(unsafe.Pointer(queue.quarkQueue))
+			return nil, err
+		}
+		queue.handle, err = kubetalker.Start(true, "minikube", "/home/haesbaert/.kube/config", queue.kubeOut)
+		if err != nil {
+			queue.kubeIn.Close()
+			queue.kubeOut.Close()
+			C.free(unsafe.Pointer(queue.quarkQueue))
+			return nil, err
+		}
+
+		cattr.kubefd = C.int(queue.kubeIn.Fd())
+		queue.kubeOut = queue.kubeOut
+	}
+
 	ok, err := C.quark_queue_open(queue.quarkQueue, &cattr)
 	if ok == -1 {
 		C.free(unsafe.Pointer(queue.quarkQueue))
+		if queue.handle != nil {
+			queue.handle.Stop()
+		}
+		if queue.kubeIn != nil {
+			queue.kubeIn.Close()
+		}
+		if queue.kubeOut != nil {
+			queue.kubeOut.Close()
+		}
 		return nil, wrapErrno(err)
 	}
 
@@ -341,9 +376,26 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 
 // Close closes the queue.
 func (queue *Queue) Close() {
+	// quark_queue_close() never closes input kube fd (kubeIn)
 	C.quark_queue_close(queue.quarkQueue)
 	C.free(unsafe.Pointer(queue.quarkQueue))
 	queue.quarkQueue = nil
+	// Close kubeIn, which would cause any blocking writes on
+	// kubeOut to error out
+	if queue.kubeIn != nil {
+		queue.kubeIn.Close()
+		queue.kubeIn = nil
+	}
+	// Stop the writers, so we can safely close kubeOut
+	if queue.handle != nil {
+		queue.handle.Stop()
+		queue.handle = nil
+	}
+	// Finally close kubeOut
+	if queue.kubeOut != nil {
+		queue.kubeOut.Close()
+		queue.kubeOut = nil
+	}
 }
 
 func (queue *Queue) GetEvent() (Event, bool) {
