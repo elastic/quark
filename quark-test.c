@@ -81,6 +81,7 @@ enum {
 static int	noforkflag;	/* don't fork on each test */
 static int	bflag;		/* run bpf tests */
 static int	kflag;		/* run kprobe tests */
+static int	tflag;		/* listen to the tracepipe */
 static u64	boottime;
 static int	fancy_tty;
 static int	in_valgrind;
@@ -418,7 +419,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-1bkv] [-x test] [tests ...]\n",
+	fprintf(stderr, "usage: %s [-1bktv] [-x test] [tests ...]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -l\n",
 	    program_invocation_short_name);
@@ -2251,11 +2252,12 @@ static int
 run_test(struct progress *progress, struct test *t, struct quark_queue_attr *qa)
 {
 	pid_t		 child;
-	int		 status, x, linepos, be, r;
+	int		 status, x, linepos, be, r, tracefd;
 	int		 child_stderr[2];
 	FILE		*child_stream;
 	char		*child_buf;
 	size_t		 child_buflen;
+	char		 buf[4096];
 	ssize_t		 n;
 
 	progress_print(progress);
@@ -2294,6 +2296,14 @@ run_test(struct progress *progress, struct test *t, struct quark_queue_attr *qa)
 		return (r);
 	}
 
+	if (tflag) {
+		tracefd = open("/sys/kernel/tracing/trace_pipe",
+		    O_RDONLY | O_NONBLOCK);
+		if (tracefd == -1)
+			warn("can't open trace_pipe");
+	} else
+		tracefd = -1;
+
 	/*
 	 * Create a pipe to save the child stderr, so we don't get crappy
 	 * interleaved output with the parent.
@@ -2330,7 +2340,7 @@ run_test(struct progress *progress, struct test *t, struct quark_queue_attr *qa)
 	for (;;) {
 		fd_set		rfds;
 		struct timeval	tv;
-		char		buf[4096];
+		int		nfds;
 
 		spin();
 		tv.tv_sec = 0;
@@ -2338,31 +2348,73 @@ run_test(struct progress *progress, struct test *t, struct quark_queue_attr *qa)
 
 		FD_ZERO(&rfds);
 		FD_SET(child_stderr[0], &rfds);
+		if (tracefd != -1)
+			FD_SET(tracefd, &rfds);
 
-		r = select(child_stderr[0] + 1, &rfds, NULL, NULL, &tv);
+		nfds = child_stderr[0] > tracefd ?
+		    child_stderr[0] + 1 : tracefd + 1;
+		r = select(nfds, &rfds, NULL, NULL, &tv);
 		if (r == -1 && (errno == EINTR))
 			continue;
 		else if (r == -1)
 			err(1, "select");
 		else if (r == 0)
 			continue;
-		if (!FD_ISSET(child_stderr[0], &rfds))
-			errx(1, "rfds should be set");
 
-		n = qread(child_stderr[0], buf, sizeof(buf));
-		if (n == -1)
-			err(1, "read");
-		else if (n == 0) {
-			close(child_stderr[0]);
-			break;
+		if (tracefd != -1 && FD_ISSET(tracefd, &rfds)) {
+			n = qread(tracefd, buf, sizeof(buf));
+			/*
+			 * Tracepipe is a bit special, EOF is just a marker of
+			 * "no current data to be read", so we basically ignore
+			 * it.
+			 */
+			if (n == -1 && errno != EAGAIN)
+				err(1, "read tracepipe");
+			else if (n > 0) {
+				/* n is positive, move to the stream */
+				if (fwrite(buf, 1, n, child_stream) != (size_t)n)
+					err(1, "fwrite child_stream");
+				if (ferror(child_stream))
+					err(1, "ferror child_stream");
+				if (feof(child_stream))
+					errx(1, "feof child_stream");
+			}
 		}
-		/* n is positive, move to the stream */
-		if (fwrite(buf, 1, n, child_stream) != (size_t)n)
-			err(1, "fwrite");
-		if (ferror(child_stream))
-			err(1, "fwrite");
-		if (feof(child_stream))
-			errx(1, "fwrite got EOF");
+
+		if (FD_ISSET(child_stderr[0], &rfds)) {
+			n = qread(child_stderr[0], buf, sizeof(buf));
+			if (n == -1)
+				err(1, "read child_stderr[0]");
+			else if (n == 0) {
+				close(child_stderr[0]);
+				break;
+			}
+			/* n is positive, move to the stream */
+			if (fwrite(buf, 1, n, child_stream) != (size_t)n)
+				err(1, "fwrite child_stream 2");
+			if (ferror(child_stream))
+				err(1, "ferror child_stream 2");
+			if (feof(child_stream))
+				errx(1, "feof child_stream 2");
+		}
+	}
+
+	if (tracefd != -1) {
+		/*
+		 * Make sure to drain until we got it all
+		 */
+		while ((n = qread(tracefd, buf, sizeof(buf))) > 0) {
+			if (fwrite(buf, 1, n, child_stream) != (size_t)n)
+				err(1, "fwrite child_stream 3");
+			if (ferror(child_stream))
+				err(1, "ferror child_stream 3");
+			if (feof(child_stream))
+				errx(1, "feof child_stream 3");
+		}
+		if (n == -1 && errno != EAGAIN)
+			warn("read tracefd");
+		close(tracefd);
+		tracefd = -1;
 	}
 
 	/*
@@ -2499,7 +2551,7 @@ main(int argc, char *argv[])
 	fancy_tty = probe_fancy_tty();
 	in_valgrind = getenv("VALGRIND") != NULL;
 
-	while ((ch = getopt(argc, argv, "1bhklvVx:")) != -1) {
+	while ((ch = getopt(argc, argv, "1bhkltvVx:")) != -1) {
 		switch (ch) {
 		case '1':
 			noforkflag = 1;
@@ -2519,6 +2571,9 @@ main(int argc, char *argv[])
 		case 'l':
 			display_tests();
 			break;	/* NOTREACHED */
+		case 't':
+			tflag = 1;
+			break;
 		case 'v':
 			quark_verbose++;
 			break;
@@ -2532,6 +2587,9 @@ main(int argc, char *argv[])
 			usage();
 		}
 	}
+
+	if (tflag && noforkflag)
+		usage();
 
 	boottime = fetch_boottime();
 

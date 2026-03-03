@@ -6,7 +6,7 @@
 .Nd quark's test utility
 .Sh SYNOPSIS
 .Nm quark-test
-.Op Fl 1bkv
+.Op Fl 1bktv
 .Op Fl x Ar test
 .Op Ar tests ...
 .Nm quark-test
@@ -43,6 +43,12 @@ Display this manpage.
 Run only KPROBE tests.
 .It Fl l
 Prints all available tests on stdout.
+.It Fl t
+Print out the contents of
+.Pa /sys/kernel/tracing/trace_pipe
+during the test.
+This option cannot be used with
+.Fl 1 .
 .It Fl v
 Increase
 .Em quark_verbose ,
