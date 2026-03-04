@@ -25,7 +25,7 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-test</code></td>
-    <td>[<code class="Fl">-1bkv</code>] [<code class="Fl">-x</code>
+    <td>[<code class="Fl">-1bktv</code>] [<code class="Fl">-x</code>
       <var class="Ar">test</var>] [<var class="Ar">tests ...</var>]</td>
   </tr>
 </table>
@@ -74,6 +74,10 @@ The <code class="Nm">quark-test</code> program runs tests for
   <dd>Run only KPROBE tests.</dd>
   <dt id="l"><a class="permalink" href="#l"><code class="Fl">-l</code></a></dt>
   <dd>Prints all available tests on stdout.</dd>
+  <dt id="t"><a class="permalink" href="#t"><code class="Fl">-t</code></a></dt>
+  <dd>Print out the contents of
+      <span class="Pa">/sys/kernel/tracing/trace_pipe</span> during the test.
+      This option cannot be used with <code class="Fl">-1</code>.</dd>
   <dt id="v"><a class="permalink" href="#v"><code class="Fl">-v</code></a></dt>
   <dd>Increase
       <a class="permalink" href="#quark_verbose"><i class="Em" id="quark_verbose">quark_verbose</i></a>,
@@ -124,7 +128,7 @@ failed tests 0</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">January 21, 2026</td>
+    <td class="foot-date">March 3, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
