@@ -2132,6 +2132,28 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 }
 
 
+static int
+t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	assert(!quark_queue_trusted_pid_add(&qq, getpid()));
+	assert(!quark_queue_trusted_pid_reset(&qq));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  * Use T() for tests that require no queue.
@@ -2179,6 +2201,7 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
+	T_EBPF(t_trusted_pid),
 	{ NULL,	NULL, 0, 0 }
 };
 #undef S
