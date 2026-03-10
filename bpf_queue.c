@@ -1441,8 +1441,47 @@ quark_get_bpf_probes(struct quark_queue *qq)
 {
 	struct bpf_queue *bqq = qq->queue_be;
 
-	if (!(qq->flags & QQ_EBPF) || !(qq->flags & QQ_BYPASS))
+	if (!(qq->flags & QQ_EBPF))
 		return (errno = EINVAL, NULL);
 
 	return (bqq->probes);
+}
+
+int
+quark_queue_trusted_pid_reset(struct quark_queue *qq)
+{
+	struct bpf_probes	*p;
+	struct bpf_map		*m;
+	u32			 k;
+	int			 r;
+
+	if ((p = quark_get_bpf_probes(qq)) == NULL)
+		return (-1);
+	if ((m = p->maps.elastic_ebpf_events_trusted_pids) == NULL)
+		return (errno = EINVAL, -1);
+	while ((r = bpf_map__get_next_key(m, NULL, &k, sizeof(k))) == 0) {
+		if (bpf_map__delete_elem(m, &k, sizeof(k), 0) != 0)
+			return (-1);
+	}
+
+	return (r == -ENOENT ? 0 : -1);
+}
+
+int
+quark_queue_trusted_pid_add(struct quark_queue *qq, u32 pid)
+{
+	struct bpf_probes	*p;
+	struct bpf_map		*m;
+	u32			 v;
+
+	if ((p = quark_get_bpf_probes(qq)) == NULL)
+		return (-1);
+	if ((m = p->maps.elastic_ebpf_events_trusted_pids) == NULL)
+		return (errno = EINVAL, -1);
+	v = 1;
+	if (bpf_map__update_elem(m, &pid, sizeof(pid),
+	    &v, sizeof(v), BPF_ANY) < 0)
+		return (-1);
+
+	return (0);
 }
