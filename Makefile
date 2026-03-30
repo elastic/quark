@@ -46,6 +46,12 @@ define assert_no_syslib
   $(if $(SYSLIB), $(error cant build target $@ with SYSLIB))
 endef
 
+ifdef SYSLIB
+ifndef NO_GO
+$(error defining SYSLIB implies defining NO_GO, define both!)
+endif
+endif
+
 CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
 ifdef CENTOS7
 CFLAGS+= -std=gnu99 -DNO_PUSH_PRAGMA -DNO_MEMFD -DNO_SHM_OPEN
@@ -563,7 +569,7 @@ clean:
 		quark-kube-talker	\
 		quark-go-test		\
 		true			\
-		btf_prog_skel.h		\
+		bpf_probes_skel.h	\
 		init
 	$(Q)rm -rf initramfs
 
