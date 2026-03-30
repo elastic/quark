@@ -59,13 +59,25 @@ SEC("fexit/inet_csk_accept")
 int BPF_PROG(fexit__inet_csk_accept)
 {
     struct sock *ret = FUNC_RET_READ(___type(ret), inet_csk_accept);
-    return inet_csk_accept__exit(ret);
+    int r;
+
+    preempt_disable();
+    r = inet_csk_accept__exit(ret);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kretprobe/inet_csk_accept")
 int BPF_KRETPROBE(kretprobe__inet_csk_accept, struct sock *ret)
 {
-    return inet_csk_accept__exit(ret);
+    int r;
+
+    preempt_disable();
+    r = inet_csk_accept__exit(ret);
+    preempt_enable();
+
+    return r;
 }
 
 static int tcp_connect(struct sock *sk, int ret)
@@ -98,7 +110,13 @@ out:
 SEC("fexit/tcp_v4_connect")
 int BPF_PROG(fexit__tcp_v4_connect, struct sock *sk, struct sockaddr *uaddr, int addr_len, int ret)
 {
-    return tcp_connect(sk, ret);
+    int r;
+
+    preempt_disable();
+    r = tcp_connect(sk, ret);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/tcp_v4_connect")
@@ -106,9 +124,14 @@ int BPF_KPROBE(kprobe__tcp_v4_connect, struct sock *sk)
 {
     struct ebpf_events_state state = {};
     state.tcp_v4_connect.sk        = sk;
+
+    preempt_disable();
     if (ebpf_events_is_trusted_pid())
-        return 0;
+        goto out;
     ebpf_events_state__set(EBPF_EVENTS_STATE_TCP_V4_CONNECT, &state);
+
+out:
+    preempt_enable();
     return 0;
 }
 
@@ -116,18 +139,31 @@ SEC("kretprobe/tcp_v4_connect")
 int BPF_KRETPROBE(kretprobe__tcp_v4_connect, int ret)
 {
     struct ebpf_events_state *state;
+    int r;
 
+    preempt_disable();
+    r = 0;
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_TCP_V4_CONNECT);
     if (!state)
-        return 0;
+        goto out;
 
-    return tcp_connect(state->tcp_v4_connect.sk, ret);
+    r = tcp_connect(state->tcp_v4_connect.sk, ret);
+
+out:
+    preempt_enable();
+    return r;
 }
 
 SEC("fexit/tcp_v6_connect")
 int BPF_PROG(fexit__tcp_v6_connect, struct sock *sk, struct sockaddr *uaddr, int addr_len, int ret)
 {
-    return tcp_connect(sk, ret);
+    int r;
+
+    preempt_disable();
+    r = tcp_connect(sk, ret);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/tcp_v6_connect")
@@ -135,9 +171,14 @@ int BPF_KPROBE(kprobe__tcp_v6_connect, struct sock *sk)
 {
     struct ebpf_events_state state = {};
     state.tcp_v6_connect.sk        = sk;
+
+    preempt_disable();
     if (ebpf_events_is_trusted_pid())
-        return 0;
+        goto out;
     ebpf_events_state__set(EBPF_EVENTS_STATE_TCP_V6_CONNECT, &state);
+
+out:
+    preempt_enable();
     return 0;
 }
 
@@ -145,12 +186,20 @@ SEC("kretprobe/tcp_v6_connect")
 int BPF_KRETPROBE(kretprobe__tcp_v6_connect, int ret)
 {
     struct ebpf_events_state *state;
+    int r;
 
+    preempt_disable();
+    r = 0;
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_TCP_V6_CONNECT);
     if (!state)
-        return 0;
+        goto out;
 
-    return tcp_connect(state->tcp_v6_connect.sk, ret);
+    r = tcp_connect(state->tcp_v6_connect.sk, ret);
+
+out:
+    preempt_enable();
+
+    return r;
 }
 
 static int tcp_close__enter(struct sock *sk)
@@ -189,13 +238,25 @@ out:
 SEC("fentry/tcp_close")
 int BPF_PROG(fentry__tcp_close, struct sock *sk, long timeout)
 {
-    return tcp_close__enter(sk);
+    int r;
+
+    preempt_disable();
+    r = tcp_close__enter(sk);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/tcp_close")
 int BPF_KPROBE(kprobe__tcp_close, struct sock *sk, long timeout)
 {
-    return tcp_close__enter(sk);
+    int r;
+
+    preempt_disable();
+    r = tcp_close__enter(sk);
+    preempt_enable();
+
+    return r;
 }
 
 #ifdef notyet
@@ -203,7 +264,7 @@ int BPF_KPROBE(kprobe__tcp_close, struct sock *sk, long timeout)
  * XXX naive, only handles ROUTING and DEST, untested, ipv6 needs more work to
  * be enabled.
  */
-int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
+static int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
 {
     struct ipv6hdr ip6;
     int off;
@@ -235,7 +296,7 @@ int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
 }
 #endif
 
-int skb_in_or_egress(struct __sk_buff *skb, int ingress)
+static int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 {
     struct udphdr udp;
     struct bpf_sock *sk;
@@ -342,16 +403,28 @@ ignore:
 SEC("cgroup_skb/egress")
 int skb_egress(struct __sk_buff *skb)
 {
-    return skb_in_or_egress(skb, 0);
+    int r;
+
+    preempt_disable();
+    r = skb_in_or_egress(skb, 0);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("cgroup_skb/ingress")
 int skb_ingress(struct __sk_buff *skb)
 {
-    return skb_in_or_egress(skb, 1);
+    int r;
+
+    preempt_disable();
+    r = skb_in_or_egress(skb, 1);
+    preempt_enable();
+
+    return r;
 }
 
-int sk_maybe_save_tgid(struct bpf_sock *sk)
+static int sk_maybe_save_tgid(struct bpf_sock *sk)
 {
     u32 tgid, zero = 0;
     u64 *sk_addr;
@@ -384,25 +457,49 @@ int sk_maybe_save_tgid(struct bpf_sock *sk)
 SEC("cgroup/sendmsg4")
 int sendmsg4(struct bpf_sock_addr *sa)
 {
-    return sk_maybe_save_tgid(sa->sk);
+    int r;
+
+    preempt_disable();
+    r = sk_maybe_save_tgid(sa->sk);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("cgroup/recvmsg4")
 int recvmsg4(struct bpf_sock_addr *sa)
 {
-    return sk_maybe_save_tgid(sa->sk);
+    int r;
+
+    preempt_disable();
+    r = sk_maybe_save_tgid(sa->sk);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("cgroup/connect4")
 int connect4(struct bpf_sock_addr *sa)
 {
-    return sk_maybe_save_tgid(sa->sk);
+    int r;
+
+    preempt_disable();
+    r = sk_maybe_save_tgid(sa->sk);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("cgroup/sock_create")
 int sock_create(struct bpf_sock *sk)
 {
-    return sk_maybe_save_tgid(sk);
+    int r;
+
+    preempt_disable();
+    r = sk_maybe_save_tgid(sk);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("cgroup/sock_release")
@@ -411,8 +508,9 @@ int sock_release(struct bpf_sock *sk)
     u32 zero = 0;
     u64 *sk_addr;
 
+    preempt_disable();
     if (sk->protocol != IPPROTO_UDP)
-        return (1);
+        goto out;
 
     /*
      * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
@@ -420,9 +518,12 @@ int sock_release(struct bpf_sock *sk)
      */
     sk_addr = bpf_map_lookup_elem(&scratch64, &zero);
     if (sk_addr == NULL)
-        return (1);
+        goto out;
     *sk_addr = (u64)sk;
     bpf_map_delete_elem(&sk_to_tgid, sk_addr);
+
+out:
+    preempt_enable();
 
     return (1);
 }
