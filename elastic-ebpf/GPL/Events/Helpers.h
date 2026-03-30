@@ -396,4 +396,20 @@ static u64 bpf_ktime_get_boot_ns_helper()
         return 0;
 }
 
+extern void bpf_preempt_disable(void) __ksym __weak;
+
+static void preempt_disable(void)
+{
+    if (bpf_ksym_exists(bpf_preempt_disable))
+        bpf_preempt_disable();
+}
+
+extern void bpf_preempt_enable(void) __ksym __weak;
+
+static void preempt_enable(void)
+{
+    if (bpf_ksym_exists(bpf_preempt_enable))
+        bpf_preempt_enable();
+}
+
 #endif // EBPF_EVENTPROBE_HELPERS_H

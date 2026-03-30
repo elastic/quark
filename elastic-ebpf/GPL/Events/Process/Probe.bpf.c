@@ -38,6 +38,7 @@ DECL_FIELD_OFFSET(iov_iter, __iov);
 SEC("tp_btf/sched_process_fork")
 int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct task_struct *child)
 {
+    preempt_disable();
     // Ignore the !is_thread_group_leader(child) case as we want to ignore
     // thread creations in the same thread group.
     //
@@ -81,6 +82,7 @@ int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct 
     ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
 
 out:
+    preempt_enable();
     return 0;
 }
 
@@ -90,6 +92,7 @@ int BPF_PROG(sched_process_exec,
              pid_t old_pid,
              const struct linux_binprm *binprm)
 {
+    preempt_disable();
     if (!binprm)
         goto out;
 
@@ -173,6 +176,7 @@ int BPF_PROG(sched_process_exec,
     ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
 
 out:
+    preempt_enable();
     return 0;
 }
 
@@ -247,13 +251,25 @@ static int disassociate_ctty__enter(int on_exit)
 SEC("fentry/disassociate_ctty")
 int BPF_PROG(fentry__disassociate_ctty, int on_exit)
 {
-    return disassociate_ctty__enter(on_exit);
+    int r;
+
+    preempt_disable();
+    r = disassociate_ctty__enter(on_exit);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/disassociate_ctty")
 int BPF_KPROBE(kprobe__disassociate_ctty, int on_exit)
 {
-    return disassociate_ctty__enter(on_exit);
+    int r;
+
+    preempt_disable();
+    r = disassociate_ctty__enter(on_exit);;
+    preempt_enable();
+
+    return r;
 }
 
 static int setsid__exit(int evtype)
@@ -288,24 +304,36 @@ out:
 SEC("tracepoint/syscalls/sys_exit_setsid")
 int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
 {
+    int r;
+
+    r = 0;
+    preempt_disable();
     if (BPF_CORE_READ(args, ret) < 0)
         goto out;
 
-    return setsid__exit(EBPF_EVENT_PROCESS_SETSID);
+    r = setsid__exit(EBPF_EVENT_PROCESS_SETSID);
 
 out:
-    return 0;
+    preempt_enable();
+    return r;
 }
 
 SEC("tracepoint/syscalls/sys_exit_getpid")
 int tracepoint_syscalls_sys_exit_getpid(struct syscall_trace_exit *args)
 {
-    return setsid__exit(EBPF_EVENT_PROCESS_GETPID);
+    int r;
+
+    preempt_disable();
+    r = setsid__exit(EBPF_EVENT_PROCESS_GETPID);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("tp_btf/module_load")
 int BPF_PROG(module_load, struct module *mod)
 {
+    preempt_disable();
     if (ebpf_events_is_trusted_pid())
         goto out;
 
@@ -357,6 +385,7 @@ int BPF_PROG(module_load, struct module *mod)
     ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
 
 out:
+    preempt_enable();
     return 0;
 }
 
@@ -411,7 +440,13 @@ int BPF_KPROBE(kprobe__ptrace_attach,
                unsigned long addr,
                unsigned long data)
 {
-    return ptrace_event(child, request, addr, data);
+    int r;
+
+    preempt_disable();
+    r = ptrace_event(child, request, addr, data);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/arch_ptrace")
@@ -421,12 +456,19 @@ int BPF_KPROBE(kprobe__arch_ptrace,
                unsigned long addr,
                unsigned long data)
 {
-    return ptrace_event(child, request, addr, data);
+    int r;
+
+    preempt_disable();
+    r = ptrace_event(child, request, addr, data);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("tracepoint/syscalls/sys_enter_shmget")
 int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
 {
+    preempt_disable();
     if (ebpf_events_is_trusted_pid())
         goto out;
 
@@ -461,12 +503,14 @@ int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
 
     bpf_ringbuf_submit(event, 0);
 out:
+    preempt_enable();
     return 0;
 }
 
 SEC("tracepoint/syscalls/sys_enter_memfd_create")
 int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
 {
+    preempt_disable();
     // from: /sys/kernel/debug/tracing/events/syscalls/sys_enter_memfd_create/format
     struct memfd_create_args {
         short common_type;
@@ -482,6 +526,7 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
     struct ebpf_events_state state = {};
     state.memfd.flags = ex_args->flags;
     ebpf_events_state__set(EBPF_EVENTS_STATE_MEMFD_CREATE, &state);
+    preempt_enable();
     return 0;
 }
 
@@ -531,25 +576,49 @@ out:
 SEC("fentry/hugetlb_file_setup")
 int BPF_PROG(fentry__hugetlb_file_setup, const char * name)
 {
-    return emit_memfd_create_event(name);
+    int r;
+
+    preempt_disable();
+    r = emit_memfd_create_event(name);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/hugetlb_file_setup")
 int BPF_KPROBE(kprobe__hugetlb_file_setup, const char * name)
 {
-    return emit_memfd_create_event(name);
+    int r;
+
+    preempt_disable();
+    r = emit_memfd_create_event(name);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("fentry/shmem_file_setup")
 int BPF_PROG(fentry__shmem_file_setup, const char * name)
 {
-    return emit_memfd_create_event(name);
+    int r;
+
+    preempt_disable();
+    r = emit_memfd_create_event(name);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/shmem_file_setup")
 int BPF_KPROBE(kprobe__shmem_file_setup, const char * name)
 {
-    return emit_memfd_create_event(name);
+    int r;
+
+    preempt_disable();
+    r = emit_memfd_create_event(name);
+    preempt_enable();
+
+    return r;
 }
 
 static int commit_creds__enter(struct cred *new)
@@ -625,13 +694,25 @@ out:
 SEC("fentry/commit_creds")
 int BPF_PROG(fentry__commit_creds, struct cred *new)
 {
-    return commit_creds__enter(new);
+    int r;
+
+    preempt_disable();
+    r = commit_creds__enter(new);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/commit_creds")
 int BPF_KPROBE(kprobe__commit_creds, struct cred *new)
 {
-    return commit_creds__enter(new);
+    int r;
+
+    preempt_disable();
+    r = commit_creds__enter(new);
+    preempt_enable();
+
+    return r;
 }
 
 #define MAX_NR_SEGS 8
@@ -773,11 +854,23 @@ out:
 SEC("fentry/tty_write")
 int BPF_PROG(fentry__tty_write, struct kiocb *iocb, struct iov_iter *from)
 {
-    return tty_write__enter(iocb, from);
+    int r;
+
+    preempt_disable();
+    r = tty_write__enter(iocb, from);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/tty_write")
 int BPF_KPROBE(kprobe__tty_write, struct kiocb *iocb, struct iov_iter *from)
 {
-    return tty_write__enter(iocb, from);
+    int r;
+
+    preempt_disable();
+    r = tty_write__enter(iocb, from);
+    preempt_enable();
+
+    return r;
 }

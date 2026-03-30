@@ -45,13 +45,25 @@ static int do_unlinkat__enter()
 SEC("fentry/do_unlinkat")
 int BPF_PROG(fentry__do_unlinkat)
 {
-    return do_unlinkat__enter();
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__enter();
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/do_unlinkat")
 int BPF_KPROBE(kprobe__do_unlinkat)
 {
-    return do_unlinkat__enter();
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__enter();
+    preempt_enable();
+
+    return r;
 }
 
 static int mnt_want_write__enter(struct vfsmount *mnt)
@@ -89,13 +101,25 @@ out:
 SEC("fentry/mnt_want_write")
 int BPF_PROG(fentry__mnt_want_write, struct vfsmount *mnt)
 {
-    return mnt_want_write__enter(mnt);
+    int r;
+
+    preempt_disable();
+    r = mnt_want_write__enter(mnt);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/mnt_want_write")
 int BPF_KPROBE(kprobe__mnt_want_write, struct vfsmount *mnt)
 {
-    return mnt_want_write__enter(mnt);
+    int r;
+
+    preempt_disable();
+    r = mnt_want_write__enter(mnt);
+    preempt_enable();
+
+    return r;
 }
 
 static int vfs_unlink__exit(int ret)
@@ -167,14 +191,26 @@ out:
 SEC("fexit/vfs_unlink")
 int BPF_PROG(fexit__vfs_unlink)
 {
-    int ret = FUNC_RET_READ(___type(ret), vfs_unlink);
-    return vfs_unlink__exit(ret);
+    int ret, r;
+
+    preempt_disable();
+    ret = FUNC_RET_READ(___type(ret), vfs_unlink);
+    r = vfs_unlink__exit(ret);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kretprobe/vfs_unlink")
 int BPF_KRETPROBE(kretprobe__vfs_unlink, int ret)
 {
-    return vfs_unlink__exit(ret);
+    int r;
+
+    preempt_disable();
+    r = vfs_unlink__exit(ret);
+    preempt_enable();
+
+    return r;
 }
 
 static int vfs_unlink__enter(struct dentry *de)
@@ -198,20 +234,34 @@ out:
 SEC("fentry/vfs_unlink")
 int BPF_PROG(fentry__vfs_unlink)
 {
-    struct dentry *de = FUNC_ARG_READ(___type(de), vfs_unlink, dentry);
-    return vfs_unlink__enter(de);
+    struct dentry *de;
+    int r;
+
+    preempt_disable();
+    de = FUNC_ARG_READ(___type(de), vfs_unlink, dentry);
+    r = vfs_unlink__enter(de);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/vfs_unlink")
 int BPF_KPROBE(kprobe__vfs_unlink)
 {
     struct dentry *de;
+    int r;
+
+    preempt_disable();
+    r = 0;
     if (FUNC_ARG_READ_PTREGS(de, vfs_unlink, dentry)) {
         bpf_printk("kprobe__vfs_unlink: error reading dentry\n");
-        return 0;
+        goto out;
     }
 
-    return vfs_unlink__enter(de);
+    r = vfs_unlink__enter(de);
+out:
+    preempt_enable();
+    return r;
 }
 
 // prepare a file event and send it to ringbuf.
@@ -355,7 +405,13 @@ int BPF_KPROBE(kprobe__fsnotify,
                const unsigned char *file_name,
                u32 cookie)
 {
-    return fsnotify__enter(mask);
+    int r;
+
+    preempt_disable();
+    r = fsnotify__enter(mask);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("fentry/fsnotify")
@@ -367,7 +423,13 @@ int BPF_PROG(fentry__fsnotify,
              const unsigned char *file_name,
              u32 cookie)
 {
-    return fsnotify__enter(mask);
+    int r;
+
+    preempt_disable();
+    r = fsnotify__enter(mask);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("fexit/do_filp_open")
@@ -377,13 +439,25 @@ int BPF_PROG(fexit__do_filp_open,
              const struct open_flags *op,
              struct file *ret)
 {
-    return do_filp_open__exit(ret);
+    int r;
+
+    preempt_disable();
+    r = do_filp_open__exit(ret);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kretprobe/do_filp_open")
 int BPF_KRETPROBE(kretprobe__do_filp_open, struct file *ret)
 {
-    return do_filp_open__exit(ret);
+    int r;
+
+    preempt_disable();
+    r = do_filp_open__exit(ret);
+    preempt_enable();
+
+    return r;
 }
 
 static int do_renameat2__enter()
@@ -409,13 +483,25 @@ out:
 SEC("fentry/do_renameat2")
 int BPF_PROG(fentry__do_renameat2)
 {
-    return do_renameat2__enter();
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__enter();
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/do_renameat2")
 int BPF_KPROBE(kprobe__do_renameat2)
 {
-    return do_renameat2__enter();
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__enter();
+    preempt_enable();
+
+    return r;
 }
 
 static int vfs_rename__enter(struct dentry *old_dentry, struct dentry *new_dentry)
@@ -454,6 +540,9 @@ SEC("fentry/vfs_rename")
 int BPF_PROG(fentry__vfs_rename)
 {
     struct dentry *old_dentry, *new_dentry;
+    int r;
+
+    preempt_disable();
 
     if (FUNC_ARG_EXISTS(vfs_rename, rd)) {
         /* Function arguments have been refactored into struct renamedata */
@@ -466,14 +555,19 @@ int BPF_PROG(fentry__vfs_rename)
         new_dentry = FUNC_ARG_READ(___type(new_dentry), vfs_rename, new_dentry);
     }
 
-    return vfs_rename__enter(old_dentry, new_dentry);
+    r = vfs_rename__enter(old_dentry, new_dentry);
+    preempt_enable();
+    return r;
 }
 
 SEC("kprobe/vfs_rename")
 int BPF_KPROBE(kprobe__vfs_rename)
 {
     struct dentry *old_dentry, *new_dentry;
+    int r;
 
+    preempt_disable();
+    r = 0;
     if (FUNC_ARG_EXISTS(vfs_rename, rd)) {
         /* Function arguments have been refactored into struct renamedata */
         struct renamedata rd;
@@ -484,15 +578,18 @@ int BPF_KPROBE(kprobe__vfs_rename)
         /* Dentries are accessible from ctx */
         if (FUNC_ARG_READ_PTREGS(old_dentry, vfs_rename, old_dentry)) {
             bpf_printk("kprobe__vfs_rename: error reading old_dentry\n");
-            return 0;
+            goto out;
         }
         if (FUNC_ARG_READ_PTREGS(new_dentry, vfs_rename, new_dentry)) {
             bpf_printk("kprobe__vfs_rename: error reading new_dentry\n");
-            return 0;
+            goto out;
         }
     }
 
-    return vfs_rename__enter(old_dentry, new_dentry);
+    r = vfs_rename__enter(old_dentry, new_dentry);
+out:
+    preempt_enable();
+    return r;
 }
 
 static int vfs_rename__exit(int ret)
@@ -571,14 +668,26 @@ out:
 SEC("fexit/vfs_rename")
 int BPF_PROG(fexit__vfs_rename)
 {
-    int ret = FUNC_RET_READ(___type(ret), vfs_rename);
-    return vfs_rename__exit(ret);
+    int ret, r;
+
+    preempt_disable();
+    ret = FUNC_RET_READ(___type(ret), vfs_rename);
+    r = vfs_rename__exit(ret);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kretprobe/vfs_rename")
 int BPF_KRETPROBE(kretprobe__vfs_rename, int ret)
 {
-    return vfs_rename__exit(ret);
+    int r;
+
+    preempt_disable();
+    r = vfs_rename__exit(ret);
+    preempt_enable();
+
+    return r;
 }
 
 static void file_modify_event__emit(enum ebpf_file_change_type typ, struct path *path)
@@ -645,10 +754,14 @@ int BPF_KPROBE(kprobe__chmod_common, const struct path *path, umode_t mode)
     state.chmod.path               = (struct path *)path;
     state.chmod.mode               = mode;
 
+    preempt_disable();
     if (ebpf_events_is_trusted_pid())
-        return 0;
+        goto out;
 
     ebpf_events_state__set(EBPF_EVENTS_STATE_CHMOD, &state);
+
+out:
+    preempt_enable();
     return 0;
 }
 
@@ -669,20 +782,26 @@ out:
 SEC("fexit/chmod_common")
 int BPF_PROG(fexit__chmod_common, const struct path *path, umode_t mode, int ret)
 {
+    preempt_disable();
     chmod_common__exit((struct path *)path, ret);
+    preempt_enable();
     return 0;
 }
 
 SEC("kretprobe/chmod_common")
 int BPF_KRETPROBE(kretprobe__chmod_common, int ret)
 {
-    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHMOD);
+    struct ebpf_events_state *state;
+
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHMOD);
     if (!state)
         goto out;
 
     chmod_common__exit(state->chmod.path, ret);
 
 out:
+    preempt_enable();
     return 0;
 }
 
@@ -691,19 +810,22 @@ int BPF_KPROBE(kprobe__do_truncate)
 {
     struct ebpf_events_state state = {};
 
+    preempt_disable();
+
     if (ebpf_events_is_trusted_pid())
         goto out;
 
     struct file *filp;
     if (FUNC_ARG_READ_PTREGS(filp, do_truncate, filp)) {
         bpf_printk("kprobe__do_truncate: error reading filp\n");
-        return 0;
+        goto out;
     }
 
     state.truncate.path = path_from_file(filp);
     ebpf_events_state__set(EBPF_EVENTS_STATE_TRUNCATE, &state);
 
 out:
+    preempt_enable();
     return 0;
 }
 
@@ -724,22 +846,32 @@ out:
 SEC("fexit/do_truncate")
 int BPF_PROG(fexit__do_truncate)
 {
-    struct file *filp = FUNC_ARG_READ(___type(filp), do_truncate, filp);
-    int ret           = FUNC_RET_READ(___type(ret), do_truncate);
+    struct file *filp;
+    int ret;
+
+    preempt_disable();
+    filp = FUNC_ARG_READ(___type(filp), do_truncate, filp);
+    ret = FUNC_RET_READ(___type(ret), do_truncate);
     do_truncate__exit(path_from_file(filp), ret);
+    preempt_enable();
+
     return 0;
 }
 
 SEC("kretprobe/do_truncate")
 int BPF_KRETPROBE(kretprobe__do_truncate, int ret)
 {
-    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_TRUNCATE);
+    struct ebpf_events_state *state;
+
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_TRUNCATE);
     if (!state)
         goto out;
 
     do_truncate__exit(state->truncate.path, ret);
 
 out:
+    preempt_enable();
     return 0;
 }
 
@@ -747,12 +879,15 @@ SEC("kprobe/vfs_write")
 int BPF_KPROBE(kprobe__vfs_write, struct file *file)
 {
     struct ebpf_events_state state = {};
+
+    preempt_disable();
     if (ebpf_events_is_trusted_pid())
-        return 0;
+        goto out;
 
     state.write.path = path_from_file(file);
     ebpf_events_state__set(EBPF_EVENTS_STATE_WRITE, &state);
-
+out:
+    preempt_enable();
     return 0;
 }
 
@@ -760,12 +895,16 @@ SEC("kprobe/vfs_writev")
 int BPF_KPROBE(kprobe__vfs_writev, struct file *file)
 {
     struct ebpf_events_state state = {};
+
+    preempt_disable();
     if (ebpf_events_is_trusted_pid())
-        return 0;
+        goto out;
 
     state.writev.path = path_from_file(file);
     ebpf_events_state__set(EBPF_EVENTS_STATE_WRITEV, &state);
 
+out:
+    preempt_enable();
     return 0;
 }
 
@@ -787,7 +926,9 @@ SEC("fexit/vfs_write")
 int BPF_PROG(
     fexit__vfs_write, struct file *file, const char *buf, size_t count, loff_t *pos, ssize_t ret)
 {
+    preempt_disable();
     vfs_write__exit(path_from_file(file), ret);
+    preempt_enable();
     return 0;
 }
 
@@ -800,33 +941,43 @@ int BPF_PROG(fexit__vfs_writev,
              rwf_t flags,
              ssize_t ret)
 {
+    preempt_disable();
     vfs_write__exit(path_from_file(file), ret);
+    preempt_enable();
     return 0;
 }
 
 SEC("kretprobe/vfs_write")
 int BPF_KRETPROBE(kretprobe__vfs_write, ssize_t ret)
 {
-    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_WRITE);
+    struct ebpf_events_state *state;
+
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_WRITE);
     if (!state)
         goto out;
 
     vfs_write__exit(state->write.path, ret);
 
 out:
+    preempt_enable();
     return 0;
 }
 
 SEC("kretprobe/vfs_writev")
 int BPF_KRETPROBE(kretprobe__vfs_writev, ssize_t ret)
 {
-    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_WRITEV);
+    struct ebpf_events_state *state;
+
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_WRITEV);
     if (!state)
         goto out;
 
     vfs_write__exit(state->writev.path, ret);
 
 out:
+    preempt_enable();
     return 0;
 }
 
@@ -834,10 +985,14 @@ SEC("kprobe/chown_common")
 int BPF_KPROBE(kprobe__chown_common, struct path *path, uid_t user, gid_t group)
 {
     struct ebpf_events_state state = {};
+
+    preempt_disable();
     if (ebpf_events_is_trusted_pid())
-        return 0;
+        goto out;
     state.chown.path               = path;
     ebpf_events_state__set(EBPF_EVENTS_STATE_CHOWN, &state);
+out:
+    preempt_enable();
     return 0;
 }
 
@@ -858,19 +1013,25 @@ out:
 SEC("fexit/chown_common")
 int BPF_PROG(fexit__chown_common, struct path *path, uid_t user, gid_t group, int ret)
 {
+    preempt_disable();
     chown_common__exit(path, ret);
+    preempt_enable();
     return 0;
 }
 
 SEC("kretprobe/chown_common")
 int BPF_KRETPROBE(kretprobe__chown_common, int ret)
 {
-    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHOWN);
+    struct ebpf_events_state *state;
+
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHOWN);
     if (!state)
         goto out;
 
     chown_common__exit(state->chown.path, ret);
 
 out:
+    preempt_enable();
     return 0;
 }
