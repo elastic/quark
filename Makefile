@@ -184,11 +184,10 @@ ifdef CENTOS7
 LIBBPF_EXTRA_CFLAGS+= -Wno-address
 endif
 
-# BPFPROG (kernel side)
-BPFPROG_OBJ:= bpf_probes.o
-BPFPROG_DEPS:= bpf_probes.c
+# BPFPROBES (kernel side)
+BPFPROBES_DEPS:= bpf_probes.c
 ifndef SYSLIB
-BPFPROG_DEPS+= $(LIBBPF_DEPS) $(EEBPF_FILES) include
+BPFPROBES_DEPS+= $(LIBBPF_DEPS) $(EEBPF_FILES) include
 endif
 
 # NOVA
@@ -257,11 +256,11 @@ $(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
 	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
 
 # careful! stupid bpftool writes to stdout even if it fails!
-bpf_probes_skel.h: $(BPFPROG_OBJ)
-	$(call msg,BPFTOOL,bpf_probes_skel.h)
-	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_probes_skel.h
+bpf_probes_skel.h: bpf_probes.o
+	$(call msg,BPFTOOL,$@)
+	$(Q)$(BPFTOOL) gen skeleton $^ > $@
 
-$(BPFPROG_OBJ): $(BPFPROG_DEPS)
+bpf_probes.o: $(BPFPROBES_DEPS)
 	$(call msg,BPF_CC,$@)
 	$(Q)$(BPF_CC)								\
 		-g -O2								\
