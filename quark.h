@@ -141,12 +141,6 @@ int			 quark_queue_trusted_pid_reset(struct quark_queue *);
 /* kprobe_queue.c */
 int	kprobe_queue_open(struct quark_queue *);
 
-/* qutil.c */
-struct qstr {
-	char	*p;
-	char	 small[64];
-};
-
 ssize_t		 qread(int, void *, size_t);
 int		 qwrite(int, const void *, size_t);
 ssize_t		 qreadlinkat(int, const char *, char *, size_t);
