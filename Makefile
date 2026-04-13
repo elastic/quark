@@ -115,7 +115,7 @@ EEBPF_FILES:= $(shell find elastic-ebpf)
 EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)
 
 # LIBQUARK
-LIBQUARK_DEPS:= $(wildcard *.h) bpf_probes_skel.h
+LIBQUARK_DEPS:= $(wildcard *.h) bpf_probes_skel.h nova_skel.h
 ifndef SYSLIB
 LIBQUARK_DEPS+= $(EEBPF_FILES) include
 endif
@@ -129,6 +129,7 @@ LIBQUARK_SRCS:=			\
 	hanson.c		\
 	kprobe_queue.c		\
 	parse.tab.c		\
+	nova_queue.c		\
 	qbtf.c			\
 	quark.c			\
 	qutil.c
@@ -190,6 +191,11 @@ ifndef SYSLIB
 BPFPROG_DEPS+= $(LIBBPF_DEPS) $(EEBPF_FILES) include
 endif
 
+# NOVA
+NOVA_DEPS:= nova.bpf.c
+ifndef SYSLIB
+NOVA_DEPS+= $(LIBBPF_DEPS) include
+endif
 # Go files
 GO_FILES:= $(shell find go/)
 QUARK_GO_DEPS:= $(LIBQUARK_DEPS) $(LIBQUARK_STATIC_BIG) $(GO_FILES)
@@ -250,6 +256,7 @@ $(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
 	$(call msg,CC,$@)
 	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
 
+# careful! stupid bpftool writes to stdout even if it fails!
 bpf_probes_skel.h: $(BPFPROG_OBJ)
 	$(call msg,BPFTOOL,bpf_probes_skel.h)
 	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_probes_skel.h
@@ -264,6 +271,21 @@ $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 		$(CPPFLAGS)							\
 		$(EEBPF_INCLUDES)						\
 		-c bpf_probes.c							\
+		-o $@
+
+# careful! stupid bpftool writes to stdout even if it fails!
+nova_skel.h: nova.bpf.o
+	$(call msg,BPFTOOL,$@)
+	$(Q)$(BPFTOOL) gen skeleton $^ > $@
+
+nova.bpf.o: $(NOVA_DEPS)
+	$(call msg,BPF_CC,$@)
+	$(Q)$(BPF_CC)								\
+		-g -O2								\
+		-target $(BPF_ARCH)						\
+		-Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)			\
+		$(CPPFLAGS)							\
+		-c nova.bpf.c							\
 		-o $@
 
 parse.tab.c: parse.y quark.h
@@ -314,8 +336,8 @@ CENTOS7_RUN_ARGS=$(QDOCKER)				\
 # These are targets that we can't build on centos7 since it's too old
 # We build them in the ubuntu24 docker container first, and then
 # continue with the rest of the build on centos7.
-CENTOS7_BORROW_TARGETS+=bpf_probes.o
-CENTOS7_BORROW_TARGETS+=bpf_probes_skel.h
+CENTOS7_BORROW_TARGETS+=bpf_probes.o bpf_probes_skel.h
+CENTOS7_BORROW_TARGETS+=nova.bpf.o nova_skel.h
 ifndef NO_GO
 CENTOS7_BORROW_TARGETS+=quark-kube-talker
 endif
@@ -570,6 +592,7 @@ clean:
 		quark-go-test		\
 		true			\
 		bpf_probes_skel.h	\
+		nova_skel.h		\
 		init
 	$(Q)rm -rf initramfs
 

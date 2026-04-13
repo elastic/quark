@@ -139,7 +139,10 @@ int			 quark_queue_trusted_pid_add(struct quark_queue *, u32);
 int			 quark_queue_trusted_pid_reset(struct quark_queue *);
 
 /* kprobe_queue.c */
-int	kprobe_queue_open(struct quark_queue *);
+int			 kprobe_queue_open(struct quark_queue *);
+
+/* nova_queue.c */
+int			 nova_queue_open(struct quark_queue *);
 
 ssize_t		 qread(int, void *, size_t);
 int		 qwrite(int, const void *, size_t);
@@ -885,7 +888,8 @@ struct quark_queue_attr {
 #define QQ_PTRACE		(1 << 11)
 #define QQ_MODULE_LOAD		(1 << 12)
 #define QQ_GETPID		(1 << 13)
-#define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)
+#define QQ_NOVA			(1 << 14)
+#define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)	/* QQ_NOVA excluded for now */
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */
