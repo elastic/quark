@@ -1359,7 +1359,7 @@ bpf_queue_open(struct quark_queue *qq)
 
 	if (bpf_queue_open1(qq, 1) == -1) {
 		qwarn("bpf_queue_open failed with fentry, trying kprobe");
-		return bpf_queue_open1(qq, 0);
+		return (bpf_queue_open1(qq, 0));
 	}
 
 	return (0);
