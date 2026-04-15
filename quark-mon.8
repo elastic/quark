@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDEeFGgHhkMNSsTtv
+.Op Fl BbDEeFGgHhkMNnSsTtv
 .Op Fl C Ar filename
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
@@ -110,6 +110,8 @@ This is used purely for internal debugging.
 Run in a simple benchmark form that only counts and display stats.
 .It Fl N
 Enable DNS events (experimental).
+.It Fl n
+Attempt NOVA as the backend.
 .It Fl P Ar ppid
 Display only events where parent pid is
 .Ar ppid .

@@ -81,6 +81,7 @@ enum {
 static int	noforkflag;	/* don't fork on each test */
 static int	bflag;		/* run bpf tests */
 static int	kflag;		/* run kprobe tests */
+static int	nflag;		/* run nova tests */
 static int	tflag;		/* listen to the tracepipe */
 static u64	boottime;
 static int	fancy_tty;
@@ -143,6 +144,8 @@ backend_of_attr(struct quark_queue_attr *qa)
 		be = QQ_EBPF;
 	else if (qa->flags & QQ_KPROBE)
 		be = QQ_KPROBE;
+	else if (qa->flags & QQ_NOVA)
+		be = QQ_NOVA;
 	else
 		errx(1, "bad flags");
 
@@ -2162,10 +2165,12 @@ t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
 #define T(_x)		{ S(_x), _x, 0, 0 }
 #define T_KPROBE(_x)	{ S(_x), _x, QQ_KPROBE, 0 }
 #define T_EBPF(_x)	{ S(_x), _x, QQ_EBPF, 0 }
+#define T_NOVA(_x)	{ S(_x), _x, QQ_NOVA, 0 }
 #define S(_x)		#_x
 struct test all_tests[] = {
 	T_EBPF(t_probe),
 	T_KPROBE(t_probe),
+	T_NOVA(t_probe),
 	T_EBPF(t_os_release),
 	T_KPROBE(t_os_release),
 	T_EBPF(t_fork_exec_exit),
@@ -2293,7 +2298,10 @@ run_test(struct progress *progress, struct test *t, struct quark_queue_attr *qa)
 	linepos = printf("%s", t->name);
 	if (be != -1) {
 		linepos += printf(" @ %s",
-		    be == QQ_EBPF ? "ebpf" : "kprobe");
+		    be == QQ_EBPF ? "ebpf" :
+		    be == QQ_KPROBE ? "kprobe" :
+		    be == QQ_NOVA ? "nova" :
+		    "unknown");
 	}
 
 	while (++linepos < STATUS_LINELEN)
@@ -2491,6 +2499,7 @@ run_tests(int argc, char *argv[])
 	int			 failed, i;
 	struct quark_queue_attr	 bpf_attr;
 	struct quark_queue_attr	 kprobe_attr;
+	struct quark_queue_attr	 nova_attr;
 	struct quark_queue_attr	*attr;
 	struct progress		 progress;
 
@@ -2505,6 +2514,12 @@ run_tests(int argc, char *argv[])
 	kprobe_attr.flags |= QQ_KPROBE | QQ_ENTRY_LEADER;
 	kprobe_attr.hold_time = 100;
 	kprobe_attr.max_env = 32768;
+
+	quark_queue_default_attr(&nova_attr);
+	nova_attr.flags &= ~QQ_ALL_BACKENDS;
+	nova_attr.flags |= QQ_NOVA | QQ_ENTRY_LEADER;
+	nova_attr.hold_time = 100;
+	nova_attr.max_env = 32768;
 
 	bzero(&progress, sizeof(progress));
 	failed = 0;
@@ -2526,7 +2541,8 @@ run_tests(int argc, char *argv[])
 	 */
 	for (t = all_tests; t->name != NULL; t++) {
 		if ((t->backend == QQ_EBPF && !bflag) ||
-		    (t->backend == QQ_KPROBE && !kflag))
+		    (t->backend == QQ_KPROBE && !kflag) ||
+		    (t->backend == QQ_NOVA && !nflag))
 			t->excluded = 1;
 	}
 
@@ -2547,6 +2563,8 @@ run_tests(int argc, char *argv[])
 			attr = &bpf_attr;
 		else if (t->backend == QQ_KPROBE)
 			attr = &kprobe_attr;
+		else if (t->backend == QQ_NOVA)
+			attr = &nova_attr;
 		else
 			attr = NULL;
 		if (run_test(&progress, t, attr) != 0)
@@ -2574,7 +2592,7 @@ main(int argc, char *argv[])
 	fancy_tty = probe_fancy_tty();
 	in_valgrind = getenv("VALGRIND") != NULL;
 
-	while ((ch = getopt(argc, argv, "1bhkltvVx:")) != -1) {
+	while ((ch = getopt(argc, argv, "1bhklntvVx:")) != -1) {
 		switch (ch) {
 		case '1':
 			noforkflag = 1;
@@ -2594,6 +2612,9 @@ main(int argc, char *argv[])
 		case 'l':
 			display_tests();
 			break;	/* NOTREACHED */
+		case 'n':
+			nflag = 1;
+			break;
 		case 't':
 			tflag = 1;
 			break;
@@ -2616,7 +2637,10 @@ main(int argc, char *argv[])
 
 	boottime = fetch_boottime();
 
-	if (!bflag && !kflag)
+	/*
+	 * Run bpf and kprobe by default, don't run nova
+	 */
+	if (!bflag && !kflag && !nflag)
 		bflag = kflag = 1;
 
 	argc -= optind;
