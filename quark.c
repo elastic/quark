@@ -4063,7 +4063,8 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	 */
 	if (qa->flags & QQ_BYPASS) {
 		if ((qa->flags &
-		    (QQ_KPROBE|QQ_ENTRY_LEADER|QQ_MIN_AGG|QQ_THREAD_EVENTS)) ||
+		    (QQ_KPROBE|QQ_NOVA|QQ_ENTRY_LEADER|
+		    QQ_MIN_AGG|QQ_THREAD_EVENTS)) ||
 		    !(qa->flags & QQ_EBPF) ||
 		    qa->kubefd != -1)
 			return (errno = EINVAL, -1);
@@ -4075,7 +4076,8 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qa->max_length = 1;
 	}
 
-	if ((qa->flags & QQ_ALL_BACKENDS) == 0 ||
+	/* XXX hardcode QQ_NOVA for now XXX */
+	if ((qa->flags & (QQ_ALL_BACKENDS | QQ_NOVA)) == 0 ||
 	    qa->max_length <= 0 ||
 	    qa->cache_grace_time < 0 ||
 	    qa->hold_time < 10)
@@ -4185,7 +4187,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	/*
 	 * Open the rings
 	 */
-	if (bpf_queue_open(qq) && kprobe_queue_open(qq)) {
+	if (nova_queue_open(qq) != 0 &&
+	    bpf_queue_open(qq) != 0 &&
+	    kprobe_queue_open(qq) != 0) {
 		qwarnx("all backends failed");
 		goto fail;
 	}

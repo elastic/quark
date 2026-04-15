@@ -65,6 +65,7 @@ fetch_backend(struct quark_queue *qq)
 
 	return (s.backend == QQ_EBPF ? "ebpf" :
 	    s.backend == QQ_KPROBE ? "kprobe" :
+	    s.backend == QQ_NOVA ? "nova" :
 	    "invalid");
 }
 
@@ -116,7 +117,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDeFGgHhkLMNSsTtv]\n",
+	fprintf(stderr, "usage: %s [-BbDeFGgHhkLMNnSsTtv]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
 	    "[-l maxlength] [-m maxnodes]\n", ' ');
@@ -178,7 +179,7 @@ main(int argc, char *argv[])
 	kube_config = NULL;
 	print_event = print_dump;
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NP:Ttr:SsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -260,6 +261,9 @@ main(int argc, char *argv[])
 			break;
 		case 'N':
 			qa.flags |= QQ_DNS;
+			break;
+		case 'n':
+			qa.flags |= QQ_NOVA;
 			break;
 		case 'P':
 			if (optarg == NULL)

@@ -17,17 +17,17 @@
 #include <bpf/btf.h>
 
 #include "quark.h"
-/* #include "nova_skel.h" */
+#include "nova_skel.h"
 
 struct nova_queue {
-	void	*nada;
+	struct nova_bpf	*nova_bpf;
 };
 
 static int	nova_queue_populate(struct quark_queue *);
 static int	nova_queue_update_stats(struct quark_queue *);
 static void	nova_queue_close(struct quark_queue *);
 
-struct quark_queue_ops queue_ops_qbpf = {
+struct quark_queue_ops queue_ops_nova = {
 	.open	      = nova_queue_open,
 	.populate     = nova_queue_populate,
 	.update_stats = nova_queue_update_stats,
@@ -37,13 +37,24 @@ struct quark_queue_ops queue_ops_qbpf = {
 int
 nova_queue_open(struct quark_queue *qq)
 {
-#ifdef notyet
+	struct nova_queue	*nqq;
+
 	if ((qq->flags & QQ_NOVA) == 0)
 		return (errno = ENOTSUP, -1);
 
+	if ((nqq = calloc(1, sizeof(*nqq))) == NULL)
+		return (-1);
+	if ((nqq->nova_bpf = nova_bpf__open_and_load()) == NULL)
+		goto fail;
+
+	qq->queue_be = nqq;
+	qq->queue_ops = &queue_ops_nova;
+	qq->stats.backend = QQ_NOVA;
+
 	return (0);
-#endif
-	return (errno = ENOTSUP, -1);
+fail:
+	nova_queue_close(qq);
+	return (-1);
 }
 
 static int
@@ -61,5 +72,12 @@ nova_queue_update_stats(struct quark_queue *qq)
 static void
 nova_queue_close(struct quark_queue *qq)
 {
-	/* NADA */
+	struct nova_queue	*nqq = qq->queue_be;
+
+	if (nqq == NULL)
+		return;
+
+	nova_bpf__destroy(nqq->nova_bpf);
+	free(nqq);
+	qq->queue_be = NULL;
 }

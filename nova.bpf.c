@@ -9,8 +9,8 @@
 
 #include <linux/limits.h>
 
-SEC("lsm/file_open")
-int BPF_PROG(test_path, struct file *file)
+SEC("lsm/task_alloc")
+int BPF_PROG(task_alloc, struct task_struct *task, __u64 clone_flags)
 {
 	return (0);
 }
