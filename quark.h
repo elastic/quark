@@ -18,6 +18,9 @@
 /* Compat, tree.h, queue.h */
 #include "compat.h"
 
+/* Shared quark_rule definitions are in nova.h */
+#include "nova.h"
+
 /* Misc */
 #ifndef ALIGN_UP
 #define ALIGN_UP(_p, _b) (((u64)(_p) + ((_b) - 1)) & ~((_b) - 1))
@@ -768,24 +771,10 @@ struct quark_group {
 	char			*name;
 };
 
-enum quark_rule_field_code {
-	QUARK_RF_NONE,
-	QUARK_RF_PROCESS_PID,
-	QUARK_RF_PROCESS_PPID,
-	QUARK_RF_PROCESS_UID,
-	QUARK_RF_PROCESS_GID,
-	QUARK_RF_PROCESS_SID,
-	QUARK_RF_PROCESS_COMM,
-	QUARK_RF_PROCESS_FILENAME,
-	QUARK_RF_FILE_PATH,
-	QUARK_RF_POISON,
-	QUARK_RF_MAX,
-};
-
 /* Rule Field */
 struct quark_rule_field {
-	enum quark_rule_field_code	code;
-	size_t				wildcard_len;
+	u64		 code;
+	size_t		 wildcard_len;
 	union {
 		u32	 pid;
 		u64	 poison_tag;
@@ -793,13 +782,6 @@ struct quark_rule_field {
 		u32	 id;
 		char	 comm[16];
 	};
-};
-
-enum quark_rule_action {
-	QUARK_RA_INVALID,
-	QUARK_RA_DROP,
-	QUARK_RA_PASS,
-	QUARK_RA_POISON,
 };
 
 struct quark_rule {
