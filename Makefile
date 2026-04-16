@@ -115,11 +115,13 @@ EEBPF_FILES:= $(shell find elastic-ebpf)
 EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)
 
 # LIBQUARK
-LIBQUARK_DEPS:= $(wildcard *.h) bpf_probes_skel.h nova_skel.h
+LIBQUARK_DEPS:= $(wildcard *.h)
+LIBQUARK_DEPS:= $(filter-out nova_skel.h, $(LIBQUARK_DEPS))
+LIBQUARK_DEPS:= $(filter-out bpf_probes_skel.h, $(LIBQUARK_DEPS))
+LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
 ifndef SYSLIB
 LIBQUARK_DEPS+= $(EEBPF_FILES) include
 endif
-LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
 LIBQUARK_SRCS:=			\
 	base64.c		\
 	bpf_queue.c		\
@@ -191,7 +193,7 @@ BPFPROBES_DEPS+= $(LIBBPF_DEPS) $(EEBPF_FILES) include
 endif
 
 # NOVA
-NOVA_DEPS:= nova.bpf.c
+NOVA_DEPS:= nova.bpf.c nova.h
 ifndef SYSLIB
 NOVA_DEPS+= $(LIBBPF_DEPS) include
 endif
@@ -255,6 +257,9 @@ $(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
 	$(call msg,CC,$@)
 	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
 
+# Explicit dependency so we only rebuild bpf_queue.o when the skel changes
+bpf_queue.o: bpf_probes_skel.h
+
 # careful! stupid bpftool writes to stdout even if it fails!
 bpf_probes_skel.h: bpf_probes.o
 	$(call msg,BPFTOOL,$@)
@@ -271,6 +276,9 @@ bpf_probes.o: $(BPFPROBES_DEPS)
 		$(EEBPF_INCLUDES)						\
 		-c bpf_probes.c							\
 		-o $@
+
+# Explicit dependency so we only rebuild nova_queue.o when the skel changes
+nova_queue.o: nova_skel.h
 
 # careful! stupid bpftool writes to stdout even if it fails!
 nova_skel.h: nova.bpf.o
