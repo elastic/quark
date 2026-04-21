@@ -15,6 +15,9 @@
 
 #define E2BIG		7
 
+extern void bpf_preempt_disable(void) __ksym __weak;
+extern void bpf_preempt_enable(void) __ksym __weak;
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -36,17 +39,15 @@ struct rule_eval_loop_ctx {
 	struct nova_rule	*match;
 };
 
-extern void bpf_preempt_disable(void) __ksym __weak;
-
-static void preempt_disable(void)
+static void
+preempt_disable(void)
 {
 	if (bpf_ksym_exists(bpf_preempt_disable))
 		bpf_preempt_disable();
 }
 
-extern void bpf_preempt_enable(void) __ksym __weak;
-
-static void preempt_enable(void)
+static void
+preempt_enable(void)
 {
 	if (bpf_ksym_exists(bpf_preempt_enable))
 		bpf_preempt_enable();
