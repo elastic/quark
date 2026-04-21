@@ -295,6 +295,7 @@ nova.bpf.o: $(NOVA_DEPS)
 		-target $(BPF_ARCH)						\
 		-Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)			\
 		$(CPPFLAGS)							\
+		$(CDIAGFLAGS)	-Wno-strict-prototypes				\
 		-c nova.bpf.c							\
 		-o $@
 

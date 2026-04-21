@@ -9,6 +9,9 @@
 
 #include "nova.h"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic error "-Wpadded"
+
 /* XXX check if there isn't something like this on the headers XXX */
 #define LOOP_CONTINUE	0
 #define LOOP_STOP	1
@@ -20,12 +23,18 @@ extern void bpf_preempt_enable(void) __ksym __weak;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
+	__uint(max_entries, 2);
 	__type(key, __u32);
-	__type(value, struct nova_rule);
-} scratch_rule SEC(".maps");
+	__type(value, struct path_lpm_key);
+} scratch_path SEC(".maps");
 
-#define my_rule_eval_ctx()	bpf_map_lookup_elem(&scratch_rule, &(int){0})
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__type(key, struct path_lpm_key);
+	__type(value, u64);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__uint(max_entries, NOVA_MAX_PATHS);
+} lpm_path SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -34,9 +43,26 @@ struct {
 	__uint(max_entries, NOVA_MAX_RULES);
 } ruleset SEC(".maps");
 
-struct rule_eval_loop_ctx {
-	struct nova_rule	*rctx;
-	struct nova_rule	*match;
+const volatile u_int	rules_active;
+
+/*
+ * Consider moving most of these to a map, currently we need them on the stack
+ * which is limited to 512 bytes.
+ */
+struct eval {
+	/* fields is the bitmask of things that have been filled */
+	__u64			 fields;		/* QUARK_RF_* bitmask */
+	__u64			 poison_tag;		/* QUARK_RF_POISON */
+	__u32			 pid;			/* QUARK_RF_PROCESS_PID */
+	__u32			 ppid;			/* QUARK_RF_PROCESS_PPID */
+	__u32			 uid;			/* QUARK_RF_PROCESS_UID */
+	__u32			 gid;			/* QUARK_RF_PROCESS_GID */
+	__u32			 sid;			/* QUARK_RF_PROCESS_SID */
+	__u32			 pad0;
+	struct path_lpm_key	*process_filename;	/* QUARK_RF_PROCESS_FILENAME */
+	struct path_lpm_key	*file_path;		/* QUARK_RF_PROCESS_FILE_PATH */
+	struct nova_rule	*match;			/* result of eval_run */
+	char			 comm[16];		/* QUARK_RF_PROCESS_COMM */
 };
 
 static void
@@ -54,26 +80,55 @@ preempt_enable(void)
 }
 
 static int
-rule_eval_loop(__u32 i, struct rule_eval_loop_ctx *lctx)
+eval_loop(__u32 i, struct eval *eval)
 {
-	struct nova_rule	*cand;
-	struct nova_rule	*rctx;
+	struct nova_rule	*rule;
+	__u64			*v, matched;
 
-	rctx = lctx->rctx;
-	if (rctx == NULL ||
-	    ((cand = bpf_map_lookup_elem(&ruleset, &i)) == NULL))
-		return (LOOP_CONTINUE); /* XXX signal something is really wrong XXX */
-	rctx->fields = 0;
-	rctx->fields |= (__u64)(rctx->pid == cand->pid) * QUARK_RF_PROCESS_PID;
-	rctx->fields |= (__u64)(rctx->ppid == cand->ppid) * QUARK_RF_PROCESS_PPID;
-	rctx->fields |= (__u64)(rctx->uid == cand->uid) * QUARK_RF_PROCESS_UID;
-	rctx->fields |= (__u64)(rctx->gid == cand->gid) * QUARK_RF_PROCESS_GID;
-	rctx->fields |= (__u64)(rctx->sid == cand->sid) * QUARK_RF_PROCESS_SID;
-	rctx->fields |= (__u64)(rctx->poison_tag == cand->poison_tag) * QUARK_RF_POISON;
+	if ((rule = bpf_map_lookup_elem(&ruleset, &i)) == NULL) {
+		bpf_printk("rule not found, this is a bug");
+		return (LOOP_CONTINUE);
+	}
+	rule->evals++;		/* XXX RACY XXX */
 
-	if ((rctx->fields & cand->fields) == cand->fields) {
-		lctx->match = cand;
+	/*
+	 * matched is a bitmask of fields that match (are equal).
+	 * eval->fields are the valid fields for evaluation
+	 * rule->fields are the fields that must match for this rule to be
+	 * considered a match. We over compare things as can be seen below, this
+	 * is to avoid having to do multiple jumps like: if (eval->fields &
+	 * FOO), we curb it later with matched &= eval->fields.
+	 */
+	matched = 0;
+	matched |= (__u64)(eval->pid == rule->pid) * QUARK_RF_PROCESS_PID;
+	matched |= (__u64)(eval->ppid == rule->ppid) * QUARK_RF_PROCESS_PPID;
+	matched |= (__u64)(eval->uid == rule->uid) * QUARK_RF_PROCESS_UID;
+	matched |= (__u64)(eval->gid == rule->gid) * QUARK_RF_PROCESS_GID;
+	matched |= (__u64)(eval->sid == rule->sid) * QUARK_RF_PROCESS_SID;
+	matched |= (__u64)(eval->poison_tag == rule->poison_tag) * QUARK_RF_POISON;
 
+	if (rule->fields & QUARK_RF_PROCESS_FILENAME &&
+	    eval->fields & QUARK_RF_PROCESS_FILENAME &&
+	    eval->process_filename != NULL) {
+		eval->process_filename->meta = META_MAKE(i, META_RF_PROCESS_FILENAME);
+		eval->process_filename->prefixlen = PATH_LPM_KEYLEN * 8;
+		v = bpf_map_lookup_elem(&lpm_path, eval->process_filename);
+		matched |= (v != NULL) * QUARK_RF_PROCESS_FILENAME;
+	}
+
+	if (rule->fields & QUARK_RF_FILE_PATH &&
+	    eval->fields & QUARK_RF_FILE_PATH &&
+	    eval->file_path != NULL) {
+		eval->file_path->meta = META_MAKE(i, META_RF_FILE_PATH);
+		eval->file_path->prefixlen = PATH_LPM_KEYLEN * 8;
+		v = bpf_map_lookup_elem(&lpm_path, eval->file_path);
+		matched |= (v != NULL) * QUARK_RF_FILE_PATH;
+	}
+
+	matched &= eval->fields;
+	if ((matched & rule->fields) == rule->fields) {
+		rule->hits++;
+		eval->match = rule; /* XXX RACY XXX */
 		return (LOOP_STOP);
 	}
 
@@ -81,40 +136,80 @@ rule_eval_loop(__u32 i, struct rule_eval_loop_ctx *lctx)
 }
 
 static int
-rule_eval(struct nova_rule *rctx)
+eval_run(struct eval *eval)
 {
-	struct rule_eval_loop_ctx	lctx;
-	int				r;
-
-	lctx.rctx = rctx;
-	lctx.match = NULL;
-
-	r = bpf_loop(NOVA_MAX_RULES, rule_eval_loop, &lctx, 0);
-	if (r < 0) {
-		bpf_printk("bad bpf_loop %d", r);
+	if (bpf_loop(rules_active, eval_loop, eval, 0) < 0) {
+		bpf_printk("bad bpf_loop");
 		return (0);
 	}
-	if (lctx.match == NULL)
+
+	if (eval->match == NULL)
 		return (0);
 
+	bpf_printk("rule %d matched! (0x%x)",
+	    eval->match->number, eval->match->fields);
+
 	return (0);
+}
+
+static void
+eval_init(struct eval *eval)
+{
+	eval->fields = 0;
+	eval->process_filename = bpf_map_lookup_elem(&scratch_path, &(int){0});
+	eval->file_path = bpf_map_lookup_elem(&scratch_path, &(int){1});
+	eval->match = NULL;
+}
+
+static void
+eval_init_task(struct eval *eval, struct task_struct *task)
+{
+	eval->pid = BPF_CORE_READ(task, tgid);
+	eval->fields |= QUARK_RF_PROCESS_PID;
+	eval->ppid = BPF_CORE_READ(task, group_leader, real_parent, tgid);
+	eval->fields |= QUARK_RF_PROCESS_PPID;
+	eval->uid = BPF_CORE_READ(task, cred, uid.val);
+	eval->fields |= QUARK_RF_PROCESS_UID;
+	eval->gid = BPF_CORE_READ(task, cred, gid.val);
+	eval->fields |= QUARK_RF_PROCESS_GID;
+#if 0
+	eval->sid = 		/* XXX TODO XXX */
+	eval->fields |= QUARK_RF_PROCESS_SID;
+#endif
+	if (BPF_CORE_READ_STR_INTO(eval->comm, task, comm) > 0)
+		eval->fields |= QUARK_RF_PROCESS_COMM;
+	/* TODO MORE TODO */
 }
 
 SEC("lsm/task_alloc")
 int BPF_PROG(task_alloc, struct task_struct *task, __u64 clone_flags)
 {
-	struct nova_rule	*rctx;
+	struct eval		 eval;
 	int			 r;
 
-	bpf_preempt_disable();
+	preempt_disable();
 
-	rctx = my_rule_eval_ctx();
-	r = rule_eval(rctx);
-	/* XXX r ignored for now */
+	eval_init(&eval);
+	eval_init_task(&eval, task);
 
-	bpf_preempt_enable();
+	if (BPF_CORE_READ(task, mm, exe_file) != NULL &&
+	    eval.process_filename != NULL) {
+		if (bpf_d_path(&task->mm->exe_file->f_path,
+		    eval.process_filename->path,
+		    sizeof(eval.process_filename->path)) <= 0)
+			bpf_printk("can't make filename");
+		else
+			eval.fields |= QUARK_RF_PROCESS_FILENAME;
+	}
 
-	return (0);
+	r = eval_run(&eval);
+	r = 0; /* XXX r ignored for now */
+
+	preempt_enable();
+
+	return (r);
 }
+
+#pragma GCC diagnostic pop
 
 char _license[] SEC("license") = "Dual BSD/GPL";
