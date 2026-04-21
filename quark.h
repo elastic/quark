@@ -785,12 +785,13 @@ struct quark_rule_field {
 };
 
 struct quark_rule {
-	struct quark_rule_field	*fields;
-	size_t			 n_fields;
-	int			 action;
-	u64			 poison_tag;
-	u64			 evals;
-	u64			 hits;
+	struct quark_rule_field	*fields;	/* fields that must match */
+	size_t			 n_fields;	/* number of fields */
+	int			 action;	/* QUARK_RA_* */
+	u64			 poison_tag;	/* tag used for SETTING poison */
+	u64			 evals;		/* counter */
+	u64			 hits;		/* counter */
+	u_int			 number;	/* starting from 0 */
 };
 
 struct quark_ruleset {

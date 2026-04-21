@@ -4930,6 +4930,7 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 	rule->fields = NULL;
 	rule->n_fields = 0;
 	rule->action = action;
+	rule->number = ruleset->n_rules - 1;
 	rule->evals = 0;
 	rule->hits = 0;
 	if (action == QUARK_RA_POISON)

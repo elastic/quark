@@ -786,7 +786,7 @@ ruleset_from_string(struct quark_ruleset *ruleset, char *s)
 static int
 t_probe(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	qq;
+	struct quark_queue	 qq;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "%s: quark_queue_open", t->name);
@@ -2161,6 +2161,37 @@ t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_ruleset	 ruleset;
+	char			*text_ruleset;
+
+	if (!noforkflag)
+		errx(1, "please run me with -1");
+
+	text_ruleset =
+	    "pass on process.filename /usr/bin/bash\n"
+	    "pass on process.filename /bin/bash\n"
+	    "pass on process.filename /usr/bin/mksh\n"
+	    "pass on process.filename /bin/mksh\n"
+	    "pass on process.filename /idontexist\n"
+	    "pass on any";
+	ruleset_from_string(&ruleset, text_ruleset);
+
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	fprintf(stderr, "\nthis test is a placeholder for temporary fiddling!!!\n");
+	fprintf(stderr, "sleeping forevis...\n");
+	for (;;)
+		sleep(300);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  * Use T() for tests that require no queue.
@@ -2211,6 +2242,7 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
 	T_EBPF(t_trusted_pid),
+	T_NOVA(t_nova),		/* XXX temporary XXX */
 	{ NULL,	NULL, 0, 0 }
 };
 #undef S

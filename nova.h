@@ -4,7 +4,14 @@
 #ifndef _NOVA_H_
 #define _NOVA_H_
 
+#if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 10))
+#pragma GCC diagnostic push
+#pragma GCC diagnostic error "-Wpadded"
+#endif
+
 #define NOVA_MAX_RULES	1024
+#define NOVA_MAX_PATHS	(NOVA_MAX_RULES * 2)
+#define NOVA_PATHLEN	250	/* including NUL */
 
 #define QUARK_RF_PROCESS_PID		(1ULL << 0)
 #define QUARK_RF_PROCESS_PPID		(1ULL << 1)
@@ -23,16 +30,45 @@ enum quark_rule_action {
 	QUARK_RA_POISON,
 };
 
-struct nova_rule {
-	enum quark_rule_action	action;
-	__u64			fields;	/* QUARK_RF_* bitmask */
-	__u32			pid;
-	__u32			ppid;
-	__u32			uid;
-	__u32			gid;
-	__u32			sid;
-	char			comm[16];
-	__u64			poison_tag;
+struct path_lpm_key {
+	__u32	prefixlen;
+	__u16	meta;		/* upper 12 bits rule, 4 bits for type META_RF_*_* */
+	char	path[NOVA_PATHLEN];
 };
+
+/*
+ * path_lpm_key.meta
+ */
+#define META_RF_PROCESS_FILENAME	0x0001
+#define META_RF_FILE_PATH		0x0002
+#define META_RF_MSK			0x000F
+#define META_RF_SHIFT			0
+#define META_RULE_MSK			0xFFF0
+#define META_RULE_SHIFT			4
+#define META_MAKE(_r, _k)						\
+	((__u16)(_r) << META_RULE_SHIFT | (__u16)(_k) << META_RF_SHIFT)
+
+/* 4 is sizeof(prefixlen) */
+#define PATH_LPM_KEYLEN (sizeof(struct path_lpm_key) - 4)
+
+struct nova_rule {
+	__u64	hits;			/* counter */
+	__u64	evals;			/* counter */
+	__u64	fields;			/* QUARK_RF_* bitmask */
+	__u64	poison_tag;		/* QUARK_RF_POISON */
+	__u32	number;			/* starting from 0 */
+	__u32	pid;			/* QUARK_RF_PID */
+	__u32	ppid;			/* QUARK_RF_PPID */
+	__u32	uid;			/* QUARK_RF_UID */
+	__u32	gid;			/* QUARK_RF_GID */
+	__u32	sid;			/* QUARK_RF_SID */
+	__u32	action;			/* QUARK_RA_* */
+	__u32	pad0;
+	char	comm[16];		/* QUARK_RF_COMM */
+};
+
+#if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 10))
+#pragma GCC diagnostic pop
+#endif
 
 #endif /* _NOVA_H_ */
