@@ -1279,21 +1279,24 @@ t_shm_open(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_event	*qev;
 	const struct quark_shm		*qshm;
 	int				 fd, fd2;
+	char				 path[512];
 
 	qa->flags |= QQ_SHM | QQ_FILE;
 
+	snprintf(path, sizeof(path), "/quark_test-%s-%d", __func__, getpid());
+	(void)shm_unlink(path);
 	/*
 	 * Probes are bugged, a O_CREAT that actually creates a file, shows up
 	 * as a FILE events, not a SHM_OPEN.
 	 * See https://github.com/elastic/quark/issues/256
 	 */
-	if ((fd = shm_open("/shm_open-ohmyohmy", O_CREAT | O_RDWR, 0600)) == -1)
+	if ((fd = shm_open(path, O_CREAT | O_RDWR, 0600)) == -1)
 		err(1, "shm_open");
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	if ((fd2 = shm_open("/shm_open-ohmyohmy", O_RDWR, 0600)) == -1)
+	if ((fd2 = shm_open(path, O_RDWR, 0600)) == -1)
 		err(1, "shm_open");
 
 	qev = drain_for_pid(&qq, getpid());
@@ -1301,11 +1304,12 @@ t_shm_open(const struct test *t, struct quark_queue_attr *qa)
 
 	assert(qev->events & QUARK_EV_SHM);
 	assert(qshm->kind == QUARK_SHM_SHM_OPEN);
-	assert(!strcmp(qshm->path, "/dev/shm/shm_open-ohmyohmy"));
+	assert(strlen(qshm->path) > strlen("/dev/shm"));
+	assert(!strcmp(qshm->path + strlen("/dev/shm"), path));
 
 	close(fd2);
 	close(fd);
-	if (shm_unlink("/shm_open-ohmyohmy") == -1)
+	if (shm_unlink(path) == -1)
 		err(1, "shm_unlink");
 
 	quark_queue_close(&qq);
