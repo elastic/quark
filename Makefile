@@ -54,7 +54,7 @@ endif
 
 CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
 ifdef CENTOS7
-CFLAGS+= -std=gnu99 -DNO_PUSH_PRAGMA -DNO_MEMFD -DNO_SHM_OPEN
+CFLAGS+= -std=gnu99
 endif
 
 CPPFLAGS+= -D_GNU_SOURCE
@@ -62,7 +62,9 @@ ifndef MUSL
 CPPFLAGS+= -DHAVE_GETPWENT_R
 CPPFLAGS+= -DHAVE_GETGRENT_R
 endif
-ifndef CENTOS7
+ifdef CENTOS7
+CPPFLAGS+= -DNO_MEMFD -DNO_SHM_OPEN
+else
 CPPFLAGS+= -DHAVE_EXPLICIT_BZERO
 CPPFLAGS+= -DHAVE_REALLOCARRAY
 CPPFLAGS+= -DHAVE_STATIC_ASSERT
@@ -345,9 +347,6 @@ CENTOS7_RUN_ARGS=$(QDOCKER)				\
 # continue with the rest of the build on centos7.
 CENTOS7_BORROW_TARGETS+=bpf_probes.o bpf_probes_skel.h
 CENTOS7_BORROW_TARGETS+=nova.bpf.o nova_skel.h
-ifndef NO_GO
-CENTOS7_BORROW_TARGETS+=quark-kube-talker
-endif
 
 centos7: clean-all docker-image centos7-image
 	# We first make only bpf_probes.o, bpf_probes_skel.h and quark-kube-talker

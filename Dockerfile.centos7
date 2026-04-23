@@ -1,5 +1,9 @@
 FROM centos:7
+ENV HOME=/tmp/centos7-quark-builder
 RUN sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/CentOS-*.repo
 RUN sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/CentOS-*.repo
 RUN sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/CentOS-*.repo
-RUN yum install -y bison gcc make m4 less
+RUN yum install -y bison gcc make m4 less curl
+RUN cd /tmp && curl -L -O https://go.dev/dl/go1.26.2.linux-amd64.tar.gz
+RUN rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go1.26.2.linux-amd64.tar.gz
+ENV PATH="$PATH:/usr/local/go/bin"
