@@ -309,7 +309,7 @@ qlog_func(int pri, int do_errno, const char *func, int lineno,
 const char *
 safe_basename(const char *path)
 {
-	char	*p;
+	const char	*p;
 
 	p = strrchr(path, '/');
 

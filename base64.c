@@ -189,7 +189,7 @@ qb64_pton(char const *src, u_char *target, size_t targsize)
 {
 	u_int tarindex, state;
 	int ch;
-	char *pos;
+	const char *pos;
 
 	state = 0;
 	tarindex = 0;
