@@ -181,6 +181,7 @@ LIBBPF_DEPS+=	$(ELFTOOLCHAIN_FILES)			\
 endif
 LIBBPF_EXTRA_CFLAGS:= -DQUARK
 LIBBPF_EXTRA_CFLAGS+= -fPIC
+LIBBPF_EXTRA_CFLAGS+= -Wno-discarded-qualifiers
 LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/libelf
 LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/common
 LIBBPF_EXTRA_CFLAGS+= -I../../zlib

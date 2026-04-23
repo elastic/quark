@@ -1273,7 +1273,7 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 static void
 parse_provider_id(struct quark_kube_node *node, const char *provider_id)
 {
-	char	*sep, *project_end;
+	const char	*sep, *project_end;
 
 	if ((sep = strstr(provider_id, "://")) == NULL)
 		return;
@@ -2315,8 +2315,7 @@ quark_cmdline_iter_init(struct quark_cmdline_iter *qcmdi,
 const char *
 quark_cmdline_iter_next(struct quark_cmdline_iter *qcmdi)
 {
-	char *p;
-	const char *arg;
+	const char	*p, *arg;
 
 	if (qcmdi->off >= qcmdi->cmdline_len)
 		return (NULL);
