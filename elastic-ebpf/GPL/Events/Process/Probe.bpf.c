@@ -22,16 +22,6 @@
 /* tty_write */
 DECL_FIELD_OFFSET(iov_iter, __iov);
 
-// Limits on large things we send up as variable length parameters.
-//
-// These should be kept _well_ under half the size of the event_buffer_map or
-// the verifier will be unhappy due to bounds checks. Putting a cap on these
-// things also prevents any one process from DoS'ing and filling up the
-// ringbuffer with super rapid-fire events.
-#define ARGV_MAX 20480
-#define ENV_MAX 40960
-#define TTY_OUT_MAX 8192
-
 #define S_ISUID 0004000
 #define S_ISGID 0002000
 
@@ -155,12 +145,12 @@ int BPF_PROG(sched_process_exec,
 
     // argv
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_ARGV);
-    size  = ebpf_argv__fill(field->data, ARGV_MAX, task);
+    size  = ebpf_argv__fill(field->data, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // env
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_ENV);
-    size  = ebpf_env__fill(field->data, ENV_MAX, task);
+    size  = ebpf_env__fill(field->data, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // cwd
@@ -717,11 +707,18 @@ int BPF_KPROBE(kprobe__commit_creds, struct cred *new)
 
 #define MAX_NR_SEGS 8
 
+// This should be kept _well_ under half the size of the event_buffer_map or
+// the verifier will be unhappy due to bounds checks. Putting a cap on these
+// things also prevents any one process from DoS'ing and filling up the
+// ringbuffer with super rapid-fire events.
+#define TTY_OUT_MAX 8192u
+
 static int output_tty_event(struct ebpf_tty_dev *slave, const void *base, size_t base_len)
 {
     struct ebpf_process_tty_write_event *event;
     struct ebpf_varlen_field *field;
     const struct task_struct *task;
+    u32 len_cap;
     int ret = 0;
 
     event = get_event_buffer();
@@ -734,7 +731,6 @@ static int output_tty_event(struct ebpf_tty_dev *slave, const void *base, size_t
     event->hdr.type          = EBPF_EVENT_PROCESS_TTY_WRITE;
     event->hdr.ts            = bpf_ktime_get_ns();
     event->hdr.ts_boot       = bpf_ktime_get_boot_ns_helper();
-    u64 len_cap              = base_len > TTY_OUT_MAX ? TTY_OUT_MAX : base_len;
     event->tty_out_truncated = base_len > TTY_OUT_MAX ? base_len - TTY_OUT_MAX : 0;
     event->tty               = *slave;
     ebpf_pid_info__fill(&event->pids, task);
@@ -746,6 +742,18 @@ static int output_tty_event(struct ebpf_tty_dev *slave, const void *base, size_t
 
     // tty_out
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_TTY_OUT);
+
+    /*
+     * DO NOT REMOVE THE CASTS OR A BIG AND SCARY MONSTER WILL COME AND EAT YOU!
+     * Old verifiers will lose the bound tracking when narrowing a 64bit
+     * register to 32bit, len_cap must be used as 32bit in
+     * bpf_probe_read_user(), meaning when we narrow from 64bit->32bit, it loses
+     * all bound checking, so make sure this never happens by keeping it all on
+     * 32bit land. This also depends on the compiler, so make sure to test on
+     * clang-20+.
+     */
+    len_cap = (u32)((u32)base_len > TTY_OUT_MAX ? TTY_OUT_MAX : (u32)base_len);
+
     if (bpf_probe_read_user(field->data, len_cap, base)) {
         ret = 1;
         goto out;

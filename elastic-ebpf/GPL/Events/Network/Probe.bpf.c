@@ -389,6 +389,15 @@ static int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 
         ebpf_vl_fields__init(&event->vl_fields);
         field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_DNS_BODY);
+        /*
+         * 5.10 kernels on clang-20+, for $REASONS, will result in code here
+         * that loses track of cap_len, so cap_len will be unbound (R4 in
+         * bpf_skb_load_bytes()).
+         */
+        barrier_var(cap_len);
+        if (cap_len > MAX_DNS_PACKET ||
+            cap_len < (__u32)(sizeof(struct iphdr) + sizeof(udp) + 12))
+                goto ignore;
         if (bpf_skb_load_bytes(skb, 0, field->data, cap_len))
             goto ignore;
         ebpf_vl_field__set_size(&event->vl_fields, field, cap_len);
