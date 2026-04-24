@@ -43,6 +43,13 @@ struct {
 	__uint(max_entries, NOVA_MAX_RULES);
 } ruleset SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, NOVA_MAX_RULES);
+	__type(key, __u32);
+	__type(value, struct nova_rule_pcpu);
+} ruleset_pcpu SEC(".maps");
+
 const volatile u_int	rules_active;
 
 /*
@@ -83,13 +90,18 @@ static int
 eval_loop(__u32 i, struct eval *eval)
 {
 	struct nova_rule	*rule;
+	struct nova_rule_pcpu	*rule_pcpu;
 	__u64			*v, matched;
 
 	if ((rule = bpf_map_lookup_elem(&ruleset, &i)) == NULL) {
 		bpf_printk("rule not found, this is a bug");
 		return (LOOP_CONTINUE);
 	}
-	rule->evals++;		/* XXX RACY XXX */
+	if ((rule_pcpu = bpf_map_lookup_elem(&ruleset_pcpu, &i)) == NULL) {
+		bpf_printk("rule_pcpu not found, this is a bug");
+		return (LOOP_CONTINUE);
+	}
+	rule_pcpu->evals++;
 
 	/*
 	 * matched is a bitmask of fields that match (are equal).
@@ -127,8 +139,8 @@ eval_loop(__u32 i, struct eval *eval)
 
 	matched &= eval->fields;
 	if ((matched & rule->fields) == rule->fields) {
-		rule->hits++;
-		eval->match = rule; /* XXX RACY XXX */
+		rule_pcpu->hits++;
+		eval->match = rule;
 		return (LOOP_STOP);
 	}
 

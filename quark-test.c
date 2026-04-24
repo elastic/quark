@@ -2164,9 +2164,11 @@ t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_nova(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	 qq;
-	struct quark_ruleset	 ruleset;
-	char			*text_ruleset;
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct quark_queue_stats	 stats;
+	char				*text_ruleset;
+	size_t				 i;
 
 	if (!noforkflag)
 		errx(1, "please run me with -1");
@@ -2185,8 +2187,15 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "%s: quark_queue_open", t->name);
 	fprintf(stderr, "\nthis test is a placeholder for temporary fiddling!!!\n");
 	fprintf(stderr, "sleeping forevis...\n");
-	for (;;)
-		sleep(300);
+	for (;;) {
+		quark_queue_get_stats(&qq, &stats);
+		for (i = 0; i < qq.ruleset->n_rules; i++) {
+			printf("rule %zd: evals %llu hits %llu\n",
+			    i, qq.ruleset->rules[i].evals, qq.ruleset->rules[i].hits);
+		}
+		putchar('\n');
+		sleep(1);
+	}
 	quark_queue_close(&qq);
 
 	return (0);

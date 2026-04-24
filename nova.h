@@ -9,6 +9,13 @@
 #pragma GCC diagnostic error "-Wpadded"
 #endif
 
+/*
+ * Redefine since we can't pull compat.h
+ */
+#ifndef __aligned
+#define __aligned(x)	__attribute__((aligned(x)))
+#endif	/* __aligned */
+
 #define NOVA_MAX_RULES	1024
 #define NOVA_MAX_PATHS	(NOVA_MAX_RULES * 2)
 #define NOVA_PATHLEN	250	/* including NUL */
@@ -52,8 +59,6 @@ struct path_lpm_key {
 #define PATH_LPM_KEYLEN (sizeof(struct path_lpm_key) - 4)
 
 struct nova_rule {
-	__u64	hits;			/* counter */
-	__u64	evals;			/* counter */
 	__u64	fields;			/* QUARK_RF_* bitmask */
 	__u64	poison_tag;		/* QUARK_RF_POISON */
 	__u32	number;			/* starting from 0 */
@@ -66,6 +71,11 @@ struct nova_rule {
 	__u32	pad0;
 	char	comm[16];		/* QUARK_RF_COMM */
 };
+
+struct nova_rule_pcpu {
+	__u64	hits;			/* counter */
+	__u64	evals;			/* counter */
+} __aligned(8);
 
 #if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 10))
 #pragma GCC diagnostic pop

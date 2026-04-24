@@ -6,6 +6,7 @@
 #include <sys/mount.h>
 #include <sys/sysinfo.h>
 
+#include <assert.h>
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
@@ -1387,23 +1388,42 @@ static int
 bpf_queue_update_stats(struct quark_queue *qq)
 {
 	struct bpf_queue	*bqq  = qq->queue_be;
-	struct ebpf_event_stats	 pcpu_ees[libbpf_num_possible_cpus()];
+	struct ebpf_event_stats	*pcpu_ees;
 	u32			 zero = 0;
 	u64			 lost;
-	int			 i;
+	int			 i, num_cpus;
 
-	/* valgrind doesn't track that this will be updated below */
-	bzero(pcpu_ees, sizeof(pcpu_ees));
+	if ((num_cpus = libbpf_num_possible_cpus()) <= 0) {
+		qwarnx("bad libbpf_num_possible_cpus: %d", num_cpus);
+		return (-1);
+	}
+	if ((pcpu_ees = calloc(num_cpus, sizeof(*pcpu_ees))) == NULL) {
+		qwarn("calloc");
+		return (-1);
+	}
+
+#ifdef HAVE_STATIC_ASSERT
+	static_assert(sizeof(*pcpu_ees) % 8 == 0,
+	    "struct ebpf_event_stats must be 8 byte aligned");
+#endif
 
 	if (bpf_map__lookup_elem(bqq->probes->maps.ringbuf_stats, &zero,
-	    sizeof(zero), pcpu_ees, sizeof(pcpu_ees), 0) != 0)
-		return (-1);
+	    sizeof(zero), pcpu_ees, sizeof(*pcpu_ees) * num_cpus, 0) != 0) {
+		qwarn("bpf_map__lookup_elem");
+		goto fail;
+	}
 
-	for (i = 0, lost = 0; i < libbpf_num_possible_cpus(); i++)
+	for (i = 0, lost = 0; i < num_cpus; i++)
 		lost += pcpu_ees[i].lost;
 	qq->stats.lost = lost;
+	free(pcpu_ees);
 
 	return (0);
+
+fail:
+	free(pcpu_ees);
+
+	return (-1);
 }
 
 static void
