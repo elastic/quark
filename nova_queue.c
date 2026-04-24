@@ -243,7 +243,55 @@ nova_queue_populate(struct quark_queue *qq)
 static int
 nova_queue_update_stats(struct quark_queue *qq)
 {
+	struct nova_queue	*nqq	  = qq->queue_be;
+	struct nova_bpf		*nova_bpf = nqq->nova_bpf;
+	struct nova_rule_pcpu	*rule_pcpu;
+	int			 num_cpus;
+	struct quark_rule	*qr;
+	u32			 i;
+	int			 j;
+
+	if (qq->ruleset == NULL)
+		return (0);
+
+	if ((num_cpus = libbpf_num_possible_cpus()) <= 0) {
+		qwarnx("bad libbpf_num_possible_cpus: %d", num_cpus);
+		return (-1);
+	}
+	if ((rule_pcpu = calloc(num_cpus, sizeof(*rule_pcpu))) == NULL) {
+		qwarn("calloc");
+		return (-1);
+	}
+#ifdef HAVE_STATIC_ASSERT
+	static_assert(sizeof(*rule_pcpu) % 8 == 0,
+	    "struct nova_rule_pcpu must be 8 byte aligned");
+#endif
+
+	for (i = 0; i < (u32)qq->ruleset->n_rules; i++) {
+		qr = qq->ruleset->rules + i;
+
+		qr->evals = 0;
+		qr->hits = 0;
+
+		if (bpf_map__lookup_elem(nova_bpf->maps.ruleset_pcpu, &i,
+		    sizeof(i), rule_pcpu, sizeof(*rule_pcpu) * num_cpus, 0) != 0) {
+			qwarn("bpf_map__lookup_elem");
+			goto fail;
+		}
+
+		for (j = 0; j < num_cpus; j++) {
+			qr->evals += rule_pcpu[j].evals;
+			qr->hits += rule_pcpu[j].hits;
+		}
+	}
+
+	free(rule_pcpu);
+
 	return (0);
+fail:
+	free(rule_pcpu);
+
+	return (-1);
 }
 
 static void
