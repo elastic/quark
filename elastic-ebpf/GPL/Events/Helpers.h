@@ -155,20 +155,36 @@ static long read_kernel_str_or_empty_str(void *dst, int size, const void *unsafe
     return ret;
 }
 
-static long ebpf_argv__fill(char *buf, size_t buf_size, const struct task_struct *task)
+// These should be kept _well_ under half the size of the event_buffer_map or
+// the verifier will be unhappy due to bounds checks. Putting a cap on these
+// things also prevents any one process from DoS'ing and filling up the
+// ringbuffer with super rapid-fire events.
+#define ARGV_MAX 20480u
+#define ENV_MAX 40960u
+
+static long ebpf_argv__fill(char *buf, const struct task_struct *task)
 {
-    unsigned long start, end, size;
+    unsigned long start, end;
+    u32 size;
 
     start = BPF_CORE_READ(task, mm, arg_start);
     end   = BPF_CORE_READ(task, mm, arg_end);
 
-    if (end <= start) {
-        buf[0] = '\0';
-        return 1;
-    }
+    /* Make sure we NUL terminate if we bail */
+    buf[0] = 0;
 
-    size = end - start;
-    size = size > buf_size ? buf_size : size;
+    if (start >= end)
+	    return 1;
+
+    /*
+     * Make sure we never narrow a 64bit to 32bit, in older kernels, 5.10,
+     * depending on the code clang-20+ emits, we might end up narrowing the
+     * computation, which makes the verifier lose track of bounds.
+     */
+    size = (u32)(end - start);
+    if (size == 0)
+            return 1;
+    size = size > ARGV_MAX ? ARGV_MAX : size;
 
     bpf_probe_read_user(buf, size, (void *)start);
 
@@ -178,20 +194,29 @@ static long ebpf_argv__fill(char *buf, size_t buf_size, const struct task_struct
     return size;
 }
 
-static long ebpf_env__fill(char *buf, size_t buf_size, const struct task_struct *task)
+static long ebpf_env__fill(char *buf, const struct task_struct *task)
 {
-    unsigned long start, end, size;
+    unsigned long start, end;
+    u32 size;
 
     start = BPF_CORE_READ(task, mm, env_start);
     end   = BPF_CORE_READ(task, mm, env_end);
 
-    if (end <= start) {
-        buf[0] = '\0';
-        return 1;
-    }
+    /* Make sure we NUL terminate if we bail */
+    buf[0] = 0;
 
-    size = end - start;
-    size = size > buf_size ? buf_size : size;
+    if (start >= end)
+	    return 1;
+
+    /*
+     * Make sure we never narrow a 64bit to 32bit, in older kernels, 5.10,
+     * depending on the code clang-20+ emits, we might end up narrowing the
+     * computation, which makes the verifier lose track of bounds.
+     */
+    size = (u32)(end - start);
+    if (size == 0)
+            return 1;
+    size = size > ENV_MAX ? ENV_MAX : size;
 
     bpf_probe_read_user(buf, size, (void *)start);
 
