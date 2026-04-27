@@ -112,29 +112,29 @@ eval_loop(__u32 i, struct eval *eval)
 	 * FOO), we curb it later with matched &= eval->fields.
 	 */
 	matched = 0;
-	matched |= (__u64)(eval->pid == rule->pid) * QUARK_RF_PROCESS_PID;
-	matched |= (__u64)(eval->ppid == rule->ppid) * QUARK_RF_PROCESS_PPID;
-	matched |= (__u64)(eval->uid == rule->uid) * QUARK_RF_PROCESS_UID;
-	matched |= (__u64)(eval->gid == rule->gid) * QUARK_RF_PROCESS_GID;
-	matched |= (__u64)(eval->sid == rule->sid) * QUARK_RF_PROCESS_SID;
+	matched |= (__u64)(eval->pid == rule->pid) * QUARK_RF_PID;
+	matched |= (__u64)(eval->ppid == rule->ppid) * QUARK_RF_PPID;
+	matched |= (__u64)(eval->uid == rule->uid) * QUARK_RF_UID;
+	matched |= (__u64)(eval->gid == rule->gid) * QUARK_RF_GID;
+	matched |= (__u64)(eval->sid == rule->sid) * QUARK_RF_SID;
 	matched |= (__u64)(eval->poison_tag == rule->poison_tag) * QUARK_RF_POISON;
 
-	if (rule->fields & QUARK_RF_PROCESS_FILENAME &&
-	    eval->fields & QUARK_RF_PROCESS_FILENAME &&
+	if (rule->fields & QUARK_RF_EXE &&
+	    eval->fields & QUARK_RF_EXE &&
 	    eval->process_filename != NULL) {
-		eval->process_filename->meta = META_MAKE(i, META_RF_PROCESS_FILENAME);
+		eval->process_filename->meta = META_MAKE(i, META_RF_EXE);
 		eval->process_filename->prefixlen = PATH_LPM_KEYLEN * 8;
 		v = bpf_map_lookup_elem(&lpm_path, eval->process_filename);
-		matched |= (v != NULL) * QUARK_RF_PROCESS_FILENAME;
+		matched |= (v != NULL) * QUARK_RF_EXE;
 	}
 
-	if (rule->fields & QUARK_RF_FILE_PATH &&
-	    eval->fields & QUARK_RF_FILE_PATH &&
+	if (rule->fields & QUARK_RF_FILEPATH &&
+	    eval->fields & QUARK_RF_FILEPATH &&
 	    eval->file_path != NULL) {
-		eval->file_path->meta = META_MAKE(i, META_RF_FILE_PATH);
+		eval->file_path->meta = META_MAKE(i, META_RF_FILEPATH);
 		eval->file_path->prefixlen = PATH_LPM_KEYLEN * 8;
 		v = bpf_map_lookup_elem(&lpm_path, eval->file_path);
-		matched |= (v != NULL) * QUARK_RF_FILE_PATH;
+		matched |= (v != NULL) * QUARK_RF_FILEPATH;
 	}
 
 	matched &= eval->fields;
@@ -177,19 +177,19 @@ static void
 eval_init_task(struct eval *eval, struct task_struct *task)
 {
 	eval->pid = BPF_CORE_READ(task, tgid);
-	eval->fields |= QUARK_RF_PROCESS_PID;
+	eval->fields |= QUARK_RF_PID;
 	eval->ppid = BPF_CORE_READ(task, group_leader, real_parent, tgid);
-	eval->fields |= QUARK_RF_PROCESS_PPID;
+	eval->fields |= QUARK_RF_PPID;
 	eval->uid = BPF_CORE_READ(task, cred, uid.val);
-	eval->fields |= QUARK_RF_PROCESS_UID;
+	eval->fields |= QUARK_RF_UID;
 	eval->gid = BPF_CORE_READ(task, cred, gid.val);
-	eval->fields |= QUARK_RF_PROCESS_GID;
+	eval->fields |= QUARK_RF_GID;
 #if 0
 	eval->sid = 		/* XXX TODO XXX */
-	eval->fields |= QUARK_RF_PROCESS_SID;
+	eval->fields |= QUARK_RF_SID;
 #endif
 	if (BPF_CORE_READ_STR_INTO(eval->comm, task, comm) > 0)
-		eval->fields |= QUARK_RF_PROCESS_COMM;
+		eval->fields |= QUARK_RF_COMM;
 	/* TODO MORE TODO */
 }
 
@@ -211,7 +211,7 @@ int BPF_PROG(task_alloc, struct task_struct *task, __u64 clone_flags)
 		    sizeof(eval.process_filename->path)) <= 0)
 			bpf_printk("can't make filename");
 		else
-			eval.fields |= QUARK_RF_PROCESS_FILENAME;
+			eval.fields |= QUARK_RF_EXE;
 	}
 
 	r = eval_run(&eval);

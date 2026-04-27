@@ -96,14 +96,14 @@ type Exit struct {
 
 // Process represents a single process.
 type Process struct {
-	Pid      uint32 // Always present
-	Proc     Proc   // Only meaningful if Proc.Valid (QUARK_F_PROC)
-	Exit     Exit   // Only meaningful if Exit.Valid (QUARK_F_EXIT)
-	Comm     string
-	Filename string
-	Cmdline  []string
-	Cwd      string
-	Cgroup   string
+	Pid     uint32 // Always present
+	Proc    Proc   // Only meaningful if Proc.Valid (QUARK_F_PROC)
+	Exit    Exit   // Only meaningful if Exit.Valid (QUARK_F_EXIT)
+	Comm    string
+	Exe     string
+	Cmdline []string
+	Cwd     string
+	Cgroup  string
 }
 
 // Socket represents a connection between two endpoints
@@ -508,8 +508,8 @@ func processFromC(cProcess *C.struct_quark_process) Process {
 		}
 	}
 	process.Comm = C.GoString(&cProcess.comm[0])
-	if cProcess.filename != nil {
-		process.Filename = C.GoString(cProcess.filename)
+	if cProcess.exe != nil {
+		process.Exe = C.GoString(cProcess.exe)
 	}
 	if cProcess.cmdline != nil && cProcess.cmdline_len > 0 {
 		b := C.GoBytes(unsafe.Pointer(cProcess.cmdline), C.int(cProcess.cmdline_len))

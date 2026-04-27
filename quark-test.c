@@ -856,7 +856,7 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	assert(qp != NULL);
 	assert(qp->flags & QUARK_F_EXIT);
 	assert(qp->comm[0] != 0);
-	assert(qp->filename != NULL);
+	assert(qp->exe != NULL);
 	assert(qp->cmdline != NULL && qp->cmdline_len > 0);
 	assert(qp->cwd != NULL);
 	if (qa->flags & QQ_EBPF)
@@ -899,8 +899,8 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 #endif
 	/* check strings */
 	assert(!strcmp(qp->comm, "true"));
-	assert(!strcmp(qp->filename, "/bin/true") ||
-	    !strcmp(qp->filename, "/usr/bin/true"));
+	assert(!strcmp(qp->exe, "/bin/true") ||
+	    !strcmp(qp->exe, "/usr/bin/true"));
 	/* check args */
 	quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
 	argc = 0;
@@ -1993,7 +1993,7 @@ t_rule_poison_existing(const struct test *t, struct quark_queue_attr *qa)
 	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_POISON, poison_tag);
 	assert(rule != NULL);
 	bzero(&rf, sizeof(rf));
-	rf.code = QUARK_RF_PROCESS_PID;
+	rf.code = QUARK_RF_PID;
 	rf.pid = getpid();
 	assert(!quark_rule_match_field(rule, rf));
 
@@ -2037,7 +2037,7 @@ t_rule_id(const struct test *t, struct quark_queue_attr *qa)
 	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
 	assert(rule != NULL);
 	bzero(&rf, sizeof(rf));
-	rf.code = QUARK_RF_PROCESS_UID;
+	rf.code = QUARK_RF_UID;
 	rf.id = uid;
 	assert(!quark_rule_match_field(rule, rf));
 
@@ -2094,12 +2094,12 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"pass on process.sid 11\n",
 		"drop on file.path /foo/bar\n",
 		"pass on file.path foo-bar\n",
-		"drop on process.filename /foo/bar\n",
-		"pass on process.filename foo-bar\n",
-		"drop on process.filename \"foo bar lero\"\n",
-		"pass on process.filename /foo/*\n",
-		"drop on process.filename \"/foo bar/*\"\n",
-		"pass on process.filename \\\nfoo",	/* line split by \ */
+		"drop on process.exe /foo/bar\n",
+		"pass on process.exe foo-bar\n",
+		"drop on process.exe \"foo bar lero\"\n",
+		"pass on process.exe /foo/*\n",
+		"drop on process.exe \"/foo bar/*\"\n",
+		"pass on process.exe \\\nfoo",	/* line split by \ */
 		NULL
 	};
 	char *bad_cases[] = {
@@ -2114,7 +2114,7 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"pass on process.pid \"1 \"2",
 		"drop on process.gid",
 		"drop on foobar\n",
-		"drop on process.filename",
+		"drop on process.exe",
 		"drop on file.name \"foo\n",
 		NULL
 	};
@@ -2174,11 +2174,11 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 		errx(1, "please run me with -1");
 
 	text_ruleset =
-	    "pass on process.filename /usr/bin/bash\n"
-	    "pass on process.filename /bin/bash\n"
-	    "pass on process.filename /usr/bin/mksh\n"
-	    "pass on process.filename /bin/mksh\n"
-	    "pass on process.filename /idontexist\n"
+	    "pass on process.exe /usr/bin/bash\n"
+	    "pass on process.exe /bin/bash\n"
+	    "pass on process.exe /usr/bin/mksh\n"
+	    "pass on process.exe /bin/mksh\n"
+	    "pass on process.exe /idontexist\n"
 	    "pass on any";
 	ruleset_from_string(&ruleset, text_ruleset);
 
