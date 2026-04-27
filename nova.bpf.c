@@ -18,6 +18,16 @@
 
 #define E2BIG		7
 
+#define MAX(_a, _b)	((_a) > (_b) ? (_a) : (_b))
+#define MIN(_a, _b)	((_a) < (_b) ? (_a) : (_b))
+
+#define PATH_LPM_KEYLEN							\
+	(sizeof(struct path_lpm_key) -					\
+	    sizeof(((struct path_lpm_key *)0)->prefixlen))
+#define PATH_LPM_PREFIXLEN(_b)						\
+	(MIN(PATH_LPM_KEYLEN,						\
+	    ((_b) + sizeof(((struct path_lpm_key *)0)->meta))) * 8)
+
 extern void bpf_preempt_disable(void) __ksym __weak;
 extern void bpf_preempt_enable(void) __ksym __weak;
 
@@ -60,16 +70,16 @@ struct eval {
 	/* fields is the bitmask of things that have been filled */
 	__u64			 fields;		/* QUARK_RF_* bitmask */
 	__u64			 poison_tag;		/* QUARK_RF_POISON */
-	__u32			 pid;			/* QUARK_RF_PROCESS_PID */
-	__u32			 ppid;			/* QUARK_RF_PROCESS_PPID */
-	__u32			 uid;			/* QUARK_RF_PROCESS_UID */
-	__u32			 gid;			/* QUARK_RF_PROCESS_GID */
-	__u32			 sid;			/* QUARK_RF_PROCESS_SID */
+	__u32			 pid;			/* QUARK_RF_PID */
+	__u32			 ppid;			/* QUARK_RF_PPID */
+	__u32			 uid;			/* QUARK_RF_UID */
+	__u32			 gid;			/* QUARK_RF_GID */
+	__u32			 sid;			/* QUARK_RF_SID */
 	__u32			 pad0;
-	struct path_lpm_key	*process_filename;	/* QUARK_RF_PROCESS_FILENAME */
-	struct path_lpm_key	*file_path;		/* QUARK_RF_PROCESS_FILE_PATH */
+	struct path_lpm_key	*exe;			/* QUARK_RF_EXE */
+	struct path_lpm_key	*filepath;		/* QUARK_RF_FILEPATH */
 	struct nova_rule	*match;			/* result of eval_run */
-	char			 comm[16];		/* QUARK_RF_PROCESS_COMM */
+	char			 comm[16];		/* QUARK_RF_COMM */
 };
 
 static void
@@ -121,19 +131,17 @@ eval_loop(__u32 i, struct eval *eval)
 
 	if (rule->fields & QUARK_RF_EXE &&
 	    eval->fields & QUARK_RF_EXE &&
-	    eval->process_filename != NULL) {
-		eval->process_filename->meta = META_MAKE(i, META_RF_EXE);
-		eval->process_filename->prefixlen = PATH_LPM_KEYLEN * 8;
-		v = bpf_map_lookup_elem(&lpm_path, eval->process_filename);
+	    eval->exe != NULL) {
+		eval->exe->meta = META_MAKE(i, META_RF_EXE);
+		v = bpf_map_lookup_elem(&lpm_path, eval->exe);
 		matched |= (v != NULL) * QUARK_RF_EXE;
 	}
 
 	if (rule->fields & QUARK_RF_FILEPATH &&
 	    eval->fields & QUARK_RF_FILEPATH &&
-	    eval->file_path != NULL) {
-		eval->file_path->meta = META_MAKE(i, META_RF_FILEPATH);
-		eval->file_path->prefixlen = PATH_LPM_KEYLEN * 8;
-		v = bpf_map_lookup_elem(&lpm_path, eval->file_path);
+	    eval->filepath != NULL) {
+		eval->filepath->meta = META_MAKE(i, META_RF_FILEPATH);
+		v = bpf_map_lookup_elem(&lpm_path, eval->filepath);
 		matched |= (v != NULL) * QUARK_RF_FILEPATH;
 	}
 
@@ -168,8 +176,8 @@ static void
 eval_init(struct eval *eval)
 {
 	eval->fields = 0;
-	eval->process_filename = bpf_map_lookup_elem(&scratch_path, &(int){0});
-	eval->file_path = bpf_map_lookup_elem(&scratch_path, &(int){1});
+	eval->exe = bpf_map_lookup_elem(&scratch_path, &(int){0});
+	eval->filepath = bpf_map_lookup_elem(&scratch_path, &(int){1});
 	eval->match = NULL;
 }
 
@@ -193,27 +201,32 @@ eval_init_task(struct eval *eval, struct task_struct *task)
 	/* TODO MORE TODO */
 }
 
-SEC("lsm/task_alloc")
-int BPF_PROG(task_alloc, struct task_struct *task, __u64 clone_flags)
+SEC("lsm/bprm_check_security")
+int
+BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 {
+	struct task_struct	*task = bpf_get_current_task_btf();
 	struct eval		 eval;
 	int			 r;
+	long			 len;
 
 	preempt_disable();
 
 	eval_init(&eval);
 	eval_init_task(&eval, task);
 
-	if (BPF_CORE_READ(task, mm, exe_file) != NULL &&
-	    eval.process_filename != NULL) {
-		if (bpf_d_path(&task->mm->exe_file->f_path,
-		    eval.process_filename->path,
-		    sizeof(eval.process_filename->path)) <= 0)
-			bpf_printk("can't make filename");
-		else
-			eval.fields |= QUARK_RF_EXE;
+	if (bprm->file != NULL && eval.exe != NULL) {
+		len = bpf_d_path(&bprm->file->f_path,
+		    eval.exe->path, sizeof(eval.exe->path));
+		if (len <= 0) {
+			if (len < 0)
+				bpf_printk("can't make executable");
+			goto noexe;
+		}
+		eval.exe->prefixlen = PATH_LPM_PREFIXLEN(len);
+		eval.fields |= QUARK_RF_EXE;
 	}
-
+noexe:
 	r = eval_run(&eval);
 	r = 0; /* XXX r ignored for now */
 
