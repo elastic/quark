@@ -55,9 +55,6 @@ struct path_lpm_key {
 #define META_MAKE(_r, _k)						\
 	((__u16)(_r) << META_RULE_SHIFT | (__u16)(_k) << META_RF_SHIFT)
 
-/* 4 is sizeof(prefixlen) */
-#define PATH_LPM_KEYLEN (sizeof(struct path_lpm_key) - 4)
-
 struct nova_rule {
 	__u64	fields;			/* QUARK_RF_* bitmask */
 	__u64	poison_tag;		/* QUARK_RF_POISON */
