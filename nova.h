@@ -20,15 +20,15 @@
 #define NOVA_MAX_PATHS	(NOVA_MAX_RULES * 2)
 #define NOVA_PATHLEN	250	/* including NUL */
 
-#define QUARK_RF_PROCESS_PID		(1ULL << 0)
-#define QUARK_RF_PROCESS_PPID		(1ULL << 1)
-#define QUARK_RF_PROCESS_UID		(1ULL << 2)
-#define QUARK_RF_PROCESS_GID		(1ULL << 3)
-#define QUARK_RF_PROCESS_SID		(1ULL << 4)
-#define QUARK_RF_PROCESS_COMM		(1ULL << 5)
-#define QUARK_RF_PROCESS_FILENAME	(1ULL << 6)
-#define QUARK_RF_FILE_PATH		(1ULL << 7)
-#define QUARK_RF_POISON			(1ULL << 8)
+#define QUARK_RF_PID		(1ULL << 0)
+#define QUARK_RF_PPID		(1ULL << 1)
+#define QUARK_RF_UID		(1ULL << 2)
+#define QUARK_RF_GID		(1ULL << 3)
+#define QUARK_RF_SID		(1ULL << 4)
+#define QUARK_RF_COMM		(1ULL << 5)
+#define QUARK_RF_EXE		(1ULL << 6)
+#define QUARK_RF_FILEPATH	(1ULL << 7)
+#define QUARK_RF_POISON		(1ULL << 8)
 
 enum quark_rule_action {
 	QUARK_RA_INVALID,
@@ -46,8 +46,8 @@ struct path_lpm_key {
 /*
  * path_lpm_key.meta
  */
-#define META_RF_PROCESS_FILENAME	0x0001
-#define META_RF_FILE_PATH		0x0002
+#define META_RF_EXE			0x0001
+#define META_RF_FILEPATH		0x0002
 #define META_RF_MSK			0x000F
 #define META_RF_SHIFT			0
 #define META_RULE_MSK			0xFFF0

@@ -618,7 +618,7 @@ struct quark_process {
 	s32	 exit_code;
 	u64	 exit_time_event;
 	char	 comm[16];
-	char	*filename;
+	char	*exe;
 	size_t	 cmdline_len;
 	char	*cmdline;
 	char	*cwd;

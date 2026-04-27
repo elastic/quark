@@ -55,7 +55,7 @@ int	quark_lex(YYSTYPE *, struct quark_parser_ctx *);
 
 %token PASS DROP POISON ON ANY STRING
 %token PROCESS_PID PROCESS_PPID PROCESS_UID PROCESS_GID PROCESS_SID
-%token PROCESS_FILENAME FILE_PATH
+%token PROCESS_EXE FILE_PATH
 
 %%
 grammar:	/* empty  */
@@ -101,25 +101,25 @@ match:		matchfield {
 		} ;
 
 matchfield:	PROCESS_PID num_u32 {
-			$$.rf.code = QUARK_RF_PROCESS_PID;
+			$$.rf.code = QUARK_RF_PID;
 			$$.rf.pid = $2.num_u32;
 		} | PROCESS_PPID num_u32 {
-			$$.rf.code = QUARK_RF_PROCESS_PPID;
+			$$.rf.code = QUARK_RF_PPID;
 			$$.rf.pid = $2.num_u32;
 		} | PROCESS_UID num_u32 {
-			$$.rf.code = QUARK_RF_PROCESS_UID;
+			$$.rf.code = QUARK_RF_UID;
 			$$.rf.pid = $2.num_u32;
 		} | PROCESS_GID num_u32 {
-			$$.rf.code = QUARK_RF_PROCESS_GID;
+			$$.rf.code = QUARK_RF_GID;
 			$$.rf.pid = $2.num_u32;
 		} | PROCESS_SID num_u32 {
-			$$.rf.code = QUARK_RF_PROCESS_SID;
+			$$.rf.code = QUARK_RF_SID;
 			$$.rf.pid = $2.num_u32;
-		} | PROCESS_FILENAME STRING {
-			$$.rf.code = QUARK_RF_PROCESS_FILENAME;
+		} | PROCESS_EXE STRING {
+			$$.rf.code = QUARK_RF_EXE;
 			$$.rf.path =(char *)$2.str;
 		} | FILE_PATH STRING {
-			$$.rf.code = QUARK_RF_FILE_PATH;
+			$$.rf.code = QUARK_RF_FILEPATH;
 			$$.rf.path =(char *)$2.str;
 		} | POISON num_u64 {
 			$$.rf.code = QUARK_RF_POISON;
@@ -192,7 +192,7 @@ static struct keyword {
 	{ "process.uid",	PROCESS_UID },
 	{ "process.gid",	PROCESS_GID },
 	{ "process.sid",	PROCESS_SID },
-	{ "process.filename",	PROCESS_FILENAME },
+	{ "process.exe",	PROCESS_EXE },
 	{ "file.path",		FILE_PATH },
 };
 

@@ -472,7 +472,7 @@ gc_collect(struct quark_queue *qq)
 static void
 process_free(struct quark_process *qp)
 {
-	free(qp->filename);
+	free(qp->exe);
 	free(qp->cwd);
 	free(qp->cmdline);
 	free(qp->cgroup);
@@ -523,9 +523,9 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 	/* Ignore QUARK_F_PROC? as we always have it all on fork */
 
 	strlcpy(qp->comm, parent->comm, sizeof(qp->comm));
-	if (parent->filename != NULL) {
-		free(qp->filename);
-		qp->filename = strdup(parent->filename);
+	if (parent->exe != NULL) {
+		free(qp->exe);
+		qp->exe = strdup(parent->exe);
 	}
 	/* Do we really want CMDLINE? */
 	if (parent->cmdline != NULL) {
@@ -1794,8 +1794,8 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 	tty = tty_type(qp->proc_tty_major, qp->proc_tty_minor);
 
 	basename = NULL;
-	if (qp->filename != NULL)
-		basename = strrchr(qp->filename, '/');
+	if (qp->exe != NULL)
+		basename = strrchr(qp->exe, '/');
 	if (basename == NULL)
 		basename = "";
 	else
@@ -1850,8 +1850,8 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 		return (0);
 
 	p_basename = NULL;
-	if (parent->filename != NULL)
-		p_basename = strrchr(parent->filename, '/');
+	if (parent->exe != NULL)
+		p_basename = strrchr(parent->exe, '/');
 	if (p_basename == NULL)
 		p_basename = "";
 	else
@@ -1895,7 +1895,7 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 
 	if (qp->proc_entry_leader == QUARK_ELT_UNKNOWN)
 		qwarnx("%d (%s) is UNKNOWN (tty=%d)",
-		    qp->pid, qp->filename ? qp->filename : "null", tty);
+		    qp->pid, qp->exe ? qp->exe : "null", tty);
 
 	return (0);
 }
@@ -2220,9 +2220,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		fl = "CWD";
 		PF(fl, "cwd=%s\n", qp->cwd);
 	}
-	if (qp->filename != NULL) {
-		fl = "FNAME";
-		PF(fl, "filename=%s\n", qp->filename);
+	if (qp->exe != NULL) {
+		fl = "EXE";
+		PF(fl, "exe=%s\n", qp->exe);
 	}
 	if (qp->env != NULL) {
 		fl = "ENV";
@@ -2340,14 +2340,14 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 	struct quark_process	*qp;
 	struct raw_task		*raw_task;
 	char			*comm;
-	char			*filename;
+	char			*exe;
 	char			*args;
 	size_t			 args_len;
 
 	qp	 = (struct quark_process *)dst->process;
 	raw_task = NULL;
 	comm	 = NULL;
-	filename = NULL;
+	exe	 = NULL;
 	args	 = NULL;
 	args_len = 0;
 
@@ -2359,7 +2359,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		break;
 	case RAW_EXEC:
 		dst->events |= QUARK_EV_EXEC;
-		filename = src->exec.filename;
+		exe = src->exec.filename;
 		src->exec.filename = NULL;
 		if (src->exec.flags & RAW_EXEC_F_EXT) {
 			raw_task = &src->exec.ext.task;
@@ -2467,10 +2467,10 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		strlcpy(qp->comm, comm, sizeof(qp->comm));
 		comm = NULL;
 	}
-	if (filename != NULL) {
-		free(qp->filename);
-		qp->filename = filename;
-		filename = NULL;
+	if (exe != NULL) {
+		free(qp->exe);
+		qp->exe = exe;
+		exe = NULL;
 	}
 	if (args != NULL && args_len > 0) {
 		free(qp->cmdline);
@@ -2968,7 +2968,7 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 		qp->comm[0] = 0;
 	/* filename */
 	if (qreadlinkat(dfd, "exe", path, sizeof(path)) > 0)
-		qp->filename = strdup(path);
+		qp->exe = strdup(path);
 	/* cmdline */
 	sproc_cmdline(qp, dfd);
 	/* cwd */
@@ -3921,8 +3921,8 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 		if (color_index >= nitems(color_table)) /* paranoia */
 			color_index = 0;
 
-		if (qp->filename != NULL)
-			name = qp->filename;
+		if (qp->exe != NULL)
+			name = qp->exe;
 		else if (qp->comm[0] != 0)
 			name = qp->comm;
 		else
@@ -4768,8 +4768,8 @@ quark_ruleset_clear(struct quark_ruleset *ruleset)
 		rule = ruleset->rules + i;
 		for (j = 0; j < rule->n_fields; j++) {
 			switch (rule->fields[j].code) {
-			case QUARK_RF_FILE_PATH:		/* FALLTHROUGH */
-			case QUARK_RF_PROCESS_FILENAME:		/* FALLTHROUGH */
+			case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
+			case QUARK_RF_EXE:		/* FALLTHROUGH */
 				free(rule->fields[j].path);
 				break;
 			default:
@@ -4837,28 +4837,28 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 	((_p) != NULL && ((_p)->flags & QUARK_F_PROC) && (_p)->_n == _v)
 
 	switch (field->code) {
-	case QUARK_RF_PROCESS_PID:
+	case QUARK_RF_PID:
 		if (qp != NULL)
 			return (qp->pid == field->pid);
 		break;
-	case QUARK_RF_PROCESS_PPID:
+	case QUARK_RF_PPID:
 		return (MATCH_PROC_FIELD(qp, proc_ppid, field->pid));
-	case QUARK_RF_PROCESS_FILENAME:
-		if (qp != NULL && qp->filename != NULL)
-			return (path_match(field, qp->filename));
+	case QUARK_RF_EXE:
+		if (qp != NULL && qp->exe != NULL)
+			return (path_match(field, qp->exe));
 		break;
-	case QUARK_RF_PROCESS_UID:
+	case QUARK_RF_UID:
 		return (MATCH_PROC_FIELD(qp, proc_uid, field->id));
-	case QUARK_RF_PROCESS_GID:
+	case QUARK_RF_GID:
 		return (MATCH_PROC_FIELD(qp, proc_gid, field->id));
-	case QUARK_RF_PROCESS_SID:
+	case QUARK_RF_SID:
 		return (MATCH_PROC_FIELD(qp, proc_sid, field->id));
 		break;
-	case QUARK_RF_PROCESS_COMM:
+	case QUARK_RF_COMM:
 		if (qp != NULL)
 			return (!strcmp(field->comm, qp->comm));
 		break;
-	case QUARK_RF_FILE_PATH:
+	case QUARK_RF_FILEPATH:
 		if (qev->file != NULL)
 			return (path_match(field, qev->file->path));
 		break;
@@ -4951,21 +4951,21 @@ quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
 	path = NULL;
 
 	switch (rf.code) {
-	case QUARK_RF_PROCESS_PID:		/* FALLTHROUGH */
-	case QUARK_RF_PROCESS_PPID:
+	case QUARK_RF_PID:		/* FALLTHROUGH */
+	case QUARK_RF_PPID:
 		if (rf.pid == 0)
 			goto inval;
 		break;
-	case QUARK_RF_PROCESS_UID:		/* FALLTHROUGH */
-	case QUARK_RF_PROCESS_GID:		/* FALLTHROUGH */
-	case QUARK_RF_PROCESS_SID:
+	case QUARK_RF_UID:		/* FALLTHROUGH */
+	case QUARK_RF_GID:		/* FALLTHROUGH */
+	case QUARK_RF_SID:
 		break;
-	case QUARK_RF_PROCESS_COMM:
+	case QUARK_RF_COMM:
 		if (strlen(rf.comm) == 0)
 			goto inval;
 		break;
-	case QUARK_RF_PROCESS_FILENAME:		/* FALLTHROUGH */
-	case QUARK_RF_FILE_PATH:
+	case QUARK_RF_EXE:		/* FALLTHROUGH */
+	case QUARK_RF_FILEPATH:
 		if (rf.path == NULL || strlen(rf.path) == 0 ||
 		    strlen(rf.path) >= PATH_MAX)
 			goto inval;

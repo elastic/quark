@@ -56,11 +56,11 @@ alloc_path(struct nova_queue *nqq, int rule_i, struct quark_rule_field *field)
 #endif
 
 	switch (field->code) {
-	case QUARK_RF_PROCESS_FILENAME:
-		key.meta = META_MAKE(rule_i, META_RF_PROCESS_FILENAME);
+	case QUARK_RF_EXE:
+		key.meta = META_MAKE(rule_i, META_RF_EXE);
 		break;
-	case QUARK_RF_FILE_PATH:
-		key.meta = META_MAKE(rule_i, META_RF_FILE_PATH);
+	case QUARK_RF_FILEPATH:
+		key.meta = META_MAKE(rule_i, META_RF_FILEPATH);
 		break;
 	default:
 		qwarnx("unhandled code %llu", field->code);
@@ -104,31 +104,31 @@ nova_rule_from_quark(struct nova_queue *nqq,
 		field = qr->fields + i;
 
 		switch (field->code) {
-		case QUARK_RF_PROCESS_PID:
+		case QUARK_RF_PID:
 			nr->pid = field->id;
 			break;
-		case QUARK_RF_PROCESS_PPID:
+		case QUARK_RF_PPID:
 			nr->ppid = field->id;
 			break;
-		case QUARK_RF_PROCESS_UID:
+		case QUARK_RF_UID:
 			nr->uid = field->id;
 			break;
-		case QUARK_RF_PROCESS_GID:
+		case QUARK_RF_GID:
 			nr->gid = field->id;
 			break;
-		case QUARK_RF_PROCESS_SID:
+		case QUARK_RF_SID:
 			nr->sid = field->id;
 			break;
-		case QUARK_RF_PROCESS_COMM:
+		case QUARK_RF_COMM:
 			strlcpy(nr->comm, field->comm, sizeof(nr->comm));
 			break;
-		case QUARK_RF_PROCESS_FILENAME:
+		case QUARK_RF_EXE:
 			if ((alloc_path(nqq, qr->number, field)) == -1) {
-				qwarn("process_filename alloc_path");
+				qwarn("exe alloc_path");
 				return (-1);
 			}
 			break;
-		case QUARK_RF_FILE_PATH:
+		case QUARK_RF_FILEPATH:
 			if ((alloc_path(nqq, qr->number, field)) == -1) {
 				qwarn("file_path alloc_path");
 				return (-1);
