@@ -45,8 +45,12 @@ alloc_path(struct nova_queue *nqq, int rule_i, struct quark_rule_field *field)
 	struct path_lpm_key	key;
 	u64			v = 1;
 
-	if (strlen(field->path) >= NOVA_PATHLEN)
+	if (strlen(field->wild.pre) >= NOVA_PATHLEN ||
+	    strlen(field->wild.post) >= NOVA_PATHLEN)
 		return (errno = E2BIG, -1);
+
+	if (field->wild.post_len != 0)
+		return (errno = ENOTSUP, -1);
 
 	bzero(&key, sizeof(key));
 
@@ -69,18 +73,12 @@ alloc_path(struct nova_queue *nqq, int rule_i, struct quark_rule_field *field)
 
 	/*
 	 * Calculate prefixlen, we always include at least key.meta, and then
-	 * add a positive number related to wildcard_len.
+	 * add pre_len
 	 */
-	key.prefixlen = sizeof(key.meta);
-	if (field->wildcard_len == 0)
-		key.prefixlen += strlen(field->path) + 1;
-	else
-		key.prefixlen += field->wildcard_len;
-	if (strlcpy(key.path, field->path, sizeof(key.path)) >= sizeof(key.path))
-		return (errno = E2BIG, -1);
+	key.prefixlen = (sizeof(key.meta) + field->wild.pre_len) * 8;
 
-	/* prefixlen is in bits */
-	key.prefixlen *= 8;
+	if (strlcpy(key.path, field->wild.pre, sizeof(key.path)) >= sizeof(key.path))
+		return (errno = E2BIG, -1);
 
 	if (bpf_map__update_elem(nqq->nova_bpf->maps.lpm_path,
 	    &key, sizeof(key), &v, sizeof(v), BPF_ANY) != 0) {

@@ -117,10 +117,10 @@ matchfield:	PROCESS_PID num_u32 {
 			$$.rf.pid = $2.num_u32;
 		} | PROCESS_EXE STRING {
 			$$.rf.code = QUARK_RF_EXE;
-			$$.rf.path =(char *)$2.str;
+			$$.rf.wild.pre = (char *)$2.str;
 		} | FILE_PATH STRING {
 			$$.rf.code = QUARK_RF_FILEPATH;
-			$$.rf.path =(char *)$2.str;
+			$$.rf.wild.pre = (char *)$2.str;
 		} | POISON num_u64 {
 			$$.rf.code = QUARK_RF_POISON;
 			$$.rf.poison_tag = $2.num_u64;
