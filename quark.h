@@ -771,16 +771,25 @@ struct quark_group {
 	char			*name;
 };
 
+/*
+ * post points into pre
+ */
+struct quark_wild {
+	char	*pre;		/* user input, like foo*bar */
+	size_t	 pre_len;
+	char	*post;
+	size_t	 post_len;
+};
+
 /* Rule Field */
 struct quark_rule_field {
 	u64		 code;
-	size_t		 wildcard_len;
 	union {
-		u32	 pid;
-		u64	 poison_tag;
-		char	*path;
-		u32	 id;
-		char	 comm[16];
+		u32			 pid;
+		u64			 poison_tag;
+		struct quark_wild	 wild;
+		u32			 id;
+		char			 comm[16];
 	};
 };
 

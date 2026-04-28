@@ -1922,6 +1922,96 @@ t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_rule_path2(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*suff_rule, *inf_rule, *drop_rule;
+	char				 suff[] = "/tmp/quark-test-suff.XXXXXX";
+	char				 other[] = "/tmp/quark-test-other.XXXXXX";
+	char				 inf[512];
+	int				 suff_fd, other_fd, inf_fd;
+	char				*text_ruleset;
+
+	if ((suff_fd = mkstemp(suff)) == -1)
+		err(1, "mkstemp");
+	if ((other_fd = mkstemp(other)) == -1)
+		err(1, "mkstemp");
+	snprintf(inf, sizeof(inf), "/tmp/quark-test-%d-infix", getpid());
+	if ((inf_fd = open(inf, O_RDWR | O_CREAT, 0644)) == -1)
+		err(1, "open");
+
+	if (asprintf(&text_ruleset,
+	    "pass on process.pid %d file.path /tmp/quark-test-suff*\n"
+	    "pass on process.pid %d file.path /tmp/quark-test-*-infix\n"
+	    "drop on process.pid %d\n",
+	    getpid(), getpid(), getpid()) == -1)
+		err(1, "asprintf");
+	ruleset_from_string(&ruleset, text_ruleset);
+	free(text_ruleset);
+
+	assert(ruleset.n_rules == 3);
+
+	/* Assert suff_rule */
+	suff_rule = &ruleset.rules[0];
+	assert(suff_rule->action == QUARK_RA_PASS);
+	assert(suff_rule->n_fields == 2);
+
+	/* Assert inf_rule */
+	inf_rule = &ruleset.rules[1];
+	assert(inf_rule->action == QUARK_RA_PASS);
+	assert(inf_rule->n_fields == 2);
+
+	/* Assert drop_rule */
+	drop_rule = &ruleset.rules[2];
+	assert(drop_rule->action == QUARK_RA_DROP);
+	assert(drop_rule->n_fields == 1);
+
+	/* Start the ball */
+	qa->ruleset = &ruleset;
+	qa->flags |= QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Write to a other, this must be dropped */
+	assert(write(other_fd, "1", 1) == 1);
+	close(other_fd);
+	if (unlink(other) == -1)
+		err(1, "unlink");
+	/* Write to a suff file, this must pass */
+	assert(write(suff_fd, "1", 1) == 1);
+	close(suff_fd);
+	if (unlink(suff) == -1)
+		err(1, "unlink");
+	/* Write to a inf file, this must pass */
+	assert(write(inf_fd, "1", 1) == 1);
+	close(inf_fd);
+	if (unlink(inf) == -1)
+		err(1, "unlink");
+	/* Fetch suff event, other should have been dropped */
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_FILE);
+	assert(!strcmp(qev->file->path, suff));
+	/* Fetch inf event, other should have been dropped */
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_FILE);
+	assert(!strcmp(qev->file->path, inf));
+	/* Make sure it hits the rule once */
+	assert(suff_rule->hits == 1);
+	assert(inf_rule->hits == 1);
+	assert(drop_rule->hits == 1);
+	/* evals must be bigger than hits, since it must have dropped other */
+	assert(suff_rule->evals > 1);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+static int
 t_rule_poison(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
@@ -2095,6 +2185,9 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on file.path /foo/bar\n",
 		"pass on file.path foo-bar\n",
 		"drop on process.exe /foo/bar\n",
+		"drop on process.exe /foo/*\n",
+		"drop on process.exe */bar\n",
+		"drop on process.exe /*/bar\n",
 		"pass on process.exe foo-bar\n",
 		"drop on process.exe \"foo bar lero\"\n",
 		"pass on process.exe /foo/*\n",
@@ -2108,6 +2201,11 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"pass\n",
 		"pass on",
 		"foo",
+		"drop on process.exe /foo/bar**\n",
+		"drop on process.exe **/foo/bar\n",
+		"drop on process.exe **/foo/**bar\n",
+		"drop on process.exe */foo/bar*\n",
+		"drop on process.exe /foo**/bar\n",
 		"pass on any any",
 		"pass on any process.pid 1\n",
 		"pass on process.pid 1 2",
@@ -2186,6 +2284,7 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 	    "pass on process.exe /bin/bc\n"
 	    "pass on process.exe /somethingreallyreallylong\n"
 	    "pass on process.exe /idontexist\n"
+	    "pass on process.exe /omginowc*andoinfix\n"
 	    "pass on any";
 	ruleset_from_string(&ruleset, text_ruleset);
 
@@ -2253,6 +2352,7 @@ struct test all_tests[] = {
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),
+	T_EBPF(t_rule_path2),
 	T_EBPF(t_rule_poison),
 	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),

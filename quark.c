@@ -4786,8 +4786,7 @@ raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 void
 quark_ruleset_init(struct quark_ruleset *ruleset)
 {
-	ruleset->rules = NULL;
-	ruleset->n_rules = 0;
+	bzero(ruleset, sizeof(*ruleset));
 }
 
 void
@@ -4802,7 +4801,7 @@ quark_ruleset_clear(struct quark_ruleset *ruleset)
 			switch (rule->fields[j].code) {
 			case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
 			case QUARK_RF_EXE:		/* FALLTHROUGH */
-				free(rule->fields[j].path);
+				free(rule->fields[j].wild.pre);
 				break;
 			default:
 				break;
@@ -4850,10 +4849,25 @@ quark_ruleset_parse(struct quark_ruleset *ruleset, FILE *in,
 static int
 path_match(struct quark_rule_field *field, const char *a)
 {
-	if (field->wildcard_len == 0)
-		return (!strcmp(field->path, a));
-	else
-		return (!strncmp(field->path, a, field->wildcard_len));
+	struct quark_wild	*w = &field->wild;
+	size_t			 alen;
+
+	/*
+	 * Include NUL in the comparison. Without it, "foo" would match "foobar"
+	 * as a prefix. pre_len includes the NUL when it's an exact match. If
+	 * post_len is 0, NUL is not included (hence zero), if post_len is
+	 * positive, NUL is included.
+	 */
+	alen = strlen(a) + 1;	/* include NUL */
+
+	if (w->pre_len + w->post_len > alen)
+		return (0);
+	if (memcmp(w->pre, a, w->pre_len) != 0)
+		return (0);
+	if (memcmp(w->post, a + alen - w->post_len, w->post_len) != 0)
+		return (0);
+
+	return (1);
 }
 
 /* 1 for match, 0 for non match */
@@ -4978,7 +4992,7 @@ quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
 {
 	struct quark_rule_field	*new_fields;
 	size_t			 new_n_fields;
-	char			*path, *p;
+	char			*path, *star;
 
 	path = NULL;
 
@@ -4998,16 +5012,35 @@ quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
 		break;
 	case QUARK_RF_EXE:		/* FALLTHROUGH */
 	case QUARK_RF_FILEPATH:
-		if (rf.path == NULL || strlen(rf.path) == 0 ||
-		    strlen(rf.path) >= PATH_MAX)
+		rf.wild.post = NULL;
+		rf.wild.pre_len = rf.wild.post_len = 0;
+
+		if (rf.wild.pre == NULL || strlen(rf.wild.pre) == 0 ||
+		    strlen(rf.wild.pre) >= PATH_MAX)
 			goto inval;
 		/* Save path in case we error out and need to free */
-		path = rf.path = strdup(rf.path);
-		if (rf.path == NULL)
+		path = rf.wild.pre = strdup(rf.wild.pre);
+		if (path == NULL)
 			goto bad;
-		rf.wildcard_len = 0;
-		if ((p = strchr(rf.path, '*')) != NULL)
-			rf.wildcard_len = p - rf.path;
+		/*
+		 * Split rf.wild.pre and rf.wild.post
+		 * as in foo*bar: pre = foo, post = bar
+		 */
+		rf.wild.post = rf.wild.pre + strlen(rf.wild.pre);
+		if ((star = strchr(rf.wild.pre, '*')) != NULL) {
+			*star = 0;
+			/* Only one * is allowed */
+			rf.wild.post = star + 1;
+			if (strchr(rf.wild.post, '*') != NULL)
+				goto bad;
+		}
+		/* Don't move this up, as the block above might shorten "pre" */
+		rf.wild.pre_len = strlen(rf.wild.pre);
+		rf.wild.post_len = strlen(rf.wild.post);
+		if (star == NULL)
+			rf.wild.pre_len++; /* Include NUL in the comparison */
+		if (rf.wild.post_len > 0)
+			rf.wild.post_len++; /* Include NUL in the comparison */
 		break;
 	case QUARK_RF_POISON:
 		if (rf.poison_tag == 0)
