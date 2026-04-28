@@ -3967,6 +3967,45 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 }
 #undef P
 
+/*
+ * Do a first pass of the ruleset in the existing process cache.
+ * Atm used only for poisoning existing processes.
+ * Be careful to only bump relevant rule counters.
+ */
+static int
+quark_queue_ruleset_prime(struct quark_queue *qq)
+{
+	struct quark_event	 qev;
+	struct quark_process	*qp;
+	struct quark_rule	*qr;
+	size_t			 i;
+
+	if (qq->ruleset == NULL)
+		return (0);
+
+	bzero(&qev, sizeof(qev));
+
+	RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
+		qev.process = qp;
+		quark_ruleset_match(qq->ruleset, &qev);
+	}
+
+	/*
+	 * Reset all counters for non poison rules, this makes testing
+	 * and reasoning easier (code for: "I lost a lot of time trying
+	 * to figure why my counters were off").
+	 */
+	for (i = 0; i < qq->ruleset->n_rules; i++) {
+		qr = qq->ruleset->rules + i;
+		if (qr->action == QUARK_RA_POISON)
+			continue;
+		qr->hits = 0;
+		qr->evals = 0;
+	}
+
+	return (0);
+}
+
 int
 quark_queue_set_agg_matrix(struct quark_queue *qq,
     int parent, int child, quark_can_aggregate_fn fn)
@@ -4246,16 +4285,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	/*
 	 * Pass rules on all processes, so we can have match on poison rules
 	 */
-	if (qq->ruleset != NULL) {
-		struct quark_event	 qev;
-		struct quark_process	*qp;
-
-		bzero(&qev, sizeof(qev));
-
-		RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
-			qev.process = qp;
-			quark_ruleset_match(qq->ruleset, &qev);
-		}
+	if (quark_queue_ruleset_prime(qq) == -1) {
+		qwarn("Can't prime ruleset");
+		goto fail;
 	}
 
 	return (0);
