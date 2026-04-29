@@ -66,6 +66,30 @@ int BPF_KPROBE(kprobe__do_unlinkat)
     return r;
 }
 
+SEC("fentry/filename_unlinkat")
+int BPF_PROG(fentry__filename_unlinkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__enter();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kprobe/filename_unlinkat")
+int BPF_KPROBE(kprobe__filename_unlinkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__enter();
+    preempt_enable();
+
+    return r;
+}
+
 static int mnt_want_write__enter(struct vfsmount *mnt)
 {
     struct ebpf_events_state *state = NULL;
@@ -460,6 +484,34 @@ int BPF_KRETPROBE(kretprobe__do_filp_open, struct file *ret)
     return r;
 }
 
+SEC("fexit/do_file_open")
+int BPF_PROG(fexit__do_file_open,
+             int dfd,
+             struct filename *pathname,
+             const struct open_flags *op,
+             struct file *ret)
+{
+    int r;
+
+    preempt_disable();
+    r = do_filp_open__exit(ret);
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/do_file_open")
+int BPF_KRETPROBE(kretprobe__do_file_open, struct file *ret)
+{
+    int r;
+
+    preempt_disable();
+    r = do_filp_open__exit(ret);
+    preempt_enable();
+
+    return r;
+}
+
 static int do_renameat2__enter()
 {
     struct ebpf_events_state state = {};
@@ -494,6 +546,30 @@ int BPF_PROG(fentry__do_renameat2)
 
 SEC("kprobe/do_renameat2")
 int BPF_KPROBE(kprobe__do_renameat2)
+{
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__enter();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("fentry/filename_renameat2")
+int BPF_PROG(fentry__filename_renameat2)
+{
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__enter();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kprobe/filename_renameat2")
+int BPF_KPROBE(kprobe__filename_renameat2)
 {
     int r;
 

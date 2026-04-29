@@ -1153,10 +1153,22 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_FILE) {
 		int use_fsnotify =
 		    (btf_number_of_params_of_ptr(btf, "inode_operations", "atomic_open") == 6);
+		int unlink_renamed =
+		    (btf_number_of_params(btf, "do_unlinkat") == -1);
+		int filp_open_renamed =
+		    (btf_number_of_params(btf, "do_filp_open") == -1);
+		int renameat2_renamed =
+		    (btf_number_of_params(btf, "do_renameat2") == -1);
 
 		if (use_fentry) {
-			bpf_program__set_autoload(p->progs.fentry__do_renameat2, 1);
-			bpf_program__set_autoload(p->progs.fentry__do_unlinkat, 1);
+			if (renameat2_renamed)
+				bpf_program__set_autoload(p->progs.fentry__filename_renameat2, 1);
+			else
+				bpf_program__set_autoload(p->progs.fentry__do_renameat2, 1);
+			if (unlink_renamed)
+				bpf_program__set_autoload(p->progs.fentry__filename_unlinkat, 1);
+			else
+				bpf_program__set_autoload(p->progs.fentry__do_unlinkat, 1);
 			if (use_fsnotify)
 				bpf_program__set_autoload(p->progs.fentry__fsnotify, 1);
 			bpf_program__set_autoload(p->progs.fentry__mnt_want_write, 1);
@@ -1164,7 +1176,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.fentry__vfs_unlink, 1);
 			bpf_program__set_autoload(p->progs.fexit__chmod_common, 1);
 			bpf_program__set_autoload(p->progs.fexit__chown_common, 1);
-			bpf_program__set_autoload(p->progs.fexit__do_filp_open, 1);
+			if (filp_open_renamed)
+				bpf_program__set_autoload(p->progs.fexit__do_file_open, 1);
+			else
+				bpf_program__set_autoload(p->progs.fexit__do_filp_open, 1);
 			bpf_program__set_autoload(p->progs.fexit__do_truncate, 1);
 			bpf_program__set_autoload(p->progs.fexit__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.fexit__vfs_unlink, 1);
@@ -1187,10 +1202,19 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_unlink, 1);
 			bpf_program__set_autoload(p->progs.kprobe__vfs_write, 1);
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_write, 1);
-			bpf_program__set_autoload(p->progs.kprobe__do_renameat2, 1);
-			bpf_program__set_autoload(p->progs.kprobe__do_unlinkat, 1);
+			if (renameat2_renamed)
+				bpf_program__set_autoload(p->progs.kprobe__filename_renameat2, 1);
+			else
+				bpf_program__set_autoload(p->progs.kprobe__do_renameat2, 1);
+			if (unlink_renamed)
+				bpf_program__set_autoload(p->progs.kprobe__filename_unlinkat, 1);
+			else
+				bpf_program__set_autoload(p->progs.kprobe__do_unlinkat, 1);
 			bpf_program__set_autoload(p->progs.kprobe__mnt_want_write, 1);
-			bpf_program__set_autoload(p->progs.kretprobe__do_filp_open, 1);
+			if (filp_open_renamed)
+				bpf_program__set_autoload(p->progs.kretprobe__do_file_open, 1);
+			else
+				bpf_program__set_autoload(p->progs.kretprobe__do_filp_open, 1);
 		}
 
 		/* vfs_unlink() */
