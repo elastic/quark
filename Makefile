@@ -286,7 +286,7 @@ nova_queue.o: nova_skel.h
 # careful! stupid bpftool writes to stdout even if it fails!
 nova_skel.h: nova.bpf.o
 	$(call msg,BPFTOOL,$@)
-	$(Q)$(BPFTOOL) gen skeleton $^ > $@
+	$(Q)$(BPFTOOL) gen skeleton $^ name nova > $@
 
 nova.bpf.o: $(NOVA_DEPS)
 	$(call msg,BPF_CC,$@)

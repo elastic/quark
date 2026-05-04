@@ -21,7 +21,7 @@
 #include "nova_skel.h"
 
 struct nova_queue {
-	struct nova_bpf	*nova_bpf;
+	struct nova	*nova;
 };
 
 static int	nova_queue_populate(struct quark_queue *);
@@ -80,7 +80,7 @@ alloc_path(struct nova_queue *nqq, int rule_i, struct quark_rule_field *field)
 	if (strlcpy(key.path, field->wild.pre, sizeof(key.path)) >= sizeof(key.path))
 		return (errno = E2BIG, -1);
 
-	if (bpf_map__update_elem(nqq->nova_bpf->maps.lpm_path,
+	if (bpf_map__update_elem(nqq->nova->maps.lpm_path,
 	    &key, sizeof(key), &v, sizeof(v), BPF_ANY) != 0) {
 		qwarn("bpf_map__update_elem %d", rule_i);
 		return (-1);
@@ -159,7 +159,7 @@ load_rodata(struct quark_queue *qq, struct nova_queue *nqq)
 	if (qq->ruleset->n_rules > NOVA_MAX_RULES)
 		return (errno = EFBIG, -1);
 
-	nqq->nova_bpf->rodata->rules_active = qq->ruleset->n_rules;
+	nqq->nova->rodata->rules_active = qq->ruleset->n_rules;
 
 	return (0);
 }
@@ -172,16 +172,16 @@ static int
 load_ruleset(struct quark_queue *qq, struct nova_queue *nqq)
 {
 	u32			 i;
-	struct nova_bpf		*nova_bpf;
+	struct nova		*nova;
 	struct nova_rule	 nr;
 
 	if (qq->ruleset == NULL)
 		return (0);
 	if (qq->ruleset->n_rules > NOVA_MAX_RULES)
 		return (errno = EFBIG, -1);
-	if (qq->ruleset->n_rules != nqq->nova_bpf->rodata->rules_active)
+	if (qq->ruleset->n_rules != nqq->nova->rodata->rules_active)
 		return (errno = EINVAL, -1);
-	if ((nova_bpf = nqq->nova_bpf) == NULL)
+	if ((nova = nqq->nova) == NULL)
 		return (errno = EINVAL, -1);
 
 	for (i = 0; i < (u32)qq->ruleset->n_rules; i++) {
@@ -190,7 +190,7 @@ load_ruleset(struct quark_queue *qq, struct nova_queue *nqq)
 			qwarn("quark_rule_to_nova");
 			return (-1);
 		}
-		if (bpf_map__update_elem(nova_bpf->maps.ruleset, &i, sizeof(i),
+		if (bpf_map__update_elem(nova->maps.ruleset, &i, sizeof(i),
 		    &nr, sizeof(nr), BPF_ANY) != 0) {
 			qwarn("bpf_map__update_elem %d", i);
 			return (-1);
@@ -215,20 +215,20 @@ nova_queue_open(struct quark_queue *qq)
 		return (-1);
 	qq->queue_be = nqq;
 
-	if ((nqq->nova_bpf = nova_bpf__open()) == NULL)
+	if ((nqq->nova = nova__open()) == NULL)
 		goto fail;
-	bpf_object__for_each_program(prog, nqq->nova_bpf->obj) {
+	bpf_object__for_each_program(prog, nqq->nova->obj) {
 		/* bpf_program__set_autoload(prog, 0); */
 		if (quark_verbose >= QUARK_VL_DEBUG)
 			bpf_program__set_log_level(prog, 1);
 	}
 	if (load_rodata(qq, nqq) == -1)
 		goto fail;
-	if (nova_bpf__load(nqq->nova_bpf) != 0)
+	if (nova__load(nqq->nova) != 0)
 		goto fail;
 	if (load_ruleset(qq, nqq) == -1)
 		goto fail;
-	if (nova_bpf__attach(nqq->nova_bpf) != 0)
+	if (nova__attach(nqq->nova) != 0)
 		goto fail;
 
 	qq->queue_ops = &queue_ops_nova;
@@ -249,8 +249,8 @@ nova_queue_populate(struct quark_queue *qq)
 static int
 nova_queue_update_stats(struct quark_queue *qq)
 {
-	struct nova_queue	*nqq	  = qq->queue_be;
-	struct nova_bpf		*nova_bpf = nqq->nova_bpf;
+	struct nova_queue	*nqq  = qq->queue_be;
+	struct nova		*nova = nqq->nova;
 	struct nova_rule_pcpu	*rule_pcpu;
 	int			 num_cpus;
 	struct quark_rule	*qr;
@@ -279,7 +279,7 @@ nova_queue_update_stats(struct quark_queue *qq)
 		qr->evals = 0;
 		qr->hits = 0;
 
-		if (bpf_map__lookup_elem(nova_bpf->maps.ruleset_pcpu, &i,
+		if (bpf_map__lookup_elem(nova->maps.ruleset_pcpu, &i,
 		    sizeof(i), rule_pcpu, sizeof(*rule_pcpu) * num_cpus, 0) != 0) {
 			qwarn("bpf_map__lookup_elem");
 			goto fail;
@@ -308,7 +308,7 @@ nova_queue_close(struct quark_queue *qq)
 	if (nqq == NULL)
 		return;
 
-	nova_bpf__destroy(nqq->nova_bpf);
+	nova__destroy(nqq->nova);
 	free(nqq);
 	qq->queue_be = NULL;
 }
