@@ -13,6 +13,7 @@
 #include <netinet/in.h>
 
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 
 /* Compat, tree.h, queue.h */
@@ -161,6 +162,7 @@ char		*load_file_path_nostat(const char *, size_t *);
 int		 ipv6_supported(void);
 const char	*safe_basename(const char *);
 u64		 fetch_boottime(void);
+void		 setup_libbpf_logs(void);
 
 enum quark_verbosity_levels {
 	QUARK_VL_SILENT,

@@ -13,6 +13,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <bpf/libbpf.h>
+
 #include "quark.h"
 
 ssize_t
@@ -336,4 +338,42 @@ fetch_boottime(void)
 		qwarnx("can't parse btime: %s", errstr);
 
 	return (btime * NS_PER_S);
+}
+
+/*
+ * Map libbpf logs into quark_verbose.
+ * fmt has a newline, we have to prepend program_invocatin_short_name, so we
+ * can't use vwarn, as it prepends itself and adds a newline.
+ */
+static int
+libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list ap)
+{
+	int	 pri;
+	char	*nfmt;
+
+	if (level == LIBBPF_WARN || level == LIBBPF_INFO)
+		pri = QUARK_VL_WARN;
+	else if (level == LIBBPF_DEBUG)
+		pri = QUARK_VL_DEBUG;
+	else
+		pri = QUARK_VL_WARN; /* fallback in case they add something new */
+
+	if (pri > quark_verbose)
+		return (0);
+
+	/* best effort in out of mem situations */
+	if (asprintf(&nfmt, "%s: %s", program_invocation_short_name, fmt) == -1)
+		vfprintf(stderr, fmt, ap);
+	else {
+		vfprintf(stderr, nfmt, ap);
+		free(nfmt);
+	}
+
+	return (0);
+}
+
+void
+setup_libbpf_logs(void)
+{
+	libbpf_set_print(libbpf_print_fn);
 }

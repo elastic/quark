@@ -38,38 +38,6 @@ struct quark_queue_ops queue_ops_bpf = {
 };
 
 /*
- * Map libbpf logs into quark_verbose.
- * fmt has a newline, we have to prepend program_invocatin_short_name, so we
- * can't use vwarn, as it prepends itself and adds a newline.
- */
-static int
-libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list ap)
-{
-	int	 pri;
-	char	*nfmt;
-
-	if (level == LIBBPF_WARN || level == LIBBPF_INFO)
-		pri = QUARK_VL_WARN;
-	else if (level == LIBBPF_DEBUG)
-		pri = QUARK_VL_DEBUG;
-	else
-		pri = QUARK_VL_WARN; /* fallback in case they add something new */
-
-	if (pri > quark_verbose)
-		return (0);
-
-	/* best effort in out of mem situations */
-	if (asprintf(&nfmt, "%s: %s", program_invocation_short_name, fmt) == -1)
-		vfprintf(stderr, fmt, ap);
-	else {
-		vfprintf(stderr, nfmt, ap);
-		free(nfmt);
-	}
-
-	return (0);
-}
-
-/*
  * This structure exists to work around the bad layout of ebpf events
  */
 struct ebpf_ctx {
@@ -1062,6 +1030,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
 	struct bpf_queue		*bqq;
 	struct bpf_probes		*p;
+	struct bpf_program		*prog;
 	struct ring_buffer_opts		 ringbuf_opts;
 	int				 cgroup_fd, i, off, ringbuf_fd;
 	char				*cgroup_umount;
@@ -1069,7 +1038,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	struct btf			*btf;
 	struct epoll_event		 ev;
 
-	libbpf_set_print(libbpf_print_fn);
+	setup_libbpf_logs();
 
 	if ((bqq = calloc(1, sizeof(*bqq))) == NULL)
 		return (-1);
@@ -1103,9 +1072,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	/*
 	 * Unload everything since it has way more than we want
 	 */
-	for (i = 0; i < p->skeleton->prog_cnt; i++) {
-		ps = &p->skeleton->progs[i];
-		bpf_program__set_autoload(*ps->prog, 0);
+	bpf_object__for_each_program(prog, bqq->probes->obj) {
+		bpf_program__set_autoload(prog, 0);
+		if (quark_verbose >= QUARK_VL_DEBUG)
+			bpf_program__set_log_level(prog, 1);
 	}
 
 	/*
