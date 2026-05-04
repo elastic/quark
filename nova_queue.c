@@ -204,9 +204,12 @@ int
 nova_queue_open(struct quark_queue *qq)
 {
 	struct nova_queue	*nqq;
+	struct bpf_program	*prog;
 
 	if ((qq->flags & QQ_NOVA) == 0)
 		return (errno = ENOTSUP, -1);
+
+	setup_libbpf_logs();
 
 	if ((nqq = calloc(1, sizeof(*nqq))) == NULL)
 		return (-1);
@@ -214,6 +217,11 @@ nova_queue_open(struct quark_queue *qq)
 
 	if ((nqq->nova_bpf = nova_bpf__open()) == NULL)
 		goto fail;
+	bpf_object__for_each_program(prog, nqq->nova_bpf->obj) {
+		/* bpf_program__set_autoload(prog, 0); */
+		if (quark_verbose >= QUARK_VL_DEBUG)
+			bpf_program__set_log_level(prog, 1);
+	}
 	if (load_rodata(qq, nqq) == -1)
 		goto fail;
 	if (nova_bpf__load(nqq->nova_bpf) != 0)
