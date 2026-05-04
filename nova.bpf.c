@@ -101,7 +101,7 @@ eval_loop(__u32 i, struct eval *eval)
 {
 	struct nova_rule	*rule;
 	struct nova_rule_pcpu	*rule_pcpu;
-	__u64			*v, matched;
+	__u64			*v;
 
 	if ((rule = bpf_map_lookup_elem(&ruleset, &i)) == NULL) {
 		bpf_printk("rule not found, this is a bug");
@@ -113,46 +113,49 @@ eval_loop(__u32 i, struct eval *eval)
 	}
 	rule_pcpu->evals++;
 
-	/*
-	 * matched is a bitmask of fields that match (are equal).
-	 * eval->fields are the valid fields for evaluation
-	 * rule->fields are the fields that must match for this rule to be
-	 * considered a match. We over compare things as can be seen below, this
-	 * is to avoid having to do multiple jumps like: if (eval->fields &
-	 * FOO), we curb it later with matched &= eval->fields.
-	 */
-	matched = 0;
-	matched |= (__u64)(eval->pid == rule->pid) * QUARK_RF_PID;
-	matched |= (__u64)(eval->ppid == rule->ppid) * QUARK_RF_PPID;
-	matched |= (__u64)(eval->uid == rule->uid) * QUARK_RF_UID;
-	matched |= (__u64)(eval->gid == rule->gid) * QUARK_RF_GID;
-	matched |= (__u64)(eval->sid == rule->sid) * QUARK_RF_SID;
-	matched |= (__u64)(eval->poison_tag == rule->poison_tag) * QUARK_RF_POISON;
+	if ((eval->fields & rule->fields) != rule->fields)
+		return (LOOP_CONTINUE);
 
-	if (rule->fields & QUARK_RF_EXE &&
-	    eval->fields & QUARK_RF_EXE &&
-	    eval->exe != NULL) {
+	if (rule->fields & QUARK_RF_PID && eval->pid != rule->pid)
+		return (LOOP_CONTINUE);
+	if (rule->fields & QUARK_RF_PPID && eval->ppid != rule->ppid)
+		return (LOOP_CONTINUE);
+	if (rule->fields & QUARK_RF_UID && eval->uid != rule->uid)
+		return (LOOP_CONTINUE);
+	if (rule->fields & QUARK_RF_GID && eval->gid != rule->gid)
+		return (LOOP_CONTINUE);
+	if (rule->fields & QUARK_RF_SID && eval->sid != rule->sid)
+		return (LOOP_CONTINUE);
+	if (rule->fields & QUARK_RF_POISON &&
+	    eval->poison_tag != rule->poison_tag)
+		return (LOOP_CONTINUE);
+
+	if (rule->fields & QUARK_RF_EXE) {
+		if (eval->exe == NULL) {
+			bpf_printk("no exe rule %d", rule->number);
+			return (LOOP_CONTINUE);
+		}
 		eval->exe->meta = META_MAKE(i, META_RF_EXE);
 		v = bpf_map_lookup_elem(&lpm_path, eval->exe);
-		matched |= (v != NULL) * QUARK_RF_EXE;
+		if (v == NULL)
+			return (LOOP_CONTINUE);
 	}
 
-	if (rule->fields & QUARK_RF_FILEPATH &&
-	    eval->fields & QUARK_RF_FILEPATH &&
-	    eval->filepath != NULL) {
+	if (rule->fields & QUARK_RF_FILEPATH) {
+		if (eval->filepath == NULL) {
+			bpf_printk("no filepath rule %d", rule->number);
+			return (LOOP_CONTINUE);
+		}
 		eval->filepath->meta = META_MAKE(i, META_RF_FILEPATH);
 		v = bpf_map_lookup_elem(&lpm_path, eval->filepath);
-		matched |= (v != NULL) * QUARK_RF_FILEPATH;
+		if (v == NULL)
+			return (LOOP_CONTINUE);
 	}
 
-	matched &= eval->fields;
-	if ((matched & rule->fields) == rule->fields) {
-		rule_pcpu->hits++;
-		eval->match = rule;
-		return (LOOP_STOP);
-	}
+	eval->match = rule;
+	rule_pcpu->hits++;
 
-	return (LOOP_CONTINUE);
+	return (LOOP_STOP);
 }
 
 static int
@@ -215,17 +218,17 @@ BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	eval_init(&eval);
 	eval_init_task(&eval, task);
 
-	if (bprm->file != NULL && eval.exe != NULL) {
-		len = bpf_d_path(&bprm->file->f_path,
-		    eval.exe->path, sizeof(eval.exe->path));
-		if (len <= 0) {
-			if (len < 0)
-				bpf_printk("can't make executable");
-			goto noexe;
-		}
-		eval.exe->prefixlen = PATH_LPM_PREFIXLEN(len);
-		eval.fields |= QUARK_RF_EXE;
+	if (bprm->file == NULL || eval.exe == NULL)
+		goto noexe;
+
+	len = bpf_d_path(&bprm->file->f_path,
+	    eval.exe->path, sizeof(eval.exe->path));
+	if (len < 0) {
+		bpf_printk("can't make executable");
+		goto noexe;
 	}
+	eval.exe->prefixlen = PATH_LPM_PREFIXLEN(len);
+	eval.fields |= QUARK_RF_EXE;
 noexe:
 	r = eval_run(&eval);
 	r = 0; /* XXX r ignored for now */
