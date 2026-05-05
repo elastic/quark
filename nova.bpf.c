@@ -17,31 +17,55 @@
 #define LOOP_STOP	1
 
 #define E2BIG		7
+#define PATH_MAX	4096
 
 #define MAX(_a, _b)	((_a) > (_b) ? (_a) : (_b))
 #define MIN(_a, _b)	((_a) < (_b) ? (_a) : (_b))
 
-#define PATH_LPM_KEYLEN							\
-	(sizeof(struct path_lpm_key) -					\
-	    sizeof(((struct path_lpm_key *)0)->prefixlen))
-#define PATH_LPM_PREFIXLEN(_b)						\
-	(MIN(PATH_LPM_KEYLEN,						\
-	    ((_b) + sizeof(((struct path_lpm_key *)0)->meta))) * 8)
+#define PATH_LPM_KEY_BITLEN	((sizeof(struct path_lpm_key) - 4) * 8)
 
 extern void bpf_preempt_disable(void) __ksym __weak;
 extern void bpf_preempt_enable(void) __ksym __weak;
 
+struct eval_path {
+	char			 full[PATH_MAX];
+	__u32			 full_len;
+	__u32			 pad0;
+	struct path_lpm_key	 pre;		/* QUARK_RF_* prefix */
+	struct path_lpm_key	 post;		/* QUARK_RF_* postfix */
+};
+
+/*
+ * Our rule evaluation context, we have a single instance of this throughout the
+ * evaluation phase.
+ * Don't forget to bump NOVA_PATH_FIELDS if you add another eval_path.
+ */
+struct eval {
+	/* fields is the bitmask of things that have been filled */
+	__u64			 fields;		/* QUARK_RF_* bitmask */
+	__u64			 poison_tag;		/* QUARK_RF_POISON */
+	__u32			 pid;			/* QUARK_RF_PID */
+	__u32			 ppid;			/* QUARK_RF_PPID */
+	__u32			 uid;			/* QUARK_RF_UID */
+	__u32			 gid;			/* QUARK_RF_GID */
+	__u32			 sid;			/* QUARK_RF_SID */
+	__u32			 pad0;
+	struct eval_path	 exe;			/* QUARK_RF_EXE */
+	struct eval_path	 filepath;		/* QUARK_RF_FILEPATH */
+	char			 comm[16];		/* QUARK_RF_COMM */
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 2);
+	__uint(max_entries, 1);
 	__type(key, __u32);
-	__type(value, struct path_lpm_key);
-} scratch_path SEC(".maps");
+	__type(value, struct eval);
+} scratch_eval SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
 	__type(key, struct path_lpm_key);
-	__type(value, u64);
+	__type(value, __u32);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
 	__uint(max_entries, NOVA_MAX_PATHS);
 } lpm_path SEC(".maps");
@@ -62,26 +86,6 @@ struct {
 
 const volatile u_int	rules_active;
 
-/*
- * Consider moving most of these to a map, currently we need them on the stack
- * which is limited to 512 bytes.
- */
-struct eval {
-	/* fields is the bitmask of things that have been filled */
-	__u64			 fields;		/* QUARK_RF_* bitmask */
-	__u64			 poison_tag;		/* QUARK_RF_POISON */
-	__u32			 pid;			/* QUARK_RF_PID */
-	__u32			 ppid;			/* QUARK_RF_PPID */
-	__u32			 uid;			/* QUARK_RF_UID */
-	__u32			 gid;			/* QUARK_RF_GID */
-	__u32			 sid;			/* QUARK_RF_SID */
-	__u32			 pad0;
-	struct path_lpm_key	*exe;			/* QUARK_RF_EXE */
-	struct path_lpm_key	*filepath;		/* QUARK_RF_FILEPATH */
-	struct nova_rule	*match;			/* result of eval_run */
-	char			 comm[16];		/* QUARK_RF_COMM */
-};
-
 static void
 preempt_disable(void)
 {
@@ -96,13 +100,74 @@ preempt_enable(void)
 		bpf_preempt_enable();
 }
 
-static int
-eval_loop(__u32 i, struct eval *eval)
+static __always_inline struct eval *
+eval_ctx(void)
 {
+	return (bpf_map_lookup_elem(&scratch_eval, &(int){0}));
+}
+
+/*
+ * 0 for no match
+ * 1 for match
+ */
+static int
+eval_path_match(struct eval_path *ep, struct nova_rule *rule, __u16 mcode)
+{
+	__u32	*v, post_len, start;
+
+	/*
+	 * Lookup prefix
+	 */
+	ep->pre.meta = META_MAKE(rule->number, mcode);
+	v = bpf_map_lookup_elem(&lpm_path, &ep->pre);
+	if (v == NULL)
+		return (0);
+	post_len = *v;
+	/*
+	 * No suffix, so it's a match
+	 */
+	if (post_len == 0)
+		return (1);
+	if (post_len > NOVA_PATHLEN)
+		post_len = NOVA_PATHLEN;
+	/*
+	 * Find the suffix start
+	 */
+	if (ep->full_len > post_len)
+		start = ep->full_len - post_len;
+	else
+		start = 0;
+	/*
+	 * Copy suffix so we can do a lookup
+	 */
+	if (bpf_probe_read_kernel_str(ep->post.path, post_len,
+	    &ep->full[start]) < 0) {
+		bpf_printk("can't make post rule %d", rule->number);
+		return (0);
+	}
+	/*
+	 * Build the key that would match this suffix in this rule, and do a
+	 * lookup.
+	 */
+	ep->post.meta = META_MAKE(rule->number, mcode | META_RF_POSTFIX);
+	v = bpf_map_lookup_elem(&lpm_path, &ep->post);
+	if (v == NULL)
+		return (0);
+
+	return (1);
+}
+
+static int
+eval_loop(__u32 i, struct nova_rule **match)
+{
+	struct eval		*eval;
 	struct nova_rule	*rule;
 	struct nova_rule_pcpu	*rule_pcpu;
-	__u64			*v;
 
+	if ((eval = eval_ctx()) == NULL) {
+		bpf_printk("no eval");
+		return (LOOP_CONTINUE);
+	}
 	if ((rule = bpf_map_lookup_elem(&ruleset, &i)) == NULL) {
 		bpf_printk("rule not found, this is a bug");
 		return (LOOP_CONTINUE);
@@ -130,29 +195,14 @@ eval_loop(__u32 i, struct eval *eval)
 	    eval->poison_tag != rule->poison_tag)
 		return (LOOP_CONTINUE);
 
-	if (rule->fields & QUARK_RF_EXE) {
-		if (eval->exe == NULL) {
-			bpf_printk("no exe rule %d", rule->number);
-			return (LOOP_CONTINUE);
-		}
-		eval->exe->meta = META_MAKE(i, META_RF_EXE);
-		v = bpf_map_lookup_elem(&lpm_path, eval->exe);
-		if (v == NULL)
-			return (LOOP_CONTINUE);
-	}
+	if ((rule->fields & QUARK_RF_EXE) &&
+	    !eval_path_match(&eval->exe, rule, META_RF_EXE))
+		return (LOOP_CONTINUE);
+	if ((rule->fields & QUARK_RF_FILEPATH) &&
+	    !eval_path_match(&eval->filepath, rule, META_RF_FILEPATH))
+		return (LOOP_CONTINUE);
 
-	if (rule->fields & QUARK_RF_FILEPATH) {
-		if (eval->filepath == NULL) {
-			bpf_printk("no filepath rule %d", rule->number);
-			return (LOOP_CONTINUE);
-		}
-		eval->filepath->meta = META_MAKE(i, META_RF_FILEPATH);
-		v = bpf_map_lookup_elem(&lpm_path, eval->filepath);
-		if (v == NULL)
-			return (LOOP_CONTINUE);
-	}
-
-	eval->match = rule;
+	*match = rule;
 	rule_pcpu->hits++;
 
 	return (LOOP_STOP);
@@ -161,27 +211,43 @@ eval_loop(__u32 i, struct eval *eval)
 static int
 eval_run(struct eval *eval)
 {
-	if (bpf_loop(rules_active, eval_loop, eval, 0) < 0) {
+	struct nova_rule	*match = NULL;
+
+	if (bpf_loop(rules_active, eval_loop, &match, 0) < 0) {
 		bpf_printk("bad bpf_loop");
 		return (0);
 	}
 
-	if (eval->match == NULL)
+	if (match == NULL)
 		return (0);
 
-	bpf_printk("rule %d matched! (0x%x)",
-	    eval->match->number, eval->match->fields);
+	bpf_printk("rule %d matched! (0x%x)", match->number, match->fields);
 
 	return (0);
 }
 
 static void
-eval_init(struct eval *eval)
+eval_path_init(struct eval_path *ep)
 {
+	ep->full_len = 0;
+	ep->full[0] = 0;
+	ep->pre.prefixlen = PATH_LPM_KEY_BITLEN;
+	ep->post.prefixlen = PATH_LPM_KEY_BITLEN;
+}
+
+static struct eval *
+eval_init(void)
+{
+	struct eval	*eval;
+
+	if ((eval = eval_ctx()) == NULL)
+		return (NULL);
+
 	eval->fields = 0;
-	eval->exe = bpf_map_lookup_elem(&scratch_path, &(int){0});
-	eval->filepath = bpf_map_lookup_elem(&scratch_path, &(int){1});
-	eval->match = NULL;
+	eval_path_init(&eval->exe);
+	eval_path_init(&eval->filepath);
+
+	return (eval);
 }
 
 static void
@@ -199,40 +265,56 @@ eval_init_task(struct eval *eval, struct task_struct *task)
 	eval->sid = 		/* XXX TODO XXX */
 	eval->fields |= QUARK_RF_SID;
 #endif
+	/* XXX NOT WORTH THE BRANCH? XXX */
 	if (BPF_CORE_READ_STR_INTO(eval->comm, task, comm) > 0)
 		eval->fields |= QUARK_RF_COMM;
 	/* TODO MORE TODO */
+}
+
+static int
+bprm_check1(struct linux_binprm *bprm, int ret)
+{
+	struct task_struct	*task = bpf_get_current_task_btf();
+	struct eval		*eval;
+	int			 r;
+	long			 len;
+
+	if ((eval = eval_init()) == NULL)
+		return (0);
+	eval_init_task(eval, task);
+
+	if (bprm->file == NULL)
+		goto noexe;
+
+	len = bpf_d_path(&bprm->file->f_path, eval->exe.full, PATH_MAX);
+	if (len < 0) {
+		bpf_printk("can't make executable 1");
+		goto noexe;
+	}
+	eval->exe.full_len = len;
+	len = bpf_probe_read_kernel_str(eval->exe.pre.path,
+	    sizeof(eval->exe.pre.path), eval->exe.full);
+	if (len < 0) {
+		bpf_printk("can't make executable 2");
+		goto noexe;
+	}
+
+	eval->fields |= QUARK_RF_EXE;
+noexe:
+	r = eval_run(eval);
+	r = 0; /* XXX r ignored for now */
+
+	return (r);
 }
 
 SEC("lsm/bprm_check_security")
 int
 BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 {
-	struct task_struct	*task = bpf_get_current_task_btf();
-	struct eval		 eval;
-	int			 r;
-	long			 len;
+	int	r;
 
 	preempt_disable();
-
-	eval_init(&eval);
-	eval_init_task(&eval, task);
-
-	if (bprm->file == NULL || eval.exe == NULL)
-		goto noexe;
-
-	len = bpf_d_path(&bprm->file->f_path,
-	    eval.exe->path, sizeof(eval.exe->path));
-	if (len < 0) {
-		bpf_printk("can't make executable");
-		goto noexe;
-	}
-	eval.exe->prefixlen = PATH_LPM_PREFIXLEN(len);
-	eval.fields |= QUARK_RF_EXE;
-noexe:
-	r = eval_run(&eval);
-	r = 0; /* XXX r ignored for now */
-
+	r = bprm_check1(bprm, ret);
 	preempt_enable();
 
 	return (r);
