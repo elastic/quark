@@ -43,14 +43,11 @@ static int
 alloc_path(struct nova_queue *nqq, int rule_i, struct quark_rule_field *field)
 {
 	struct path_lpm_key	key;
-	u64			v = 1;
+	u32			post_len;
 
 	if (strlen(field->wild.pre) >= NOVA_PATHLEN ||
 	    strlen(field->wild.post) >= NOVA_PATHLEN)
 		return (errno = E2BIG, -1);
-
-	if (field->wild.post_len != 0)
-		return (errno = ENOTSUP, -1);
 
 	bzero(&key, sizeof(key));
 
@@ -80,9 +77,37 @@ alloc_path(struct nova_queue *nqq, int rule_i, struct quark_rule_field *field)
 	if (strlcpy(key.path, field->wild.pre, sizeof(key.path)) >= sizeof(key.path))
 		return (errno = E2BIG, -1);
 
+	/*
+	 * If there is no postfix, post_len is 0.
+	 */
+	post_len = field->wild.post_len;
+
+	/*
+	 * Install the prefix path
+	 */
 	if (bpf_map__update_elem(nqq->nova->maps.lpm_path,
-	    &key, sizeof(key), &v, sizeof(v), BPF_ANY) != 0) {
-		qwarn("bpf_map__update_elem %d", rule_i);
+	    &key, sizeof(key), &post_len, sizeof(post_len), BPF_ANY) != 0) {
+		qwarn("bpf_map__update_elem pre %d", rule_i);
+		return (-1);
+	}
+
+	/*
+	 * Maybe install the postfix path
+	 */
+	if (post_len == 0)
+		return (0);
+
+	key.meta |= META_RF_POSTFIX;
+	key.prefixlen = (sizeof(key.meta) + field->wild.post_len) * 8;
+
+	if (strlcpy(key.path, field->wild.post, sizeof(key.path)) >= sizeof(key.path))
+		return (errno = E2BIG, -1);
+
+	/* No post_len inside a postfix */
+	post_len = 0;
+	if (bpf_map__update_elem(nqq->nova->maps.lpm_path,
+	    &key, sizeof(key), &post_len, sizeof(post_len), BPF_ANY) != 0) {
+		qwarn("bpf_map__update_elem post %d", rule_i);
 		return (-1);
 	}
 

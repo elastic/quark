@@ -4880,7 +4880,7 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 	qp = qev->process;
 
 #define MATCH_PROC_FIELD(_p, _n, _v)					\
-	((_p) != NULL && ((_p)->flags & QUARK_F_PROC) && (_p)->_n == _v)
+	((_p) != NULL && ((_p)->flags & QUARK_F_PROC) && (_p)->_n == (_v))
 
 	switch (field->code) {
 	case QUARK_RF_PID:

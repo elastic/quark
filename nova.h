@@ -16,9 +16,14 @@
 #define __aligned(x)	__attribute__((aligned(x)))
 #endif	/* __aligned */
 
-#define NOVA_MAX_RULES	1024
-#define NOVA_MAX_PATHS	(NOVA_MAX_RULES * 2)
-#define NOVA_PATHLEN	250	/* including NUL */
+#define NOVA_MAX_RULES		1024
+/*
+ * NOVA_PATH_FIELDS is how many META_RF_THINGs that are paths we have.
+ * NOVA_MAX_PATHS is two paths (prefix + suffix) per rule per field
+ */
+#define NOVA_PATH_FIELDS	2
+#define NOVA_MAX_PATHS		(NOVA_MAX_RULES * NOVA_PATH_FIELDS * 2)
+#define NOVA_PATHLEN		250	/* including NUL */
 
 #define QUARK_RF_PID		(1ULL << 0)
 #define QUARK_RF_PPID		(1ULL << 1)
@@ -37,6 +42,10 @@ enum quark_rule_action {
 	QUARK_RA_POISON,
 };
 
+/*
+ * path_lpm value is a __u32 which is the length of the suffix
+ * match. 0 means no suffix matching.
+ */
 struct path_lpm_key {
 	__u32	prefixlen;
 	__u16	meta;		/* upper 12 bits rule, 4 bits for type META_RF_*_* */
@@ -48,6 +57,7 @@ struct path_lpm_key {
  */
 #define META_RF_EXE			0x0001
 #define META_RF_FILEPATH		0x0002
+#define META_RF_POSTFIX			0x8000 /* ORed for a postfix */
 #define META_RF_MSK			0x000F
 #define META_RF_SHIFT			0
 #define META_RULE_MSK			0xFFF0

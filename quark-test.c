@@ -2272,19 +2272,14 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 		errx(1, "please run me with -1");
 
 	text_ruleset =
-	    "pass on process.exe /usr/bin/bash\n"
-	    "pass on process.exe /bin/bash\n"
-	    "pass on process.exe /usr/bin/ls\n"
-	    "pass on process.exe /bin/ls\n"
+	    "pass on process.exe ishallnevermatch\n"
 	    "pass on process.exe /usr/bin/mksh\n"
-	    "pass on process.exe /bin/mksh\n"
+	    "pass on process.exe /usr/*/bash\n"
 	    "pass on process.exe /usr/bin/b*\n"
 	    "pass on process.exe /bin/b*\n"
 	    "pass on process.exe /usr/bin/bc\n"
 	    "pass on process.exe /bin/bc\n"
-	    "pass on process.exe /somethingreallyreallylong\n"
 	    "pass on process.exe /idontexist\n"
-	    "pass on process.exe /omginowc*andoinfix\n"
 	    "pass on any";
 	ruleset_from_string(&ruleset, text_ruleset);
 
