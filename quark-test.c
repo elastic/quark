@@ -525,6 +525,50 @@ fork_n(int n)
 	}
 }
 
+#ifndef NO_MEMFD
+static pid_t
+fork_memfd_exec(void)
+{
+	pid_t	 child;
+	int	 status, fd;
+	char	 fd_path[256];
+	ssize_t	 n;
+	size_t	 size;
+	void	*bin;
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child != 0) {
+		if (waitpid(child, &status, 0) == -1)
+			err(1, "waitpid");
+		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+			errx(1, "memfd child didn't exit cleanly");
+		return (child);
+	}
+	/* child */
+	bin = load_file_path_nostat("/usr/bin/true", &size);
+	if (bin == NULL)
+		bin = load_file_path_nostat("/bin/true", &size);
+	if (bin == NULL)
+		errx(1, "can't find true binary");
+	if ((fd = memfd_create("quark-test-memfd-exec", 0)) == -1)
+		err(1, "memfd_create");
+	n = qwrite(fd, bin, size);
+	if (n == -1)
+		err(1, "qwrite");
+	free(bin);
+	bin = NULL;
+	if (snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd)
+	    >= (int)sizeof(fd_path))
+		errx(1, "snprintf fd_path");
+	execl(fd_path, "true", "memfd-exec-fileless", (char *)NULL);
+	err(1, "execl memfd");
+
+	/* NOTREACHED */
+	return (0);
+}
+#endif	/* NO_MEMFD */
+
 static int
 clone_start(void *nada)
 {
@@ -1232,6 +1276,43 @@ t_memfd(const struct test *t, struct quark_queue_attr *qa)
 
 	close(fd);
 	quark_queue_close(&qq);
+#endif	/* NO_MEMFD */
+
+	return (0);
+}
+
+static int
+t_memfd_exec(const struct test *t, struct quark_queue_attr *qa)
+{
+#ifdef NO_MEMFD
+	warnx("%s: compiled with NO_MEMFD, skipping", __func__);
+#else
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	child = fork_memfd_exec();
+	qev = drain_for_pid(&qq, child);
+
+	assert(qev->events & QUARK_EV_FORK);
+	assert(qev->events & QUARK_EV_EXEC);
+	assert(qev->events & QUARK_EV_EXIT);
+
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->exe != NULL);
+	/*
+	 * Make sure the path looks valid, this test was written since we were
+	 * getting garbage for memfd execs.
+	 */
+	assert(qp->exe[0] == '/' || !strncmp(qp->exe, "memfd:", 6));
+
+	quark_queue_close(&qq);
+
 #endif	/* NO_MEMFD */
 
 	return (0);
@@ -2328,6 +2409,7 @@ struct test all_tests[] = {
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
+	T_EBPF(t_memfd_exec),
 	T_EBPF(t_shmget),
 	T_EBPF(t_shm_open),
 	T_EBPF(t_tty_load),
