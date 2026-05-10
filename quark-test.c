@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Copyright (c) 2024 Elastic NV */
 
+#include <asm/termbits.h>
+
+#include <sys/ioctl.h>
+#include <sys/ipc.h>
 #include <sys/mman.h>
 #include <sys/select.h>
+#include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -38,13 +43,29 @@
 #define MAN_QUARK_TEST
 #include "manpages.h"
 
-#define PATTERN "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+#define PATTERN		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+#define STATUS_LINELEN	32
+#define MAXTESTS	512
 
 struct udphdr {
 	u16 source;
 	u16 dest;
 	u16 len;
 	u16 check;
+};
+
+struct progress {
+	int green;
+	int red;
+	int total;
+	int state[MAXTESTS];
+};
+
+struct test {
+	char	 *name;
+	int	(*func)(const struct test *, struct quark_queue_attr *);
+	int	  backend;
+	int	  excluded;
 };
 
 #define msleep(_x)	usleep((uint64_t)_x * 1000ULL)
@@ -60,9 +81,14 @@ enum {
 static int	noforkflag;	/* don't fork on each test */
 static int	bflag;		/* run bpf tests */
 static int	kflag;		/* run kprobe tests */
+static int	nflag;		/* run nova tests */
+static int	tflag;		/* listen to the tracepipe */
+static u64	boottime;
+static int	fancy_tty;
+static int	in_valgrind;
 
 static int
-fancy_tty(void)
+probe_fancy_tty(void)
 {
 	char	*term = getenv("TERM");
 
@@ -78,7 +104,7 @@ color(int color)
 	static int	 old;
 	int		 ret;
 
-	if (!fancy_tty())
+	if (!fancy_tty)
 		return (SANE);
 
 	ret = old;
@@ -110,12 +136,16 @@ backend_of_attr(struct quark_queue_attr *qa)
 {
 	int	be;
 
-	if (((qa->flags & QQ_ALL_BACKENDS) == QQ_ALL_BACKENDS))
+	if (qa == NULL)
+		return (-1);
+	else if (((qa->flags & QQ_ALL_BACKENDS) == QQ_ALL_BACKENDS))
 		errx(1, "backend must be explicit");
 	else if (qa->flags & QQ_EBPF)
 		be = QQ_EBPF;
 	else if (qa->flags & QQ_KPROBE)
 		be = QQ_KPROBE;
+	else if (qa->flags & QQ_NOVA)
+		be = QQ_NOVA;
 	else
 		errx(1, "bad flags");
 
@@ -127,7 +157,7 @@ spin(void)
 {
 	static int ch;
 
-	if (!fancy_tty())
+	if (!fancy_tty || in_valgrind)
 		return;
 
 	/* -\|/ */
@@ -151,6 +181,102 @@ spin(void)
 
 	printf("%c\b", ch);
 	fflush(stdout);
+}
+
+#define erase_from_cursor()	printf("\033[0K")
+#define cursor_up(_n)		printf("\033[%dA", _n)
+
+static void
+progress_add(struct progress *progress, int state)
+{
+	int	idx;
+
+	idx = progress->green + progress->red;
+	if (idx == MAXTESTS)
+		err(1, "max tests reached! bump MAXTESTS!");
+	if (state == GREEN)
+		progress->green++;
+	else if (state == RED)
+		progress->red++;
+	else
+		err(1, "bad progress state");
+	progress->state[idx] = state;
+}
+
+static void
+progress_print(struct progress *progress)
+{
+	int	i, x, finished;
+
+	if (!fancy_tty || progress->total == 1)
+		return;
+
+	finished = progress->green + progress->red;
+
+	erase_from_cursor();
+	putchar('\n');
+	if (finished != progress->total) {
+		erase_from_cursor();
+		putchar('\n');
+	}
+	putchar('[');
+	for (i = 0; i < finished; i++) {
+		x = color(progress->state[i]);
+		putchar('#');
+		color(x);
+	}
+	for (i = 0; i < (progress->total - finished); i++)
+		putchar(' ');
+	putchar(']');
+	putchar(' ');
+	x = color(GREEN);
+	printf("%d", progress->green);
+	color(x);
+	putchar('/');
+	x = color(RED);
+	printf("%d", progress->red);
+	color(x);
+	putchar('/');
+	printf("%d", progress->total);
+
+	if (finished == progress->total)
+		putchar('\n');
+	else {
+		/* go up two lines*/
+		cursor_up(2);
+		putchar('\r');
+	}
+
+	fflush(stdout);
+}
+
+static void
+hide_cursor(void)
+{
+	if (!fancy_tty || noforkflag)
+		return;
+	printf("\e[?25l");
+	fflush(stdout);
+}
+
+static void
+show_cursor(void)
+{
+	if (!fancy_tty)
+		return;
+	printf("\e[?25h");
+	fflush(stdout);
+}
+
+static u64
+ns_since_epoch(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
+		err(1, "clock_gettime");
+
+	return boottime + ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
 }
 
 static u32
@@ -281,13 +407,6 @@ dump_open_fd(FILE *f)
 	fflush(f);
 }
 
-struct test {
-	char	 *name;
-	int	(*func)(const struct test *, struct quark_queue_attr *);
-	int	  backend;
-	int	  excluded;
-};
-
 static void
 display_version(void)
 {
@@ -303,7 +422,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-1bkv] [-x test] [tests ...]\n",
+	fprintf(stderr, "usage: %s [-1bktv] [-x test] [tests ...]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -l\n",
 	    program_invocation_short_name);
@@ -314,7 +433,7 @@ usage(void)
 }
 
 static pid_t
-fork_exec_nop_rel(int relative)
+fork_exec_nop1(int relative, uid_t id)
 {
 	pid_t		child;
 	int		status;
@@ -328,11 +447,11 @@ fork_exec_nop_rel(int relative)
 
 	if ((child = fork()) == -1)
 		err(1, "fork");
+	/* child */
 	else if (child == 0) {
 		struct stat	 st;
 		char		*true_path, *true_dir;
 
-		/* child */
 		if (stat("/usr/bin/true", &st) == 0) {
 			true_path = "/usr/bin/true";
 			true_dir = "/usr/bin";
@@ -343,6 +462,16 @@ fork_exec_nop_rel(int relative)
 		} else
 			errx(1, "can't find true binary");
 
+		if (setenv("IM_A_QUARK_TEST_CHILD", "OHYES", 1) == -1)
+			err(1, "setenv");
+		if (id != 0) {
+			if (setresgid(id, id, id) == -1)
+				err(1, "setresgid");
+			if (setresuid(id, id, id) == -1)
+				err(1, "setresuid");
+			if (setsid() == -1)
+				err(1, "setsid");
+		}
 		if (!relative)
 			return (execv(true_path, argv));
 
@@ -368,8 +497,77 @@ fork_exec_nop_rel(int relative)
 static pid_t
 fork_exec_nop(void)
 {
-	return (fork_exec_nop_rel(0));
+	return (fork_exec_nop1(0, 0));
 }
+
+static void
+fork_n(int n)
+{
+	pid_t	pid;
+	int	status;
+
+	if (n == 0)
+		return;
+
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+	/* parent */
+	if (pid != 0) {
+		if (waitpid(pid, &status, 0) == -1)
+			err(1, "waitpid");
+		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+			errx(1, "child didn't exit cleanly");
+
+		return;
+	} else {
+		fork_n(--n);
+		exit(0);
+	}
+}
+
+#ifndef NO_MEMFD
+static pid_t
+fork_memfd_exec(void)
+{
+	pid_t	 child;
+	int	 status, fd;
+	char	 fd_path[256];
+	ssize_t	 n;
+	size_t	 size;
+	void	*bin;
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child != 0) {
+		if (waitpid(child, &status, 0) == -1)
+			err(1, "waitpid");
+		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+			errx(1, "memfd child didn't exit cleanly");
+		return (child);
+	}
+	/* child */
+	bin = load_file_path_nostat("/usr/bin/true", &size);
+	if (bin == NULL)
+		bin = load_file_path_nostat("/bin/true", &size);
+	if (bin == NULL)
+		errx(1, "can't find true binary");
+	if ((fd = memfd_create("quark-test-memfd-exec", 0)) == -1)
+		err(1, "memfd_create");
+	n = qwrite(fd, bin, size);
+	if (n == -1)
+		err(1, "qwrite");
+	free(bin);
+	bin = NULL;
+	if (snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd)
+	    >= (int)sizeof(fd_path))
+		errx(1, "snprintf fd_path");
+	execl(fd_path, "true", "memfd-exec-fileless", (char *)NULL);
+	err(1, "execl memfd");
+
+	/* NOTREACHED */
+	return (0);
+}
+#endif	/* NO_MEMFD */
 
 static int
 clone_start(void *nada)
@@ -473,6 +671,12 @@ drain_for_pid(struct quark_queue *qq, pid_t pid)
 	}
 
 	return (qev);
+}
+
+static const struct quark_event *
+drain_any(struct quark_queue *qq)
+{
+	return (drain_for_pid(qq, -1));
 }
 
 static void
@@ -597,12 +801,67 @@ fork_sock_write(u16 port, int type, u16 *bound_port)
 }
 
 static int
+ruleset_from_string1(struct quark_ruleset *ruleset, char *s,
+    char *err_buf, size_t err_buf_len)
+{
+	FILE	*in;
+	int	 r;
+
+	if ((in = fmemopen(s, strlen(s), "r")) == NULL)
+		err(1, "fmemopen");
+
+	r = quark_ruleset_parse(ruleset, in, err_buf, err_buf_len);
+
+	fclose(in);
+
+	return (r);
+}
+
+static void
+ruleset_from_string(struct quark_ruleset *ruleset, char *s)
+{
+	char	 parse_error[1024];
+
+	if (ruleset_from_string1(ruleset, s,
+	    parse_error, sizeof(parse_error)) != 0)
+		errx(1, "can't parse ruleset: %s", parse_error);
+}
+
+static int
 t_probe(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	qq;
+	struct quark_queue	 qq;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "%s: quark_queue_open", t->name);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_os_release(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_sysinfo	*si;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	si = &qq.sysinfo;
+
+	assert(si->os_name != NULL);
+
+	if (getenv("QUARK_INITRAMFS") != NULL) {
+		assert(!strcmp(si->os_name, "quark kernel testing"));
+		assert(!strcmp(si->os_version, "1.23.4 iota"));
+		assert(!strcmp(si->os_release_type, "testing"));
+		assert(!strcmp(si->os_id, "quark"));
+		assert(!strcmp(si->os_version_id, "1.23.4"));
+		assert(!strcmp(si->os_version_codename, "iota"));
+		assert(!strcmp(si->os_pretty_name, "Quark kernel testing initramfs"));
+	}
+
 	quark_queue_close(&qq);
 
 	return (0);
@@ -620,27 +879,32 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	size_t				 expected_args_len;
 	int				 argc;
 	char				 path[PATH_MAX];
+	u64				 before, after;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	child = fork_exec_nop_rel(relative);
+	before = ns_since_epoch();
+	child = fork_exec_nop1(relative, 0);
 	qev = drain_for_pid(&qq, child);
+	after = ns_since_epoch();
 
 	/* check qev.events */
 	assert(qev->events & QUARK_EV_FORK);
 	assert(qev->events & QUARK_EV_EXEC);
 	assert(qev->events & QUARK_EV_EXIT);
+	assert(qev->time >= before);
+	assert(qev->time <= after);
 	/* check qev.process */
 	qp = qev->process;
 	assert(qp != NULL);
 	assert(qp->flags & QUARK_F_EXIT);
-	assert(qp->flags & QUARK_F_COMM);
-	assert(qp->flags & QUARK_F_FILENAME);
-	assert(qp->flags & QUARK_F_CMDLINE);
-	assert(qp->flags & QUARK_F_CWD);
+	assert(qp->comm[0] != 0);
+	assert(qp->exe != NULL);
+	assert(qp->cmdline != NULL && qp->cmdline_len > 0);
+	assert(qp->cwd != NULL);
 	if (qa->flags & QQ_EBPF)
-		assert(qp->flags & QUARK_F_CGROUP);
+		assert(qp->cgroup != NULL);
 	assert((pid_t)qp->pid == child);
 	assert((pid_t)qp->proc_ppid == getpid());
 	assert(qp->proc_time_boot > 0); /* XXX: improve */
@@ -679,8 +943,8 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 #endif
 	/* check strings */
 	assert(!strcmp(qp->comm, "true"));
-	assert(!strcmp(qp->filename, "/bin/true") ||
-	    !strcmp(qp->filename, "/usr/bin/true"));
+	assert(!strcmp(qp->exe, "/bin/true") ||
+	    !strcmp(qp->exe, "/usr/bin/true"));
 	/* check args */
 	quark_cmdline_iter_init(&qcmdi, qp->cmdline, qp->cmdline_len);
 	argc = 0;
@@ -735,6 +999,16 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 		assert(!strcmp(path, qp->cgroup));
 	}
 
+	/*
+	 * Check env, we should have set IM_A_QUARK_TEST_CHILD=OHYES
+	 */
+	if (qa->flags & QQ_EBPF) {
+		const char *needle = "IM_A_QUARK_TEST_CHILD=OHYES";
+
+		assert(qp->env != NULL);
+		assert(memmem(qp->env, qp->env_len, needle, strlen(needle)) != NULL);
+	}
+
 	quark_queue_close(&qq);
 
 	return (0);
@@ -750,6 +1024,44 @@ static int
 t_fork_exec_exit_rel(const struct test *t, struct quark_queue_attr *qa)
 {
 	return (fork_exec_exit(t, qa, 1));
+}
+
+static int
+t_id_change(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+	uid_t				 id;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	id = 4242;
+	child = fork_exec_nop1(0, id);
+	qev = drain_for_pid(&qq, child);
+
+	/* EXEC and EXIT must _not_ have been aggregated */
+	assert(qev->events == (QUARK_EV_FORK | QUARK_EV_ID_CHANGE));
+	assert(qev->id_change == (QUARK_ID_CHANGE_SETSID |
+	    QUARK_ID_CHANGE_SETUID | QUARK_ID_CHANGE_SETGID));
+
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->proc_uid == id);
+	assert(qp->proc_gid == id);
+	assert(qp->proc_suid == id);
+	assert(qp->proc_sgid == id);
+	assert(qp->proc_euid == id);
+	assert(qp->proc_egid == id);
+	/* make sure pgid and sid changed */
+	assert((pid_t)qp->proc_pgid != getpgid(0));
+	assert((pid_t)qp->proc_sid != getsid(0));
+
+	quark_queue_close(&qq);
+
+	return (0);
 }
 
 /* Make sure an exit comes from tgid, not tid */
@@ -792,14 +1104,17 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	struct stat			 st;
 	char				 path[] = "/tmp/quark-test.XXXXXX";
 	int				 fd;
+	u64				 before, after;
 
 	qa->flags |= QQ_FILE;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
+	before = ns_since_epoch();
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
+	after = ns_since_epoch();
 	assert(write(fd, "1", 1) == 1);
 	assert(write(fd, "2", 1) == 1);
 	assert(write(fd, "3", 1) == 1);
@@ -819,6 +1134,8 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 
 	qev = drain_for_pid(&qq, getpid());
 	assert(qev->events == QUARK_EV_FILE);
+	assert(qev->time >= before);
+	assert(qev->time <= after);
 	qf = qev->file;
 	assert(qf != NULL);
 	assert(qf->op_mask & QUARK_FILE_OP_CREATE);
@@ -899,14 +1216,195 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
-/* XXX Only probe loading for now */
 static int
 t_memfd(const struct test *t, struct quark_queue_attr *qa)
 {
+#ifdef NO_MEMFD
+	warnx("%s: compiled with NO_MEMFD, skipping", __func__);
+#else
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_shm		*qshm;
+	int				 fd;
+#if 0
+	int				 fd2;
+	char				 buf[1024];
+#endif
+	/*
+	 * MEMFD_OPEN still requires QQ_FILE for now
+	 */
+	qa->flags |= QQ_SHM | QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * Test MEMFD_CREATE
+	 */
+	if ((fd = memfd_create("t_memfd-glorious-test", MFD_CLOEXEC)) == -1) {
+		if (errno == ENOTSUP) {
+			warn("old kernel, skipping memfd_create");
+			quark_queue_close(&qq);
+
+			return (0);
+		}
+		err(1, "memfd_create");
+	}
+	qev = drain_for_pid(&qq, getpid());
+
+	assert(qev->events & QUARK_EV_SHM);
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
+	assert(qshm->memfd_create_flags == MFD_CLOEXEC);
+	assert(!strcmp(qshm->path, "memfd:t_memfd-glorious-test"));
+
+#if 0
+	/*
+	 * XXX MEMFD_OPEN is broken, hence the test is disabled, see
+	 * https://github.com/elastic/quark/issues/255
+	 */
+	snprintf(buf, sizeof(buf), "/proc/self/fd/%d", fd);
+	if ((fd2 = open(buf, O_RDWR)) == -1)
+		err(1, "open");
+
+	qev = drain_for_pid(&qq, getpid());
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_MEMFD_OPEN);
+	assert(!strcmp(qshm->path, "t_memfd-glorious-test"));
+	close(fd2);
+#endif
+
+	close(fd);
+	quark_queue_close(&qq);
+#endif	/* NO_MEMFD */
+
+	return (0);
+}
+
+static int
+t_memfd_exec(const struct test *t, struct quark_queue_attr *qa)
+{
+#ifdef NO_MEMFD
+	warnx("%s: compiled with NO_MEMFD, skipping", __func__);
+#else
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	child = fork_memfd_exec();
+	qev = drain_for_pid(&qq, child);
+
+	assert(qev->events & QUARK_EV_FORK);
+	assert(qev->events & QUARK_EV_EXEC);
+	assert(qev->events & QUARK_EV_EXIT);
+
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->exe != NULL);
+	/*
+	 * Make sure the path looks valid, this test was written since we were
+	 * getting garbage for memfd execs.
+	 */
+	assert(qp->exe[0] == '/' || !strncmp(qp->exe, "memfd:", 6));
+
+	quark_queue_close(&qq);
+
+#endif	/* NO_MEMFD */
+
+	return (0);
+}
+
+static int
+t_shmget(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_shm		*qshm;
+	int				 id;
+
+	qa->flags |= QQ_SHM;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((id = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0600)) == -1)
+		err(1, "shmget");
+	qev = drain_for_pid(&qq, getpid());
+
+	assert(qev->events & QUARK_EV_SHM);
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_SHMGET);
+	assert(qshm->shmget_key == IPC_PRIVATE);
+	assert(qshm->shmget_shmflg == (IPC_CREAT | 0600));
+	assert(qshm->shmget_size == 4096);
+
+	if (shmctl(id, IPC_RMID, NULL) == -1)
+		err(1, "shmctl");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_shm_open(const struct test *t, struct quark_queue_attr *qa)
+{
+#ifdef NO_SHM_OPEN
+	warnx("%s: compiled without SHM_OPEN", __func__);
+#else
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_shm		*qshm;
+	int				 fd, fd2;
+	char				 path[512];
+
+	qa->flags |= QQ_SHM | QQ_FILE;
+
+	snprintf(path, sizeof(path), "/quark_test-%s-%d", __func__, getpid());
+	(void)shm_unlink(path);
+	/*
+	 * Probes are bugged, a O_CREAT that actually creates a file, shows up
+	 * as a FILE events, not a SHM_OPEN.
+	 * See https://github.com/elastic/quark/issues/256
+	 */
+	if ((fd = shm_open(path, O_CREAT | O_RDWR, 0600)) == -1)
+		err(1, "shm_open");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd2 = shm_open(path, O_RDWR, 0600)) == -1)
+		err(1, "shm_open");
+
+	qev = drain_for_pid(&qq, getpid());
+	qshm = qev->shm;
+
+	assert(qev->events & QUARK_EV_SHM);
+	assert(qshm->kind == QUARK_SHM_SHM_OPEN);
+	assert(strlen(qshm->path) > strlen("/dev/shm"));
+	assert(!strcmp(qshm->path + strlen("/dev/shm"), path));
+
+	close(fd2);
+	close(fd);
+	if (shm_unlink(path) == -1)
+		err(1, "shm_unlink");
+
+	quark_queue_close(&qq);
+#endif	/* NO_SHM_OPEN */
+
+	return (0);
+}
+
+static int
+t_tty_load(const struct test *t, struct quark_queue_attr *qa)
+{
 	struct quark_queue		 qq;
 
-	qa->flags &= ~QQ_ENTRY_LEADER;
-	qa->flags |= QQ_BYPASS | QQ_MEMFD;
+	qa->flags |= QQ_TTY;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
@@ -916,17 +1414,70 @@ t_memfd(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
-/* XXX Only probe loading for now */
 static int
 t_tty(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_tty		*qtty;
+	pid_t				 pid;
+	struct winsize			 winsize;
+	const char			*data	  = "oh hai from the tty test ";
+	size_t				 data_len = strlen(data);
+	int				 status;
 
-	qa->flags &= ~QQ_ENTRY_LEADER;
-	qa->flags |= QQ_BYPASS | QQ_TTY;
+	if (!isatty(STDOUT_FILENO)) {
+		warnx("stdout is not a tty, skipping");
+		return (0);
+	}
+
+	if (getenv("QUARK_INITRAMFS") != NULL) {
+		warnx("no tty events in initramfs, skipping");
+		return (0);
+	}
+
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &winsize) == -1)
+		err(1, "ioctl TIOCGWINSZ");
+
+	qa->flags |= QQ_TTY;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
+
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+
+	/* child */
+	if (pid == 0) {
+		fputs(data, stdout);
+		fflush(stdout);
+		fputs(data, stdout);
+		fflush(stdout);
+		fputs(data, stdout);
+		fflush(stdout);
+		exit(0);
+	}
+
+	/* parent */
+	if (waitpid(pid, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "tty child didn't exit cleanly");
+
+	qev = drain_for_pid(&qq, pid); /* FORK */
+	qev = drain_for_pid(&qq, pid); /* TTY */
+
+	assert(qev->events == QUARK_EV_TTY);
+	qtty = qev->tty;
+	assert(qtty->cols == winsize.ws_col);
+	assert(qtty->rows == winsize.ws_row);
+	assert(qtty->total_len == 3 * data_len);
+	assert(qtty->data_len == data_len);
+	assert(!memcmp(qtty->data, data, data_len));
+	assert(!memcmp(qtty->next->data, data, data_len));
+	assert(!memcmp(qtty->next->next->data, data, data_len));
+	assert(qtty->next->next->next == NULL);
+	assert(qtty->truncated == 0);
 
 	quark_queue_close(&qq);
 
@@ -959,16 +1510,18 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert((pid_t)qev->process->pid == child);
 	assert(qev->socket != NULL);
 	assert(qev->socket->established_time > 0);
-	assert(qev->socket->from_scrape == 0);
+	assert(qev->socket->conn_origin == SOCK_CONN_CONNECT);
 	assert((pid_t)qev->socket->pid_origin == child);
 	assert((pid_t)qev->socket->pid_last_use == child);
 	assert(qev->socket->local.af == AF_INET);
-	assert(qev->socket->local.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->local.u.addr4 == htonl(INADDR_LOOPBACK));
 	assert(qev->socket->local.port == bound_port);
 	assert(qev->socket->remote.af == AF_INET);
-	assert(qev->socket->remote.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->remote.u.addr4 == htonl(INADDR_LOOPBACK));
 	assert(qev->socket->remote.port == htons(18888));
 	assert(qev->socket->close_time == 0);
+	assert(qev->socket->bytes_received == 0);
+	assert(qev->socket->bytes_sent == 0);
 
 	/* SOCK_CONN_CLOSED */
 	qev = drain_for_pid(&qq, child);
@@ -977,16 +1530,18 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert((pid_t)qev->process->pid == child);
 	assert(qev->socket != NULL);
 	assert(qev->socket->established_time > 0);
-	assert(qev->socket->from_scrape == 0);
+	assert(qev->socket->conn_origin == SOCK_CONN_CONNECT);
 	assert((pid_t)qev->socket->pid_origin == child);
 	assert((pid_t)qev->socket->pid_last_use == child);
 	assert(qev->socket->local.af == AF_INET);
-	assert(qev->socket->local.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->local.u.addr4 == htonl(INADDR_LOOPBACK));
 	assert(qev->socket->local.port == bound_port);
 	assert(qev->socket->remote.af == AF_INET);
-	assert(qev->socket->remote.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qev->socket->remote.u.addr4 == htonl(INADDR_LOOPBACK));
 	assert(qev->socket->remote.port == htons(18888));
 	assert(qev->socket->close_time > 0);
+	assert(qev->socket->bytes_received == 0);
+	assert(qev->socket->bytes_sent == strlen(PATTERN));
 
 	/* QUARK_EV_EXIT */
 	qev = drain_for_pid(&qq, child);
@@ -1068,17 +1623,11 @@ t_cache_grace(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
-t_min_agg(const struct test *t, struct quark_queue_attr *qa)
+t_min_agg1(const struct test *t, struct quark_queue *qq)
 {
-	struct quark_queue		 qq;
 	const struct quark_event	*qev;
 	const struct quark_process	*qp;
 	pid_t				 child;
-
-	qa->flags |= QQ_MIN_AGG;
-
-	if (quark_queue_open(&qq, qa) != 0)
-		err(1, "quark_queue_open");
 
 	/*
 	 * Fork a child, since there is no aggregation, we should see 3 events
@@ -1087,7 +1636,7 @@ t_min_agg(const struct test *t, struct quark_queue_attr *qa)
 	child = fork_exec_nop();
 
 	/* Fork */
-	qev = drain_for_pid(&qq, child);
+	qev = drain_for_pid(qq, child);
 	assert(qev->events & QUARK_EV_FORK);
 	assert(!(qev->events & (QUARK_EV_EXEC|QUARK_EV_EXIT)));
 	qp = qev->process;
@@ -1095,12 +1644,12 @@ t_min_agg(const struct test *t, struct quark_queue_attr *qa)
 	assert((pid_t)qp->pid == child);
 	assert(qp->flags & QUARK_F_PROC);
 	/* Exec */
-	qev = drain_for_pid(&qq, child);
+	qev = drain_for_pid(qq, child);
 	assert(qev->events & QUARK_EV_EXEC);
 	assert(!(qev->events & (QUARK_EV_FORK|QUARK_EV_EXIT)));
 	assert((pid_t)qp->pid == child);
 	/* Exit */
-	qev = drain_for_pid(&qq, child);
+	qev = drain_for_pid(qq, child);
 	assert(qev->events & QUARK_EV_EXIT);
 	assert(!(qev->events & (QUARK_EV_FORK|QUARK_EV_EXEC)));
 	qp = qev->process;
@@ -1109,6 +1658,44 @@ t_min_agg(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp->flags & QUARK_F_EXIT);
 	assert(qp->exit_code == 0);
 	assert(qp->exit_time_event > 0);
+
+	return (0);
+}
+
+static int
+t_min_agg(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+
+	qa->flags |= QQ_MIN_AGG;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	assert(!t_min_agg1(t, &qq));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_set_agg_matrix(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	int				 i, j;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Clear all aggregation, so it should behave like QQ_MIN */
+	for (i = 0; i < RAW_NUM_TYPES; i++) {
+		for (j = 0; j < RAW_NUM_TYPES; j++) {
+			assert(!quark_queue_set_agg_matrix(&qq, i, j, NULL));
+		}
+	}
+
+	assert(!t_min_agg1(t, &qq));
 
 	quark_queue_close(&qq);
 
@@ -1252,7 +1839,7 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	for (i = 0; cases[i].in != NULL; i++) {
 		bzero(cid, sizeof(cid));
 
-		r = parse_kube_cgroup(cases[i].in, cid, sizeof(cid));
+		r = kube_parse_cgroup(cases[i].in, cid, sizeof(cid));
 		assert(r == cases[i].expected_ret);
 		if (r == 0)
 			assert(!strcmp(cid, cases[i].out));
@@ -1261,30 +1848,594 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_hanson(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct hanson	 h;
+	char		*buf;
+	size_t		 buf_len;
+	int		 basic_first = 1;
+	const char	*expected =
+	    "{\"basic\":{"
+	    "\"foo\":\"bar\","
+	    "\"zero\":0,"
+	    "\"one\":1,"
+	    "\"two\":2,"
+	    "\"neg_one\":-1,"
+	    "\"int64_min\":-9223372036854775808,"
+	    "\"int64_min_plus_one\":-9223372036854775807,"
+	    "\"int64_max\":9223372036854775807"
+	    "}}";
+
+	assert(hanson_open(&h) == 0);
+
+	hanson_add_object(&h, "basic", NULL);
+	/* Test escaped strings */
+	hanson_add_key_value(&h, "foo", "bar", &basic_first);
+	hanson_add_key_value_int(&h, "zero", 0, &basic_first);
+	hanson_add_key_value_int(&h, "one", 1, &basic_first);
+	hanson_add_key_value_int(&h, "two", 2, &basic_first);
+	hanson_add_key_value_int(&h, "neg_one", -1, &basic_first);
+	hanson_add_key_value_int(&h, "int64_min", INT64_MIN, &basic_first);
+	hanson_add_key_value_int(&h, "int64_min_plus_one", -9223372036854775807LL, &basic_first);
+	hanson_add_key_value_int(&h, "int64_max", INT64_MAX, &basic_first);
+	hanson_close_object(&h);
+
+	assert(hanson_close(&h, &buf, &buf_len) == 0);
+
+	if (strcmp(buf, expected)) {
+		errx(1, "json doesn't match\n got: %s\nwant: %s\n",
+		    buf, expected);
+	}
+	free(buf);
+
+	return (0);
+}
+
+static int
+t_hanson_escape(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct hanson	 h;
+	char		*buf;
+	size_t		 buf_len;
+	int		 esc_first = 1;
+	const char	*expected =
+	    "{\"mytest\":{"
+	    "\"esc_bslash\":\"_\\\\_\","
+	    "\"esc_dquote\":\"_\\\"_\","
+	    "\"esc_bspace\":\"_\\b_\","
+	    "\"esc_feed\":\"_\\f_\","
+	    "\"esc_nl\":\"_\\n_\","
+	    "\"esc_cr\":\"_\\r_\","
+	    "\"esc_tab\":\"_\\t_\","
+	    "\"esc_unicode\":\"_\\u0001_\""
+	    "}}";
+
+	assert(hanson_open(&h) == 0);
+
+	hanson_add_object(&h, "mytest", NULL);
+	/* Test escaped strings */
+	hanson_add_key_value(&h, "esc_bslash", "_\\_", &esc_first);
+	hanson_add_key_value(&h, "esc_dquote", "_\"_", &esc_first);
+
+	hanson_add_key_value(&h, "esc_bspace", "_\b_", &esc_first);
+	hanson_add_key_value(&h, "esc_feed", "_\f_", &esc_first);
+	hanson_add_key_value(&h, "esc_nl", "_\n_", &esc_first);
+	hanson_add_key_value(&h, "esc_cr", "_\r_", &esc_first);
+	hanson_add_key_value(&h, "esc_tab", "_\t_", &esc_first);
+	hanson_add_key_value(&h, "esc_unicode", "_\1_", &esc_first);
+	hanson_close_object(&h);
+
+	assert(hanson_close(&h, &buf, &buf_len) == 0);
+
+	if (strcmp(buf, expected)) {
+		errx(1, "json doesn't match\n got: %s\nwant: %s\n",
+		    buf, expected);
+	}
+	free(buf);
+
+	return (0);
+}
+
+static int
+t_rule_path(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*rule;
+	char				 path1[] = "/tmp/quark-test-path1.XXXXXX";
+	char				 path2[] = "/tmp/quark-test-path2.XXXXXX";
+	int				 fd1, fd2;
+	char				*text_ruleset;
+
+	if ((fd1 = mkstemp(path1)) == -1)
+		err(1, "mkstemp");
+	if ((fd2 = mkstemp(path2)) == -1)
+		err(1, "mkstemp");
+
+	/*
+	 * Make a rule that will drop file events to path1 from ourselves.
+	 * We then write to both path1 and path2, we should see only the path2
+	 * write.
+	 */
+
+	if (asprintf(&text_ruleset,
+	    "drop on process.pid %d file.path /tmp/quark-test-path1*",
+	    getpid()) == -1)
+		err(1, "asprintf");
+	ruleset_from_string(&ruleset, text_ruleset);
+	free(text_ruleset);
+
+	assert(ruleset.n_rules == 1);
+	rule = &ruleset.rules[0];
+	assert(rule->action == QUARK_RA_DROP);
+	assert(rule->n_fields == 2);
+
+	qa->ruleset = &ruleset;
+	qa->flags |= QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Write to a path1 */
+	assert(write(fd1, "1", 1) == 1);
+	close(fd1);
+	if (unlink(path1) == -1)
+		err(1, "unlink");
+	/* Write to a path2 */
+	assert(write(fd2, "1", 1) == 1);
+	close(fd2);
+	if (unlink(path2) == -1)
+		err(1, "unlink");
+	/* Fetch the path2 event */
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_FILE);
+	assert(!strcmp(qev->file->path, path2));
+	/* Make sure it hits the rule once */
+	assert(rule->hits == 1);
+	assert(rule->evals > rule->hits);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+static int
+t_rule_path2(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*suff_rule, *inf_rule, *drop_rule;
+	char				 suff[] = "/tmp/quark-test-suff.XXXXXX";
+	char				 other[] = "/tmp/quark-test-other.XXXXXX";
+	char				 inf[512];
+	int				 suff_fd, other_fd, inf_fd;
+	char				*text_ruleset;
+
+	if ((suff_fd = mkstemp(suff)) == -1)
+		err(1, "mkstemp");
+	if ((other_fd = mkstemp(other)) == -1)
+		err(1, "mkstemp");
+	snprintf(inf, sizeof(inf), "/tmp/quark-test-%d-infix", getpid());
+	if ((inf_fd = open(inf, O_RDWR | O_CREAT, 0644)) == -1)
+		err(1, "open");
+
+	if (asprintf(&text_ruleset,
+	    "pass on process.pid %d file.path /tmp/quark-test-suff*\n"
+	    "pass on process.pid %d file.path /tmp/quark-test-*-infix\n"
+	    "drop on process.pid %d\n",
+	    getpid(), getpid(), getpid()) == -1)
+		err(1, "asprintf");
+	ruleset_from_string(&ruleset, text_ruleset);
+	free(text_ruleset);
+
+	assert(ruleset.n_rules == 3);
+
+	/* Assert suff_rule */
+	suff_rule = &ruleset.rules[0];
+	assert(suff_rule->action == QUARK_RA_PASS);
+	assert(suff_rule->n_fields == 2);
+
+	/* Assert inf_rule */
+	inf_rule = &ruleset.rules[1];
+	assert(inf_rule->action == QUARK_RA_PASS);
+	assert(inf_rule->n_fields == 2);
+
+	/* Assert drop_rule */
+	drop_rule = &ruleset.rules[2];
+	assert(drop_rule->action == QUARK_RA_DROP);
+	assert(drop_rule->n_fields == 1);
+
+	/* Start the ball */
+	qa->ruleset = &ruleset;
+	qa->flags |= QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Write to a other, this must be dropped */
+	assert(write(other_fd, "1", 1) == 1);
+	close(other_fd);
+	if (unlink(other) == -1)
+		err(1, "unlink");
+	/* Write to a suff file, this must pass */
+	assert(write(suff_fd, "1", 1) == 1);
+	close(suff_fd);
+	if (unlink(suff) == -1)
+		err(1, "unlink");
+	/* Write to a inf file, this must pass */
+	assert(write(inf_fd, "1", 1) == 1);
+	close(inf_fd);
+	if (unlink(inf) == -1)
+		err(1, "unlink");
+	/* Fetch suff event, other should have been dropped */
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_FILE);
+	assert(!strcmp(qev->file->path, suff));
+	/* Fetch inf event, other should have been dropped */
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_FILE);
+	assert(!strcmp(qev->file->path, inf));
+	/* Make sure it hits the rule once */
+	assert(suff_rule->hits == 1);
+	assert(inf_rule->hits == 1);
+	assert(drop_rule->hits == 1);
+	/* evals must be bigger than hits, since it must have dropped other */
+	assert(suff_rule->evals > 1);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+static int
+t_rule_poison(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	char				*text_ruleset;
+	u64				 poison_tag;
+	int				 i;
+
+	/*
+	 * We will add 3 rules.
+	 * First rule poisons all our children with poison_tag.
+	 * Second rule PASSes everything with poison_tag.
+	 * Third rule DROPs everything else.
+	 * We then fork children up to gran-gran-children(4 levels) and wait for
+	 * their events.
+	 */
+
+	poison_tag = 1805;
+
+	if (asprintf(&text_ruleset,
+	    "poison %llu on process.ppid %d\n"
+	    "pass on poison %llu\n"
+	    "drop on any",
+	    poison_tag, getpid(), poison_tag) == -1)
+		err(1, "asprintf");
+	ruleset_from_string(&ruleset, text_ruleset);
+	free(text_ruleset);
+
+	/* Start the ball */
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * Fork up to gran-gran-children, this only returns when they've all
+	 * been waited for by their parents
+	 */
+	fork_n(4);
+
+	/* There should be now exactly 4 events, all with FORK+EXIT */
+	for (i = 0; i < 4; i++) {
+		qev = drain_any(&qq);
+		assert(qev->events == (QUARK_EV_FORK | QUARK_EV_EXIT));
+		assert(qev->process != NULL);
+		assert(qev->process->poison_tag == poison_tag);
+	}
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+static int
+t_rule_poison_existing(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_process	*qp;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*rule;
+	struct quark_rule_field		 rf;
+	u64				 poison_tag;
+
+	poison_tag = 1805;
+	quark_ruleset_init(&ruleset);
+
+	/* Add a rule to poison just ourselves */
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_POISON, poison_tag);
+	assert(rule != NULL);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_PID;
+	rf.pid = getpid();
+	assert(!quark_rule_match_field(rule, rf));
+
+	/* Start the ball, we should be poison even before getting any event */
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	qp = quark_process_lookup(&qq, getpid());
+	assert(qp != NULL);
+	assert(qp->poison_tag == poison_tag);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+static int
+t_rule_id(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*rule;
+	struct quark_rule_field		 rf;
+	uid_t				 uid;
+	struct timespec			 start, now;
+
+	/*
+	 * We will add 2 rules.
+	 * First rule accepts only events from uid 66666.
+	 * Second rule drops all events.
+	 * We then generate one event from uid 0, and another from 66666, if we
+	 * ever see the one with uid 0, it failed.
+	 */
+
+	uid = 66666;
+	quark_ruleset_init(&ruleset);
+
+	/* Accept events that match uid 66666 */
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
+	assert(rule != NULL);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_UID;
+	rf.id = uid;
+	assert(!quark_rule_match_field(rule, rf));
+
+	/* Now block everything else */
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0);
+	assert(rule != NULL);
+
+	/* Start the ball */
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * fork a process in uid 0 followed by uid 66666.
+	 */
+	fork_exec_nop();
+	(void)fork_exec_nop1(0, uid);
+
+	/* There should be now exactly 4 events, all with FORK+EXIT */
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	for (now = start; ;(void)clock_gettime(CLOCK_MONOTONIC, &now)) {
+		if ((now.tv_sec - start.tv_sec) >= 5) {
+			errno = ETIME;
+			err(1, "timed out waiting event");
+		}
+		qev = drain_any(&qq);
+		assert(qev->process != NULL);
+		assert(qev->process->flags & QUARK_F_PROC);
+		assert(qev->process->proc_euid == uid);
+		break;
+	}
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+static int
+t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset	  ruleset;
+	int			  i;
+	char			**s;
+	char			  parser_error[1024];
+	char *good_cases[] = {
+		"drop on any",
+		"pass on any\n",
+		"drop on process.pid 77\n",
+		"pass on process.ppid 84\n",
+		"drop on process.uid 230000\n",
+		"drop on process.gid 1313\n",
+		"pass on process.sid 11\n",
+		"drop on file.path /foo/bar\n",
+		"pass on file.path foo-bar\n",
+		"drop on process.exe /foo/bar\n",
+		"drop on process.exe /foo/*\n",
+		"drop on process.exe */bar\n",
+		"drop on process.exe /*/bar\n",
+		"pass on process.exe foo-bar\n",
+		"drop on process.exe \"foo bar lero\"\n",
+		"pass on process.exe /foo/*\n",
+		"drop on process.exe \"/foo bar/*\"\n",
+		"pass on process.exe \\\nfoo",	/* line split by \ */
+		NULL
+	};
+	char *bad_cases[] = {
+		"pass on pXrocess.pid 77",
+		"pass",
+		"pass\n",
+		"pass on",
+		"foo",
+		"drop on process.exe /foo/bar**\n",
+		"drop on process.exe **/foo/bar\n",
+		"drop on process.exe **/foo/**bar\n",
+		"drop on process.exe */foo/bar*\n",
+		"drop on process.exe /foo**/bar\n",
+		"pass on any any",
+		"pass on any process.pid 1\n",
+		"pass on process.pid 1 2",
+		"pass on process.pid \"1 \"2",
+		"drop on process.gid",
+		"drop on foobar\n",
+		"drop on process.exe",
+		"drop on file.name \"foo\n",
+		NULL
+	};
+
+	for (s = good_cases, i = 1; *s != NULL; s++, i++) {
+		parser_error[0] = 0;
+		quark_ruleset_init(&ruleset);
+		if (ruleset_from_string1(&ruleset, *s,
+		    parser_error, sizeof(parser_error)) != 0)
+			errx(1, "rule %d failed: %s\n%s", i, *s, parser_error);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	for (s = bad_cases, i = 1; *s != NULL; s++, i++) {
+		quark_ruleset_init(&ruleset);
+		if (ruleset_from_string1(&ruleset, *s, NULL, 0) == 0)
+			errx(1, "rule %d should have failed: %s", i, *s);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	return (0);
+}
+
+
+static int
+t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	assert(!quark_queue_trusted_pid_add(&qq, getpid()));
+	assert(!quark_queue_trusted_pid_reset(&qq));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct quark_queue_stats	 stats;
+	char				*text_ruleset;
+	size_t				 i;
+
+	if (!noforkflag)
+		errx(1, "please run me with -1");
+
+	text_ruleset =
+	    "pass on process.exe ishallnevermatch\n"
+	    "pass on process.exe /usr/bin/mksh\n"
+	    "pass on process.exe /usr/*/bash\n"
+	    "pass on process.exe /usr/bin/b*\n"
+	    "pass on process.exe /bin/b*\n"
+	    "pass on process.exe /usr/bin/bc\n"
+	    "pass on process.exe /bin/bc\n"
+	    "pass on process.exe /idontexist\n"
+	    "pass on any";
+	ruleset_from_string(&ruleset, text_ruleset);
+
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	fprintf(stderr, "\nthis test is a placeholder for temporary fiddling!!!\n");
+	fprintf(stderr, "sleeping forevis...\n");
+	for (;;) {
+		quark_queue_get_stats(&qq, &stats);
+		for (i = 0; i < qq.ruleset->n_rules; i++) {
+			printf("rule %zd: evals %llu hits %llu\n",
+			    i, qq.ruleset->rules[i].evals, qq.ruleset->rules[i].hits);
+		}
+		putchar('\n');
+		sleep(1);
+	}
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
+ * Use T() for tests that require no queue.
+ * Define the test twice if for KPROBE and EBPF
  */
-#define T(_x)		{ S(_x), _x, QQ_ALL_BACKENDS, 0 }
+#define T(_x)		{ S(_x), _x, 0, 0 }
 #define T_KPROBE(_x)	{ S(_x), _x, QQ_KPROBE, 0 }
 #define T_EBPF(_x)	{ S(_x), _x, QQ_EBPF, 0 }
+#define T_NOVA(_x)	{ S(_x), _x, QQ_NOVA, 0 }
 #define S(_x)		#_x
 struct test all_tests[] = {
-	T(t_probe),
-	T(t_fork_exec_exit),
+	T_EBPF(t_probe),
+	T_KPROBE(t_probe),
+	T_NOVA(t_probe),
+	T_EBPF(t_os_release),
+	T_KPROBE(t_os_release),
+	T_EBPF(t_fork_exec_exit),
+	T_KPROBE(t_fork_exec_exit),
 	T_EBPF(t_fork_exec_exit_rel),
-	T(t_exit_tgid),
+	T_EBPF(t_id_change),
+	T_EBPF(t_exit_tgid),
+	T_KPROBE(t_exit_tgid),
 	T_EBPF(t_file),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
+	T_EBPF(t_memfd_exec),
+	T_EBPF(t_shmget),
+	T_EBPF(t_shm_open),
+	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
 	T_EBPF(t_cgroup_parse),
-	T(t_namespace),
-	T(t_cache_grace),
-	T(t_min_agg),
-	T(t_stats),
+	T_EBPF(t_namespace),
+	T_KPROBE(t_namespace),
+	T_EBPF(t_cache_grace),
+	T_KPROBE(t_cache_grace),
+	T_EBPF(t_min_agg),
+	T_KPROBE(t_min_agg),
+	T_EBPF(t_set_agg_matrix),
+	T_EBPF(t_stats),
+	T_KPROBE(t_stats),
+	T(t_hanson),
+	T(t_hanson_escape),
+	T_EBPF(t_rule_path),
+	T_EBPF(t_rule_path2),
+	T_EBPF(t_rule_poison),
+	T_EBPF(t_rule_poison_existing),
+	T_EBPF(t_rule_id),
+	T_EBPF(t_rule_parser),
+	T_EBPF(t_trusted_pid),
+	T_NOVA(t_nova),		/* XXX temporary XXX */
 	{ NULL,	NULL, 0, 0 }
 };
 #undef S
@@ -1301,18 +2452,26 @@ display_tests(void)
 	exit(0);
 }
 
-static struct test *
-lookup_test(const char *name)
+static void
+toggle_test(const char *name, int excluded)
 {
 	struct test	*t;
+	int		 matches;
 
+	matches = 0;
 	for (t = all_tests; t->name != NULL; t++) {
-		if (!strcmp(t->name, name))
-			return (t);
+		if (strcmp(t->name, name))
+			continue;
+		t->excluded = excluded;
+		matches++;
 	}
 
-	return (NULL);
+	if (!matches)
+		errx(1, "no test named %s", name);
 }
+
+#define exclude_test(_n) toggle_test(_n, 1)
+#define include_test(_n) toggle_test(_n, 0)
 
 static int
 run_test_doit(struct test *t, struct quark_queue_attr *qa)
@@ -1324,8 +2483,13 @@ run_test_doit(struct test *t, struct quark_queue_attr *qa)
 	 * Check for FD leaks
 	 */
 	before_nfd = num_open_fd();
-	qa_copy = *qa;
-	r = t->func(t, &qa_copy);
+	if (qa == NULL)
+		qa = NULL;
+	else {
+		qa_copy = *qa;
+		qa = &qa_copy;
+	}
+	r = t->func(t, qa);
 	after_nfd = num_open_fd();
 	if (before_nfd != after_nfd) {
 		fprintf(stderr,
@@ -1342,38 +2506,37 @@ run_test_doit(struct test *t, struct quark_queue_attr *qa)
  * A test runs as a subprocess to avoid contamination.
  */
 static int
-run_test(struct test *t, struct quark_queue_attr *qa)
+run_test(struct progress *progress, struct test *t, struct quark_queue_attr *qa)
 {
 	pid_t		 child;
-	int		 status, x, linepos, be, r;
+	int		 status, x, linepos, be, r, tracefd;
 	int		 child_stderr[2];
 	FILE		*child_stream;
 	char		*child_buf;
 	size_t		 child_buflen;
+	char		 buf[4096];
 	ssize_t		 n;
+
+	progress_print(progress);
 
 	/*
 	 * Figure out if this is ebpf or kprobe
 	 */
 	be = backend_of_attr(qa);
-	if (be != QQ_EBPF && be != QQ_KPROBE)
-		errx(1, "bad backend");
 
-	linepos = printf("%s @ %s", t->name,
-	    be == QQ_EBPF ? "ebpf" : "kprobe");
-	while (++linepos < 32)
+	linepos = printf("%s", t->name);
+	if (be != -1) {
+		linepos += printf(" @ %s",
+		    be == QQ_EBPF ? "ebpf" :
+		    be == QQ_KPROBE ? "kprobe" :
+		    be == QQ_NOVA ? "nova" :
+		    "unknown");
+	}
+
+	while (++linepos < STATUS_LINELEN)
 		putchar('.');
 
 	fflush(stdout);
-
-	if (((t->backend & be) == 0) || t->excluded) {
-		x = color(YELLOW);
-		printf("n/a\n");
-		color(x);
-		fflush(stdout);
-
-		return (0);
-	}
 
 	if (noforkflag) {
 		r = run_test_doit(t, qa);
@@ -1381,15 +2544,25 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 			x = color(GREEN);
 			printf("ok\n");
 			color(x);
+			progress_add(progress, GREEN);
 		} else {
 			x = color(RED);
 			printf("failed\n");
 			color(x);
+			progress_add(progress, RED);
 		}
 		fflush(stdout);
 
 		return (r);
 	}
+
+	if (tflag) {
+		tracefd = open("/sys/kernel/tracing/trace_pipe",
+		    O_RDONLY | O_NONBLOCK);
+		if (tracefd == -1)
+			warn("can't open trace_pipe");
+	} else
+		tracefd = -1;
 
 	/*
 	 * Create a pipe to save the child stderr, so we don't get crappy
@@ -1427,39 +2600,81 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 	for (;;) {
 		fd_set		rfds;
 		struct timeval	tv;
-		char		buf[4096];
+		int		nfds;
 
 		spin();
 		tv.tv_sec = 0;
-		tv.tv_usec = 25;
+		tv.tv_usec = 100000; /* 100ms */
 
 		FD_ZERO(&rfds);
 		FD_SET(child_stderr[0], &rfds);
+		if (tracefd != -1)
+			FD_SET(tracefd, &rfds);
 
-		r = select(child_stderr[0] + 1, &rfds, NULL, NULL, &tv);
+		nfds = child_stderr[0] > tracefd ?
+		    child_stderr[0] + 1 : tracefd + 1;
+		r = select(nfds, &rfds, NULL, NULL, &tv);
 		if (r == -1 && (errno == EINTR))
 			continue;
 		else if (r == -1)
 			err(1, "select");
 		else if (r == 0)
 			continue;
-		if (!FD_ISSET(child_stderr[0], &rfds))
-			errx(1, "rfds should be set");
 
-		n = qread(child_stderr[0], buf, sizeof(buf));
-		if (n == -1)
-			err(1, "read");
-		else if (n == 0) {
-			close(child_stderr[0]);
-			break;
+		if (tracefd != -1 && FD_ISSET(tracefd, &rfds)) {
+			n = qread(tracefd, buf, sizeof(buf));
+			/*
+			 * Tracepipe is a bit special, EOF is just a marker of
+			 * "no current data to be read", so we basically ignore
+			 * it.
+			 */
+			if (n == -1 && errno != EAGAIN)
+				err(1, "read tracepipe");
+			else if (n > 0) {
+				/* n is positive, move to the stream */
+				if (fwrite(buf, 1, n, child_stream) != (size_t)n)
+					err(1, "fwrite child_stream");
+				if (ferror(child_stream))
+					err(1, "ferror child_stream");
+				if (feof(child_stream))
+					errx(1, "feof child_stream");
+			}
 		}
-		/* n is positive, move to the stream */
-		if (fwrite(buf, 1, n, child_stream) != (size_t)n)
-			err(1, "fwrite");
-		if (ferror(child_stream))
-			err(1, "fwrite");
-		if (feof(child_stream))
-			errx(1, "fwrite got EOF");
+
+		if (FD_ISSET(child_stderr[0], &rfds)) {
+			n = qread(child_stderr[0], buf, sizeof(buf));
+			if (n == -1)
+				err(1, "read child_stderr[0]");
+			else if (n == 0) {
+				close(child_stderr[0]);
+				break;
+			}
+			/* n is positive, move to the stream */
+			if (fwrite(buf, 1, n, child_stream) != (size_t)n)
+				err(1, "fwrite child_stream 2");
+			if (ferror(child_stream))
+				err(1, "ferror child_stream 2");
+			if (feof(child_stream))
+				errx(1, "feof child_stream 2");
+		}
+	}
+
+	if (tracefd != -1) {
+		/*
+		 * Make sure to drain until we got it all
+		 */
+		while ((n = qread(tracefd, buf, sizeof(buf))) > 0) {
+			if (fwrite(buf, 1, n, child_stream) != (size_t)n)
+				err(1, "fwrite child_stream 3");
+			if (ferror(child_stream))
+				err(1, "ferror child_stream 3");
+			if (feof(child_stream))
+				errx(1, "feof child_stream 3");
+		}
+		if (n == -1 && errno != EAGAIN)
+			warn("read tracefd");
+		close(tracefd);
+		tracefd = -1;
 	}
 
 	/*
@@ -1496,8 +2711,12 @@ run_test(struct test *t, struct quark_queue_attr *qa)
 	child_buf = NULL;
 	child_buflen = 0;
 
-	if (WIFEXITED(status))
+	if (WIFEXITED(status)) {
+		progress_add(progress, WEXITSTATUS(status) == 0 ? GREEN : RED);
 		return (WEXITSTATUS(status));
+	}
+
+	progress_add(progress, RED);
 
 	return (-1);
 }
@@ -1509,47 +2728,100 @@ run_tests(int argc, char *argv[])
 	int			 failed, i;
 	struct quark_queue_attr	 bpf_attr;
 	struct quark_queue_attr	 kprobe_attr;
+	struct quark_queue_attr	 nova_attr;
+	struct quark_queue_attr	*attr;
+	struct progress		 progress;
 
 	quark_queue_default_attr(&bpf_attr);
 	bpf_attr.flags &= ~QQ_ALL_BACKENDS;
 	bpf_attr.flags |= QQ_EBPF | QQ_ENTRY_LEADER;
 	bpf_attr.hold_time = 100;
+	bpf_attr.max_env = 32768;
 
 	quark_queue_default_attr(&kprobe_attr);
 	kprobe_attr.flags &= ~QQ_ALL_BACKENDS;
 	kprobe_attr.flags |= QQ_KPROBE | QQ_ENTRY_LEADER;
 	kprobe_attr.hold_time = 100;
+	kprobe_attr.max_env = 32768;
 
+	quark_queue_default_attr(&nova_attr);
+	nova_attr.flags &= ~QQ_ALL_BACKENDS;
+	nova_attr.flags |= QQ_NOVA | QQ_ENTRY_LEADER;
+	nova_attr.hold_time = 100;
+	nova_attr.max_env = 32768;
+
+	bzero(&progress, sizeof(progress));
 	failed = 0;
-	if (argc == 0) {
-		for (t = all_tests; t->name != NULL; t++) {
-			if (bflag && run_test(t, &bpf_attr) != 0)
-				failed++;
-			if (kflag && run_test(t, &kprobe_attr) != 0)
-				failed++;
-		}
-	} else {
-		for (i = 0; i < argc; i++) {
-			t = lookup_test(argv[i]);
-			if (t == NULL)
-				errx(1, "test %s doesn't exist", argv[i]);
-			if (bflag && run_test(t, &bpf_attr) != 0)
-				failed++;
-			if (kflag && run_test(t, &kprobe_attr) != 0)
-				failed++;
-		}
+
+	/*
+	 * If argc != 0, only consider specified tests.
+	 */
+	if (argc != 0) {
+		for (t = all_tests; t->name != NULL; t++)
+			t->excluded = 1;
+		for (i = 0; i < argc; i++)
+			for (t = all_tests; t->name != NULL; t++)
+				if (!strcmp(t->name, argv[i]))
+					include_test(t->name);
 	}
 
+	/*
+	 * Maybe exclude tests depending on the backend
+	 */
+	for (t = all_tests; t->name != NULL; t++) {
+		if ((t->backend == QQ_EBPF && !bflag) ||
+		    (t->backend == QQ_KPROBE && !kflag) ||
+		    (t->backend == QQ_NOVA && !nflag))
+			t->excluded = 1;
+	}
+
+	for (t = all_tests; t->name != NULL; t++) {
+		if (t->excluded)
+			continue;
+		progress.total++;
+	}
+
+	if (progress.total == 0)
+		errx(1, "nothing to run");
+
+	hide_cursor();
+	for (t = all_tests; t->name != NULL; t++) {
+		if (t->excluded)
+			continue;
+		if (t->backend == QQ_EBPF)
+			attr = &bpf_attr;
+		else if (t->backend == QQ_KPROBE)
+			attr = &kprobe_attr;
+		else if (t->backend == QQ_NOVA)
+			attr = &nova_attr;
+		else
+			attr = NULL;
+		if (run_test(&progress, t, attr) != 0)
+			failed++;
+	}
+	progress_print(&progress);
+	show_cursor();
+
 	return (failed);
+}
+
+static void
+sigint_handler(int sig)
+{
+	show_cursor();
+	raise(sig);
 }
 
 int
 main(int argc, char *argv[])
 {
-	int		  ch, failed, x;
-	struct test	 *t;
+	int			 ch, failed, x;
+	struct sigaction	 sigact;
 
-	while ((ch = getopt(argc, argv, "1bhklvVx:")) != -1) {
+	fancy_tty = probe_fancy_tty();
+	in_valgrind = getenv("VALGRIND") != NULL;
+
+	while ((ch = getopt(argc, argv, "1bhklntvVx:")) != -1) {
 		switch (ch) {
 		case '1':
 			noforkflag = 1;
@@ -1569,6 +2841,12 @@ main(int argc, char *argv[])
 		case 'l':
 			display_tests();
 			break;	/* NOTREACHED */
+		case 'n':
+			nflag = 1;
+			break;
+		case 't':
+			tflag = 1;
+			break;
 		case 'v':
 			quark_verbose++;
 			break;
@@ -1576,20 +2854,32 @@ main(int argc, char *argv[])
 			display_version();
 			break;	/* NOTREACHED */
 		case 'x':
-			if ((t = lookup_test(optarg)) == NULL)
-				errx(1, "test %s doesn't exist", optarg);
-			t->excluded = 1;
+			exclude_test(optarg);
 			break;
 		default:
 			usage();
 		}
 	}
 
-	if (!bflag && !kflag)
+	if (tflag && noforkflag)
+		usage();
+
+	boottime = fetch_boottime();
+
+	/*
+	 * Run bpf and kprobe by default, don't run nova
+	 */
+	if (!bflag && !kflag && !nflag)
 		bflag = kflag = 1;
 
 	argc -= optind;
 	argv += optind;
+
+	bzero(&sigact, sizeof(sigact));
+	sigact.sa_flags = SA_RESTART | SA_RESETHAND;
+	sigact.sa_handler = &sigint_handler;
+	if (sigaction(SIGINT, &sigact, NULL) == -1)
+		warn("sigaction");
 
 	failed = run_tests(argc, argv);
 

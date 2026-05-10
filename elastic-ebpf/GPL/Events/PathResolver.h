@@ -66,13 +66,33 @@ ebpf_resolve_path_to_string(char *buf, struct path *path, const struct task_stru
     // All struct vfsmount's are stored in a struct mount. We need fields in
     // the struct mount to continue the dentry walk when we hit the root of a
     // mounted filesystem.
-    struct mount *mnt          = container_of(curr_vfsmount, struct mount, mnt);
-    struct dentry *curr_dentry = BPF_CORE_READ(path, dentry);
+    struct mount *mnt                    = container_of(curr_vfsmount, struct mount, mnt);
+    struct dentry *curr_dentry           = BPF_CORE_READ(path, dentry);
+    struct dentry *leaf_parent           = BPF_CORE_READ(curr_dentry, d_parent);
+    const struct dentry_operations *d_op = BPF_CORE_READ(curr_dentry, d_op);
     struct dentry **dentry_arr;
 
     // Ensure we make buf an empty string early up here so if we exit with any
     // sort of error, we won't leave garbage in it if it's uninitialized
     buf[0] = '\0';
+
+    // Pseudo / anonymous dentries (memfd, anon_inode, pipefs, sockfs, ...)
+    // are self-parented and live on kernel-internal mounts that are never
+    // grafted onto the task's mount tree. Walking the parent chain spins
+    // until truncation and produces garbage. The kernel's d_path() handles
+    // these via dentry->d_op->d_dname; mirror that here by emitting d_name
+    // directly. For memfd execs this yields "memfd:<name>", matching what
+    // d_path() emits (minus the " (deleted)" suffix simple_dname appends).
+    if (curr_dentry == leaf_parent && d_op != NULL &&
+        BPF_CORE_READ(d_op, d_dname) != NULL) {
+        struct qstr name = BPF_CORE_READ(curr_dentry, d_name);
+        int ret = bpf_probe_read_kernel_str(buf, PATH_MAX, (void *)name.name);
+        if (ret <= 0) {
+            bpf_printk("could not read pseudo d_name at %p", name.name);
+            goto out_err;
+        }
+        return ret;
+    }
 
     u32 zero = 0;
     if (!(dentry_arr = bpf_map_lookup_elem(&path_resolver_dentry_scratch_map, &zero))) {

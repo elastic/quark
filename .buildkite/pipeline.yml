@@ -1,7 +1,7 @@
 steps:
   - label: "build amd64 in docker"
     key: make_docker
-    command: "make docker"
+    command: "make docker NO_GO=y WITH_BTFHUB=y"
     artifact_paths:
       - "initramfs.gz"
     agents:
@@ -11,7 +11,7 @@ steps:
 
   - label: "build amd64 in a centos7 container"
     key: make_centos7
-    command: "make centos7"
+    command: "make centos7 NO_GO=y WITH_BTFHUB=y"
     artifact_paths:
       - "quark-test"
     agents:
@@ -21,7 +21,7 @@ steps:
 
   - label: "build arm64 cross-compiled in docker"
     key: make_docker_cross_arm64
-    command: "make docker-cross-arm64"
+    command: "make docker-cross-arm64 NO_GO=y WITH_BTFHUB=y"
     agents:
       image: family/core-ubuntu-2404
       provider: gcp
@@ -29,7 +29,7 @@ steps:
 
   - label: "build amd64 in an alpine container"
     key: make_alpine
-    command: "make alpine"
+    command: "make alpine NO_GO=y WITH_BTFHUB=y"
     agents:
       image: family/core-ubuntu-2404
       provider: gcp
@@ -53,6 +53,16 @@ steps:
       image: family/core-ubuntu-2404
       provider: gcp
       machineType: n2-highcpu-8
+      enableNestedVirtualization: true
+
+  - label: "test-go"
+    key: test_go
+    # we trigger a full rebuild to make sure dependencies for go are correct
+    command: "./.buildkite/runtestgo.sh"
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
       enableNestedVirtualization: true
 
   - label: "quark-test on fedora 28 (no bpf)"
@@ -220,6 +230,28 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
+  - label: "quark-test on fedora 43"
+    key: test_fedora_43
+    command: "./.buildkite/runtest_distro.sh fedora 43"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on fedora 44"
+    key: test_fedora_44
+    command: "./.buildkite/runtest_distro.sh fedora 44"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
   - label: "quark-test on rhel 8"
     key: test_rhel_8
     command: "./.buildkite/runtest_distro.sh rhel 8"
@@ -255,7 +287,7 @@ steps:
 
   - label: "quark-test on rhel 8.5 (no file)"
     key: test_rhel_8_5
-    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file"
+    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2"
     depends_on:
       - make_docker
     agents:
@@ -266,7 +298,7 @@ steps:
 
   - label: "quark-test on rhel 8.6 (no file)"
     key: test_rhel_8_6
-    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file"
+    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2"
     depends_on:
       - make_docker
     agents:
@@ -277,7 +309,7 @@ steps:
 
   - label: "quark-test on rhel 8.7 (no file)"
     key: test_rhel_8_7
-    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file"
+    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2"
     depends_on:
       - make_docker
     agents:
@@ -352,9 +384,9 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 9.3"
+  - label: "quark-test on rhel 9.3 (memfd+shmget broken)"
     key: test_rhel_9_3
-    command: "./.buildkite/runtest_distro.sh rhel 9.3"
+    command: "./.buildkite/runtest_distro.sh rhel 9.3 -x t_memfd -x t_shmget"
     depends_on:
       - make_docker
     agents:
@@ -454,6 +486,17 @@ steps:
   - label: "quark-test on ubuntu 25.04"
     key: test_ubuntu_25_04
     command: "./.buildkite/runtest_distro.sh ubuntu 25.04"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on ubuntu 26.04"
+    key: test_ubuntu_26_04
+    command: "./.buildkite/runtest_distro.sh ubuntu 26.04"
     depends_on:
       - make_docker
     agents:

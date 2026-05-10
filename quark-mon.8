@@ -6,11 +6,13 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDeFkMNSstv
+.Op Fl BbDEeFGgHhkMNnSsTtv
 .Op Fl C Ar filename
+.Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
 .Op Fl P Ar ppid
+.Op Fl r Ar rulefile
 .Nm quark-mon
 .Fl h
 .Nm quark-mon Fl V
@@ -52,6 +54,8 @@ dot -Tsvg filename -o filename.svg
 .It Fl D
 Drop priviledges to nobody and chroot to /var/empty, useful to show how quark
 can run without priviledges.
+.It Fl E
+Output ECS JSON to stdout (experimental).
 .It Fl e
 Include
 .Em proc_entry_leader
@@ -63,14 +67,27 @@ Entry leader is how the process entered the system, it is disabled by default as
 it is Elastic/ECS specific.
 .It Fl F
 Enable file events (experimental).
+.It Fl G
+Enables a getpid probe, only for benchmarking,
+.Em don't
+use this otherwise!
 .It Fl g
 Use minimal aggregation, fork, exec and exit will
 .Em not
 be aggregated.
+.It Fl H
+Enable SHMGET events.
 .It Fl h
 Display this manpage.
+.It Fl K Ar kubeconfig
+Enrich events with kubernetes metadata, requires quark-kube-talker.
+.Ar kubeconfig
+is the path to the kubernetes configuration, usually
+.Pa $HOME/.kube/config .
 .It Fl k
 Attempt kprobe as the backend.
+.It Fl L
+Enable module loading events.
 .It Fl l Ar maxlength
 Maximum lenght of the quark queue, essentially how much quark is willing to
 buffer, refer to
@@ -93,6 +110,8 @@ This is used purely for internal debugging.
 Run in a simple benchmark form that only counts and display stats.
 .It Fl N
 Enable DNS events (experimental).
+.It Fl n
+Attempt NOVA as the backend.
 .It Fl P Ar ppid
 Display only events where parent pid is
 .Ar ppid .
@@ -100,6 +119,14 @@ Display only events where parent pid is
 Enable socket events (experimental).
 .It Fl s
 Don't send the initial snapshot of existing processes.
+.It Fl r Ar rulefile
+Read rules from
+.Ar rulefile ,
+use
+.Em -
+for stdin.
+.It Fl T
+Enable ptrace event tracing.
 .It Fl t
 Don't supress thread events, this is only useful for debugging and will likely
 be zapped in the future.

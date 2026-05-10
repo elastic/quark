@@ -33,26 +33,48 @@ EXTRA_LDFLAGS+= -lfts
 endif
 
 ifeq ($(V),1)
-	Q =
-	msg =
-	QDOCKER =
+	Q=
+	msg=
+	QDOCKER=
+	EXTRA_OPTIONS+= V=1
 else
-	Q = @
-	msg = @printf '  %-8s %s%s\n' "$(1)" "$(2)" "$(if $(3), $(3))";
-	QREDIR = > /dev/null
-	QDOCKER = -q
+	Q= @
+	msg= @printf '  %-8s %s%s\n' "$(1)" "$(2)" "$(if $(3), $(3))";
+	QREDIR= > /dev/null
+	QDOCKER= -q
 endif
 
 define assert_no_syslib
   $(if $(SYSLIB), $(error cant build target $@ with SYSLIB))
 endef
 
-CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
-ifdef CENTOS7
-CFLAGS+= -std=gnu99 -DNO_PUSH_PRAGMA
+ifdef SYSLIB
+ifndef NO_GO
+$(error defining SYSLIB implies defining NO_GO, define both!)
+endif
 endif
 
-CPPFLAGS?= -D_GNU_SOURCE
+CFLAGS?= -g -O2 -fno-strict-aliasing -fPIC
+ifdef CENTOS7
+CFLAGS+= -std=gnu99
+endif
+
+CPPFLAGS+= -D_GNU_SOURCE
+ifndef MUSL
+CPPFLAGS+= -DHAVE_GETPWENT_R
+CPPFLAGS+= -DHAVE_GETGRENT_R
+endif
+ifdef CENTOS7
+CPPFLAGS+= -DNO_MEMFD -DNO_SHM_OPEN
+else
+CPPFLAGS+= -DHAVE_EXPLICIT_BZERO
+CPPFLAGS+= -DHAVE_REALLOCARRAY
+CPPFLAGS+= -DHAVE_STATIC_ASSERT
+endif
+ifdef WITH_BTFHUB
+CPPFLAGS+= -DWITH_BTFHUB
+EXTRA_OPTIONS+= WITH_BTFHUB=$(WITH_BTFHUB)
+endif
 ifndef SYSLIB
 CPPFLAGS+= -Iinclude
 endif
@@ -97,19 +119,25 @@ EEBPF_FILES:= $(shell find elastic-ebpf)
 EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)
 
 # LIBQUARK
-LIBQUARK_DEPS:= $(wildcard *.h) bpf_probes_skel.h
+LIBQUARK_DEPS:= $(wildcard *.h)
+LIBQUARK_DEPS:= $(filter-out nova_skel.h, $(LIBQUARK_DEPS))
+LIBQUARK_DEPS:= $(filter-out bpf_probes_skel.h, $(LIBQUARK_DEPS))
+LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
 ifndef SYSLIB
 LIBQUARK_DEPS+= $(EEBPF_FILES) include
 endif
-LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
 LIBQUARK_SRCS:=			\
 	base64.c		\
 	bpf_queue.c		\
 	btfhub.c		\
 	compat.c		\
+	ecs.c			\
+	hanson.c		\
 	kprobe_queue.c		\
-	quark.c			\
+	parse.tab.c		\
+	nova_queue.c		\
 	qbtf.c			\
+	quark.c			\
 	qutil.c
 # CJSON
 # We build the source directly as it's just one file
@@ -155,6 +183,7 @@ LIBBPF_DEPS+=	$(ELFTOOLCHAIN_FILES)			\
 endif
 LIBBPF_EXTRA_CFLAGS:= -DQUARK
 LIBBPF_EXTRA_CFLAGS+= -fPIC
+LIBBPF_EXTRA_CFLAGS+= -Wno-discarded-qualifiers
 LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/libelf
 LIBBPF_EXTRA_CFLAGS+= -I../../elftoolchain/common
 LIBBPF_EXTRA_CFLAGS+= -I../../zlib
@@ -162,12 +191,20 @@ ifdef CENTOS7
 LIBBPF_EXTRA_CFLAGS+= -Wno-address
 endif
 
-# BPFPROG (kernel side)
-BPFPROG_OBJ:= bpf_probes.o
-BPFPROG_DEPS:= bpf_probes.c
+# BPFPROBES (kernel side)
+BPFPROBES_DEPS:= bpf_probes.c
 ifndef SYSLIB
-BPFPROG_DEPS+= $(LIBBPF_DEPS) $(EEBPF_FILES) include
+BPFPROBES_DEPS+= $(LIBBPF_DEPS) $(EEBPF_FILES) include
 endif
+
+# NOVA
+NOVA_DEPS:= nova.bpf.c nova.h
+ifndef SYSLIB
+NOVA_DEPS+= $(LIBBPF_DEPS) include
+endif
+# Go files
+GO_FILES:= $(shell find go/)
+QUARK_GO_DEPS:= $(LIBQUARK_DEPS) $(LIBQUARK_STATIC_BIG) $(GO_FILES)
 
 # SVGS
 SVGS:= $(patsubst %.dot,%.svg,$(wildcard *.dot))
@@ -178,11 +215,17 @@ DOCS_HTML:= $(patsubst %.3,docs/%.3.html,$(wildcard *.3))
 DOCS_HTML+= $(patsubst %.7,docs/%.7.html,$(wildcard *.7))
 DOCS_HTML+= $(patsubst %.8,docs/%.8.html,$(wildcard *.8))
 
-all:	$(LIBQUARK_TARGET)		\
-	quark-mon			\
-	quark-btf			\
-	quark-test			\
-	quark-kube-talker
+ALL_TARGETS+=$(LIBQUARK_TARGET)
+ALL_TARGETS+=quark-mon
+ALL_TARGETS+=quark-btf
+ALL_TARGETS+=quark-test
+ALL_TARGETS+=hanson-bench
+ifndef NO_GO
+ALL_TARGETS+=quark-kube-talker
+ALL_TARGETS+=quark-go-test
+endif
+
+all: $(ALL_TARGETS)
 
 $(ZLIB_STATIC): $(ZLIB_FILES)
 	$(call assert_no_syslib)
@@ -219,11 +262,15 @@ $(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
 	$(call msg,CC,$@)
 	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
 
-bpf_probes_skel.h: $(BPFPROG_OBJ)
-	$(call msg,BPFTOOL,bpf_probes_skel.h)
-	$(Q)$(BPFTOOL) gen skeleton $(BPFPROG_OBJ) > bpf_probes_skel.h
+# Explicit dependency so we only rebuild bpf_queue.o when the skel changes
+bpf_queue.o: bpf_probes_skel.h
 
-$(BPFPROG_OBJ): $(BPFPROG_DEPS)
+# careful! stupid bpftool writes to stdout even if it fails!
+bpf_probes_skel.h: bpf_probes.o
+	$(call msg,BPFTOOL,$@)
+	$(Q)$(BPFTOOL) gen skeleton $^ > $@
+
+bpf_probes.o: $(BPFPROBES_DEPS)
 	$(call msg,BPF_CC,$@)
 	$(Q)$(BPF_CC)								\
 		-g -O2								\
@@ -235,6 +282,29 @@ $(BPFPROG_OBJ): $(BPFPROG_DEPS)
 		-c bpf_probes.c							\
 		-o $@
 
+# Explicit dependency so we only rebuild nova_queue.o when the skel changes
+nova_queue.o: nova_skel.h
+
+# careful! stupid bpftool writes to stdout even if it fails!
+nova_skel.h: nova.bpf.o
+	$(call msg,BPFTOOL,$@)
+	$(Q)$(BPFTOOL) gen skeleton $^ name nova > $@
+
+nova.bpf.o: $(NOVA_DEPS)
+	$(call msg,BPF_CC,$@)
+	$(Q)$(BPF_CC)								\
+		-g -O2								\
+		-target $(BPF_ARCH)						\
+		-Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)			\
+		$(CPPFLAGS)							\
+		$(CDIAGFLAGS)	-Wno-strict-prototypes				\
+		-c nova.bpf.c							\
+		-o $@
+
+parse.tab.c: parse.y quark.h
+	$(call msg,BISON,$@)
+	$(Q)bison parse.y
+
 DOCKER_RUN_ARGS=$(QDOCKER)				\
 		-v $(PWD):$(PWD)			\
 		-w $(PWD)				\
@@ -243,7 +313,8 @@ DOCKER_RUN_ARGS=$(QDOCKER)				\
 
 docker: docker-image clean-all
 	$(call msg,DOCKER-RUN,Dockerfile)
-	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS) $(SHELL) -c "make -C $(PWD) all initramfs.gz"
+	$(Q)$(DOCKER) run $(DOCKER_RUN_ARGS)		\
+		$(SHELL) -c "make $(EXTRA_OPTIONS) -C $(PWD) $(ALL_TARGETS) initramfs.gz"
 
 docker-cross-arm64: clean-all docker-image manpages.h
 	$(call msg,DOCKER-RUN,Dockerfile)
@@ -254,7 +325,7 @@ docker-cross-arm64: clean-all docker-image manpages.h
 		-e AR=aarch64-linux-gnu-ar		\
 		-e GOARCH=arm64				\
 		$(DOCKER_RUN_ARGS)			\
-		$(SHELL) -c "make -C $(PWD) all initramfs.gz"
+		$(SHELL) -c "make -C $(PWD) $(ALL_TARGETS) initramfs.gz"
 
 docker-image: clean-all
 	$(call msg,DOCKER-IMAGE,Dockerfile)
@@ -275,17 +346,23 @@ CENTOS7_RUN_ARGS=$(QDOCKER)				\
 		-e CENTOS7=y				\
 		centos7-quark-builder
 
+# These are targets that we can't build on centos7 since it's too old
+# We build them in the ubuntu24 docker container first, and then
+# continue with the rest of the build on centos7.
+CENTOS7_BORROW_TARGETS+=bpf_probes.o bpf_probes_skel.h
+CENTOS7_BORROW_TARGETS+=nova.bpf.o nova_skel.h
+
 centos7: clean-all docker-image centos7-image
 	# We first make only bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
 	# in the modern Ubuntu image, we can't make those on centos7.
 	$(DOCKER) run					\
 		$(DOCKER_RUN_ARGS)			\
-		$(SHELL) -c "make -C $(PWD) bpf_probes.o bpf_probes_skel.h quark-kube-talker"
+		$(SHELL) -c "make -C $(PWD) $(CENTOS7_BORROW_TARGETS)"
 	# Now we build the rest of the suite as it won't try to rebuild
 	# bpf_probes.o, bpf_probes_skel.h and quark-kube-talker
 	$(DOCKER) run					\
 		$(CENTOS7_RUN_ARGS)			\
-		$(SHELL) -c "make -j1 -C $(PWD)"
+		$(SHELL) -c "make -j1 $(EXTRA_OPTIONS) -C $(PWD) $(ALL_TARGETS)"
 
 centos7-image: clean-all
 	$(call msg,DOCKER-IMAGE,Dockerfile.centos7)
@@ -308,7 +385,7 @@ alpine: alpine-image clean-all
 	$(call msg,ALPINE-DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run 				\
 		$(ALPINE_RUN_ARGS) $(SHELL)		\
-		-c "make -C $(PWD) all initramfs.gz"
+		-c "make $(EXTRA_OPTIONS) -C $(PWD) $(ALL_TARGETS) initramfs.gz"
 
 alpine-image: clean-all
 	$(call msg,ALPINE-IMAGE,Dockerfile.alpine)
@@ -335,8 +412,16 @@ include: $(LIBBPF_DEPS) cJSON.h
 
 svg: $(SVGS)
 
+scan:
+	@echo "NOTE! Expect a bunch of false positives."
+	@echo "clang doesn't understand TAILQ_REMOVE and friends."
+	scan-build -o /tmp/quark-scan make
+
 test: quark-test
 	$(SUDO) ./quark-test
+
+test-go: quark-go-test
+	$(SUDO) ./quark-go-test -test.v
 
 test-kernel: initramfs.gz
 	./ktest-all.sh
@@ -349,16 +434,26 @@ test-kernel: initramfs.gz
 # positives.
 #
 test-valgrind: quark-test
-	$(SUDO) QUARK_BTF_PATH=/sys/kernel/btf/vmlinux			\
+	$(SUDO) VALGRIND=1 QUARK_BTF_PATH=/sys/kernel/btf/vmlinux	\
 		valgrind						\
 		--trace-children=no					\
 		--child-silent-after-fork=yes				\
+		--leak-check=full					\
+		--error-exitcode=1					\
 		./quark-test -1						\
 		2>&1
 # | grep -v "^--.*WARNING: unhandled eBPF command"
 
 initramfs:
 	mkdir -p initramfs/bin
+	mkdir -p initramfs/etc
+	echo "NAME=\"quark kernel testing\"" > initramfs/etc/os-release
+	echo "VERSION=\"1.23.4 iota\"" >> initramfs/etc/os-release
+	echo "RELEASE_TYPE=\"testing\"" >> initramfs/etc/os-release
+	echo "ID=\"quark\"" >> initramfs/etc/os-release
+	echo "VERSION_ID=\"1.23.4\"" >> initramfs/etc/os-release
+	echo "VERSION_CODENAME=\"iota\"" >> initramfs/etc/os-release
+	echo "PRETTY_NAME=\"Quark kernel testing initramfs\"" >> initramfs/etc/os-release
 
 initramfs.gz: init quark-mon-static quark-btf-static quark-test-static true initramfs
 	$(call assert_no_syslib)
@@ -377,6 +472,11 @@ init: init.c
 true: true.c
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
+
+hanson-bench: hanson-bench.c hanson.o compat.o quark.h
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+		-o $@ $< hanson.o compat.o $(EXTRA_LDFLAGS)
 
 quark-mon: quark-mon.c manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
@@ -411,9 +511,14 @@ quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
-quark-kube-talker: quark-kube-talker.go go.mod
+# kube-talker does not use quark-go
+quark-kube-talker: $(GO_FILES)
 	$(call msg,GO,$@)
-	$(Q)$(GO) build -o $@ quark-kube-talker.go $(QREDIR)
+	$(Q)$(GO) build -C go/$@ -o $(PWD)/$@ $(QREDIR)
+
+quark-go-test: $(QUARK_GO_DEPS)
+	$(call msg,GO,$@)
+	$(Q)cd go/quark && go test -c -o ../../quark-go-test
 
 man-embedder: man-embedder.c
 	$(call msg,CC,$@)
@@ -483,6 +588,8 @@ clean:
 	$(Q)rm -f			\
 		*.o			\
 		*.a			\
+		parse.tab.c		\
+		hanson-bench		\
 		man-embedder		\
 		manpages.h		\
 		quark-mon		\
@@ -492,8 +599,10 @@ clean:
 		quark-test		\
 		quark-test-static	\
 		quark-kube-talker	\
+		quark-go-test		\
 		true			\
-		btf_prog_skel.h		\
+		bpf_probes_skel.h	\
+		nova_skel.h		\
 		init
 	$(Q)rm -rf initramfs
 
@@ -504,7 +613,7 @@ clean-all: clean
 	$(Q)rm -f initramfs.gz
 	$(Q)make -C $(LIBBPF_SRC) clean NO_PKG_CONFIG=y
 	$(Q)make -C $(ELFTOOLCHAIN_SRC)/libelf clean
-	$(Q)make -C $(ZLIB_SRC) clean || true
+	$(Q)test -f $(ZLIB_SRC)/Makefile && make -C $(ZLIB_SRC) clean || true
 	$(Q)rm -f $(ZLIB_SRC)/{Makefile,zconf.h,configure.log}
 
 clean-docs:
@@ -588,7 +697,9 @@ dist: all
 	docker-image		\
 	docker-shell		\
 	eebpf-sync		\
+	scan			\
 	test			\
+	test-go			\
 	test-kernel		\
 	test-valgrind
 
@@ -603,7 +714,9 @@ dist: all
 	docker-image		\
 	docker-shell		\
 	initramfs.gz		\
+	scan			\
 	test			\
+	test-go			\
 	test-kernel		\
 	test-valgrind
 

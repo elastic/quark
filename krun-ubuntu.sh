@@ -76,6 +76,7 @@ case "$UBUNTU_VERSION" in
 	22.04) CODENAME=jammy ;;
 	24.04) CODENAME=noble ;;
 	25.04) CODENAME=plucky ;;
+	26.04) CODENAME=resolute ;;
 	*) die "Unsupported Ubuntu version: $UBUNTU_VERSION" ;;
 esac
 

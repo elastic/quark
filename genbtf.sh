@@ -144,14 +144,17 @@ function do_arch
 
 }
 
+printf "#ifdef WITH_BTFHUB\n\n"
 do_arch amd64
 do_arch arm64
+printf "#endif /* __WITH_BTFHUB__ */\n\n"
 
 cat <<EOF
 struct quark_btf *all_btfs[] = {
 EOF
 
-	printf "\n#ifdef __amd64__\n"
+	printf "\n#ifdef WITH_BTFHUB\n\n"
+	printf "#ifdef __amd64__\n"
 	for name in "${Good_amd64[@]}"; do
 		printf "\t&%s,\n" "$name"
 	done
@@ -162,6 +165,7 @@ EOF
 		printf "\t&%s,\n" "$name"
 	done
 	printf "#endif /* __aarch64__ */\n\n"
+	printf "#endif /* __WITH_BTFHUB__ */\n\n"
 
 cat <<EOF
 	NULL

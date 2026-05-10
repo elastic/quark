@@ -22,22 +22,13 @@
 /* tty_write */
 DECL_FIELD_OFFSET(iov_iter, __iov);
 
-// Limits on large things we send up as variable length parameters.
-//
-// These should be kept _well_ under half the size of the event_buffer_map or
-// the verifier will be unhappy due to bounds checks. Putting a cap on these
-// things also prevents any one process from DoS'ing and filling up the
-// ringbuffer with super rapid-fire events.
-#define ARGV_MAX 20480
-#define ENV_MAX 40960
-#define TTY_OUT_MAX 8192
-
 #define S_ISUID 0004000
 #define S_ISGID 0002000
 
 SEC("tp_btf/sched_process_fork")
 int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct task_struct *child)
 {
+    preempt_disable();
     // Ignore the !is_thread_group_leader(child) case as we want to ignore
     // thread creations in the same thread group.
     //
@@ -81,6 +72,7 @@ int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct 
     ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
 
 out:
+    preempt_enable();
     return 0;
 }
 
@@ -90,6 +82,7 @@ int BPF_PROG(sched_process_exec,
              pid_t old_pid,
              const struct linux_binprm *binprm)
 {
+    preempt_disable();
     if (!binprm)
         goto out;
 
@@ -152,12 +145,12 @@ int BPF_PROG(sched_process_exec,
 
     // argv
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_ARGV);
-    size  = ebpf_argv__fill(field->data, ARGV_MAX, task);
+    size  = ebpf_argv__fill(field->data, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // env
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_ENV);
-    size  = ebpf_env__fill(field->data, ENV_MAX, task);
+    size  = ebpf_env__fill(field->data, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // cwd
@@ -173,6 +166,7 @@ int BPF_PROG(sched_process_exec,
     ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
 
 out:
+    preempt_enable();
     return 0;
 }
 
@@ -196,24 +190,20 @@ out:
 // The problem is taskstats_exit__enter happens before file descriptors are
 // closed in exit_files(), so instead of emiting the event here, record that we
 // saw group_dead and delay emiting the event until sched_process_exit().
-static int taskstats_exit__enter(const struct task_struct *task, int group_dead)
+//
+// UPDATE: taskstats_exit can be compiled out of the kernel based on
+// configuration. So, instead we use disassociate_ctty (guarded by CONFIG_TTY),
+// which is hopefully less common of being compiled out. disassociate_ctty is
+// called from do_exit() only when group_dead is true, and in that case,
+// the parameter, on_exit, is set to true, and we can use current to populate
+// event data. Finally, sched_process_exit() is not called after exit_files,
+// but disassociate_ctty is.
+static int disassociate_ctty__enter(int on_exit)
 {
-    struct ebpf_events_state state = {};
-
-    if (!group_dead || is_kernel_thread(task))
-        return 0;
-
-    ebpf_events_state__set(EBPF_EVENTS_STATE_GROUP_DEAD, &state);
-
-    return 0;
-}
-
-SEC("tp_btf/sched_process_exit")
-int BPF_PROG(sched_process_exit, const struct task_struct *task)
-{
+    const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     struct ebpf_process_exit_event *event;
 
-    if (ebpf_events_state__get(EBPF_EVENTS_STATE_GROUP_DEAD) == NULL)
+    if (!on_exit || is_kernel_thread(task))
         return 0;
 
     event = get_event_buffer();
@@ -248,16 +238,55 @@ int BPF_PROG(sched_process_exit, const struct task_struct *task)
     return 0;
 }
 
-SEC("fentry/taskstats_exit")
-int BPF_PROG(fentry__taskstats_exit, const struct task_struct *task, int group_dead)
+SEC("fentry/disassociate_ctty")
+int BPF_PROG(fentry__disassociate_ctty, int on_exit)
 {
-    return taskstats_exit__enter(task, group_dead);
+    int r;
+
+    preempt_disable();
+    r = disassociate_ctty__enter(on_exit);
+    preempt_enable();
+
+    return r;
 }
 
-SEC("kprobe/taskstats_exit")
-int BPF_KPROBE(kprobe__taskstats_exit, const struct task_struct *task, int group_dead)
+SEC("kprobe/disassociate_ctty")
+int BPF_KPROBE(kprobe__disassociate_ctty, int on_exit)
 {
-    return taskstats_exit__enter(task, group_dead);
+    int r;
+
+    preempt_disable();
+    r = disassociate_ctty__enter(on_exit);;
+    preempt_enable();
+
+    return r;
+}
+
+static int setsid__exit(int evtype)
+{
+    const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+    if (is_kernel_thread(task))
+        goto out;
+
+    struct ebpf_process_setsid_event *event = get_event_buffer();
+    if (!event)
+        goto out;
+
+    event->hdr.type    = evtype;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+
+    ebpf_pid_info__fill(&event->pids, task);
+    ebpf_cred_info__fill(&event->creds, task);
+    ebpf_ctty__fill(&event->ctty, task);
+    ebpf_comm__fill(event->comm, sizeof(event->comm), task);
+    ebpf_ns__fill(&event->ns, task);
+
+    ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
+
+out:
+    return 0;
 }
 
 // tracepoint/syscalls/sys_[enter/exit]_[name] tracepoints are not available
@@ -265,33 +294,36 @@ int BPF_KPROBE(kprobe__taskstats_exit, const struct task_struct *task, int group
 SEC("tracepoint/syscalls/sys_exit_setsid")
 int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
 {
-    const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    int r;
 
-    if (is_kernel_thread(task))
-        goto out;
-
+    r = 0;
+    preempt_disable();
     if (BPF_CORE_READ(args, ret) < 0)
         goto out;
 
-    struct ebpf_process_setsid_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
-    if (!event)
-        goto out;
-
-    event->hdr.type    = EBPF_EVENT_PROCESS_SETSID;
-    event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
-
-    ebpf_pid_info__fill(&event->pids, task);
-
-    bpf_ringbuf_submit(event, 0);
+    r = setsid__exit(EBPF_EVENT_PROCESS_SETSID);
 
 out:
-    return 0;
+    preempt_enable();
+    return r;
+}
+
+SEC("tracepoint/syscalls/sys_exit_getpid")
+int tracepoint_syscalls_sys_exit_getpid(struct syscall_trace_exit *args)
+{
+    int r;
+
+    preempt_disable();
+    r = setsid__exit(EBPF_EVENT_PROCESS_GETPID);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("tp_btf/module_load")
 int BPF_PROG(module_load, struct module *mod)
 {
+    preempt_disable();
     if (ebpf_events_is_trusted_pid())
         goto out;
 
@@ -343,6 +375,7 @@ int BPF_PROG(module_load, struct module *mod)
     ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
 
 out:
+    preempt_enable();
     return 0;
 }
 
@@ -397,7 +430,13 @@ int BPF_KPROBE(kprobe__ptrace_attach,
                unsigned long addr,
                unsigned long data)
 {
-    return ptrace_event(child, request, addr, data);
+    int r;
+
+    preempt_disable();
+    r = ptrace_event(child, request, addr, data);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/arch_ptrace")
@@ -407,12 +446,19 @@ int BPF_KPROBE(kprobe__arch_ptrace,
                unsigned long addr,
                unsigned long data)
 {
-    return ptrace_event(child, request, addr, data);
+    int r;
+
+    preempt_disable();
+    r = ptrace_event(child, request, addr, data);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("tracepoint/syscalls/sys_enter_shmget")
 int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
 {
+    preempt_disable();
     if (ebpf_events_is_trusted_pid())
         goto out;
 
@@ -447,15 +493,14 @@ int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
 
     bpf_ringbuf_submit(event, 0);
 out:
+    preempt_enable();
     return 0;
 }
 
 SEC("tracepoint/syscalls/sys_enter_memfd_create")
 int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
 {
-    if (ebpf_events_is_trusted_pid())
-        goto out;
-
+    preempt_disable();
     // from: /sys/kernel/debug/tracing/events/syscalls/sys_enter_memfd_create/format
     struct memfd_create_args {
         short common_type;
@@ -467,6 +512,22 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
         unsigned long flags;
     };
     struct memfd_create_args *ex_args = (struct memfd_create_args *)ctx;
+
+    struct ebpf_events_state state = {};
+    state.memfd.flags = ex_args->flags;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_MEMFD_CREATE, &state);
+    preempt_enable();
+    return 0;
+}
+
+static int emit_memfd_create_event(const char *name)
+{
+    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_MEMFD_CREATE);
+    if (!state)
+        goto out;
+
+    if (ebpf_events_is_trusted_pid())
+        goto out;
 
     const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
@@ -480,7 +541,7 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
     event->hdr.type    = EBPF_EVENT_PROCESS_MEMFD_CREATE;
     event->hdr.ts      = bpf_ktime_get_ns();
     event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
-    event->flags       = ex_args->flags;
+    event->flags       = state->memfd.flags;
 
     ebpf_pid_info__fill(&event->pids, task);
 
@@ -491,7 +552,7 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
 
     // memfd filename
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_FILENAME);
-    size  = bpf_probe_read_user_str(field->data, PATH_MAX, ex_args->uname);
+    size  = bpf_probe_read_kernel_str(field->data, PATH_MAX, name);
     if (size <= 0)
         goto out;
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
@@ -500,6 +561,54 @@ int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
 
 out:
     return 0;
+}
+
+SEC("fentry/hugetlb_file_setup")
+int BPF_PROG(fentry__hugetlb_file_setup, const char * name)
+{
+    int r;
+
+    preempt_disable();
+    r = emit_memfd_create_event(name);
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kprobe/hugetlb_file_setup")
+int BPF_KPROBE(kprobe__hugetlb_file_setup, const char * name)
+{
+    int r;
+
+    preempt_disable();
+    r = emit_memfd_create_event(name);
+    preempt_enable();
+
+    return r;
+}
+
+SEC("fentry/shmem_file_setup")
+int BPF_PROG(fentry__shmem_file_setup, const char * name)
+{
+    int r;
+
+    preempt_disable();
+    r = emit_memfd_create_event(name);
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kprobe/shmem_file_setup")
+int BPF_KPROBE(kprobe__shmem_file_setup, const char * name)
+{
+    int r;
+
+    preempt_disable();
+    r = emit_memfd_create_event(name);
+    preempt_enable();
+
+    return r;
 }
 
 static int commit_creds__enter(struct cred *new)
@@ -525,6 +634,10 @@ static int commit_creds__enter(struct cred *new)
         event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
         ebpf_pid_info__fill(&event->pids, task);
+        ebpf_cred_info__fill(&event->creds, task);
+        ebpf_ctty__fill(&event->ctty, task);
+        ebpf_comm__fill(event->comm, sizeof(event->comm), task);
+        ebpf_ns__fill(&event->ns, task);
 
         // The legacy kprobe/tracefs implementation reports the gid even if
         // this is a UID change and vice-versa, so we have new_[r,e]gid fields
@@ -551,6 +664,10 @@ static int commit_creds__enter(struct cred *new)
         event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
         ebpf_pid_info__fill(&event->pids, task);
+        ebpf_cred_info__fill(&event->creds, task);
+        ebpf_ctty__fill(&event->ctty, task);
+        ebpf_comm__fill(event->comm, sizeof(event->comm), task);
+        ebpf_ns__fill(&event->ns, task);
 
         event->new_rgid = BPF_CORE_READ(new, gid.val);
         event->new_egid = BPF_CORE_READ(new, egid.val);
@@ -567,22 +684,41 @@ out:
 SEC("fentry/commit_creds")
 int BPF_PROG(fentry__commit_creds, struct cred *new)
 {
-    return commit_creds__enter(new);
+    int r;
+
+    preempt_disable();
+    r = commit_creds__enter(new);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/commit_creds")
 int BPF_KPROBE(kprobe__commit_creds, struct cred *new)
 {
-    return commit_creds__enter(new);
+    int r;
+
+    preempt_disable();
+    r = commit_creds__enter(new);
+    preempt_enable();
+
+    return r;
 }
 
 #define MAX_NR_SEGS 8
+
+// This should be kept _well_ under half the size of the event_buffer_map or
+// the verifier will be unhappy due to bounds checks. Putting a cap on these
+// things also prevents any one process from DoS'ing and filling up the
+// ringbuffer with super rapid-fire events.
+#define TTY_OUT_MAX 8192u
 
 static int output_tty_event(struct ebpf_tty_dev *slave, const void *base, size_t base_len)
 {
     struct ebpf_process_tty_write_event *event;
     struct ebpf_varlen_field *field;
     const struct task_struct *task;
+    u32 len_cap;
     int ret = 0;
 
     event = get_event_buffer();
@@ -595,7 +731,6 @@ static int output_tty_event(struct ebpf_tty_dev *slave, const void *base, size_t
     event->hdr.type          = EBPF_EVENT_PROCESS_TTY_WRITE;
     event->hdr.ts            = bpf_ktime_get_ns();
     event->hdr.ts_boot       = bpf_ktime_get_boot_ns_helper();
-    u64 len_cap              = base_len > TTY_OUT_MAX ? TTY_OUT_MAX : base_len;
     event->tty_out_truncated = base_len > TTY_OUT_MAX ? base_len - TTY_OUT_MAX : 0;
     event->tty               = *slave;
     ebpf_pid_info__fill(&event->pids, task);
@@ -607,6 +742,18 @@ static int output_tty_event(struct ebpf_tty_dev *slave, const void *base, size_t
 
     // tty_out
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_TTY_OUT);
+
+    /*
+     * DO NOT REMOVE THE CASTS OR A BIG AND SCARY MONSTER WILL COME AND EAT YOU!
+     * Old verifiers will lose the bound tracking when narrowing a 64bit
+     * register to 32bit, len_cap must be used as 32bit in
+     * bpf_probe_read_user(), meaning when we narrow from 64bit->32bit, it loses
+     * all bound checking, so make sure this never happens by keeping it all on
+     * 32bit land. This also depends on the compiler, so make sure to test on
+     * clang-20+.
+     */
+    len_cap = (u32)((u32)base_len > TTY_OUT_MAX ? TTY_OUT_MAX : (u32)base_len);
+
     if (bpf_probe_read_user(field->data, len_cap, base)) {
         ret = 1;
         goto out;
@@ -715,11 +862,23 @@ out:
 SEC("fentry/tty_write")
 int BPF_PROG(fentry__tty_write, struct kiocb *iocb, struct iov_iter *from)
 {
-    return tty_write__enter(iocb, from);
+    int r;
+
+    preempt_disable();
+    r = tty_write__enter(iocb, from);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kprobe/tty_write")
 int BPF_KPROBE(kprobe__tty_write, struct kiocb *iocb, struct iov_iter *from)
 {
-    return tty_write__enter(iocb, from);
+    int r;
+
+    preempt_disable();
+    r = tty_write__enter(iocb, from);
+    preempt_enable();
+
+    return r;
 }

@@ -2,19 +2,28 @@
 /* Copyright (c) 2024 Elastic NV */
 
 #include <sys/epoll.h>
+#include <sys/param.h>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/utsname.h>
 
+#include <netpacket/packet.h>
+
+#include <netinet/ether.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 
 #include <arpa/inet.h>
 
+#include <assert.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
+#include <ifaddrs.h>
 #include <fcntl.h>
 #include <fts.h>
+#include <grp.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -22,6 +31,7 @@
 #include <string.h>
 #include <strings.h>
 #include <poll.h>
+#include <pwd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -38,6 +48,8 @@ static int	socket_by_src_dst_cmp(struct quark_socket *, struct quark_socket *);
 static int	container_by_id_cmp(struct quark_container *, struct quark_container *);
 static int	pod_by_uid_cmp(struct quark_pod *, struct quark_pod *);
 static int	label_node_cmp(struct label_node *, struct label_node *);
+static int	quark_passwd_cmp(struct quark_passwd *, struct quark_passwd *);
+static int	quark_group_cmp(struct quark_group *, struct quark_group *);
 
 static void	process_cache_delete(struct quark_queue *, struct quark_process *);
 static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
@@ -82,6 +94,12 @@ RB_GENERATE(pod_by_uid, quark_pod, entry_by_uid, pod_by_uid_cmp);
 RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
 RB_GENERATE(label_tree, label_node, entry, label_node_cmp);
 
+RB_PROTOTYPE(passwd_by_uid, quark_passwd, entry, quark_passwd_cmp);
+RB_GENERATE(passwd_by_uid, quark_passwd, entry, quark_passwd_cmp);
+
+RB_PROTOTYPE(group_by_gid, quark_group, entry, quark_group_cmp);
+RB_GENERATE(group_by_gid, quark_group, entry, quark_group_cmp);
+
 struct quark {
 	unsigned int	hz;
 	u64		boottime;
@@ -100,7 +118,9 @@ raw_event_alloc(int type)
 
 	switch (raw->type) {
 	case RAW_WAKE_UP_NEW_TASK: /* FALLTHROUGH */
-	case RAW_EXIT_THREAD:
+	case RAW_EXIT_THREAD:	   /* FALLTHROUGH */
+	case RAW_ID_CHANGE:	   /* FALLTHROUGH */
+	case RAW_GETPID:
 		raw->task.exit_code = -1;
 		break;
 	case RAW_EXEC:		/* nada */
@@ -109,6 +129,10 @@ raw_event_alloc(int type)
 	case RAW_SOCK_CONN:	/* nada */
 	case RAW_PACKET:	/* caller allocates */
 	case RAW_FILE:		/* caller allocates */
+	case RAW_PTRACE:	/* nada */
+	case RAW_MODULE_LOAD:	/* caller allocates */
+	case RAW_SHM:		/* caller allocates */
+	case RAW_TTY:		/* caller allocates */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -127,8 +151,10 @@ raw_event_free(struct raw_event *raw)
 
 	task = NULL;
 	switch (raw->type) {
-	case RAW_WAKE_UP_NEW_TASK:
-	case RAW_EXIT_THREAD:
+	case RAW_WAKE_UP_NEW_TASK: /* FALLTHROUGH */
+	case RAW_EXIT_THREAD:	   /* FALLTHROUGH */
+	case RAW_ID_CHANGE:	   /* FALLTHROUGH */
+	case RAW_GETPID:
 		task = &raw->task;
 		break;
 	case RAW_EXEC:
@@ -142,12 +168,34 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
+	case RAW_PTRACE:	/* nada */
 		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
 		break;
 	case RAW_FILE:
 		free(raw->file.quark_file);
+		break;
+	case RAW_MODULE_LOAD: {
+		struct quark_module_load *qml;
+
+		qml = raw->module_load.quark_module_load;
+		if (qml == NULL)
+			break;
+		free(qml->name);
+		free(qml->version);
+		free(qml->src_version);
+		free(qml);
+		break;
+	}
+	case RAW_SHM:
+		if (raw->shm.quark_shm != NULL) {
+			free(raw->shm.quark_shm->path);
+			free(raw->shm.quark_shm);
+		}
+		break;
+	case RAW_TTY:
+		free(raw->tty.quark_tty);
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -157,6 +205,7 @@ raw_event_free(struct raw_event *raw)
 	if (task != NULL) {
 		free(task->cwd);
 		free(task->cgroup);
+		free(task->env);
 	}
 
 	while ((aux = TAILQ_FIRST(&raw->agg_queue)) != NULL) {
@@ -223,8 +272,15 @@ raw_event_target_age(struct quark_queue *qq)
 	if (qq->length < (qq->max_length / 10))
 		v = qq->hold_time;
 	else if (qq->length < ((qq->max_length / 10) * 9)) {
-		v = qq->hold_time -
-		    (qq->length / (qq->max_length / qq->hold_time)) + 1;
+		if (qq->max_length > qq->hold_time)
+			v = qq->hold_time -
+			    (qq->length / (qq->max_length / qq->hold_time)) + 1;
+		else
+			v = qq->hold_time -
+			    (qq->length * (qq->hold_time / qq->max_length)) + 1;
+
+		if (unlikely(v < 0))
+			v = 0;
 	} else
 		v = 0;
 
@@ -322,12 +378,40 @@ tty_type(int major, int minor)
 static void
 event_storage_clear(struct quark_queue *qq)
 {
+	qq->event_storage.events = 0;
+	qq->event_storage.time = 0;
 	qq->event_storage.process = NULL;
 	qq->event_storage.socket = NULL;
 	free(qq->event_storage.packet);
 	qq->event_storage.packet = NULL;
 	free(qq->event_storage.file);
 	qq->event_storage.file = NULL;
+	bzero(&qq->event_storage.ptrace, sizeof(qq->event_storage.ptrace));
+	if (qq->event_storage.module_load != NULL) {
+		free(qq->event_storage.module_load->name);
+		free(qq->event_storage.module_load->version);
+		free(qq->event_storage.module_load->src_version);
+		free(qq->event_storage.module_load);
+		qq->event_storage.module_load = NULL;
+	}
+	if (qq->event_storage.shm != NULL) {
+		free(qq->event_storage.shm->path);
+		free(qq->event_storage.shm);
+		qq->event_storage.shm = NULL;
+	}
+
+	if (qq->event_storage.tty != NULL) {
+		struct quark_tty *current;
+		struct quark_tty *next = qq->event_storage.tty->next;
+		while (next != NULL) {
+			current = next;
+			next = current->next;
+			free(current);
+		}
+	}
+	free(qq->event_storage.tty);
+	qq->event_storage.tty = NULL;
+	qq->event_storage.id_change = 0;
 }
 
 static void
@@ -388,10 +472,11 @@ gc_collect(struct quark_queue *qq)
 static void
 process_free(struct quark_process *qp)
 {
-	free(qp->filename);
+	free(qp->exe);
 	free(qp->cwd);
 	free(qp->cmdline);
 	free(qp->cgroup);
+	free(qp->env);
 	free(qp);
 }
 
@@ -432,27 +517,24 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 	if ((parent = process_cache_get(qq, ppid, 0)) == NULL)
 		return;
 
+	/* Poison tag always propagates down */
+	qp->poison_tag = parent->poison_tag;
+
 	/* Ignore QUARK_F_PROC? as we always have it all on fork */
 
-	if (parent->flags & QUARK_F_COMM) {
-		qp->flags |= QUARK_F_COMM;
-		strlcpy(qp->comm, parent->comm, sizeof(qp->comm));
-	}
-	if (parent->flags & QUARK_F_FILENAME) {
-		free(qp->filename);
-		qp->filename = strdup(parent->filename);
-		if (qp->filename != NULL)
-			qp->flags |= QUARK_F_FILENAME;
+	strlcpy(qp->comm, parent->comm, sizeof(qp->comm));
+	if (parent->exe != NULL) {
+		free(qp->exe);
+		qp->exe = strdup(parent->exe);
 	}
 	/* Do we really want CMDLINE? */
-	if (parent->flags & QUARK_F_CMDLINE) {
+	if (parent->cmdline != NULL) {
 		free(qp->cmdline);
 		qp->cmdline_len = 0;
 		qp->cmdline = malloc(parent->cmdline_len);
 		if (qp->cmdline != NULL) {
 			memcpy(qp->cmdline, parent->cmdline, parent->cmdline_len);
 			qp->cmdline_len = parent->cmdline_len;
-			qp->flags |= QUARK_F_CMDLINE;
 		}
 	}
 }
@@ -467,7 +549,6 @@ process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 	if (qp->container) {
 		TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
 		qp->container = NULL;
-		qp->flags &= ~QUARK_F_CONTAINER;
 	}
 	gc_unlink(qq, gc);
 	process_free(qp);
@@ -535,7 +616,8 @@ socket_cache_lookup(struct quark_queue *qq,
 
 static struct quark_socket *
 socket_alloc_and_insert(struct quark_queue *qq, struct quark_sockaddr *local,
-    struct quark_sockaddr *remote, u32 pid_origin, u64 est_time)
+    struct quark_sockaddr *remote, enum sock_conn conn, u64 received, u64 sent,
+    u32 pid_origin, u64 est_time)
 {
 	struct quark_socket *qsk, *col;
 
@@ -546,6 +628,9 @@ socket_alloc_and_insert(struct quark_queue *qq, struct quark_sockaddr *local,
 	qsk->remote = *remote;
 	qsk->pid_origin = qsk->pid_last_use = pid_origin;
 	qsk->established_time = est_time;
+	qsk->conn_origin = conn;
+	qsk->bytes_received = received;
+	qsk->bytes_sent = sent;
 
 	col = RB_INSERT(socket_by_src_dst, &qq->socket_by_src_dst, qsk);
 	if (col) {
@@ -592,12 +677,12 @@ socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
 		return (1);
 
 	cmplen = a->remote.af == AF_INET ? 4 : 16;
-	r = memcmp(&a->remote.addr6, &b->remote.addr6, cmplen);
+	r = memcmp(&a->remote.u, &b->remote.u, cmplen);
 	if (r != 0)
 		return (r);
 
 	cmplen = a->local.af == AF_INET ? 4 : 16;
-	r = memcmp(&a->local.addr6, &b->local.addr6, cmplen);
+	r = memcmp(&a->local.u, &b->local.u, cmplen);
 
 	return (r);
 }
@@ -680,13 +765,15 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 	while ((qp = TAILQ_FIRST(&container->processes)) != NULL) {
 		TAILQ_REMOVE(&container->processes, qp, entry_container);
 		qp->container = NULL;
-		qp->flags &= ~QUARK_F_CONTAINER;
 	}
 
 	free(container->container_id);
 	free(container->name);
 	free(container->image);
 	free(container->image_id);
+	free(container->image_name);
+	free(container->image_tag);
+	free(container->image_hash);
 	free(container);
 }
 
@@ -767,7 +854,7 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	 */
 	while ((container = RB_ROOT(&pod->containers)) != NULL) {
 		if (container->pod != pod) {
-			qwarnx("BUG: corrupted pod<>containter, leaking data");
+			qwarnx("BUG: corrupted pod<>container, leaking data");
 			return;
 		}
 		container_delete(qq, container);
@@ -799,22 +886,56 @@ debug_json(cJSON *json)
 	char *debug;
 
 	debug = cJSON_Print(json);
-	printf("printing cJSON\n%s\n", debug);
+	fprintf(stderr, "printing cJSON\n%s\n", debug);
 	free(debug);
 }
 
 static int
-process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *container_json)
+demux_image(struct quark_container *container)
+{
+	const char *tag, *tag_base, *hash;
+	/*
+	 * "image": "registry.k8s.io/e2e-test-images/agnhost:2.39",
+	 *                                 image_name^       ^tag
+	 * "imageID": "docker-pullable://registry.k8s.io/e2e-test-images/agnhost@sha256:7e8bdd271312fd25fc5ff5a8f04727be84044eb3d7d8d03611972a6752e2e11e",
+	 */
+	if ((tag_base = safe_basename(container->image)) != NULL &&
+	    (tag = strchr(tag_base, ':')) != NULL &&
+	    tag[1] != 0) {
+		container->image_name = strndup(tag_base, tag - tag_base);
+		if (container->image_name == NULL)
+			return (-1);
+		tag++;		/* skip : */
+		container->image_tag = strdup(tag);
+		if (container->image_tag == NULL)
+			return (-1);
+	}
+
+	if ((hash = safe_basename(container->image_id)) != NULL &&
+	    (hash = strchr(hash, '@')) != NULL &&
+	    hash[1] != 0) {
+		hash++;		/* skip @ */
+		container->image_hash = strdup(hash);
+		if (container->image_hash == NULL)
+			return (-1);
+	}
+
+	return (0);
+}
+
+static int
+kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *container_json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_kube	*qkube = qq->qkube;
-	cJSON			*name, *image, *state;
+	cJSON			*name, *image, *imageID, *state;
 	cJSON			*waiting, *running, *terminated;
 	cJSON			*containerID;
 	struct quark_container	*container, *col;
 
 	name	    = GET(container_json, "name");
 	image	    = GET(container_json, "image");
+	imageID     = GET(container_json, "imageID");
 	state	    = GET(container_json, "state");
 	waiting	    = GET(state, "waiting");
 	running	    = GET(state, "running");
@@ -832,6 +953,10 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 	}
 	if (!cJSON_IsString(image)) {
 		qwarnx("bad image name, ignoring");
+		return (-1);
+	}
+	if (!cJSON_IsString(imageID)) {
+		qwarnx("bad imageID, ignoring");
 		return (-1);
 	}
 	if (!cJSON_IsObject(state)) {
@@ -864,6 +989,15 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 		}
 		container->image = strdup(image->valuestring);
 		if (container->image == NULL) {
+			container_delete(qq, container);
+			return (-1);
+		}
+		container->image_id = strdup(imageID->valuestring);
+		if (container->image_id == NULL) {
+			container_delete(qq, container);
+			return (-1);
+		}
+		if (demux_image(container) == -1) {
 			container_delete(qq, container);
 			return (-1);
 		}
@@ -902,16 +1036,16 @@ process_kube_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *con
 }
 
 static int
-process_kube_event(struct quark_queue *qq, cJSON *json)
+kube_handle_pod(struct quark_queue *qq, cJSON *json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_pod	*pod;
 	cJSON			*metadata, *name, *namespace, *uid, *labels;
 	cJSON			*spec, *containers, *status, *phase;
 	cJSON			*deletionTimestamp, *containerStatuses, *label;
-	cJSON			*container_json;
+	cJSON			*container_json, *podIPs, *ipobj, *ip;
 	char			*tmp;
-	int			 new_pod;
+	int			 new_pod, ip_found;
 	struct label_node	*node, *node_aux;
 
 	metadata	  = GET(json, "metadata");
@@ -925,6 +1059,7 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	status		  = GET(json, "status");
 	phase		  = GET(status, "phase");
 	containerStatuses = GET(status, "containerStatuses");
+	podIPs		  = GET(status, "podIPs");
 
 	if (!cJSON_IsObject(metadata)) {
 		qwarnx("bad metadata");
@@ -940,10 +1075,6 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	}
 	if (!cJSON_IsString(uid)) {
 		qwarnx("bad uid");
-		return (-1);
-	}
-	if (!cJSON_IsObject(labels)) {
-		qwarnx("bad labels");
 		return (-1);
 	}
 	if (!cJSON_IsObject(spec)) {
@@ -1030,6 +1161,37 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	}
 
 	/*
+	 * Build addresses, the specification says there is at most only one ip
+	 * for each address family, so consider only the first two we find.
+	 */
+	ip_found = 0;
+	cJSON_ArrayForEach(ipobj, podIPs) {
+		struct quark_sockaddr qsk;
+
+		if (ip_found == 2)
+			break;
+		ip = GET(ipobj, "ip");
+		if (!cJSON_IsString(ip))
+			continue;
+		bzero(&qsk, sizeof(qsk));
+		if (inet_pton(AF_INET, ip->valuestring, &qsk.u) == 1) {
+			qsk.af = AF_INET;
+			pod->addr4 = qsk;
+			strlcpy(pod->addr4_a, ip->valuestring, sizeof(pod->addr4_a));
+			ip_found++;
+			continue;
+		}
+		bzero(&qsk, sizeof(qsk));
+		if (inet_pton(AF_INET6, ip->valuestring, &qsk.u) == 1) {
+			qsk.af = AF_INET6;
+			pod->addr6 = qsk;
+			strlcpy(pod->addr6_a, ip->valuestring, sizeof(pod->addr6_a));
+			ip_found++;
+			continue;
+		}
+	}
+
+	/*
 	 * Build labels, old labels start as unseen, and, as we loop mark the
 	 * seen ones, possibly update its value and add new ones, in the end,
 	 * loop again, prune all unseen ones and unmark seen.
@@ -1087,8 +1249,8 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 	 * Build containers
 	 */
 	cJSON_ArrayForEach(container_json, containerStatuses) {
-		if (process_kube_container(qq, pod, container_json) == -1)
-			qwarnx("process_kube_containers failed");
+		if (kube_handle_container(qq, pod, container_json) == -1)
+			qwarnx("kube_handle_containers failed");
 	}
 
 	/*
@@ -1104,8 +1266,151 @@ process_kube_event(struct quark_queue *qq, cJSON *json)
 #undef GET
 }
 
+/*
+ * gce://elastic-security-dev/us-east1-b/gke-demo-quark-cluster-default-pool-725cecaa-05m5"
+ *  ^provider   ^project
+ */
 static void
-stop_kube(struct quark_queue *qq)
+parse_provider_id(struct quark_kube_node *node, const char *provider_id)
+{
+	const char	*sep, *project_end;
+
+	if ((sep = strstr(provider_id, "://")) == NULL)
+		return;
+	node->provider = strndup(provider_id, sep - provider_id);
+	if (node->provider && !strcmp(node->provider, "gce"))
+		node->provider[2] = 'p';
+	sep += 3;
+	if ((project_end = strchr(sep, '/')) == NULL)
+		return;
+	node->project = strndup(sep, project_end - sep);
+}
+
+static int
+kube_handle_node(struct quark_queue *qq, cJSON *json)
+{
+#define GET cJSON_GetObjectItemCaseSensitive
+	struct quark_kube_node	*node = &qq->qkube->node;
+	cJSON			*metadata, *name, *uid;
+	cJSON			*labels, *zone, *region;	/* optionals */
+	cJSON			*spec, *providerID;		/* optionals */
+
+	metadata = GET(json, "metadata");
+	name	 = GET(metadata, "name");
+	uid	 = GET(metadata, "uid");
+	labels	 = GET(metadata, "labels");
+	spec	 = GET(json, "spec");
+
+	if (!cJSON_IsObject(metadata)) {
+		qwarnx("bad metadata");
+		return (-1);
+	}
+	if (!cJSON_IsString(name)) {
+		qwarnx("bad name");
+		return (-1);
+	}
+	if (!cJSON_IsString(uid)) {
+		qwarnx("bad uid");
+		return (-1);
+	}
+
+	/*
+	 * Ignore updates
+	 */
+	if (node->name != NULL)
+		return (0);
+
+	/*
+	 * First message
+	 */
+	node->name = strdup(name->valuestring);
+	node->uid = strdup(uid->valuestring);
+	if (node->name == NULL || node->uid == NULL) {
+		free(node->name);
+		free(node->uid);
+		node->name = NULL;
+		node->uid = NULL;
+		return (-1);
+	}
+
+	/*
+	 * Optional values
+	 */
+	zone = GET(labels, "topology.kubernetes.io/zone");
+	/* try old zone key */
+	if (!cJSON_IsString(zone))
+		zone = GET(labels, "failure-domain.beta.kubernetes.io/zone");
+	region = GET(labels, "topology.kubernetes.io/region");
+	/* try old region key */
+	if (!cJSON_IsString(region))
+		region = GET(labels, "failure-domain.beta.kubernetes.io/region");
+	/* finally commit */
+	if (cJSON_IsString(zone))
+		node->zone = strdup(zone->valuestring);
+	if (cJSON_IsString(region))
+		node->region = strdup(region->valuestring);
+	/* Fetch provider and project from providerID */
+	providerID = GET(spec, "providerID");
+	if (cJSON_IsString(providerID))
+		parse_provider_id(node, providerID->valuestring);
+
+	return (0);
+#undef GET
+}
+
+/*
+ * There is only a single gcpmeta event
+ */
+static int
+kube_handle_gcpmeta(struct quark_queue *qq, cJSON *json)
+{
+#define GET cJSON_GetObjectItemCaseSensitive
+	struct quark_kube_node	*node = &qq->qkube->node;
+	cJSON			*instance, *attributes;
+	cJSON			*cluster_name, *cluster_uid;
+	cJSON			*project, *numericProjectId;
+
+	instance	 = GET(json, "instance");
+	attributes	 = GET(instance, "attributes");
+	cluster_name	 = GET(attributes, "cluster-name");
+	cluster_uid	 = GET(attributes, "cluster-uid");
+	project		 = GET(json, "project");
+	numericProjectId = GET(project, "numericProjectId");
+
+	if (cJSON_IsString(cluster_name))
+		node->cluster_name = strdup(cluster_name->valuestring);
+	if (cJSON_IsString(cluster_uid))
+		node->cluster_uid = strdup(cluster_uid->valuestring);
+	if (cJSON_IsNumber(numericProjectId)) {
+		char buf[32];
+
+		snprintf(buf, sizeof(buf), "%lld",
+		    (s64)numericProjectId->valuedouble);
+		node->project_id = strdup(buf);
+	}
+
+	return (0);
+#undef GET
+}
+
+static int
+kube_handle_cluster_version(struct quark_queue *qq, cJSON *json)
+{
+#define GET cJSON_GetObjectItemCaseSensitive
+	struct quark_kube_node	*node = &qq->qkube->node;
+	cJSON			*version;
+
+	version	= GET(json, "version");
+
+	if (cJSON_IsString(version))
+		node->cluster_version = strdup(version->valuestring);
+
+	return (0);
+#undef GET
+}
+
+static void
+kube_stop(struct quark_queue *qq)
 {
 	struct quark_kube	*qkube = qq->qkube;
 
@@ -1123,13 +1428,14 @@ stop_kube(struct quark_queue *qq)
  * Returns 0 if there's nothing else to parse, 1 otherwise
  */
 static int
-parse_kube_events(struct quark_queue *qq)
+kube_parse_events(struct quark_queue *qq)
 {
+#define GET cJSON_GetObjectItemCaseSensitive
 	struct quark_kube	*qkube = qq->qkube;
 	size_t			 left_toread;
 	char			*ev;
 	u32			 ev_len;
-	cJSON			*json;
+	cJSON			*json, *kind;
 
 	left_toread = qkube->buf_w - qkube->buf_r;
 	/* In the middle of the 4byte len */
@@ -1141,7 +1447,7 @@ parse_kube_events(struct quark_queue *qq)
 		    "kubernetes events will stop",
 		    ev_len, qkube->buf_len - sizeof(ev_len));
 
-		stop_kube(qq);
+		kube_stop(qq);
 		return (0);
 	}
 	/* Partial event */
@@ -1170,14 +1476,28 @@ parse_kube_events(struct quark_queue *qq)
 		qwarnx("can't create json of event (len=%d)", ev_len);
 		return (1);
 	}
-	process_kube_event(qq, json);
+	kind = GET(json, "kind");
+	if (!cJSON_IsString(kind))
+		qwarnx("invalid object kind");
+	else if (!strcmp("Pod", kind->valuestring))
+		kube_handle_pod(qq, json);
+	else if (!strcmp("Node", kind->valuestring))
+		kube_handle_node(qq, json);
+	else if (!strcmp("GcpMeta", kind->valuestring))
+		kube_handle_gcpmeta(qq, json);
+	else if (!strcmp("ClusterVersion", kind->valuestring))
+		kube_handle_cluster_version(qq, json);
+	else
+		qwarnx("unhandled object kind %s", kind->valuestring);
+
 	cJSON_Delete(json);
 
 	return (1);
+#undef GET
 }
 
 static void
-read_kube_events(struct quark_queue *qq)
+kube_read_events(struct quark_queue *qq)
 {
 	struct quark_kube	*qkube = qq->qkube;
 	ssize_t			 n;
@@ -1203,7 +1523,7 @@ read_kube_events(struct quark_queue *qq)
 	left_towrite = qkube->buf_len - qkube->buf_w;
 	if (left_towrite == 0) {
 		qwarnx("BUG: no more space in buffer, kubernetes events will stop");
-		stop_kube(qq);
+		kube_stop(qq);
 		return;
 	}
 	n = qread(qkube->fd, qkube->buf + qkube->buf_w, left_towrite);
@@ -1213,16 +1533,16 @@ read_kube_events(struct quark_queue *qq)
 		if (errno == EAGAIN)
 			return;
 		qwarn("unexpected error reading kube pipe, kubernetes events will stop");
-		stop_kube(qq);
+		kube_stop(qq);
 		return;
 	} else if (n == 0) {
 		qwarnx("unexpected EOF from kubefd pipe, kubernetes events will stop");
-		stop_kube(qq);
+		kube_stop(qq);
 		return;
 	}
 	qkube->buf_w += n;
 
-	while (parse_kube_events(qq)) {
+	while (kube_parse_events(qq)) {
 		;		/* NADA */
 	}
 }
@@ -1235,15 +1555,15 @@ read_kube_events(struct quark_queue *qq)
  * Keep this function non static so we can test it.
  */
 int
-parse_kube_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
+kube_parse_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
 {
-	char		*name, *dot, *id;
+	char		*dot;
+	const char	*name, *id;
 	const char	*lookup_prefix;
 	int		 r, id_skip;
 
-	if ((name = strrchr(cgroup, '/')) == NULL)
+	if ((name = safe_basename(cgroup)) == NULL)
 		return (-1);
-	name++;
 
 	/*
 	 * Atm we only accept the systemd format, foo-<id>.scope
@@ -1300,18 +1620,17 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 
 	if (qp == NULL)
 		return;
-	if ((qp->flags & QUARK_F_CONTAINER) || qp->container != NULL)
+	if (qp->container != NULL)
 		return;
-	if (!(qp->flags & QUARK_F_CGROUP))
+	if (qp->cgroup == NULL)
 		return;
-	if (parse_kube_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
+	if (kube_parse_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
 		return;
 	if ((container = container_lookup(qq, cid)) == NULL)
 		return;
 
 	qp->container = container;
 	TAILQ_INSERT_TAIL(&container->processes, qp, entry_container);
-	qp->flags |= QUARK_F_CONTAINER;
 }
 
 /*
@@ -1319,7 +1638,7 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
  * we then enrich them into all our running processes.
  */
 static int
-prime_kube(struct quark_queue *qq)
+kube_prime(struct quark_queue *qq)
 {
 	struct pollfd		 pfd;
 	int			 r;
@@ -1334,7 +1653,7 @@ prime_kube(struct quark_queue *qq)
 	pfd.events = POLLIN;
 
 	qwarnx("priming kube events...");
-	deadline = now64() + (u64)MS_TO_NS(2000);
+	deadline = now64() + (u64)MS_TO_NS(3000);
 	do {
 		if ((r = poll(&pfd, 1, 25)) == -1) {
 			qwarn("poll");
@@ -1343,8 +1662,22 @@ prime_kube(struct quark_queue *qq)
 		if (r == 0)
 			continue;
 		qkube->try_read = 1;
-		read_kube_events(qq);
+		kube_read_events(qq);
+		/*
+		 * If read_kube_events failed at any point, fd is -1, so bail.
+		 */
+		if (qkube->fd == -1)
+			break;
 	} while (now64() < deadline);
+
+	/*
+	 * We must have received at least the node information.
+	 */
+	if (qkube->node.name == NULL) {
+		errno = EREMOTEIO;
+		qwarn("no node received by quark-kube-talker");
+		return (-1);
+	}
 
 	return (0);
 }
@@ -1357,16 +1690,6 @@ event_flag_str(u64 flag)
 		return "PROC";
 	case QUARK_F_EXIT:
 		return "EXIT";
-	case QUARK_F_COMM:
-		return "COMM";
-	case QUARK_F_FILENAME:
-		return "FNAME";
-	case QUARK_F_CMDLINE:
-		return "CMDLINE";
-	case QUARK_F_CWD:
-		return "CWD";
-	case QUARK_F_CGROUP:
-		return "CGRP";
 	default:
 		return "?";
 	}
@@ -1382,6 +1705,8 @@ event_type_str(u64 event)
 		return "EXEC";
 	case QUARK_EV_EXIT:
 		return "EXIT";
+	case QUARK_EV_ID_CHANGE:
+		return "ID_CHANGE";
 	case QUARK_EV_SETPROCTITLE:
 		return "SETPROCTITLE";
 	case QUARK_EV_SOCK_CONN_ESTABLISHED:
@@ -1394,6 +1719,16 @@ event_type_str(u64 event)
 		return "BYPASS";
 	case QUARK_EV_FILE:
 		return "FILE";
+	case QUARK_EV_PTRACE:
+		return "PTRACE";
+	case QUARK_EV_MODULE_LOAD:
+		return "MODULE_LOAD";
+	case QUARK_EV_SHM:
+		return "SHM";
+	case QUARK_EV_TTY:
+		return "TTY";
+	case QUARK_EV_GETPID:
+		return "GETPID";
 	default:
 		return "?";
 	}
@@ -1459,8 +1794,8 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 	tty = tty_type(qp->proc_tty_major, qp->proc_tty_minor);
 
 	basename = NULL;
-	if (qp->flags & QUARK_F_FILENAME)
-		basename = strrchr(qp->filename, '/');
+	if (qp->exe != NULL)
+		basename = strrchr(qp->exe, '/');
 	if (basename == NULL)
 		basename = "";
 	else
@@ -1515,8 +1850,8 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 		return (0);
 
 	p_basename = NULL;
-	if (parent->flags & QUARK_F_FILENAME)
-		p_basename = strrchr(parent->filename, '/');
+	if (parent->exe != NULL)
+		p_basename = strrchr(parent->exe, '/');
 	if (p_basename == NULL)
 		p_basename = "";
 	else
@@ -1560,7 +1895,7 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 
 	if (qp->proc_entry_leader == QUARK_ELT_UNKNOWN)
 		qwarnx("%d (%s) is UNKNOWN (tty=%d)",
-		    qp->pid, qp->filename ? qp->filename : "null", tty);
+		    qp->pid, qp->exe ? qp->exe : "null", tty);
 
 	return (0);
 }
@@ -1742,6 +2077,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_file		*file;
 	const struct quark_pod		*pod;
 	const struct quark_container	*container;
+	const struct quark_ptrace	*ptrace;
 	int				 pid;
 
 	if (qev->events == QUARK_EV_BYPASS) {
@@ -1770,17 +2106,18 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		if (qsk == NULL)
 			return (-1);
 
-		if (inet_ntop(qsk->local.af, &qsk->local.addr6,
+		if (inet_ntop(qsk->local.af, &qsk->local.u,
 		    local, sizeof(local)) == NULL)
 			strlcpy(local, "bad address", sizeof(local));
 
-		if (inet_ntop(qsk->remote.af, &qsk->remote.addr6,
+		if (inet_ntop(qsk->remote.af, &qsk->remote.u,
 		    remote, sizeof(remote)) == NULL)
 			strlcpy(remote, "bad address", sizeof(remote));
 
-		PF(fl, "local=%s:%d remote=%s:%d\n",
+		PF(fl, "local=%s:%d remote=%s:%d received=%llu sent=%llu\n",
 		    local, ntohs(qsk->local.port),
-		    remote, ntohs(qsk->remote.port));
+		    remote, ntohs(qsk->remote.port),
+		    qsk->bytes_received, qsk->bytes_sent);
 	}
 
 	if (qev->events & QUARK_EV_PACKET) {
@@ -1816,20 +2153,29 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    file->atime, file->mtime, file->ctime);
 	}
 
+	if (qev->events & QUARK_EV_PTRACE) {
+		fl = "PTRACE";
+
+		ptrace = &qev->ptrace;
+
+		PF(fl, "pid=%d request=0x%llx addr=0x%llx data=0x%llx\n",
+		    ptrace->child_pid, ptrace->request,
+		    ptrace->addr, ptrace->data);
+	}
+
 	if (qp == NULL)
 		return (-1);
 
-	if (qp->flags & QUARK_F_COMM) {
-		fl = event_flag_str(QUARK_F_COMM);
+	if (qp->comm[0] != 0) {
+		fl = "COMM";
 		PF(fl, "comm=%s\n", qp->comm);
 	}
-
-	if (qp->flags & QUARK_F_CMDLINE) {
+	if (qp->cmdline != NULL) {
 		struct quark_cmdline_iter	 qcmdi;
 		const char			*arg;
 		int				 first = 1;
 
-		fl = event_flag_str(QUARK_F_CMDLINE);
+		fl = "CMDLINE";
 
 		PF(fl, "cmdline=");
 		P("[ ");
@@ -1870,16 +2216,20 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    entry_leader_type_str(qp->proc_entry_leader_type),
 		    qp->proc_entry_leader);
 	}
-	if (qp->flags & QUARK_F_CWD) {
-		fl = event_flag_str(QUARK_F_CWD);
+	if (qp->cwd != NULL) {
+		fl = "CWD";
 		PF(fl, "cwd=%s\n", qp->cwd);
 	}
-	if (qp->flags & QUARK_F_FILENAME) {
-		fl = event_flag_str(QUARK_F_FILENAME);
-		PF(fl, "filename=%s\n", qp->filename);
+	if (qp->exe != NULL) {
+		fl = "EXE";
+		PF(fl, "exe=%s\n", qp->exe);
 	}
-	if (qp->flags & QUARK_F_CGROUP) {
-		fl = event_flag_str(QUARK_F_CGROUP);
+	if (qp->env != NULL) {
+		fl = "ENV";
+		PF(fl, "env_len=%zd\n", qp->env_len);
+	}
+	if (qp->cgroup != NULL) {
+		fl = "CGRP";
 		PF(fl, "cgroup=%s\n", qp->cgroup);
 	}
 	if (qp->flags & QUARK_F_EXIT) {
@@ -1887,10 +2237,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		PF(fl, "exit_code=%d exit_time=%llu\n",
 		    qp->exit_code, qp->exit_time_event);
 	}
-
-	if (qp->flags & QUARK_F_CONTAINER) {
+	if (qp->container != NULL) {
 		container = qp->container;
-		pod = container ? container->pod : NULL;
+		pod = container->pod;
 
 		if (pod != NULL) {
 			int			 first = 1;
@@ -1966,8 +2315,7 @@ quark_cmdline_iter_init(struct quark_cmdline_iter *qcmdi,
 const char *
 quark_cmdline_iter_next(struct quark_cmdline_iter *qcmdi)
 {
-	char *p;
-	const char *arg;
+	const char	*p, *arg;
 
 	if (qcmdi->off >= qcmdi->cmdline_len)
 		return (NULL);
@@ -1985,139 +2333,75 @@ quark_cmdline_iter_next(struct quark_cmdline_iter *qcmdi)
 	return (arg);
 }
 
-static struct quark_event *
-raw_event_process(struct quark_queue *qq, struct raw_event *src)
+static void
+raw_event_process1(struct quark_queue *qq, struct raw_event *src,
+    struct quark_event *dst)
 {
-	struct quark_process		*qp;
-	struct quark_event		*dst;
-	struct raw_event		*agg;
-	struct raw_task			*raw_fork, *raw_exit, *raw_task;
-	struct raw_comm			*raw_comm;
-	struct raw_exec			*raw_exec;
-	struct raw_exec_connector	*raw_exec_connector;
-	char				*comm;
-	char				*cwd;
-	char				*args;
-	size_t				 args_len;
-	u64				 events;
+	struct quark_process	*qp;
+	struct raw_task		*raw_task;
+	char			*comm;
+	char			*exe;
+	char			*args;
+	size_t			 args_len;
 
-	dst = &qq->event_storage;
-	raw_fork = NULL;
-	raw_exit = NULL;
+	qp	 = (struct quark_process *)dst->process;
 	raw_task = NULL;
-	raw_comm = NULL;
-	raw_exec = NULL;
-	raw_exec_connector = NULL;
-	comm = NULL;
-	cwd = NULL;
-	args = NULL;
+	comm	 = NULL;
+	exe	 = NULL;
+	args	 = NULL;
 	args_len = 0;
-
-	/* XXX pass if this is a fork down, so we can evict the old one XXX */
-	qp = process_cache_get(qq, src->pid, 1);
-	if (qp == NULL)
-		return (NULL);
-
-	events = 0;
 
 	switch (src->type) {
 	case RAW_WAKE_UP_NEW_TASK:
-		events |= QUARK_EV_FORK;
-		raw_fork = &src->task;
+		dst->events |= QUARK_EV_FORK;
+		raw_task = &src->task;
+		process_cache_inherit(qq, qp, raw_task->ppid);
 		break;
 	case RAW_EXEC:
-		events |= QUARK_EV_EXEC;
-		raw_exec = &src->exec;
+		dst->events |= QUARK_EV_EXEC;
+		exe = src->exec.filename;
+		src->exec.filename = NULL;
+		if (src->exec.flags & RAW_EXEC_F_EXT) {
+			raw_task = &src->exec.ext.task;
+			args = src->exec.ext.args;
+			args_len = src->exec.ext.args_len;
+			src->exec.ext.args = NULL;
+			src->exec.ext.args_len = 0;
+		}
 		break;
 	case RAW_EXIT_THREAD:
-		events |= QUARK_EV_EXIT;
-		raw_exit = &src->task;
+		dst->events |= QUARK_EV_EXIT;
+		raw_task = &src->task;
+		qp->flags |= QUARK_F_EXIT;
+		qp->exit_code = raw_task->exit_code;
+		if (src->task.exit_time_event)
+			qp->exit_time_event = quark.boottime + raw_task->exit_time_event;
 		break;
 	case RAW_COMM:
-		events |= QUARK_EV_SETPROCTITLE;
-		raw_comm = &src->comm;
+		dst->events |= QUARK_EV_SETPROCTITLE;
+		comm = src->comm.comm;
 		break;
 	case RAW_EXEC_CONNECTOR:
-		events |= QUARK_EV_EXEC;
-		raw_exec_connector = &src->exec_connector;
+		dst->events |= QUARK_EV_EXEC;
+		args = src->exec_connector.args;
+		args_len = src->exec_connector.args_len;
+		src->exec_connector.args = NULL;
+		src->exec_connector.args_len = 0;
+		break;
+	case RAW_ID_CHANGE:
+		dst->events |= QUARK_EV_ID_CHANGE;
+		raw_task = &src->task;
+		dst->id_change |= raw_task->id_change;
+		break;
+	case RAW_GETPID:
+		dst->events |= QUARK_EV_GETPID;
+		raw_task = &src->task;
 		break;
 	default:
-		return (NULL);
-		break;		/* NOTREACHED */
+		qwarnx("unhandled raw_event type %d", src->type);
+		return;
 	};
 
-	TAILQ_FOREACH(agg, &src->agg_queue, agg_entry) {
-		switch (agg->type) {
-		case RAW_WAKE_UP_NEW_TASK:
-			raw_fork = &agg->task;
-			events |= QUARK_EV_FORK;
-			break;
-		case RAW_EXEC:
-			events |= QUARK_EV_EXEC;
-			raw_exec = &agg->exec;
-			break;
-		case RAW_EXIT_THREAD:
-			events |= QUARK_EV_EXIT;
-			raw_exit = &agg->task;
-			break;
-		case RAW_COMM:
-			events |= QUARK_EV_SETPROCTITLE;
-			raw_comm = &agg->comm;
-			break;
-		case RAW_EXEC_CONNECTOR:
-			events |= QUARK_EV_EXEC;
-			raw_exec_connector = &agg->exec_connector;
-			break;
-		default:
-			break;
-		}
-	}
-
-	/* QUARK_F_PROC */
-	if (raw_fork != NULL) {
-		process_cache_inherit(qq, qp, raw_fork->ppid);
-		raw_task = raw_fork;
-		free(cwd);
-		cwd = raw_task->cwd;
-		raw_task->cwd = NULL;
-	}
-	if (raw_exit != NULL) {
-		qp->flags |= QUARK_F_EXIT;
-
-		qp->exit_code = raw_exit->exit_code;
-		if (raw_exit->exit_time_event)
-			qp->exit_time_event = quark.boottime + raw_exit->exit_time_event;
-		raw_task = raw_exit;
-		/* cwd is invalid, don't collect */
-		/* NOTE: maybe there are more things we _don't_ want from exit */
-	}
-	if (raw_exec != NULL) {
-		qp->flags |= QUARK_F_FILENAME;
-
-		free(qp->filename);
-		qp->filename = raw_exec->filename;
-		raw_exec->filename = NULL;
-		if (raw_exec->flags & RAW_EXEC_F_EXT) {
-			free(args);
-			args = raw_exec->ext.args;
-			raw_exec->ext.args = NULL;
-			args_len = raw_exec->ext.args_len;
-			raw_task = &raw_exec->ext.task;
-			free(cwd);
-			cwd = raw_task->cwd;
-			raw_task->cwd = NULL;
-		}
-	}
-	if (raw_exec_connector != NULL) {
-		free(args);
-		args = raw_exec_connector->args;
-		raw_exec_connector->args = NULL;
-		args_len = raw_exec_connector->args_len;
-		raw_task = &raw_exec_connector->task;
-		free(cwd);
-		cwd = raw_task->cwd;
-		raw_task->cwd = NULL;
-	}
 	if (raw_task != NULL) {
 		qp->flags |= QUARK_F_PROC;
 
@@ -2152,28 +2436,43 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 		qp->proc_mnt_inonum = raw_task->mnt_inonum;
 		qp->proc_net_inonum = raw_task->net_inonum;
 
-		/* Don't set cwd as it's not valid on exit */
-		comm = raw_task->comm;
-
 		if (raw_task->cgroup != NULL) {
-			qp->flags |= QUARK_F_CGROUP;
 			free(qp->cgroup);
 			qp->cgroup = raw_task->cgroup;
 			raw_task->cgroup = NULL;
+
+		}
+		if (raw_task->env != NULL) {
+			free(qp->env);
+			qp->env = raw_task->env;
+			qp->env_len = raw_task->env_len;
+			raw_task->env = NULL;
+			raw_task->env_len = 0;
+		}
+		/*
+		 * Fetch cwd only if not an exit, an exit doesn't have a cwd.
+		 */
+		if (src->type != RAW_EXIT_THREAD && raw_task->cwd != NULL) {
+			free(qp->cwd);
+			qp->cwd = raw_task->cwd;
+			raw_task->cwd = NULL;
 		}
 
 		/* Depends on QUARK_F_PROC, idempotent */
 		process_entity_id(qp);
-	}
-	if (raw_comm != NULL)
-		comm = raw_comm->comm; /* raw_comm always overrides */
-	/*
-	 * Field pointer checking, stuff the block above sets so we save some
-	 * code.
-	 */
-	if (args != NULL) {
-		qp->flags |= QUARK_F_CMDLINE;
 
+		comm = raw_task->comm;
+	}
+	if (comm != NULL) {
+		strlcpy(qp->comm, comm, sizeof(qp->comm));
+		comm = NULL;
+	}
+	if (exe != NULL) {
+		free(qp->exe);
+		qp->exe = exe;
+		exe = NULL;
+	}
+	if (args != NULL && args_len > 0) {
 		free(qp->cmdline);
 		qp->cmdline = args;
 		qp->cmdline_len = args_len;
@@ -2182,37 +2481,39 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 		args = NULL;
 		args_len = 0;
 	}
-	if (comm != NULL) {
-		qp->flags |= QUARK_F_COMM;
-
-		strlcpy(qp->comm, comm, sizeof(qp->comm));
-	}
-	if (cwd != NULL) {
-		qp->flags |= QUARK_F_CWD;
-
-		free(qp->cwd);
-		qp->cwd = cwd;
-		cwd = NULL;
-	}
-
-	if (qp->flags == 0)
-		qwarnx("no flags");
-
-	if (events & (QUARK_EV_FORK | QUARK_EV_EXEC)) {
+	if (src->type == RAW_WAKE_UP_NEW_TASK ||
+	    src->type == RAW_EXEC ||
+	    src->type == RAW_EXEC_CONNECTOR) {
 		if (entry_leader_compute(qq, qp) == -1)
 			qwarnx("unknown entry_leader for pid %d", qp->pid);
 	}
-
 	/*
 	 * On the very unlikely case that pids get re-used, we might
 	 * see an old qp for a new process, which could prompt us in
 	 * trying to remove it twice. In other words, gc_time guards
 	 * presence in the TAILQ.
 	 */
-	if (raw_exit != NULL)
+	if (src->type == RAW_EXIT_THREAD)
 		gc_mark(qq, &qp->gc, GC_PROCESS);
-	dst->events = events;
-	dst->process = qp;
+}
+
+static struct quark_event *
+raw_event_process(struct quark_queue *qq, struct raw_event *src)
+{
+	struct quark_event	*dst;
+	struct raw_event	*agg;
+
+	dst = &qq->event_storage;
+
+	/* XXX pass if this is a fork down, so we can evict the old one XXX */
+	if ((dst->process = process_cache_get(qq, src->pid, 1)) == NULL)
+		return (NULL);
+
+	raw_event_process1(qq, src, dst);
+
+	TAILQ_FOREACH(agg, &src->agg_queue, agg_entry) {
+		raw_event_process1(qq, agg, dst);
+	}
 
 	return (dst);
 }
@@ -2355,7 +2656,7 @@ sproc_stat(struct quark_process *qp, int dfd)
 		qp->proc_time_boot =
 		    quark.boottime +
 		    ((starttime / (u64)quark.hz) * NS_PER_S) +
-		    (((starttime % (u64)quark.hz) * NS_PER_S) / 100);
+		    (((starttime % (u64)quark.hz) * NS_PER_S) / (u64)quark.hz);
 
 		ret = 0;
 	}
@@ -2488,6 +2789,45 @@ bad:
 	return (-1);
 }
 
+static int
+sproc_env(struct quark_queue *qq, struct quark_process *qp, int dfd)
+{
+	int	 fd, ret;
+	char	*buf, *env;
+	size_t	 buf_len, env_len;
+
+	ret = -1;
+	env = NULL;
+
+	if (qp->pid == 2 || qp->proc_ppid == 2)
+		return (-1);
+	if (qq->max_env == 0)
+		return (-1);
+	if ((fd = openat(dfd, "environ", O_RDONLY)) == -1) {
+		qwarn("open environ pid %d", qp->pid);
+		return (-1);
+	}
+	buf = load_file_nostat(fd, &buf_len);
+	if (buf == NULL || buf_len == 0)
+		goto cleanup;
+	env_len = buf_len > qq->max_env ? qq->max_env : buf_len;
+	if ((env = malloc(env_len)) == NULL)
+		goto cleanup;
+	memcpy(env, buf, env_len);
+	env[env_len - 1] = 0;
+
+	qp->env = env;
+	qp->env_len = env_len;
+	env = NULL;
+	ret = 0;
+cleanup:
+	free(env);
+	free(buf);
+	close(fd);
+
+	return (ret);
+}
+
 /*
  * Note that defunct processes can return ENOENT on the actual link
  */
@@ -2582,12 +2922,11 @@ sproc_pid_sockets(struct quark_queue *qq,
 			continue;
 
 		qsk = socket_alloc_and_insert(qq, &ss->socket.local,
-		    &ss->socket.remote,  pid, now64());
+		    &ss->socket.remote, SOCK_CONN_SCRAPE, 0, 0, pid, now64());
 		if (qsk == NULL) {
 			qwarn("socket_alloc");
 			continue;
 		}
-		qsk->from_scrape = 1;
 
 		qdebugx("pid %d fd %s -> %s (inode=%lu, ss=%p)", pid,
 		    d->d_name, buf, inode, ss);
@@ -2624,25 +2963,21 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	sproc_namespace(qp, "ns/net", &qp->proc_net_inonum, dfd);
 	process_entity_id(qp);
 
-	/* QUARK_F_COMM */
-	if (readlineat(dfd, "comm", qp->comm, sizeof(qp->comm)) > 0)
-		qp->flags |= QUARK_F_COMM;
-	/* QUARK_F_FILENAME */
-	if (qreadlinkat(dfd, "exe", path, sizeof(path)) > 0) {
-		if ((qp->filename = strdup(path)) != NULL)
-			qp->flags |= QUARK_F_FILENAME;
-	}
-	/* QUARK_F_CMDLINE */
-	if (sproc_cmdline(qp, dfd) == 0)
-		qp->flags |= QUARK_F_CMDLINE;
-	/* QUARK_F_CWD */
-	if (qreadlinkat(dfd, "cwd", path, sizeof(path)) > 0) {
-		if ((qp->cwd = strdup(path)) != NULL)
-			qp->flags |= QUARK_F_CWD;
-	}
-	/* QUARK_F_CGROUP */
-	if (sproc_cgroup(qp, dfd) == 0)
-		qp->flags |= QUARK_F_CGROUP;
+	/* comm */
+	if (readlineat(dfd, "comm", qp->comm, sizeof(qp->comm)) < 1)
+		qp->comm[0] = 0;
+	/* filename */
+	if (qreadlinkat(dfd, "exe", path, sizeof(path)) > 0)
+		qp->exe = strdup(path);
+	/* cmdline */
+	sproc_cmdline(qp, dfd);
+	/* cwd */
+	if (qreadlinkat(dfd, "cwd", path, sizeof(path)) > 0)
+		qp->cwd = strdup(path);
+	/* cgroup */
+	sproc_cgroup(qp, dfd);
+	/* env */
+	sproc_env(qq, qp, dfd);
 	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */
 	if (by_inode != NULL)
 		return (sproc_pid_sockets(qq, by_inode, pid, dfd));
@@ -2739,18 +3074,18 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 
 		if (af == AF_INET) {
 			ss->socket.local.af = AF_INET;
-			ss->socket.local.addr4 = local_addr4;
+			ss->socket.local.u.addr4 = local_addr4;
 
 			ss->socket.remote.af = AF_INET;
-			ss->socket.remote.addr4 = remote_addr4;
+			ss->socket.remote.u.addr4 = remote_addr4;
 		}
 
 		if (af == AF_INET6) {
 			ss->socket.local.af = AF_INET6;
-			memcpy(ss->socket.local.addr6, local_addr6, 16);
+			memcpy(ss->socket.local.u.addr6, local_addr6, 16);
 
 			ss->socket.remote.af = AF_INET6;
-			memcpy(ss->socket.remote.addr6, remote_addr6, 16);
+			memcpy(ss->socket.remote.u.addr6, remote_addr6, 16);
 		}
 
 		col = RB_INSERT(sproc_socket_by_inode, by_inode, ss);
@@ -2910,69 +3245,509 @@ done:
 	return (r);
 }
 
-static u64
-fetch_boottime(void)
+static int
+quark_passwd_populate(struct passwd_by_uid *by_uid)
 {
-	char		*line;
-	const char	*errstr, *needle;
-	u64		 btime;
+	char			*buf;
+	long			 buf_size;
+	struct passwd		*pw;
+#ifdef HAVE_GETPWENT_R
+	struct passwd		 pwd_storage;
+#endif
+	struct quark_passwd	*qpw;
 
-	needle = "btime ";
-	line = find_line_p("/proc/stat", needle);
-	if (line == NULL)
+	if (getenv("VALGRIND") != NULL) {
+		qwarnx("running on valgrind, skipping user database.\n"
+		    "glibc will dlopen nss_switch and never release it back, "
+		    "which makes valgrind think there is a leak when there isn't");
 		return (0);
-	btime = strtonum(line + strlen(needle), 1, LLONG_MAX, &errstr);
-	free(line);
-	if (errstr != NULL)
-		qwarnx("can't parse btime: %s", errstr);
+	}
 
-	return (btime * NS_PER_S);
+	buf = NULL;
+	buf_size = sysconf(_SC_GETPW_R_SIZE_MAX);
+	if (buf_size == -1)
+		buf_size = 65536;
+
+	if ((buf = malloc(buf_size)) == NULL)
+		goto bad;
+
+	/*
+	 * XXX glibc is awesome, they invent a getpwent_r that is not
+	 * re-entrant, setpwent() shares the file offset.
+	 */
+	setpwent();
+#ifdef HAVE_GETPWENT_R
+	while (getpwent_r(&pwd_storage, buf, buf_size, &pw) == 0)
+#else
+	while ((pw = getpwent()) != NULL)
+#endif /* HAVE_GETPWENT_R */
+	{
+		qpw = calloc(1, sizeof(*qpw));
+		if (qpw == NULL)
+			goto bad;
+		qpw->name = strdup(pw->pw_name);
+		if (qpw->name == NULL) {
+			free(qpw);
+			goto bad;
+		}
+		qpw->uid = pw->pw_uid;
+		qpw->gid = pw->pw_gid;
+		if (RB_INSERT(passwd_by_uid, by_uid, qpw) != NULL) {
+			qwarnx("unexpected collision in pwd uid %d", qpw->uid);
+			free(qpw->name);
+			free(qpw);
+		}
+	}
+	endpwent();
+#ifdef HAVE_EXPLICIT_BZERO
+	explicit_bzero(buf, buf_size);
+#else
+	bzero(buf, buf_size);
+#endif
+	free(buf);
+
+	return (0);
+
+bad:
+	if (buf != NULL) {
+#ifdef HAVE_EXPLICIT_BZERO
+		explicit_bzero(buf, buf_size);
+#else
+		bzero(buf, buf_size);
+#endif
+		free(buf);
+	}
+	while ((qpw = RB_ROOT(by_uid)) != NULL) {
+		RB_REMOVE(passwd_by_uid, by_uid, qpw);
+		free(qpw->name);
+		free(qpw);
+	}
+
+	return (-1);
 }
 
-/*
- * Aggregation is a relationship between a parent event and a child event. In a
- * fork+exec cenario, fork is the parent, exec is the child.
- * Aggregation can be confiured as AGG_SINGLE or AGG_MULTI.
- *
- * AGG_SINGLE aggregate a single child: fork+exec+exec would result
- * in two events: (fork+exec); (exec).
- *
- * AGG_MULTI just smashes everything together, a fork+comm+comm+comm would
- * result in one event: (fork+comm), the intermediary comm values are lost.
- */
+static int
+quark_passwd_cmp(struct quark_passwd *a, struct quark_passwd *b)
+{
+	if (a->uid < b->uid)
+		return (-1);
+	else if (a->uid > b->uid)
+		return (1);
 
-enum agg_kind {
-	AGG_NONE,		/* Can't aggregate, must be zero */
-	AGG_SINGLE,		/* Can aggregate only one value */
-	AGG_MULTI,		/* Can aggregate multiple values */
-	AGG_CUSTOM,		/* Can aggregate depending on data */
-};
+	return (0);
+}
+
+struct quark_passwd *
+quark_passwd_lookup(struct quark_queue *qq, uid_t uid)
+{
+	struct quark_passwd	key, *qpwd;
+
+	key.uid = uid;
+	qpwd = RB_FIND(passwd_by_uid, &qq->passwd_by_uid, &key);
+	if (qpwd == NULL)
+		errno = ESRCH;
+
+	return (qpwd);
+}
+
+static int
+quark_group_cmp(struct quark_group *a, struct quark_group *b)
+{
+	if (a->gid < b->gid)
+		return (-1);
+	else if (a->gid > b->gid)
+		return (1);
+
+	return (0);
+}
+
+struct quark_group *
+quark_group_lookup(struct quark_queue *qq, gid_t gid)
+{
+	struct quark_group	key, *qgrp;
+
+	key.gid = gid;
+	qgrp = RB_FIND(group_by_gid, &qq->group_by_gid, &key);
+	if (qgrp == NULL)
+		errno = ESRCH;
+
+	return (qgrp);
+}
+
+static int
+quark_group_populate(struct group_by_gid *by_gid)
+{
+	char			*buf;
+	long			 buf_size;
+#ifdef HAVE_GETGRENT_R
+	struct group		 grp_storage;
+#endif
+	struct group		*grp;
+	struct quark_group	*qgrp;
+
+	if (getenv("VALGRIND") != NULL) {
+		qwarnx("running on valgrind, skipping group database\n"
+		    "glibc will dlopen nss_switch and never release it back\n"
+		    "which makes valgrind think there is a leak when there isn't");
+		return (0);
+	}
+
+	buf = NULL;
+	buf_size = sysconf(_SC_GETGR_R_SIZE_MAX);
+	if (buf_size == -1)
+		buf_size = 65536;
+
+	if ((buf = malloc(buf_size)) == NULL)
+		goto bad;
+
+	setgrent();
+#ifdef HAVE_GETGRENT_R
+	while (getgrent_r(&grp_storage, buf, buf_size, &grp) == 0)
+#else
+	while ((grp = (getgrent())) != NULL)
+#endif
+	{
+		if ((qgrp = calloc(1, sizeof(*qgrp))) == NULL)
+			goto bad;
+		qgrp->gid = grp->gr_gid;
+		if ((qgrp->name = strdup(grp->gr_name)) == NULL) {
+			free(qgrp);
+			goto bad;
+		}
+		if (RB_INSERT(group_by_gid, by_gid, qgrp) != NULL) {
+			qwarnx("unexpected collision in group gid %d",
+			    qgrp->gid);
+			free(qgrp->name);
+			free(qgrp);
+		}
+	}
+	endgrent();
+#ifdef HAVE_EXPLICIT_BZERO
+	explicit_bzero(buf, buf_size);
+#else
+	bzero(buf, buf_size);
+#endif
+	free(buf);
+
+	return (0);
+
+bad:
+	if (buf != NULL) {
+#ifdef HAVE_EXPLICIT_BZERO
+		explicit_bzero(buf, buf_size);
+#else
+		bzero(buf, buf_size);
+#endif
+		free(buf);
+	}
+	while ((qgrp = RB_ROOT(by_gid)) != NULL) {
+		RB_REMOVE(group_by_gid, by_gid, qgrp);
+		free(qgrp->name);
+		free(qgrp);
+	}
+
+	return (-1);
+}
+
+static int
+quark_sysinfo_os_release(struct quark_sysinfo *si)
+{
+	FILE	*f;
+	ssize_t	 n;
+	size_t	 line_len;
+	char	*line, *k, *v, *aux;
+
+	if ((f = fopen("/etc/os-release", "r")) == NULL) {
+		qwarn("fopen /etc/os-release");
+		return (-1);
+	}
+
+	line_len = 0;
+	line = NULL;
+	while ((n = getline(&line, &line_len, f)) != -1) {
+		if (n == 0 || line[n - 1] != '\n') {
+			qwarnx("bad line");
+			continue;
+		}
+		line[n - 1] = 0;
+		k = line;
+		if (*k == 0 || *k == '#')
+			continue;
+		v = strchr(line, '=');
+		if (v == NULL) {
+			qwarnx("bad line, no separator");
+			continue;
+		}
+		*v++ = 0;
+		if (*v == 0) {
+			qwarnx("bad line, no value");
+			continue;
+		}
+		if (*v == '"') {
+			v++;
+			aux = strchr(v, '"');
+			if (aux == NULL) {
+				qwarnx("unterminated line");
+				continue;
+			}
+			*aux = 0;
+		}
+		if (!strcasecmp(k, "name"))
+			si->os_name = strdup(v);
+		else if (!strcasecmp(k, "version"))
+			si->os_version = strdup(v);
+		else if (!strcasecmp(k, "release_type"))
+			si->os_release_type = strdup(v);
+		else if (!strcasecmp(k, "id"))
+			si->os_id = strdup(v);
+		else if (!strcasecmp(k, "version_id"))
+			si->os_version_id = strdup(v);
+		else if (!strcasecmp(k, "version_codename"))
+			si->os_version_codename = strdup(v);
+		else if (!strcasecmp(k, "pretty_name"))
+			si->os_pretty_name = strdup(v);
+	}
+	free(line);
+	fclose(f);
+
+	return (0);
+}
+
+static int
+quark_sysinfo_ifaddrs(struct quark_sysinfo *si)
+{
+	struct ifaddrs		 *ifa, *ifaddrs;
+	int			  af;
+	size_t			  i;
+	char			  buf[INET6_ADDRSTRLEN];
+	char			**tmp, *buf_copy;
+
+	if (getifaddrs(&ifaddrs) == -1) {
+		qwarn("getifaddrs");
+
+		return (-1);
+	}
+
+	/*
+	 * Look for all addresses that have an ip adress
+	 */
+	si->ip_addrs_len = si->mac_addrs_len = 0;
+	for (ifa = ifaddrs; ifa != NULL; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr == NULL)
+			continue;
+		af = ifa->ifa_addr->sa_family;
+		if (af == AF_INET) {
+			struct sockaddr_in	 *sin;
+
+			sin = (struct sockaddr_in *)ifa->ifa_addr;
+			if (inet_ntop(af, &sin->sin_addr, buf, sizeof(buf)) == NULL) {
+				qwarn("inet_ntop ifname %s", ifa->ifa_name);
+				continue;
+			}
+		}
+		if (af == AF_INET6) {
+			struct sockaddr_in6	 *sin6;
+
+			sin6 = (struct sockaddr_in6 *)ifa->ifa_addr;
+			if (inet_ntop(af, &sin6->sin6_addr,
+			    buf, sizeof(buf)) == NULL) {
+				qwarn("inet_ntop ifname %s", ifa->ifa_name);
+				continue;
+			}
+		}
+		if (af == AF_INET || af == AF_INET6) {
+			/* Check if unique */
+			for (i = 0; i < si->ip_addrs_len; i++) {
+				if (!strcmp(buf, si->ip_addrs[i]))
+					goto next;
+			}
+			buf_copy = strdup(buf);
+			if (buf_copy == NULL) {
+				qwarn("strdup");
+				continue;
+			}
+			tmp = reallocarray(si->ip_addrs,
+			    si->ip_addrs_len + 1, sizeof(char *));
+			if (tmp == NULL) {
+				free(buf_copy);
+				qwarn("reallocarray");
+				continue;
+			}
+			si->ip_addrs = tmp;
+			si->ip_addrs[si->ip_addrs_len] = buf_copy;
+			si->ip_addrs_len++;
+		}
+		if (af == AF_PACKET) {
+			struct sockaddr_ll	*sll;
+			struct ether_addr	*ether, zero_ether;
+			char			 eth_buf[32];
+
+			bzero(eth_buf, sizeof(eth_buf));
+			sll = (struct sockaddr_ll *)ifa->ifa_addr;
+			if (sll->sll_halen != 6)
+				continue;
+			ether = (struct ether_addr *)sll->sll_addr;
+			bzero(&zero_ether, sizeof(zero_ether));
+			if (!memcmp(&zero_ether, ether, 6))
+				continue;
+			if ((ether_ntoa_r(ether, eth_buf)) == NULL) {
+				qwarn("ether_ntoa ifname %s", ifa->ifa_name);
+				continue;
+			}
+			/* Check if unique */
+			for (i = 0; i < si->ip_addrs_len; i++) {
+				if (!strcmp(eth_buf, si->ip_addrs[i]))
+					goto next;
+			}
+			buf_copy = strdup(eth_buf);
+			if (buf_copy == NULL) {
+				qwarn("strdup");
+				continue;
+			}
+			tmp = reallocarray(si->mac_addrs,
+			    si->mac_addrs_len + 1, sizeof(char *));
+			if (tmp == NULL) {
+				free(buf_copy);
+				qwarn("reallocarray");
+				continue;
+			}
+			si->mac_addrs = tmp;
+			si->mac_addrs[si->mac_addrs_len] = buf_copy;
+			si->mac_addrs_len++;
+		}
+next:
+		; /* GCC 4.8.x will freak without a statement after a label */
+	}
+	freeifaddrs(ifaddrs);
+
+	return (0);
+}
+
+static void
+quark_sysinfo_delete(struct quark_sysinfo *si)
+{
+	size_t i;
+
+	free(si->boot_id);
+	si->boot_id = NULL;
+	free(si->hostname);
+	si->hostname = NULL;
+	/* ip_addrs */
+	for (i = 0; i < si->ip_addrs_len; i++)
+		free(si->ip_addrs[i]);
+	free(si->ip_addrs);
+	si->ip_addrs = NULL;
+	si->ip_addrs_len = 0;
+	/* mac_addrs */
+	for (i = 0; i < si->mac_addrs_len; i++)
+		free(si->mac_addrs[i]);
+	free(si->mac_addrs);
+	si->mac_addrs = NULL;
+	si->mac_addrs_len = 0;
+	/* uts_* */
+	free(si->uts_sysname);
+	si->uts_sysname = NULL;
+	free(si->uts_nodename);
+	si->uts_nodename = NULL;
+	free(si->uts_release);
+	si->uts_release = NULL;
+	free(si->uts_version);
+	si->uts_version = NULL;
+	free(si->uts_machine);
+	si->uts_machine = NULL;
+	/* os_* */
+	free(si->os_name);
+	si->os_name = NULL;
+	free(si->os_version);
+	si->os_version = NULL;
+	free(si->os_release_type);
+	si->os_release_type = NULL;
+	free(si->os_id);
+	si->os_id = NULL;
+	free(si->os_version_id);
+	si->os_version_id = NULL;
+	free(si->os_version_codename);
+	si->os_version_codename = NULL;
+	free(si->os_pretty_name);
+	si->os_pretty_name = NULL;
+}
+
+static int
+quark_sysinfo_init(struct quark_sysinfo *si)
+{
+	struct utsname	uts;
+	int		r = 0;
+	size_t		len;
+	char		hostname[MAXHOSTNAMELEN];
+
+	bzero(hostname, sizeof(hostname));
+	if (gethostname(hostname, sizeof(hostname)) == -1)
+		r = -1;
+	else {
+		hostname[sizeof(hostname) - 1] = 0;
+		si->hostname = strdup(hostname);
+	}
+
+	si->boot_id =
+	    load_file_path_nostat("/proc/sys/kernel/random/boot_id", &len);
+	if (si->boot_id == NULL || len < 2) {
+		free(si->boot_id);
+		si->boot_id = NULL;
+		r = -1;
+	} else if (si->boot_id[len - 1] == '\n') /* chomp \n */
+		si->boot_id[len - 1] = 0;
+
+	if (uname(&uts) == -1)
+		r = -1;
+	else {
+		si->uts_sysname = strdup(uts.sysname);
+		si->uts_nodename = strdup(uts.nodename);
+		si->uts_release = strdup(uts.release);
+		si->uts_version = strdup(uts.version);
+		si->uts_machine = strdup(uts.machine);
+	}
+
+	if (quark_sysinfo_os_release(si) == -1)
+		r = -1;
+
+	if (quark_sysinfo_ifaddrs(si) == -1)
+		r = -1;
+
+	return (r);
+}
+
 		     /* parent */   /* child */
-const u8 agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= AGG_SINGLE,
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= AGG_SINGLE,
-	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
-	[RAW_WAKE_UP_NEW_TASK][RAW_EXIT_THREAD]		= AGG_SINGLE,
+const quark_can_aggregate_fn base_agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC]		= quark_can_aggregate_fork_exec,
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXEC_CONNECTOR]	= quark_can_aggregate_fork_exec,
+	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= quark_can_aggregate_mult,
+	[RAW_WAKE_UP_NEW_TASK][RAW_ID_CHANGE]		= quark_can_aggregate_mult,
+	[RAW_WAKE_UP_NEW_TASK][RAW_EXIT_THREAD]		= quark_can_aggregate_single,
 
-	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= AGG_SINGLE,
-	[RAW_EXEC][RAW_COMM]				= AGG_MULTI,
-	[RAW_EXEC][RAW_EXIT_THREAD]			= AGG_SINGLE,
+	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= quark_can_aggregate_single,
+	[RAW_EXEC][RAW_COMM]				= quark_can_aggregate_mult,
+	[RAW_EXEC][RAW_EXIT_THREAD]			= quark_can_aggregate_single,
 
-	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
-	[RAW_COMM][RAW_EXIT_THREAD]			= AGG_SINGLE,
+	[RAW_COMM][RAW_COMM]				= quark_can_aggregate_mult,
+	[RAW_COMM][RAW_EXIT_THREAD]			= quark_can_aggregate_single,
 
-	[RAW_FILE][RAW_FILE]				= AGG_CUSTOM,
+	[RAW_ID_CHANGE][RAW_ID_CHANGE]			= quark_can_aggregate_mult,
+
+	[RAW_FILE][RAW_FILE]				= quark_can_aggregate_file,
+	[RAW_TTY][RAW_TTY]				= quark_can_aggregate_tty,
 };
 
 /* used if qq->flags & QQ_MIN_AGG */
 			 /* parent */   /* child */
-const u8 agg_matrix_min[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
-	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= AGG_MULTI,
+const quark_can_aggregate_fn base_agg_matrix_min[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
+	[RAW_WAKE_UP_NEW_TASK][RAW_COMM]		= quark_can_aggregate_mult,
 
-	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= AGG_SINGLE,
-	[RAW_EXEC][RAW_COMM]				= AGG_MULTI,
+	[RAW_EXEC][RAW_EXEC_CONNECTOR]			= quark_can_aggregate_single,
+	[RAW_EXEC][RAW_COMM]				= quark_can_aggregate_mult,
 
-	[RAW_COMM][RAW_COMM]				= AGG_MULTI,
+	[RAW_COMM][RAW_COMM]				= quark_can_aggregate_mult,
+
+	[RAW_ID_CHANGE][RAW_ID_CHANGE]			= quark_can_aggregate_mult,
 };
 
 static int
@@ -3146,16 +3921,16 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 		if (color_index >= nitems(color_table)) /* paranoia */
 			color_index = 0;
 
-		if (qp->flags & QUARK_F_FILENAME)
-			name = qp->filename;
-		else if (qp->flags & QUARK_F_COMM)
+		if (qp->exe != NULL)
+			name = qp->exe;
+		else if (qp->comm[0] != 0)
 			name = qp->comm;
 		else
 			name = "<unknown>";
 		P(f, "\"%d\" [label=\"%d\\n%s\\n", qp->pid, qp->pid, name);
-		if (qp->flags & QUARK_F_COMM)
+		if (qp->comm[0] != 0)
 			P(f, "comm %s\\n", qp->comm);
-		if (qp->flags & QUARK_F_CWD)
+		if (qp->cwd != NULL)
 			P(f, "cwd %s\\n", qp->cwd);
 		if (qp->flags & QUARK_F_PROC) {
 			P(f, "cap_inh 0x%llx\\n", qp->proc_cap_inheritable);
@@ -3191,6 +3966,62 @@ quark_dump_process_cache_graph(struct quark_queue *qq, FILE *f)
 	return (0);
 }
 #undef P
+
+/*
+ * Do a first pass of the ruleset in the existing process cache.
+ * Atm used only for poisoning existing processes.
+ * Be careful to only bump relevant rule counters.
+ */
+static int
+quark_queue_ruleset_prime(struct quark_queue *qq)
+{
+	struct quark_event	 qev;
+	struct quark_process	*qp;
+	struct quark_rule	*qr;
+	size_t			 i;
+
+	if (qq->ruleset == NULL)
+		return (0);
+
+	bzero(&qev, sizeof(qev));
+
+	RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
+		qev.process = qp;
+		quark_ruleset_match(qq->ruleset, &qev);
+	}
+
+	/*
+	 * Reset all counters for non poison rules, this makes testing
+	 * and reasoning easier (code for: "I lost a lot of time trying
+	 * to figure why my counters were off").
+	 */
+	for (i = 0; i < qq->ruleset->n_rules; i++) {
+		qr = qq->ruleset->rules + i;
+		if (qr->action == QUARK_RA_POISON)
+			continue;
+		qr->hits = 0;
+		qr->evals = 0;
+	}
+
+	return (0);
+}
+
+int
+quark_queue_set_agg_matrix(struct quark_queue *qq,
+    int parent, int child, quark_can_aggregate_fn fn)
+{
+	if (parent < 0 || parent >= RAW_NUM_TYPES)
+		goto inval;
+	if (child < 0 || child >= RAW_NUM_TYPES)
+		goto inval;
+
+	qq->agg_matrix[parent][child] = fn;
+
+	return (0);
+inval:
+	errno = EINVAL;
+	return (-1);
+}
 
 int
 quark_queue_get_epollfd(struct quark_queue *qq)
@@ -3231,7 +4062,9 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->max_length = 10000;
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
+	qa->max_env = 4096;		/* one page per process */
 	qa->kubefd = -1;		/* disabled */
+	qa->ruleset = NULL;		/* no rules */
 }
 
 int
@@ -3268,7 +4101,8 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	 */
 	if (qa->flags & QQ_BYPASS) {
 		if ((qa->flags &
-		    (QQ_KPROBE|QQ_ENTRY_LEADER|QQ_MIN_AGG|QQ_THREAD_EVENTS)) ||
+		    (QQ_KPROBE|QQ_NOVA|QQ_ENTRY_LEADER|
+		    QQ_MIN_AGG|QQ_THREAD_EVENTS)) ||
 		    !(qa->flags & QQ_EBPF) ||
 		    qa->kubefd != -1)
 			return (errno = EINVAL, -1);
@@ -3279,13 +4113,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		 */
 		qa->max_length = 1;
 	}
-	/*
-	 * QQ_{MEMFD,TTY} needs QQ_BYPASS for now
-	 */
-	if ((qa->flags & (QQ_MEMFD|QQ_TTY)) && !(qa->flags & QQ_BYPASS))
-		return (errno = EINVAL, -1);
 
-	if ((qa->flags & QQ_ALL_BACKENDS) == 0 ||
+	/* XXX hardcode QQ_NOVA for now XXX */
+	if ((qa->flags & (QQ_ALL_BACKENDS | QQ_NOVA)) == 0 ||
 	    qa->max_length <= 0 ||
 	    qa->cache_grace_time < 0 ||
 	    qa->hold_time < 10)
@@ -3300,17 +4130,26 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	RB_INIT(&qq->raw_event_by_pidtime);
 	RB_INIT(&qq->process_by_pid);
 	RB_INIT(&qq->socket_by_src_dst);
+	RB_INIT(&qq->passwd_by_uid);
+	RB_INIT(&qq->group_by_gid);
 	TAILQ_INIT(&qq->event_gc);
 	qq->flags = qa->flags;
 	qq->max_length = qa->max_length;
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
 	qq->hold_time = qa->hold_time;
+	qq->max_env = qa->max_env;
+	qq->ruleset = qa->ruleset;
 	qq->length = 0;
 	qq->epollfd = -1;
+
+#ifdef HAVE_STATIC_ASSERT
+	static_assert(sizeof(base_agg_matrix) == sizeof(base_agg_matrix_min));
+	static_assert(sizeof(qq->agg_matrix) == sizeof(base_agg_matrix));
+#endif
 	if (qq->flags & QQ_MIN_AGG)
-		qq->agg_matrix = agg_matrix_min;
+		memcpy(qq->agg_matrix, base_agg_matrix_min, sizeof(qq->agg_matrix));
 	else
-		qq->agg_matrix = agg_matrix;
+		memcpy(qq->agg_matrix, base_agg_matrix, sizeof(qq->agg_matrix));
 
 	if ((qq->epollfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
 		qwarn("can't create epollfd");
@@ -3377,7 +4216,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		/*
 		 * Prime our cache
 		 */
-		if (prime_kube(qq) == -1) {
+		if (kube_prime(qq) == -1) {
 			qwarn("can't prime kubernetes metadata");
 			goto fail;
 		}
@@ -3386,7 +4225,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	/*
 	 * Open the rings
 	 */
-	if (bpf_queue_open(qq) && kprobe_queue_open(qq)) {
+	if (nova_queue_open(qq) != 0 &&
+	    bpf_queue_open(qq) != 0 &&
+	    kprobe_queue_open(qq) != 0) {
 		qwarnx("all backends failed");
 		goto fail;
 	}
@@ -3423,6 +4264,32 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		}
 	}
 
+	/*
+	 * Build username database, really only used for ECS and event dumping.
+	 */
+	if (quark_passwd_populate(&qq->passwd_by_uid) == -1)
+		qwarn("Can't build user database, not fatal");
+
+	/*
+	 * Build group database, really only used for ECS and event dumping.
+	 */
+	if (quark_group_populate(&qq->group_by_gid) == -1)
+		qwarn("Can't build group database, not fatal");
+
+	/*
+	 * Build quark_sysinfo, really only used for ECS for now, not fatal
+	 */
+	if (quark_sysinfo_init(&qq->sysinfo) == -1)
+		qwarn("Can't init quark_sysinfo, not fatal");
+
+	/*
+	 * Pass rules on all processes, so we can have match on poison rules
+	 */
+	if (quark_queue_ruleset_prime(qq) == -1) {
+		qwarn("Can't prime ruleset");
+		goto fail;
+	}
+
 	return (0);
 
 fail:
@@ -3441,6 +4308,8 @@ quark_queue_close(struct quark_queue *qq)
 	struct quark_process	*qp;
 	struct quark_socket	*qsk;
 	struct quark_pod	*pod;
+	struct quark_passwd	*qpw;
+	struct quark_group	*qgrp;
 
 	/* Don't forget the storage for the last sent event */
 	event_storage_clear(qq);
@@ -3463,13 +4332,37 @@ quark_queue_close(struct quark_queue *qq)
 		qq->queue_ops->close(qq);
 	/* Clean up qkube */
 	if (qq->qkube != NULL) {
-		stop_kube(qq);
+		kube_stop(qq);
 		while ((pod = RB_ROOT(&qq->qkube->pod_by_uid)) != NULL)
 			pod_delete(qq, pod);
+		free(qq->qkube->node.name);
+		free(qq->qkube->node.uid);
+		free(qq->qkube->node.zone);
+		free(qq->qkube->node.region);
+		free(qq->qkube->node.provider);
+		free(qq->qkube->node.project);
+		free(qq->qkube->node.project_id);
+		free(qq->qkube->node.cluster_name);
+		free(qq->qkube->node.cluster_uid);
+		free(qq->qkube->node.cluster_version);
 		free(qq->qkube->buf);
 		free(qq->qkube);
 		qq->qkube = NULL;
 	}
+	/* Clean up passwd entries */
+	while ((qpw = RB_ROOT(&qq->passwd_by_uid)) != NULL) {
+		RB_REMOVE(passwd_by_uid, &qq->passwd_by_uid, qpw);
+		free(qpw->name);
+		free(qpw);
+	}
+	/* Clean up group entries */
+	while ((qgrp = RB_ROOT(&qq->group_by_gid)) != NULL) {
+		RB_REMOVE(group_by_gid, &qq->group_by_gid, qgrp);
+		free(qgrp->name);
+		free(qgrp);
+	}
+	/* Clean up sysinfo */
+	quark_sysinfo_delete(&qq->sysinfo);
 	/* Close epollfd */
 	if (qq->epollfd != -1) {
 		if (close(qq->epollfd) == -1)
@@ -3478,8 +4371,48 @@ quark_queue_close(struct quark_queue *qq)
 	}
 }
 
-static int
-can_aggregate_file(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
+int
+quark_can_aggregate_single(struct quark_queue *qq, struct raw_event *p,
+    struct raw_event *c)
+{
+	struct raw_event	*agg;
+
+	TAILQ_FOREACH(agg, &p->agg_queue, agg_entry) {
+		if (agg->type == c->type)
+			return (0);
+	}
+
+	return (1);
+}
+
+int
+quark_can_aggregate_mult(struct quark_queue *qq, struct raw_event *p,
+    struct raw_event *c)
+{
+	return (1);
+}
+
+int
+quark_can_aggregate_fork_exec(struct quark_queue *qq,
+    struct raw_event *fork, struct raw_event *exec)
+{
+	struct raw_event        *agg;
+
+	TAILQ_FOREACH(agg, &fork->agg_queue, agg_entry) {
+		/* If there is an exec, we can't */
+		if (agg->type == exec->type)
+			return (0);
+		/* If there is a ID_CHANGE, we can't */
+		if (agg->type == RAW_ID_CHANGE)
+			return (0);
+	}
+
+	return (1);
+}
+
+int
+quark_can_aggregate_file(struct quark_queue *qq,
+    struct raw_event *p, struct raw_event *c)
 {
 	struct quark_file	*pf, *cf;
 
@@ -3500,11 +4433,52 @@ can_aggregate_file(struct quark_queue *qq, struct raw_event *p, struct raw_event
 	return (0);
 }
 
+int
+quark_can_aggregate_tty(struct quark_queue *qq,
+    struct raw_event *p, struct raw_event *c)
+{
+	struct quark_tty	*pt, *ct;
+
+	pt = p->tty.quark_tty;
+	ct = c->tty.quark_tty;
+
+	if (pt->major != ct->major)
+		return (0);
+
+	if (pt->minor != ct->minor)
+		return (0);
+
+	if (pt->truncated || ct->truncated)
+		return (0);
+
+	if ((pt->total_len + ct->data_len) < 4096) {
+		pt->total_len += ct->data_len;
+		return (1);
+	}
+
+	return (0);
+}
+
+/*
+ * Aggregation is a relationship between a parent event and a child event. In a
+ * fork+exec scenario, fork is the parent, exec is the child.
+ *
+ * We derive an aggregation callback from the aggregation matrix, if that
+ * returns true we aggregate them.
+ *
+ * quark_can_aggregate_single() aggregates only one child event onto the parent event,
+ * so it will aggregate the first, but not the second, so a fork+exec+exec
+ * becomes: [fork+exec; exec].
+ *
+ * quark_can_agg_mult() joins everything, so a fork+comm+comm+comm will end up
+ * as a fork with the last comm value.
+ *
+ * The user can modify the callbacks via quark_queue_set_agg_matrix().
+ */
 static int
 can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 {
-	int			 kind;
-	struct raw_event	*agg;
+	quark_can_aggregate_fn	 can_agg_fn;
 
 	/* Different pids can't aggregate */
 	if (p->pid != c->pid)
@@ -3516,27 +4490,12 @@ can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 		return (0);
 	}
 
-	kind = qq->agg_matrix[p->type][c->type];
 
-	switch (kind) {
-	case AGG_NONE:
+	can_agg_fn = qq->agg_matrix[p->type][c->type];
+	if (can_agg_fn == NULL)
 		return (0);
-	case AGG_MULTI:
-		return (1);
-	case AGG_SINGLE:
-		TAILQ_FOREACH(agg, &p->agg_queue, agg_entry) {
-			if (agg->type == c->type)
-				return (0);
-		}
-		return (1);
-	case AGG_CUSTOM:
-		if (p->type == RAW_FILE && c->type == RAW_FILE)
-			return (can_aggregate_file(qq, p, c));
-		return (0);
-	default:
-		qwarnx("unhandle agg kind %d", kind);
-		return (0);
-	}
+
+	return (can_agg_fn(qq, p, c));
 }
 
 static void
@@ -3598,7 +4557,7 @@ quark_queue_pop_raw(struct quark_queue *qq)
 	return (min);
 }
 
-static const struct quark_event *
+static struct quark_event *
 raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -3623,7 +4582,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 			/*
 			 * If we learned it by scraping, supress it.
 			 */
-			if (qsk->pid_origin == raw->pid && qsk->from_scrape) {
+			if (qsk->pid_origin == raw->pid && qsk->conn_origin == SOCK_CONN_SCRAPE) {
 				qsk->pid_last_use = qsk->pid_origin;
 				return (NULL);
 			}
@@ -3638,7 +4597,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 		}
 
 		qsk = socket_alloc_and_insert(qq, &conn->local, &conn->remote,
-		    raw->pid, raw->time);
+		    conn->conn, 0, 0, raw->pid, raw->time);
 		if (qsk == NULL) {
 			qwarn("socket_alloc");
 			return (NULL);
@@ -3653,14 +4612,19 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 		 */
 		if (qsk == NULL) {
 			qsk = socket_alloc_and_insert(qq, &conn->local, &conn->remote,
+			    conn->conn, conn->bytes_received, conn->bytes_sent,
 			    raw->pid, raw->time);
 			if (qsk == NULL) {
 				qwarn("socket_alloc");
 				return (NULL);
 			}
 		}
+
 		if (qsk->close_time == 0)
 			qsk->close_time = raw->time;
+		qsk->bytes_received = conn->bytes_received;
+		qsk->bytes_sent = conn->bytes_sent;
+
 		gc_mark(qq, &qsk->gc, GC_SOCKET);
 		qev->events = QUARK_EV_SOCK_CONN_CLOSED;
 
@@ -3678,7 +4642,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
-static const struct quark_event *
+static struct quark_event *
 raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -3701,7 +4665,7 @@ raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
-static const struct quark_event *
+static struct quark_event *
 raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -3737,6 +4701,375 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
+static struct quark_event *
+raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_PTRACE;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->ptrace = raw->ptrace.quark_ptrace;
+
+	return (qev);
+}
+
+static struct quark_event *
+raw_event_module_load(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_MODULE_LOAD;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	/* Steal it */
+	qev->module_load = raw->module_load.quark_module_load;
+	raw->module_load.quark_module_load = NULL;
+
+	return (qev);
+}
+
+static struct quark_event *
+raw_event_shm(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_SHM;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	/* Steal it */
+	qev->shm = raw->shm.quark_shm;
+	raw->shm.quark_shm = NULL;
+
+	return (qev);
+}
+
+static struct quark_event *
+raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+	struct raw_event	*agg, *next;
+
+	if (raw->tty.quark_tty == NULL) {
+		qwarnx("quark_tty is null");
+
+		return (NULL);
+	}
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_TTY;
+	qev->process = quark_process_lookup(qq, raw->pid);
+
+	/* Link raw (our head) to the first chunk in tha agg queue */
+	next = TAILQ_FIRST(&raw->agg_queue);
+	if (next != NULL)
+		raw->tty.quark_tty->next = next->tty.quark_tty;
+
+	/* Link the remaining chunks */
+	TAILQ_FOREACH_SAFE(agg, &raw->agg_queue, agg_entry, next) {
+		if (next != NULL)
+			agg->tty.quark_tty->next = next->tty.quark_tty;
+		agg->tty.quark_tty = NULL;
+	}
+
+	/* Steal it */
+	qev->tty = raw->tty.quark_tty;
+	raw->tty.quark_tty = NULL;
+
+	return (qev);
+}
+
+void
+quark_ruleset_init(struct quark_ruleset *ruleset)
+{
+	bzero(ruleset, sizeof(*ruleset));
+}
+
+void
+quark_ruleset_clear(struct quark_ruleset *ruleset)
+{
+	struct quark_rule	*rule;
+	size_t			 i, j;
+
+	for (i = 0; i < ruleset->n_rules; i++) {
+		rule = ruleset->rules + i;
+		for (j = 0; j < rule->n_fields; j++) {
+			switch (rule->fields[j].code) {
+			case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
+			case QUARK_RF_EXE:		/* FALLTHROUGH */
+				free(rule->fields[j].wild.pre);
+				break;
+			default:
+				break;
+			}
+		}
+		free(rule->fields);
+	}
+
+	free(ruleset->rules);
+	ruleset->rules = NULL;
+	ruleset->n_rules = 0;
+}
+
+int
+quark_ruleset_parse(struct quark_ruleset *ruleset, FILE *in,
+    char *err_buf, size_t err_buf_len)
+{
+	struct quark_parser_ctx	 ctx;
+	size_t			 i;
+	int			 quark_parse(struct quark_parser_ctx *);
+
+	quark_ruleset_init(ruleset);
+	bzero(&ctx, sizeof(ctx));
+	ctx.in = in;
+	ctx.ruleset = ruleset;
+
+	quark_parse(&ctx);
+
+	/* Free up parser arena */
+	for (i = 0; i < ctx.n_allocs; i++)
+		free(ctx.allocs[i]);
+	free(ctx.allocs);
+
+	if (ctx.error) {
+		quark_ruleset_clear(ctx.ruleset);
+		if (err_buf != NULL)
+			strlcpy(err_buf, ctx.errorbuf, err_buf_len);
+
+		return (-1);
+	}
+
+	return (0);
+}
+
+static int
+path_match(struct quark_rule_field *field, const char *a)
+{
+	struct quark_wild	*w = &field->wild;
+	size_t			 alen;
+
+	/*
+	 * Include NUL in the comparison. Without it, "foo" would match "foobar"
+	 * as a prefix. pre_len includes the NUL when it's an exact match. If
+	 * post_len is 0, NUL is not included (hence zero), if post_len is
+	 * positive, NUL is included.
+	 */
+	alen = strlen(a) + 1;	/* include NUL */
+
+	if (w->pre_len + w->post_len > alen)
+		return (0);
+	if (memcmp(w->pre, a, w->pre_len) != 0)
+		return (0);
+	if (memcmp(w->post, a + alen - w->post_len, w->post_len) != 0)
+		return (0);
+
+	return (1);
+}
+
+/* 1 for match, 0 for non match */
+static int
+quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
+    struct quark_event *qev)
+{
+	const struct quark_process	*qp;
+
+	qp = qev->process;
+
+#define MATCH_PROC_FIELD(_p, _n, _v)					\
+	((_p) != NULL && ((_p)->flags & QUARK_F_PROC) && (_p)->_n == (_v))
+
+	switch (field->code) {
+	case QUARK_RF_PID:
+		if (qp != NULL)
+			return (qp->pid == field->pid);
+		break;
+	case QUARK_RF_PPID:
+		return (MATCH_PROC_FIELD(qp, proc_ppid, field->pid));
+	case QUARK_RF_EXE:
+		if (qp != NULL && qp->exe != NULL)
+			return (path_match(field, qp->exe));
+		break;
+	case QUARK_RF_UID:
+		return (MATCH_PROC_FIELD(qp, proc_uid, field->id));
+	case QUARK_RF_GID:
+		return (MATCH_PROC_FIELD(qp, proc_gid, field->id));
+	case QUARK_RF_SID:
+		return (MATCH_PROC_FIELD(qp, proc_sid, field->id));
+		break;
+	case QUARK_RF_COMM:
+		if (qp != NULL)
+			return (!strcmp(field->comm, qp->comm));
+		break;
+	case QUARK_RF_FILEPATH:
+		if (qev->file != NULL)
+			return (path_match(field, qev->file->path));
+		break;
+	case QUARK_RF_POISON:
+		if (qp != NULL)
+			return (qp->poison_tag == field->poison_tag);
+		break;
+	default:
+		break;
+	}
+
+#undef MATCH_PROC_FIELD
+
+	return (0);
+}
+
+struct quark_rule *
+quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
+{
+	struct quark_rule	*rule;
+	struct quark_rule_field		*field;
+	size_t			 i, j;
+	struct quark_process	*qp;
+
+	for (i = 0; i < ruleset->n_rules; i++) {
+		rule = ruleset->rules + i;
+		rule->evals++;
+		for (j = 0; j < rule->n_fields; j++) {
+			field = rule->fields + j;
+			if (!quark_rule_field_match(rule, field, qev))
+				break;
+		}
+		/* All fields matched, this is the rule! */
+		if (j == rule->n_fields) {
+			rule->hits++;
+			/* Poison rules continue to evaluate, others are done */
+			if (rule->action != QUARK_RA_POISON)
+				return (rule);
+			/* Poison this process */
+			qp = (struct quark_process *)qev->process;
+			if (qp != NULL)
+				qp->poison_tag = rule->poison_tag;
+		}
+	}
+
+	return (NULL);
+}
+
+struct quark_rule *
+quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_tag)
+{
+	struct quark_rule	*new_rules, *rule;
+	size_t			 new_n_rules;
+
+	if (action != QUARK_RA_DROP &&
+	    action != QUARK_RA_PASS &&
+	    action != QUARK_RA_POISON)
+		return (errno = EINVAL, NULL);
+	new_n_rules = ruleset->n_rules + 1;
+	new_rules = reallocarray(ruleset->rules, new_n_rules,
+	    sizeof(*ruleset->rules));
+	if (new_rules == NULL)
+		return (NULL);
+
+	ruleset->rules = new_rules;
+	ruleset->n_rules = new_n_rules;
+
+	rule = &ruleset->rules[ruleset->n_rules - 1];
+	rule->fields = NULL;
+	rule->n_fields = 0;
+	rule->action = action;
+	rule->number = ruleset->n_rules - 1;
+	rule->evals = 0;
+	rule->hits = 0;
+	if (action == QUARK_RA_POISON)
+		rule->poison_tag = poison_tag;
+	else
+		rule->poison_tag = 0;
+
+	return (rule);
+}
+
+int
+quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
+{
+	struct quark_rule_field	*new_fields;
+	size_t			 new_n_fields;
+	char			*path, *star;
+
+	path = NULL;
+
+	switch (rf.code) {
+	case QUARK_RF_PID:		/* FALLTHROUGH */
+	case QUARK_RF_PPID:
+		if (rf.pid == 0)
+			goto inval;
+		break;
+	case QUARK_RF_UID:		/* FALLTHROUGH */
+	case QUARK_RF_GID:		/* FALLTHROUGH */
+	case QUARK_RF_SID:
+		break;
+	case QUARK_RF_COMM:
+		if (strlen(rf.comm) == 0)
+			goto inval;
+		break;
+	case QUARK_RF_EXE:		/* FALLTHROUGH */
+	case QUARK_RF_FILEPATH:
+		rf.wild.post = NULL;
+		rf.wild.pre_len = rf.wild.post_len = 0;
+
+		if (rf.wild.pre == NULL || strlen(rf.wild.pre) == 0 ||
+		    strlen(rf.wild.pre) >= PATH_MAX)
+			goto inval;
+		/* Save path in case we error out and need to free */
+		path = rf.wild.pre = strdup(rf.wild.pre);
+		if (path == NULL)
+			goto bad;
+		/*
+		 * Split rf.wild.pre and rf.wild.post
+		 * as in foo*bar: pre = foo, post = bar
+		 */
+		rf.wild.post = rf.wild.pre + strlen(rf.wild.pre);
+		if ((star = strchr(rf.wild.pre, '*')) != NULL) {
+			*star = 0;
+			/* Only one * is allowed */
+			rf.wild.post = star + 1;
+			if (strchr(rf.wild.post, '*') != NULL)
+				goto bad;
+		}
+		/* Don't move this up, as the block above might shorten "pre" */
+		rf.wild.pre_len = strlen(rf.wild.pre);
+		rf.wild.post_len = strlen(rf.wild.post);
+		if (star == NULL)
+			rf.wild.pre_len++; /* Include NUL in the comparison */
+		if (rf.wild.post_len > 0)
+			rf.wild.post_len++; /* Include NUL in the comparison */
+		break;
+	case QUARK_RF_POISON:
+		if (rf.poison_tag == 0)
+			goto inval;
+		break;
+	default:
+		goto inval;
+	}
+
+	new_n_fields = rule->n_fields + 1;
+	new_fields = reallocarray(rule->fields, new_n_fields,
+	    sizeof(*rule->fields));
+	if (new_fields == NULL)
+		goto bad;
+
+	rule->fields = new_fields;
+	rule->n_fields = new_n_fields;
+	rule->fields[rule->n_fields - 1] = rf;
+
+	return (0);
+
+inval:
+	errno = EINVAL;
+bad:
+	free(path);
+
+	return (-1);
+}
+
 static const struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
@@ -3760,12 +5093,18 @@ get_bypass_event(struct quark_queue *qq)
 const struct quark_event *
 quark_queue_get_event(struct quark_queue *qq)
 {
-	struct raw_event		*raw;
-	const struct quark_event	*qev;
+	struct raw_event	*raw;
+	struct quark_event	*qev;
+	struct quark_rule	*rule;
 
+	/* GC all processes and sockets that exited after some grace time */
+	gc_collect(qq);
+
+	/* Read from the kube pipe */
 	if (qq->qkube != NULL)
-		read_kube_events(qq);
+		kube_read_events(qq);
 
+	/* Bypass skips everything */
 	if (qq->flags & QQ_BYPASS)
 		return (get_bypass_event(qq));
 
@@ -3778,8 +5117,10 @@ quark_queue_get_event(struct quark_queue *qq)
 		case RAW_EXEC:			/* FALLTHROUGH */
 		case RAW_WAKE_UP_NEW_TASK:	/* FALLTHROUGH */
 		case RAW_EXIT_THREAD:		/* FALLTHROUGH */
+		case RAW_ID_CHANGE:		/* FALLTHROUGH */
 		case RAW_COMM:			/* FALLTHROUGH */
-		case RAW_EXEC_CONNECTOR:
+		case RAW_EXEC_CONNECTOR:	/* FALLTHROUGH */
+		case RAW_GETPID:
 			qev = raw_event_process(qq, raw);
 			break;
 		case RAW_SOCK_CONN:
@@ -3791,19 +5132,43 @@ quark_queue_get_event(struct quark_queue *qq)
 		case RAW_FILE:
 			qev = raw_event_file(qq, raw);
 			break;
+		case RAW_PTRACE:
+			qev = raw_event_ptrace(qq, raw);
+			break;
+		case RAW_MODULE_LOAD:
+			qev = raw_event_module_load(qq, raw);
+			break;
+		case RAW_SHM:
+			qev = raw_event_shm(qq, raw);
+			break;
+		case RAW_TTY:
+			qev = raw_event_tty(qq, raw);
+			break;
 		default:
 			qwarnx("unhandled raw->type: %d", raw->type);
 			break;
 		}
 
+		if (qev != NULL)
+			qev->time = quark.boottime + raw->time;
 		raw_event_free(raw);
 	}
 
-	if (qev != NULL && qq->qkube != NULL)
-		link_kube_data(qq, (struct quark_process *)qev->process);
+	/* No event, bail early */
+	if (qev == NULL)
+		return (NULL);
 
-	/* GC all processes and sockets that exited after some grace time */
-	gc_collect(qq);
+	/* Try to correlate kubernetes metadata */
+	if (qq->qkube != NULL)
+		link_kube_data(qq,
+		    (struct quark_process *)qev->process);
+
+	/* Run ruleset, if it's a drop, nulify qev */
+	if (qq->ruleset != NULL) {
+		rule = quark_ruleset_match(qq->ruleset, qev);
+		if (rule != NULL && rule->action == QUARK_RA_DROP)
+			qev = NULL;
+	}
 
 	return (qev);
 }
@@ -3812,7 +5177,6 @@ int
 quark_start_kube_talker(const char *kube_config, pid_t *pid)
 {
 	int	pipefd[2];
-	char	fdbuf[16];
 
 	if (kube_config == NULL || pid == NULL)
 		return (errno = EINVAL, -1);
@@ -3836,17 +5200,17 @@ quark_start_kube_talker(const char *kube_config, pid_t *pid)
 
 	/* child */
 	close(pipefd[0]);
+	if (dup2(pipefd[1], STDOUT_FILENO) == -1)
+		err(1, "dup2");
 
-	if (qclosefrom(3, pipefd[1]) == -1) {
+	if (qclosefrom(3, -1) == -1) {
 		qwarn("qclosefrom");
 		qwarnx("not closing child descriptors");
 	}
 
-	snprintf(fdbuf, sizeof(fdbuf), "%d", pipefd[1]);
-
-	if (execl("quark-kube-talker", "quark-kube-talker",
-	    kube_config, fdbuf, (char *)NULL) == -1)
-		err(1, "execl");
+	if (execlp("quark-kube-talker", "quark-kube-talker",
+	    "-m", "-K", kube_config, (char *)NULL) == -1)
+		err(1, "execlp quark-kube-talker");
 
 	return (0);		/* NOTREACHED */
 }

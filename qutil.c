@@ -13,6 +13,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <bpf/libbpf.h>
+
 #include "quark.h"
 
 ssize_t
@@ -52,9 +54,9 @@ qwrite(int fd, const void *buf, size_t count)
 }
 
 /*
- * Safer readlinkat(2), guarantees termination and returns strlen(pathname) so
- * caller can check truncation, like strlcpy(). Compare to >= 0 if truncation is
- * acceptable.
+ * Safer readlinkat(2), guarantees termination and returns the number of bytes
+ * placed in buf (excluding NUL) so caller can check truncation, like strlcpy().
+ * If the return value is >= bufsiz, truncation occurred.
  */
 ssize_t
 qreadlinkat(int dfd, const char *pathname, char *buf, size_t bufsiz)
@@ -66,8 +68,10 @@ qreadlinkat(int dfd, const char *pathname, char *buf, size_t bufsiz)
 	if ((n = readlinkat(dfd, pathname, buf, bufsiz - 1)) == -1)
 		return (-1);
 	buf[n] = 0;
+	if ((size_t)n == (bufsiz - 1))
+		n++;
 
-	return (strlen(pathname));
+	return (n);
 }
 
 /*
@@ -158,7 +162,8 @@ find_line(FILE *f, const char *needle)
 	old_pos = ftell(f);
 	if (old_pos == -1)
 		return (NULL);
-	rewind(f);
+	if (fseek(f, 0, SEEK_SET) == -1)
+		return (NULL);
 	line = NULL;
 	line_len = 0;
 	found = NULL;
@@ -238,6 +243,21 @@ load_file_nostat(int fd, size_t *total)
 	return (buf);
 }
 
+char *
+load_file_path_nostat(const char *path, size_t *total)
+{
+	int	 fd;
+	char	*buf;
+
+	if ((fd = open(path, O_RDONLY)) == -1)
+		return (NULL);
+
+	buf = load_file_nostat(fd, total);
+	close(fd);
+
+	return (buf);
+}
+
 int
 ipv6_supported(void)
 {
@@ -286,4 +306,74 @@ qlog_func(int pri, int do_errno, const char *func, int lineno,
 	}
 
 	va_end(ap);
+}
+
+const char *
+safe_basename(const char *path)
+{
+	const char	*p;
+
+	p = strrchr(path, '/');
+
+	if (p != NULL && p[1] != 0)
+		return (p + 1);
+
+	return (NULL);
+}
+
+u64
+fetch_boottime(void)
+{
+	char		*line;
+	const char	*errstr, *needle;
+	u64		 btime;
+
+	needle = "btime ";
+	line = find_line_p("/proc/stat", needle);
+	if (line == NULL)
+		return (0);
+	btime = strtonum(line + strlen(needle), 1, LLONG_MAX, &errstr);
+	free(line);
+	if (errstr != NULL)
+		qwarnx("can't parse btime: %s", errstr);
+
+	return (btime * NS_PER_S);
+}
+
+/*
+ * Map libbpf logs into quark_verbose.
+ * fmt has a newline, we have to prepend program_invocatin_short_name, so we
+ * can't use vwarn, as it prepends itself and adds a newline.
+ */
+static int
+libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list ap)
+{
+	int	 pri;
+	char	*nfmt;
+
+	if (level == LIBBPF_WARN || level == LIBBPF_INFO)
+		pri = QUARK_VL_WARN;
+	else if (level == LIBBPF_DEBUG)
+		pri = QUARK_VL_DEBUG;
+	else
+		pri = QUARK_VL_WARN; /* fallback in case they add something new */
+
+	if (pri > quark_verbose)
+		return (0);
+
+	/* best effort in out of mem situations */
+	if (asprintf(&nfmt, "%s: %s", program_invocation_short_name, fmt) == -1)
+		vfprintf(stderr, fmt, ap);
+	else {
+		vfprintf(stderr, nfmt, ap);
+		free(nfmt);
+	}
+
+	return (0);
+}
+
+void
+setup_libbpf_logs(void)
+{
+	libbpf_set_print(libbpf_print_fn);
 }

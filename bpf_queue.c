@@ -3,8 +3,10 @@
 
 #include <sys/epoll.h>
 #include <sys/param.h>
+#include <sys/mount.h>
 #include <sys/sysinfo.h>
 
+#include <assert.h>
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
@@ -36,38 +38,6 @@ struct quark_queue_ops queue_ops_bpf = {
 };
 
 /*
- * Map libbpf logs into quark_verbose.
- * fmt has a newline, we have to prepend program_invocatin_short_name, so we
- * can't use vwarn, as it prepends itself and adds a newline.
- */
-static int
-libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list ap)
-{
-	int	 pri;
-	char	*nfmt;
-
-	if (level == LIBBPF_WARN || level == LIBBPF_INFO)
-		pri = QUARK_VL_WARN;
-	else if (level == LIBBPF_DEBUG)
-		pri = QUARK_VL_DEBUG;
-	else
-		pri = QUARK_VL_WARN; /* fallback in case they add something new */
-
-	if (pri > quark_verbose)
-		return (0);
-
-	/* best effort in out of mem situations */
-	if (asprintf(&nfmt, "%s: %s", program_invocation_short_name, fmt) == -1)
-		vfprintf(stderr, fmt, ap);
-	else {
-		vfprintf(stderr, nfmt, ap);
-		free(nfmt);
-	}
-
-	return (0);
-}
-
-/*
  * This structure exists to work around the bad layout of ebpf events
  */
 struct ebpf_ctx {
@@ -78,10 +48,12 @@ struct ebpf_ctx {
 	struct ebpf_namespace_info	*ns;
 	char				*cwd;
 	char				*cgroup;
+	char				*env;
+	size_t				 env_len;
 };
 
 static void
-ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
+ebpf_ctx_to_task(struct quark_queue *qq, struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 {
 	task->cap_inheritable = 0; /* unavailable */
 	task->cap_permitted = ebpf_ctx->creds->cap_permitted;
@@ -110,10 +82,22 @@ ebpf_ctx_to_task(struct ebpf_ctx *ebpf_ctx, struct raw_task *task)
 	if (ebpf_ctx->cgroup != NULL)
 		task->cgroup = strdup(ebpf_ctx->cgroup);
 	strlcpy(task->comm, ebpf_ctx->comm, sizeof(task->comm));
+	if (ebpf_ctx->env != NULL && ebpf_ctx->env_len > 0) {
+		size_t	env_len;
+
+		env_len = ebpf_ctx->env_len > qq->max_env ?
+		    qq->max_env : ebpf_ctx->env_len;
+
+		if ((task->env = malloc(env_len)) != NULL) {
+			memcpy(task->env, ebpf_ctx->env, env_len);
+			task->env_len = env_len;
+			task->env[task->env_len - 1] = 0;
+		}
+	}
 }
 
 static struct raw_event *
-ebpf_events_to_raw(struct ebpf_event_header *ev)
+ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 {
 	struct raw_event		*raw;
 	struct ebpf_varlen_field	*field;
@@ -138,6 +122,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.ns = &fork->ns;
 		ebpf_ctx.cwd = NULL;
 		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
 		/* the macro doesn't take a pointer so we can't pass down :) */
 		FOR_EACH_VARLEN_FIELD(fork->vl_fields, field) {
 			switch (field->type) {
@@ -152,7 +138,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				break;
 			}
 		}
-		ebpf_ctx_to_task(&ebpf_ctx, &raw->task);
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
 
 		break;
 	}
@@ -171,6 +157,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.ns = &exit->ns;
 		ebpf_ctx.cwd = NULL;
 		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
 
 		FOR_EACH_VARLEN_FIELD(exit->vl_fields, field) {
 			switch (field->type) {
@@ -185,7 +173,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		raw->task.exit_code = exit->exit_code;
 		raw->task.exit_time_event = raw->time;
-		ebpf_ctx_to_task(&ebpf_ctx, &raw->task);
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
 
 		break;
 	}
@@ -205,6 +193,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		ebpf_ctx.ns = &exec->ns;
 		ebpf_ctx.cwd = NULL;
 		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
 
 		FOR_EACH_VARLEN_FIELD(exec->vl_fields, field) {
 			switch (field->type) {
@@ -220,24 +210,126 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 				/* filename might still be NULL */
 				break;
 			case EBPF_VL_FIELD_ARGV:
-				raw->exec.ext.args_len = field->size;
-				if (raw->exec.ext.args_len == 0) {
-					raw->exec.ext.args = NULL;
+				if (field->size == 0)
 					break;
-				}
-
 				raw->exec.ext.args = malloc(field->size);
 				if (raw->exec.ext.args == NULL)
 					break;
+				raw->exec.ext.args_len = field->size;
 				memcpy(raw->exec.ext.args, field->data,
 				    field->size);
 				raw->exec.ext.args[field->size - 1] = 0;
+				break;
+			case EBPF_VL_FIELD_ENV:
+				if (field->size == 0)
+					break;
+				ebpf_ctx.env = field->data;
+				ebpf_ctx.env_len = field->size;
 				break;
 			default:
 				break;
 			}
 		}
-		ebpf_ctx_to_task(&ebpf_ctx, &raw->exec.ext.task);
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->exec.ext.task);
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_SETSID: /* FALLTHROUGH */
+	case EBPF_EVENT_PROCESS_GETPID: {
+		struct ebpf_process_setsid_event	*sid;
+		int					 raw_type;
+
+		if (ev->type == EBPF_EVENT_PROCESS_SETSID)
+			raw_type = RAW_ID_CHANGE;
+		else if (ev->type == EBPF_EVENT_PROCESS_GETPID)
+			raw_type = RAW_GETPID;
+		else {
+			qwarnx("unhandled setsid/getpid type");
+			goto bad;
+		}
+
+		sid = (struct ebpf_process_setsid_event *)ev;
+		if ((raw = raw_event_alloc(raw_type)) == NULL)
+			goto bad;
+		raw->pid = sid->pids.tgid;
+		raw->time = ev->ts;
+		ebpf_ctx.pids = &sid->pids;
+		ebpf_ctx.creds = &sid->creds;
+		ebpf_ctx.ctty = &sid->ctty;
+		ebpf_ctx.comm = sid->comm;
+		ebpf_ctx.ns = &sid->ns;
+		ebpf_ctx.cwd = NULL;
+		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
+
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
+		if (raw_type == RAW_ID_CHANGE)
+			raw->task.id_change = QUARK_ID_CHANGE_SETSID;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_SETGID: {
+		struct ebpf_process_setgid_event	*gid;
+
+		gid = (struct ebpf_process_setgid_event *)ev;
+		if ((raw = raw_event_alloc(RAW_ID_CHANGE)) == NULL)
+			goto bad;
+		raw->pid = gid->pids.tgid;
+		raw->time = ev->ts;
+		ebpf_ctx.pids = &gid->pids;
+		ebpf_ctx.creds = &gid->creds;
+		ebpf_ctx.ctty = &gid->ctty;
+		ebpf_ctx.comm = gid->comm;
+		ebpf_ctx.ns = &gid->ns;
+		ebpf_ctx.cwd = NULL;
+		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
+
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
+		raw->task.id_change = QUARK_ID_CHANGE_SETGID;
+
+		/*
+		 * We get the SETGID event before it took place, but after it
+		 * succeeded. So copy the new ones into the task.
+		 */
+		raw->task.euid = gid->new_euid;
+		raw->task.egid = gid->new_egid;
+		raw->task.gid = gid->new_rgid;
+		raw->task.uid = gid->new_ruid;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_SETUID: {
+		struct ebpf_process_setuid_event	*uid;
+
+		uid = (struct ebpf_process_setuid_event *)ev;
+		if ((raw = raw_event_alloc(RAW_ID_CHANGE)) == NULL)
+			goto bad;
+		raw->pid = uid->pids.tgid;
+		raw->time = ev->ts;
+		ebpf_ctx.pids = &uid->pids;
+		ebpf_ctx.creds = &uid->creds;
+		ebpf_ctx.ctty = &uid->ctty;
+		ebpf_ctx.comm = uid->comm;
+		ebpf_ctx.ns = &uid->ns;
+		ebpf_ctx.cwd = NULL;
+		ebpf_ctx.cgroup = NULL;
+		ebpf_ctx.env = NULL;
+		ebpf_ctx.env_len = 0;
+
+		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
+		raw->task.id_change = QUARK_ID_CHANGE_SETUID;
+
+		/*
+		 * We get the SETUID event before it took place, but after it
+		 * succeeded. So copy the new ones into the task.
+		 */
+		raw->task.euid = uid->new_euid;
+		raw->task.egid = uid->new_egid;
+		raw->task.gid = uid->new_rgid;
+		raw->task.uid = uid->new_ruid;
 
 		break;
 	}
@@ -257,16 +349,16 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		if (net->net.family == EBPF_NETWORK_EVENT_AF_INET) {
 			conn->local.af = AF_INET;
-			memcpy(&conn->local.addr4, net->net.saddr, 4);
+			memcpy(&conn->local.u, net->net.saddr, 4);
 
 			conn->remote.af = AF_INET;
-			memcpy(&conn->remote.addr4, net->net.daddr, 4);
+			memcpy(&conn->remote.u, net->net.daddr, 4);
 		} else if (net->net.family == EBPF_NETWORK_EVENT_AF_INET6) {
 			conn->local.af = AF_INET6;
-			memcpy(conn->local.addr6, net->net.saddr6, 16);
+			memcpy(&conn->local.u, net->net.saddr6, 16);
 
 			conn->remote.af = AF_INET6;
-			memcpy(conn->remote.addr6, net->net.daddr6, 16);
+			memcpy(&conn->remote.u, net->net.daddr6, 16);
 		} else
 			goto bad;
 
@@ -282,6 +374,8 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 			break;
 		case EBPF_EVENT_NETWORK_CONNECTION_CLOSED:
 			raw->sock_conn.conn = SOCK_CONN_CLOSE;
+			raw->sock_conn.bytes_received = net->net.tcp.close.bytes_received;
+			raw->sock_conn.bytes_sent = net->net.tcp.close.bytes_sent;
 			break;
 		default:
 			goto bad;
@@ -333,9 +427,6 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 		}
 		break;
 	}
-	case EBPF_EVENT_FILE_SHMEM_OPEN:
-		goto drop;
-		break;
 	case EBPF_EVENT_FILE_CREATE: /* FALLTHROUGH */
 	case EBPF_EVENT_FILE_DELETE: /* FALLTHROUGH */
 	case EBPF_EVENT_FILE_MODIFY: /* FALLTHROUGH */
@@ -432,7 +523,7 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 					old_path = field->data;
 					old_path_len = tmp_len + 1; /* with NUL */
 				}
-				continue;
+				break;
 			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH: /* ignored */
 				break;
 			default:
@@ -490,14 +581,250 @@ ebpf_events_to_raw(struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_PROCESS_PTRACE: {
+		struct ebpf_process_ptrace_event *ptrace;
+		struct quark_ptrace *qptrace;
+
+		ptrace = (struct ebpf_process_ptrace_event *)ev;
+		if ((raw = raw_event_alloc(RAW_PTRACE)) == NULL)
+			goto bad;
+
+		raw->pid = ptrace->pids.tgid;
+		raw->time = ev->ts;
+
+		qptrace = &raw->ptrace.quark_ptrace;
+		qptrace->child_pid = ptrace->child_pid;
+		qptrace->request = ptrace->request;
+		qptrace->addr = ptrace->addr;
+		qptrace->data = ptrace->data;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_LOAD_MODULE: {
+		struct ebpf_process_load_module_event *module;
+		struct quark_module_load	*qml;
+		char				*filename, *version, *src_version;
+
+		module = (struct ebpf_process_load_module_event *)ev;
+		if ((raw = raw_event_alloc(RAW_MODULE_LOAD)) == NULL)
+			goto bad;
+
+		raw->pid = module->pids.tgid;
+		raw->time = ev->ts;
+
+		filename = version = src_version = NULL;
+		FOR_EACH_VARLEN_FIELD(module->vl_fields, field) {
+			switch (field->type) {
+			case EBPF_VL_FIELD_FILENAME:
+				if (field->size > 0)
+					filename = strndup(field->data, field->size);
+				break;
+			case EBPF_VL_FIELD_MOD_VERSION:
+				if (field->size > 0)
+					version = strndup(field->data, field->size);
+				break;
+			case EBPF_VL_FIELD_MOD_SRCVERSION:
+				if (field->size > 0)
+					src_version = strndup(field->data, field->size);
+				break;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				free(filename);
+				free(version);
+				free(src_version);
+				goto bad;
+			}
+		}
+
+		qml = calloc(1, sizeof(*qml));
+		if (qml == NULL || filename == NULL ||
+		    version == NULL || src_version == NULL) {
+			free(qml);
+			free(filename);
+			free(version);
+			free(src_version);
+			qwarn("alloc module load event");
+			goto bad;
+		}
+
+		qml->name = filename;
+		qml->version = version;
+		qml->src_version = src_version;
+		raw->module_load.quark_module_load = qml;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_SHMGET: {
+		struct ebpf_process_shmget_event	*shm;
+		struct quark_shm			*qshm;
+
+		shm = (struct ebpf_process_shmget_event *)ev;
+		if ((raw = raw_event_alloc(RAW_SHM)) == NULL)
+			goto bad;
+
+		raw->pid = shm->pids.tgid;
+		raw->time = ev->ts;
+
+		if ((qshm = calloc(1, sizeof(*qshm))) == NULL)
+			goto bad;
+		qshm->kind = QUARK_SHM_SHMGET;
+		qshm->shmget_key = shm->key;
+		qshm->shmget_size = shm->size;
+		qshm->shmget_shmflg = shm->shmflg;
+		raw->shm.quark_shm = qshm;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_MEMFD_CREATE: {
+		struct ebpf_process_memfd_create_event	*memfd;
+		struct quark_shm			*qshm;
+		char					*path;
+
+		memfd = (struct ebpf_process_memfd_create_event *)ev;
+		if ((raw = raw_event_alloc(RAW_SHM)) == NULL)
+			goto bad;
+
+		raw->pid = memfd->pids.tgid;
+		raw->time = ev->ts;
+
+		path = NULL;
+		FOR_EACH_VARLEN_FIELD(memfd->vl_fields, field) {
+			if (field->type == EBPF_VL_FIELD_FILENAME &&
+			    field->size > 0) {
+				path = strndup(field->data, field->size);
+				break;
+			}
+		}
+		if (path == NULL) {
+			qwarnx("invalid memfd_create event");
+			goto bad;
+		}
+
+		if ((qshm = calloc(1, sizeof(*qshm))) == NULL) {
+			free(path);
+			goto bad;
+		}
+		qshm->kind = QUARK_SHM_MEMFD_CREATE;
+		qshm->memfd_create_flags = memfd->flags;
+		qshm->path = path;
+		raw->shm.quark_shm = qshm;
+
+		break;
+	}
+	case EBPF_EVENT_FILE_SHMEM_OPEN: /* FALLTHROUGH */
+	case EBPF_EVENT_FILE_MEMFD_OPEN: {
+		struct ebpf_file_create_event	*create;
+		struct quark_shm		*qshm;
+		char				*path;
+
+		/*
+		 * Path from MEMFD_OPEN is broken, see:
+		 * https://github.com/elastic/quark/issues/255
+		 */
+		if (ev->type == EBPF_EVENT_FILE_MEMFD_OPEN)
+			goto bad;
+
+		create = (struct ebpf_file_create_event *)ev;
+		if ((raw = raw_event_alloc(RAW_SHM)) == NULL)
+			goto bad;
+
+		raw->pid = create->pids.tgid;
+		raw->time = ev->ts;
+
+		path = NULL;
+		FOR_EACH_VARLEN_FIELD(create->vl_fields, field) {
+			if (field->type == EBPF_VL_FIELD_PATH &&
+			    field->size > 0) {
+				path = strndup(field->data, field->size);
+				break;
+			}
+		}
+		if (path == NULL) {
+			qwarnx("invalid {shmem,memfd}_create event");
+			goto bad;
+		}
+
+		if ((qshm = calloc(1, sizeof(*qshm))) == NULL) {
+			free(path);
+			goto bad;
+		}
+		if (ev->type == EBPF_EVENT_FILE_SHMEM_OPEN)
+			qshm->kind = QUARK_SHM_SHM_OPEN;
+		else if (ev->type == EBPF_EVENT_FILE_MEMFD_OPEN)
+			qshm->kind = QUARK_SHM_MEMFD_OPEN;
+		qshm->path = path;
+		raw->shm.quark_shm = qshm;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_TTY_WRITE: {
+		struct ebpf_process_tty_write_event	*tty;
+		struct quark_tty			*qtty;
+		size_t					 alloc_len, data_len;
+		void					*data;
+
+		tty = (struct ebpf_process_tty_write_event *)ev;
+		if ((raw = raw_event_alloc(RAW_TTY)) == NULL)
+			goto bad;
+
+		data = NULL;
+		data_len = 0;
+		FOR_EACH_VARLEN_FIELD(tty->vl_fields, field) {
+			if (field->type == EBPF_VL_FIELD_TTY_OUT &&
+			    field->size > 0) {
+				data = field->data;
+				data_len = field->size;
+				break;
+			}
+		}
+		if (data == NULL) {
+			qwarnx("tty write without data");
+			goto bad;
+		}
+
+		raw->pid = tty->pids.tgid;
+		raw->time = ev->ts;
+
+		/*
+		 * A tty_write doesn't necessarily end with a NUL, but we will
+		 * add one anyway for users that screw up.
+		 */
+		alloc_len = sizeof(*qtty) + data_len + 1; /* extra for NUL */
+		if ((qtty = malloc(alloc_len)) == NULL)
+			goto bad;
+
+		qtty->major = tty->tty.major;
+		qtty->minor = tty->tty.minor;
+		qtty->cols = tty->tty.winsize.cols;
+		qtty->rows = tty->tty.winsize.rows;
+		qtty->cflag = tty->tty.termios.c_cflag;
+		qtty->iflag = tty->tty.termios.c_iflag;
+		qtty->lflag = tty->tty.termios.c_lflag;
+		qtty->oflag = tty->tty.termios.c_oflag;
+		qtty->truncated = tty->tty_out_truncated;
+
+		qtty->next = NULL;
+		qtty->total_len = data_len;
+		qtty->data_len = data_len;
+		memcpy(qtty->data, data, data_len);
+		qtty->data[data_len] = 0;
+
+		raw->tty.quark_tty = qtty;
+
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;
 	}
 
+	if (unlikely(raw->pid == 0)) {
+		qwarnx("raw->pid is not set, did you forget me :( ?");
+		goto bad;
+	}
+
 	return (raw);
 
-drop:
 bad:
 	if (raw != NULL)
 		raw_event_free(raw);
@@ -518,12 +845,127 @@ bpf_ringbuf_cb(void *vqq, void *vdata, size_t len)
 		qev->bypass = ev;
 		qev->events = QUARK_EV_BYPASS;
 	} else {
-		raw = ebpf_events_to_raw(ev);
+		raw = ebpf_events_to_raw(qq, ev);
 		if (raw != NULL && raw_event_insert(qq, raw) == -1)
 			raw_event_free(raw);
 	}
 
 	return (0);
+}
+
+/*
+ * Lookup where cgroup2 is mounted, if it's not, try to mount it ourselves, if
+ * so, fill unmount_path with the temporary cgroup2 path that must be unmounted
+ * by calling cgroup2_umount_tmp().
+ */
+static void
+cgroup2_umount_tmp(char **path)
+{
+	if (path == NULL || *path == NULL)
+		return;
+	if (umount(*path) == -1)
+		qwarn("can't umount temporary cgroup2 at %s, "
+		    "mount point will dangle!", *path);
+	else if (rmdir(*path) == -1)
+		qwarn("can't unlink temporary cgroup2 at %s, "
+		    "directory will dangle!", *path);
+	free(*path);
+	*path = NULL;
+}
+
+static int
+cgroup2_open_fd(char **umount_path)
+{
+	char	*save_line, *file_buf;
+	char	*line, *path, path_buf[MAXPATHLEN], fs[256];
+	int	 fd, did_mount, did_mkdir;
+
+	if (umount_path == NULL) {
+		qwarnx("no umount_path, bailing");
+		return (-1);
+	}
+
+	fd = -1;
+	path = NULL;
+	*umount_path = NULL;
+	did_mount = did_mkdir = 0;
+
+	if ((file_buf = load_file_path_nostat("/proc/mounts", NULL)) == NULL) {
+		qwarn("load_file_path_nostat /proc/mounts");
+		goto fail;
+	}
+
+	/*
+	 * Search for the cgroup2 mount, if found, point path to mount point.
+	 */
+	for (line = strtok_r(file_buf, "\n", &save_line);
+	     line != NULL;
+	     line = strtok_r(NULL, "\n", &save_line)) {
+		if (sscanf(line, "%*s %s %s", path_buf, fs) != 2)
+			continue;
+		if (strcmp(fs, "cgroup2"))
+			continue;
+		path = path_buf;
+		break;
+	}
+	free(file_buf);
+
+	/*
+	 * No cgroup2 mount found, try to mount it ourselves at
+	 * /tmp/quark_cgroup2_mount.XXXXX.
+	 * If we succeed, we must pass the mounting point up to the caller, so
+	 * it can umount after the probes are loaded.
+	 */
+	if (path == NULL) {
+		char template[] = "/tmp/quark_cgroup2_mount.XXXXXX";
+
+		if ((path = mkdtemp(template)) == NULL) {
+			qwarn("mkdtemp %s", template);
+			goto fail;
+		}
+		did_mkdir = 1;
+		qwarnx("no cgroup2 mount found, will try mounting it "
+		    "ourselves at %s", path);
+
+		if (mount(NULL, path, "cgroup2", 0, NULL) == -1) {
+			qwarn("mount %s", path);
+			goto fail;
+		}
+		did_mount = 1;
+
+		/*
+		 * Dup the mounting point so that our caller can unmount it
+		 * after it used the file descriptor.
+		 */
+		if ((*umount_path = strdup(path)) == NULL) {
+			qwarn("strdup");
+			goto fail;
+		}
+	}
+
+	if ((fd = open(path, O_RDONLY)) == -1) {
+		qwarn("open %s", path);
+		goto fail;
+	}
+
+	return (fd);
+
+fail:
+	if (fd != -1)
+		close(fd);
+	if (*umount_path != NULL) {
+		free(*umount_path);
+		*umount_path = NULL;
+	}
+	if (did_mount && umount(path) == -1)
+		qwarn("can't umount temporary cgroup2 at %s, "
+		    "mount point will dangle!", path);
+	/* NOTE rmdir will fail if umount failed, we don't care */
+	if (did_mkdir && rmdir(path) == -1)
+		qwarn("can't unlink temporary cgroup2 at %s, "
+		    "directory will dangle!", path);
+
+	return (-1);
 }
 
 static int
@@ -588,19 +1030,22 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
 	struct bpf_queue		*bqq;
 	struct bpf_probes		*p;
+	struct bpf_program		*prog;
 	struct ring_buffer_opts		 ringbuf_opts;
 	int				 cgroup_fd, i, off, ringbuf_fd;
+	char				*cgroup_umount;
 	struct bpf_prog_skeleton	*ps;
 	struct btf			*btf;
 	struct epoll_event		 ev;
 
-	libbpf_set_print(libbpf_print_fn);
+	setup_libbpf_logs();
 
 	if ((bqq = calloc(1, sizeof(*bqq))) == NULL)
 		return (-1);
 
 	qq->queue_be = bqq;
 	cgroup_fd = -1;
+	cgroup_umount = NULL;
 	btf = NULL;
 
 	bqq->probes = open_probes();
@@ -627,9 +1072,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	/*
 	 * Unload everything since it has way more than we want
 	 */
-	for (i = 0; i < p->skeleton->prog_cnt; i++) {
-		ps = &p->skeleton->progs[i];
-		bpf_program__set_autoload(*ps->prog, 0);
+	bpf_object__for_each_program(prog, bqq->probes->obj) {
+		bpf_program__set_autoload(prog, 0);
+		if (quark_verbose >= QUARK_VL_DEBUG)
+			bpf_program__set_log_level(prog, 1);
 	}
 
 	/*
@@ -637,12 +1083,16 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 */
 	bpf_program__set_autoload(p->progs.sched_process_fork, 1);
 	bpf_program__set_autoload(p->progs.sched_process_exec, 1);
-	bpf_program__set_autoload(p->progs.sched_process_exit, 1);
+	bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_setsid, 1);
 
-	if (use_fentry)
-		bpf_program__set_autoload(p->progs.fentry__taskstats_exit, 1);
-	else
-		bpf_program__set_autoload(p->progs.kprobe__taskstats_exit, 1);
+	if (use_fentry) {
+		bpf_program__set_autoload(p->progs.fentry__disassociate_ctty, 1);
+		bpf_program__set_autoload(p->progs.fentry__commit_creds, 1);
+	} else {
+		bpf_program__set_autoload(p->progs.kprobe__disassociate_ctty, 1);
+		bpf_program__set_autoload(p->progs.kprobe__commit_creds, 1);
+	}
+
 	/* Used in process probes, so always on */
 	if (relo_member(btf, &off, "iov_iter", "__iov") != -1)
 		p->rodata->off__iov_iter____iov__ = off;
@@ -673,10 +1123,22 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_FILE) {
 		int use_fsnotify =
 		    (btf_number_of_params_of_ptr(btf, "inode_operations", "atomic_open") == 6);
+		int unlink_renamed =
+		    (btf_number_of_params(btf, "do_unlinkat") == -1);
+		int filp_open_renamed =
+		    (btf_number_of_params(btf, "do_filp_open") == -1);
+		int renameat2_renamed =
+		    (btf_number_of_params(btf, "do_renameat2") == -1);
 
 		if (use_fentry) {
-			bpf_program__set_autoload(p->progs.fentry__do_renameat2, 1);
-			bpf_program__set_autoload(p->progs.fentry__do_unlinkat, 1);
+			if (renameat2_renamed)
+				bpf_program__set_autoload(p->progs.fentry__filename_renameat2, 1);
+			else
+				bpf_program__set_autoload(p->progs.fentry__do_renameat2, 1);
+			if (unlink_renamed)
+				bpf_program__set_autoload(p->progs.fentry__filename_unlinkat, 1);
+			else
+				bpf_program__set_autoload(p->progs.fentry__do_unlinkat, 1);
 			if (use_fsnotify)
 				bpf_program__set_autoload(p->progs.fentry__fsnotify, 1);
 			bpf_program__set_autoload(p->progs.fentry__mnt_want_write, 1);
@@ -684,7 +1146,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.fentry__vfs_unlink, 1);
 			bpf_program__set_autoload(p->progs.fexit__chmod_common, 1);
 			bpf_program__set_autoload(p->progs.fexit__chown_common, 1);
-			bpf_program__set_autoload(p->progs.fexit__do_filp_open, 1);
+			if (filp_open_renamed)
+				bpf_program__set_autoload(p->progs.fexit__do_file_open, 1);
+			else
+				bpf_program__set_autoload(p->progs.fexit__do_filp_open, 1);
 			bpf_program__set_autoload(p->progs.fexit__do_truncate, 1);
 			bpf_program__set_autoload(p->progs.fexit__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.fexit__vfs_unlink, 1);
@@ -707,10 +1172,19 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_unlink, 1);
 			bpf_program__set_autoload(p->progs.kprobe__vfs_write, 1);
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_write, 1);
-			bpf_program__set_autoload(p->progs.kprobe__do_renameat2, 1);
-			bpf_program__set_autoload(p->progs.kprobe__do_unlinkat, 1);
+			if (renameat2_renamed)
+				bpf_program__set_autoload(p->progs.kprobe__filename_renameat2, 1);
+			else
+				bpf_program__set_autoload(p->progs.kprobe__do_renameat2, 1);
+			if (unlink_renamed)
+				bpf_program__set_autoload(p->progs.kprobe__filename_unlinkat, 1);
+			else
+				bpf_program__set_autoload(p->progs.kprobe__do_unlinkat, 1);
 			bpf_program__set_autoload(p->progs.kprobe__mnt_want_write, 1);
-			bpf_program__set_autoload(p->progs.kretprobe__do_filp_open, 1);
+			if (filp_open_renamed)
+				bpf_program__set_autoload(p->progs.kretprobe__do_file_open, 1);
+			else
+				bpf_program__set_autoload(p->progs.kretprobe__do_filp_open, 1);
 		}
 
 		/* vfs_unlink() */
@@ -741,7 +1215,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	}
 
 	if (qq->flags & QQ_DNS) {
-		cgroup_fd = open("/sys/fs/cgroup", O_RDONLY);
+		cgroup_fd = cgroup2_open_fd(&cgroup_umount);
 		if (cgroup_fd == -1) {
 			qwarn("open cgroup");
 			goto fail;
@@ -755,12 +1229,16 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.recvmsg4, 1);
 	}
 
-	if (qq->flags & QQ_MEMFD) {
+	if (qq->flags & QQ_SHM) {
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_memfd_create, 1);
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_shmget, 1);
-		bpf_program__set_autoload(p->progs.module_load, 1);
-		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
-		bpf_program__set_autoload(p->progs.kprobe__arch_ptrace, 1);
+		if (use_fentry) {
+			bpf_program__set_autoload(p->progs.fentry__hugetlb_file_setup, 1);
+			bpf_program__set_autoload(p->progs.fentry__shmem_file_setup, 1);
+		} else {
+			bpf_program__set_autoload(p->progs.kprobe__hugetlb_file_setup, 1);
+			bpf_program__set_autoload(p->progs.kprobe__shmem_file_setup, 1);
+		}
 	}
 
 	if (qq->flags & QQ_TTY) {
@@ -770,13 +1248,16 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.kprobe__tty_write, 1);
 	}
 
-	/*
-	 * These are probes that are not attached to a feature and not currently
-	 * used in quark, but we need to maintain compatibility in BYPASS.
-	 */
-	if (qq->flags & QQ_BYPASS) {
-		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_setsid, 1);
+	if (qq->flags & QQ_PTRACE) {
+		bpf_program__set_autoload(p->progs.kprobe__arch_ptrace, 1);
+		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
 	}
+
+	if (qq->flags & QQ_MODULE_LOAD)
+		bpf_program__set_autoload(p->progs.module_load, 1);
+
+	if (qq->flags & QQ_GETPID)
+		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
 
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {
@@ -817,6 +1298,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		close(cgroup_fd);
 		cgroup_fd = -1;
 	}
+	cgroup2_umount_tmp(&cgroup_umount);
 
 	if (bpf_probes__attach(p) != 0) {
 		qwarn("bpf_probes__attach");
@@ -855,6 +1337,7 @@ fail:
 		close(cgroup_fd);
 		cgroup_fd = -1;
 	}
+	cgroup2_umount_tmp(&cgroup_umount);
 	if (btf != NULL)
 		btf__free(btf);
 
@@ -871,7 +1354,7 @@ bpf_queue_open(struct quark_queue *qq)
 
 	if (bpf_queue_open1(qq, 1) == -1) {
 		qwarn("bpf_queue_open failed with fentry, trying kprobe");
-		return bpf_queue_open1(qq, 0);
+		return (bpf_queue_open1(qq, 0));
 	}
 
 	return (0);
@@ -899,21 +1382,42 @@ static int
 bpf_queue_update_stats(struct quark_queue *qq)
 {
 	struct bpf_queue	*bqq  = qq->queue_be;
-	struct ebpf_event_stats	 pcpu_ees[libbpf_num_possible_cpus()];
+	struct ebpf_event_stats	*pcpu_ees;
 	u32			 zero = 0;
-	int			 i;
+	u64			 lost;
+	int			 i, num_cpus;
 
-	/* valgrind doesn't track that this will be updated below */
-	bzero(pcpu_ees, sizeof(pcpu_ees));
+	if ((num_cpus = libbpf_num_possible_cpus()) <= 0) {
+		qwarnx("bad libbpf_num_possible_cpus: %d", num_cpus);
+		return (-1);
+	}
+	if ((pcpu_ees = calloc(num_cpus, sizeof(*pcpu_ees))) == NULL) {
+		qwarn("calloc");
+		return (-1);
+	}
+
+#ifdef HAVE_STATIC_ASSERT
+	static_assert(sizeof(*pcpu_ees) % 8 == 0,
+	    "struct ebpf_event_stats must be 8 byte aligned");
+#endif
 
 	if (bpf_map__lookup_elem(bqq->probes->maps.ringbuf_stats, &zero,
-	    sizeof(zero), pcpu_ees, sizeof(pcpu_ees), 0) != 0)
-		return (-1);
+	    sizeof(zero), pcpu_ees, sizeof(*pcpu_ees) * num_cpus, 0) != 0) {
+		qwarn("bpf_map__lookup_elem");
+		goto fail;
+	}
 
-	for (i = 0; i < libbpf_num_possible_cpus(); i++)
-		qq->stats.lost = pcpu_ees[i].lost;
+	for (i = 0, lost = 0; i < num_cpus; i++)
+		lost += pcpu_ees[i].lost;
+	qq->stats.lost = lost;
+	free(pcpu_ees);
 
 	return (0);
+
+fail:
+	free(pcpu_ees);
+
+	return (-1);
 }
 
 static void
@@ -951,8 +1455,47 @@ quark_get_bpf_probes(struct quark_queue *qq)
 {
 	struct bpf_queue *bqq = qq->queue_be;
 
-	if (!(qq->flags & QQ_EBPF) || !(qq->flags & QQ_BYPASS))
+	if (!(qq->flags & QQ_EBPF))
 		return (errno = EINVAL, NULL);
 
 	return (bqq->probes);
+}
+
+int
+quark_queue_trusted_pid_reset(struct quark_queue *qq)
+{
+	struct bpf_probes	*p;
+	struct bpf_map		*m;
+	u32			 k;
+	int			 r;
+
+	if ((p = quark_get_bpf_probes(qq)) == NULL)
+		return (-1);
+	if ((m = p->maps.elastic_ebpf_events_trusted_pids) == NULL)
+		return (errno = EINVAL, -1);
+	while ((r = bpf_map__get_next_key(m, NULL, &k, sizeof(k))) == 0) {
+		if (bpf_map__delete_elem(m, &k, sizeof(k), 0) != 0)
+			return (-1);
+	}
+
+	return (r == -ENOENT ? 0 : -1);
+}
+
+int
+quark_queue_trusted_pid_add(struct quark_queue *qq, u32 pid)
+{
+	struct bpf_probes	*p;
+	struct bpf_map		*m;
+	u32			 v;
+
+	if ((p = quark_get_bpf_probes(qq)) == NULL)
+		return (-1);
+	if ((m = p->maps.elastic_ebpf_events_trusted_pids) == NULL)
+		return (errno = EINVAL, -1);
+	v = 1;
+	if (bpf_map__update_elem(m, &pid, sizeof(pid),
+	    &v, sizeof(v), BPF_ANY) < 0)
+		return (-1);
+
+	return (0);
 }

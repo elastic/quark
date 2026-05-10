@@ -28,8 +28,8 @@ dump_stats(struct quark_queue *qq)
 	struct quark_queue_stats	s;
 
 	quark_queue_get_stats(qq, &s);
-	putchar('\n');
-	printf(
+	fputc('\n', stderr);
+	fprintf(stderr,
 	    "%14s"
 	    "%14s"
 	    "%14s"
@@ -43,8 +43,8 @@ dump_stats(struct quark_queue *qq)
 	    "lost",
 	    "gc-cols"
 	);
-	putchar('\n');
-	printf(
+	fputc('\n', stderr);
+	fprintf(stderr,
 	    "%14llu"
 	    "%14llu"
 	    "%14llu"
@@ -53,7 +53,7 @@ dump_stats(struct quark_queue *qq)
 	    "%14llu",
 	    s.insertions, s.removals, s.aggregations,
 	    s.non_aggregations, s.lost, s.garbage_collections);
-	putchar('\n');
+	fputc('\n', stderr);
 }
 
 static const char *
@@ -65,6 +65,7 @@ fetch_backend(struct quark_queue *qq)
 
 	return (s.backend == QQ_EBPF ? "ebpf" :
 	    s.backend == QQ_KPROBE ? "kprobe" :
+	    s.backend == QQ_NOVA ? "nova" :
 	    "invalid");
 }
 
@@ -116,28 +117,55 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDeFkMNSstv] "
-	    "[-K kubeconfig] [-C filename ] [-l maxlength] [-m maxnodes] [-P ppid]\n",
+	fprintf(stderr, "usage: %s [-BbDeFGgHhkLMNnSsTtv]\n",
 	    program_invocation_short_name);
+	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
+	    "[-l maxlength] [-m maxnodes]\n", ' ');
+	fprintf(stderr, "%16c [-P ppid] "
+	    "[-r rulefile ]\n", ' ');
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
 
 	exit(1);
+}
+
+static void
+print_dump(struct quark_queue *qq, const struct quark_event *qev)
+{
+	quark_event_dump(qev, stdout);
+}
+
+static void
+print_ecs(struct quark_queue *qq, const struct quark_event *qev)
+{
+	char	*ecs_buf;
+	size_t	 ecs_buf_len;
+
+	if (quark_event_to_ecs(qq, qev, &ecs_buf, &ecs_buf_len) == -1)
+		qwarnx("quark_event_to_ecs");
+	else {
+		printf("%s\n", ecs_buf);
+		fflush(stdout);
+		free(ecs_buf);
+	}
 }
 
 int
 main(int argc, char *argv[])
 {
 	int				 ch, maxnodes;
-	int				 do_priv_drop, do_snap, benchmark, lflag;
+	int				 do_priv_drop, do_snap;
+	int				 benchmark, lflag;
 	u32				 filter_ppid;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
 	const struct quark_event	*qev;
 	struct sigaction		 sigact;
-	FILE				*graph_by_time, *graph_by_pidtime, *graph_cache;
+	FILE				*graph_by_time, *graph_by_pidtime;
+	FILE				*graph_cache;
 	struct timespec			 bench_stamp, now;
 	pid_t				 kube_talker_pid;
 	const char			*kube_config;
+	void 				(*print_event)(struct quark_queue *, const struct quark_event *);
 
 	quark_queue_default_attr(&qa);
 	qa.flags &= ~QQ_ALL_BACKENDS;
@@ -149,8 +177,9 @@ main(int argc, char *argv[])
 	lflag = 0;
 	benchmark = 0;
 	kube_config = NULL;
+	print_event = print_dump;
 
-	while ((ch = getopt(argc, argv, "BbC:DeFghK:kl:Mm:NP:tSsvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -161,6 +190,8 @@ main(int argc, char *argv[])
 			qa.flags |= QQ_EBPF;
 			break;
 		case 'C':
+			if (graph_cache != NULL)
+				usage();
 			graph_cache = fopen(optarg, "w");
 			if (graph_cache == NULL)
 				err(1, "fopen %s", optarg);
@@ -171,11 +202,20 @@ main(int argc, char *argv[])
 		case 'e':
 			qa.flags |= QQ_ENTRY_LEADER;
 			break;
+		case 'E':
+			print_event = print_ecs;
+			break;
 		case 'F':
 			qa.flags |= QQ_FILE;
 			break;
+		case 'G':
+			qa.flags |= QQ_GETPID;
+			break;
 		case 'g':
 			qa.flags |= QQ_MIN_AGG;
+			break;
+		case 'H':
+			qa.flags |= QQ_SHM;
 			break;
 		case 'h':
 			if (isatty(STDOUT_FILENO))
@@ -189,6 +229,9 @@ main(int argc, char *argv[])
 		case 'k':
 			qa.flags |= QQ_KPROBE;
 			break;
+		case 'L':
+			qa.flags |= QQ_MODULE_LOAD;
+			break;
 		case 'l':
 			if (optarg == NULL)
 				usage();
@@ -199,7 +242,8 @@ main(int argc, char *argv[])
 			lflag = 1;
 			break;
 		case 'm':
-			if (optarg == NULL)
+			if (optarg == NULL || graph_by_time != NULL ||
+			    graph_by_pidtime != NULL)
 				usage();
 			maxnodes = strtonum(optarg, 1, 2000000, &errstr);
 			if (errstr != NULL)
@@ -218,6 +262,9 @@ main(int argc, char *argv[])
 		case 'N':
 			qa.flags |= QQ_DNS;
 			break;
+		case 'n':
+			qa.flags |= QQ_NOVA;
+			break;
 		case 'P':
 			if (optarg == NULL)
 				usage();
@@ -230,6 +277,31 @@ main(int argc, char *argv[])
 			break;
 		case 'S':
 			qa.flags |= QQ_SOCK_CONN;
+			break;
+		case 'r': {
+			FILE	*rule_in;
+			char	 parse_error[1024];
+
+			if (qa.ruleset != NULL)
+				errx(1, "no multiple rulesets");
+			if (optarg == NULL)
+				usage();
+			if (!strcmp(optarg, "-"))
+				rule_in = stdin;
+			else if ((rule_in = fopen(optarg, "r")) == NULL)
+				err(1, "fopen %s", optarg);
+			if ((qa.ruleset = calloc(1, sizeof(*qa.ruleset))) == NULL)
+				err(1, "calloc");
+			if (quark_ruleset_parse(qa.ruleset, rule_in,
+			    parse_error, sizeof(parse_error)) == -1)
+				errx(1, "can't parse rule file: %s",
+				    parse_error);
+			if (rule_in != stdin)
+				fclose(rule_in);
+			break;
+		}
+		case 'T':
+			qa.flags |= QQ_PTRACE;
 			break;
 		case 't':
 			qa.flags |= QQ_THREAD_EVENTS;
@@ -310,7 +382,7 @@ main(int argc, char *argv[])
 		quark_process_iter_init(&qi, qq);
 
 		while ((fake_ev.process = quark_process_iter_next(&qi)) != NULL)
-			quark_event_dump(&fake_ev, stdout);
+			print_event(qq, &fake_ev);
 	}
 
 	/*
@@ -349,7 +421,10 @@ main(int argc, char *argv[])
 		    filter_ppid != qev->process->proc_ppid)
 			continue;
 
-		quark_event_dump(qev, stdout);
+		/*
+		 * Finally print it to stdout
+		 */
+		print_event(qq, qev);
 	}
 
 	if (graph_by_pidtime != NULL && graph_by_time != NULL) {
@@ -371,6 +446,10 @@ main(int argc, char *argv[])
 	quark_queue_close(qq);
 	if (qa.kubefd != -1)
 		close(qa.kubefd);
+	if (qa.ruleset != NULL) {
+		quark_ruleset_clear(qa.ruleset);
+		free(qa.ruleset);
+	}
 	free(qq);
 
 	return (0);
