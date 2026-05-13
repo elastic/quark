@@ -11,6 +11,7 @@
 #include <sys/types.h>
 
 /* Standard */
+#include <features.h>
 #include <stdio.h>
 #include <stdint.h>
 
@@ -57,8 +58,12 @@ typedef uintptr_t	__uintptr_t;	/* for freebsd_tree.h */
 #include "freebsd_queue.h"
 #include "freebsd_tree.h"
 
+#if !defined(SYSLIB) ||							\
+	(defined(__GLIBC__) &&						\
+	    (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 38)))
 size_t		strlcat(char *, const char *, size_t);
 size_t		strlcpy(char *, const char *, size_t);
+#endif /* strlcpy, strlcat */
 long long	strtonum(const char *, long long, long long, const char **);
 
 /*

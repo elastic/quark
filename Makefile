@@ -73,7 +73,10 @@ ifdef WITH_BTFHUB
 CPPFLAGS+= -DWITH_BTFHUB
 EXTRA_OPTIONS+= WITH_BTFHUB=$(WITH_BTFHUB)
 endif
-ifndef SYSLIB
+ifdef SYSLIB
+CPPFLAGS+= -DSYSLIB
+EXTRA_OPTIONS+= SYSLIB=$(SYSLIB)
+else
 CPPFLAGS+= -Iinclude
 endif
 
@@ -218,7 +221,9 @@ ALL_TARGETS+=quark-mon
 ALL_TARGETS+=quark-btf
 ALL_TARGETS+=quark-test
 ALL_TARGETS+=hanson-bench
-ifndef NO_GO
+ifdef NO_GO
+EXTRA_OPTIONS+= NO_GO=$(NO_GO)
+else
 ALL_TARGETS+=quark-kube-talker
 ALL_TARGETS+=quark-go-test
 endif
@@ -383,7 +388,7 @@ alpine: alpine-image clean-all
 	$(call msg,ALPINE-DOCKER-RUN,Dockerfile)
 	$(Q)$(DOCKER) run 				\
 		$(ALPINE_RUN_ARGS) $(SHELL)		\
-		-c "make $(EXTRA_OPTIONS) -C $(PWD) $(ALL_TARGETS) initramfs.gz"
+		-c "make $(EXTRA_OPTIONS) -C $(PWD) $(ALL_TARGETS)"
 
 alpine-image: clean-all
 	$(call msg,ALPINE-IMAGE,Dockerfile.alpine)
