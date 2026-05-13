@@ -38,3 +38,58 @@ Changes from 0.4 to 0.5
 ~~~~~~~~~~~~~~~~~~~~~~~
   o Added support for file events, quark_event{} gets a file member.
   o entity_id was added to quark_process{}.
+
+Changes from 0.5 to 0.6
+~~~~~~~~~~~~~~~~~~~~~~~
+  o Kubernetes metadata have been added to quark_event{}. See
+    quark-mon -K.
+  o PTRACE probes have been added via QQ_PTRACE.
+  o JSON ECS output has been added via -j in quark-mon(8) and
+    quark_event_to_ecs(3).
+  o quark_event.filename has been renamed to quark_event.exe, the
+    relative pathnames are also now always resolved.
+  o quark_event_dump() now prints more fields
+  o cgroup2 is now temporarily mounted and unmounted if needed, and
+    the process cgroup is in quark_event.cgroup.
+  o A bunch of ECS only fields have been added to the JSON output.
+     o process.thread.capabilities.{effective,permitted}
+     o process.parent.*a
+     o container.runtime
+     o container.name
+     o container.tag
+     o container.hash
+     o host.hostname
+     o host.name
+     o host.architecture
+     o host.ip
+     o host.mac
+     o host.boot.id
+     o host.os.kernel
+     o host.os.name
+     o host.os.version
+     o host.os.full
+     o host.os.release_type
+  o quark-mon(8) stats are now printed to stderr.
+  o quark_socket{} now has a conn_origin field (SOCK_CONN_*).
+  o Lost events incorrect counting in ebpf have been fixed.
+  o QQ_MODULE_LOAD has been added and will produce
+    quark_event.module_load.
+  o QQ_SHM has been added and will produce quark_event.shm.
+  o Process environment has been added to quark_event.process->env.
+  o QQ_TTY now works outside of QQ_BYPASS.
+  o quark_event.time has been added, and it's the time monotonically
+    stamped by the backend.
+  o Process id changes have been added to quark_event. id_change,
+    QUARK_ID_CHANGE_SETSID, QUARK_ID_CHANGE_SETUID...
+  o Quark now has a DSL for filtering out events, see
+    quark_rule_match_field() and quark_ruleset_append_rule(), for a
+    better example check quark-mon(8) -r documentation.
+    The grammar can be checked here:
+    3ccbe219efead9f1aa310ea140b08715000fcb63
+  o quark_process.flags have been revamped, these no longer exist:
+    QUARK_F_ENV, QUARK_F_CGROUP, QUARK_F_CONTAINER, QUARK_F_CWD,
+    QUARK_F_CMDLINE, QUARK_F_FILENAME, QUARK_F_COMM.
+    The user should instead, just compare the pointer against NULL.
+  o Aggregation matrix can now be tunned via
+    quark_Queue_set_agg_matrix(3).
+  o libbpf has been updated.
