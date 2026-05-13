@@ -1,15 +1,19 @@
-FROM alpine:3.22
+FROM alpine:edge
 ENV HOME=/tmp/quark-builder
 RUN apk add 						\
 	bash						\
 	bison						\
-	clang						\
 	bpftool						\
+	cjson						\
+	cjson-dev					\
+	clang						\
 	gcc						\
 	go						\
-	libbsd						\
+	libbpf						\
+	libbpf-dev					\
 	libbsd-dev					\
+	linux-headers					\
+	m4                                              \
 	make						\
 	musl-fts					\
-	musl-fts-dev					\
-	m4
+	musl-fts-dev

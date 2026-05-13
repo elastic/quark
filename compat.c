@@ -1,10 +1,14 @@
 #include <sys/types.h>
 
 #include <ctype.h>
+#include <features.h>
 #include <string.h>
 
 #include "compat.h"
 
+#if !defined(SYSLIB) ||							\
+	(defined(__GLIBC__) &&						\
+	    (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 38)))
 /*
  * Copyright (c) 1998 Todd C. Miller <Todd.Miller@courtesan.com>
  *
@@ -105,6 +109,8 @@ strlcpy(char *dst, const char *src, size_t siz)
 
 	return(s - src - 1);	/* count does not include NUL */
 }
+
+#endif /* strlcpy, strlcat */
 
 /*
  * Copyright (c) 2004 Ted Unangst and Todd Miller
