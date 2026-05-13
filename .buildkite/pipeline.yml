@@ -27,9 +27,17 @@ steps:
       provider: gcp
       machineType: n2-standard-2
 
-  - label: "build amd64 in an alpine container"
-    key: make_alpine
+  - label: "build amd64 in an alpine container (no syslib)"
+    key: make_alpine_nosyslib
     command: "make alpine NO_GO=y WITH_BTFHUB=y"
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+
+  - label: "build amd64 in an alpine container (with syslib)"
+    key: make_alpine_syslib
+    command: "make alpine SYSLIB=y NO_GO=y WITH_BTFHUB=y"
     agents:
       image: family/core-ubuntu-2404
       provider: gcp
