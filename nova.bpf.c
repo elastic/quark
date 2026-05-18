@@ -7,12 +7,16 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
+/* XXX Remove me once we update our ancient vmlinux.h XXX */
+struct bpf_dynptr {
+	__u64 __opaque[2];
+} __attribute__((aligned(8)));
+
 #include "nova.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic error "-Wpadded"
 
-/* XXX check if there isn't something like this on the headers XXX */
 #define LOOP_CONTINUE	0
 #define LOOP_STOP	1
 
@@ -26,6 +30,14 @@
 
 extern void bpf_preempt_disable(void) __ksym __weak;
 extern void bpf_preempt_enable(void) __ksym __weak;
+
+struct output {
+	__u32			head_len;
+	__u32			total_len;
+	__u32			var_off;
+	__u32			pad;
+	struct bpf_dynptr	dptr;
+};
 
 struct eval_path {
 	char			 full[PATH_MAX];
@@ -42,17 +54,11 @@ struct eval_path {
  */
 struct eval {
 	/* fields is the bitmask of things that have been filled */
-	__u64			 fields;		/* QUARK_RF_* bitmask */
-	__u64			 poison_tag;		/* QUARK_RF_POISON */
-	__u32			 pid;			/* QUARK_RF_PID */
-	__u32			 ppid;			/* QUARK_RF_PPID */
-	__u32			 uid;			/* QUARK_RF_UID */
-	__u32			 gid;			/* QUARK_RF_GID */
-	__u32			 sid;			/* QUARK_RF_SID */
-	__u32			 pad0;
-	struct eval_path	 exe;			/* QUARK_RF_EXE */
-	struct eval_path	 filepath;		/* QUARK_RF_FILEPATH */
-	char			 comm[16];		/* QUARK_RF_COMM */
+	__u64			fields;		/* QUARK_RF_* bitmask */
+	__u64			poison_tag;	/* QUARK_RF_POISON */
+	struct nova_task	nt;
+	struct eval_path	exe;		/* QUARK_RF_EXE */
+	struct eval_path	filepath;	/* QUARK_RF_FILEPATH */
 };
 
 struct {
@@ -84,6 +90,11 @@ struct {
 	__type(value, struct nova_rule_pcpu);
 } ruleset_pcpu SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 8 * 1024 * 1024);
+} output_ring SEC(".maps");
+
 const volatile u_int	rules_active;
 
 static void
@@ -98,6 +109,83 @@ preempt_enable(void)
 {
 	if (bpf_ksym_exists(bpf_preempt_enable))
 		bpf_preempt_enable();
+}
+
+static __u64
+ktime_get_boot_ns(void)
+{
+	if (bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_ktime_get_boot_ns))
+		return (bpf_ktime_get_boot_ns());
+	else
+		return (0);
+}
+
+static void
+task_to_nova(struct task_struct *task, struct nova_task *nt)
+{
+	const struct cred	*cred;
+	struct task_struct	*gl;
+	struct signal_struct	*sig;
+	struct pid		*pgid_pid, *sid_pid;
+	int			 e_pgid, e_sid;
+	struct tty_struct	*tty;
+	const struct tty_driver *tty_driver;
+	const struct nsproxy	*ns;
+	struct pid		*pid;
+	int			 pid_level;
+
+	__builtin_memset(nt, 0, sizeof(*nt));
+
+	if (bpf_core_enum_value_exists(enum pid_type, PIDTYPE_PGID))
+		e_pgid = bpf_core_enum_value(enum pid_type, PIDTYPE_PGID);
+	else
+		e_pgid = PIDTYPE_PGID;
+	if (bpf_core_enum_value_exists(enum pid_type, PIDTYPE_SID))
+		e_sid = bpf_core_enum_value(enum pid_type, PIDTYPE_SID);
+	else
+		e_sid = PIDTYPE_SID;
+
+	cred = BPF_CORE_READ(task, cred);
+	gl = BPF_CORE_READ(task, group_leader);
+	sig = BPF_CORE_READ(gl, signal);
+	pgid_pid = BPF_CORE_READ(sig, pids[e_pgid]);
+	sid_pid  = BPF_CORE_READ(sig, pids[e_sid]);
+	tty = BPF_CORE_READ(sig, tty);
+	tty_driver = BPF_CORE_READ(tty, driver);
+	ns = BPF_CORE_READ(task, nsproxy);
+	pid = BPF_CORE_READ(task, thread_pid);
+
+	bpf_core_read(&nt->cap_eff, sizeof(nt->cap_eff), &cred->cap_effective);
+	bpf_core_read(&nt->cap_perm, sizeof(nt->cap_perm), &cred->cap_permitted);
+
+	nt->start_time_ns = BPF_CORE_READ(gl, start_time);
+	nt->tid = BPF_CORE_READ(task, pid);
+	nt->pid = BPF_CORE_READ(task, tgid);
+	nt->ppid = BPF_CORE_READ(gl, real_parent, tgid);
+	nt->uid = BPF_CORE_READ(cred, uid.val);
+	nt->gid = BPF_CORE_READ(cred, gid.val);
+	nt->suid = BPF_CORE_READ(cred, suid.val);
+	nt->sgid = BPF_CORE_READ(cred, sgid.val);
+	nt->euid = BPF_CORE_READ(cred, euid.val);
+	nt->egid = BPF_CORE_READ(cred, egid.val);
+	nt->pgid = BPF_CORE_READ(pgid_pid, numbers[0].nr);
+	nt->sid = BPF_CORE_READ(sid_pid, numbers[0].nr);
+	nt->tty_major = BPF_CORE_READ(tty_driver, major);
+	nt->tty_minor = BPF_CORE_READ(tty_driver, minor_start);
+	nt->tty_minor += BPF_CORE_READ(tty, index);
+	nt->uts_inonum = BPF_CORE_READ(ns, uts_ns, ns.inum);
+	nt->ipc_inonum = BPF_CORE_READ(ns, ipc_ns, ns.inum);
+	nt->mnt_inonum = BPF_CORE_READ(ns, mnt_ns, ns.inum);
+	nt->net_inonum = BPF_CORE_READ(ns, net_ns, ns.inum);
+	nt->cgroup_inonum = BPF_CORE_READ(ns, cgroup_ns, ns.inum);
+	nt->time_inonum = BPF_CORE_READ(ns, time_ns, ns.inum);
+	if (pid != NULL) {
+		pid_level = BPF_CORE_READ(pid, level);
+		nt->pid_inonum = BPF_CORE_READ(pid,
+		    numbers[pid_level].ns, ns.inum);
+	} else
+		nt->pid_inonum = 0;
+	BPF_CORE_READ_STR_INTO(&nt->comm, task, comm);
 }
 
 static __always_inline struct eval *
@@ -181,15 +269,15 @@ eval_loop(__u32 i, struct nova_rule **match)
 	if ((eval->fields & rule->fields) != rule->fields)
 		return (LOOP_CONTINUE);
 
-	if (rule->fields & QUARK_RF_PID && eval->pid != rule->pid)
+	if (rule->fields & QUARK_RF_PID && eval->nt.pid != rule->pid)
 		return (LOOP_CONTINUE);
-	if (rule->fields & QUARK_RF_PPID && eval->ppid != rule->ppid)
+	if (rule->fields & QUARK_RF_PPID && eval->nt.ppid != rule->ppid)
 		return (LOOP_CONTINUE);
-	if (rule->fields & QUARK_RF_UID && eval->uid != rule->uid)
+	if (rule->fields & QUARK_RF_UID && eval->nt.uid != rule->uid)
 		return (LOOP_CONTINUE);
-	if (rule->fields & QUARK_RF_GID && eval->gid != rule->gid)
+	if (rule->fields & QUARK_RF_GID && eval->nt.gid != rule->gid)
 		return (LOOP_CONTINUE);
-	if (rule->fields & QUARK_RF_SID && eval->sid != rule->sid)
+	if (rule->fields & QUARK_RF_SID && eval->nt.sid != rule->sid)
 		return (LOOP_CONTINUE);
 	if (rule->fields & QUARK_RF_POISON &&
 	    eval->poison_tag != rule->poison_tag)
@@ -219,11 +307,11 @@ eval_run(struct eval *eval)
 	}
 
 	if (match == NULL)
-		return (0);
+		return (QUARK_RA_PASS);
 
 	bpf_printk("rule %d matched! (0x%x)", match->number, match->fields);
 
-	return (0);
+	return (match->action);
 }
 
 static void
@@ -233,6 +321,28 @@ eval_path_init(struct eval_path *ep)
 	ep->full[0] = 0;
 	ep->pre.prefixlen = PATH_LPM_KEY_BITLEN;
 	ep->post.prefixlen = PATH_LPM_KEY_BITLEN;
+}
+
+static int
+eval_path_prepare(struct eval_path *dst, struct path *src)
+{
+	long	len, full_len;
+
+	full_len = bpf_d_path(src, dst->full, PATH_MAX);
+	if (full_len < 0) {
+		bpf_printk("can't make path 1");
+		return (-1);
+	}
+	len = bpf_probe_read_kernel_str(dst->pre.path,
+	    sizeof(dst->pre.path), dst->full);
+	if (len < 0) {
+		bpf_printk("can't make path 2");
+		return (-1);
+	}
+
+	dst->full_len = full_len;
+
+	return (0);
 }
 
 static struct eval *
@@ -253,22 +363,73 @@ eval_init(void)
 static void
 eval_init_task(struct eval *eval, struct task_struct *task)
 {
-	eval->pid = BPF_CORE_READ(task, tgid);
-	eval->fields |= QUARK_RF_PID;
-	eval->ppid = BPF_CORE_READ(task, group_leader, real_parent, tgid);
-	eval->fields |= QUARK_RF_PPID;
-	eval->uid = BPF_CORE_READ(task, cred, uid.val);
-	eval->fields |= QUARK_RF_UID;
-	eval->gid = BPF_CORE_READ(task, cred, gid.val);
-	eval->fields |= QUARK_RF_GID;
-#if 0
-	eval->sid = 		/* XXX TODO XXX */
-	eval->fields |= QUARK_RF_SID;
-#endif
-	/* XXX NOT WORTH THE BRANCH? XXX */
-	if (BPF_CORE_READ_STR_INTO(eval->comm, task, comm) > 0)
-		eval->fields |= QUARK_RF_COMM;
-	/* TODO MORE TODO */
+	task_to_nova(task, &eval->nt);
+	eval->fields |= QUARK_RF_PID | QUARK_RF_PPID | QUARK_RF_UID | QUARK_RF_GID;
+}
+
+static __always_inline void *
+output_reserve(struct output *o, __u32 head_len, __u32 total_len)
+{
+	struct nova_event	*ev;
+
+	o->head_len = head_len;
+	o->total_len = total_len;
+	o->var_off = o->head_len;
+
+	if (bpf_ringbuf_reserve_dynptr(&output_ring,
+	    o->total_len, 0, &o->dptr) != 0)
+		return (NULL);
+
+	if ((ev = bpf_dynptr_data(&o->dptr, 0, head_len)) == NULL)
+		return (NULL);
+
+	__builtin_memset(ev, 0, head_len);
+
+	ev->ts = bpf_ktime_get_ns();
+	ev->ts_boot = ktime_get_boot_ns();
+
+	return (ev);
+}
+
+static __always_inline void
+output_discard(struct output *o)
+{
+	bpf_ringbuf_discard_dynptr(&o->dptr, 0);
+}
+
+/*
+ * Writes src into output, fills in nv with offsets so userland can fetch it,
+ * src_len_max is max storage len of src_len.
+ */
+static __always_inline long
+output_vl_write(struct output *o, struct nova_vl *nv,
+    void *src, __u32 src_len, const __u32 src_len_max)
+{
+	long err;
+
+	nv->len = 0;
+	nv->off = 0;
+
+	if (src_len == 0)
+		return (0);
+	if (src_len > src_len_max)
+		return (-E2BIG);
+
+	err = bpf_dynptr_write(&o->dptr, o->var_off, src, src_len, 0);
+	if (err != 0)
+		return (err);
+
+	nv->len = src_len;
+	nv->off = o->var_off;
+	o->var_off += src_len;
+
+	return (0);
+}
+
+static __always_inline void
+output_submit(struct output *o)
+{
+	bpf_ringbuf_submit_dynptr(&o->dptr, 0);
 }
 
 static int
@@ -276,8 +437,10 @@ bprm_check1(struct linux_binprm *bprm, int ret)
 {
 	struct task_struct	*task = bpf_get_current_task_btf();
 	struct eval		*eval;
+	struct eval_path	*exe;
+	struct output		 o;
+	struct nova_exec	*exec;
 	int			 r;
-	long			 len;
 
 	if ((eval = eval_init()) == NULL)
 		return (0);
@@ -286,25 +449,42 @@ bprm_check1(struct linux_binprm *bprm, int ret)
 	if (bprm->file == NULL)
 		goto noexe;
 
-	len = bpf_d_path(&bprm->file->f_path, eval->exe.full, PATH_MAX);
-	if (len < 0) {
+	exe = &eval->exe;
+	if (eval_path_prepare(exe, &bprm->file->f_path) != 0) {
 		bpf_printk("can't make executable 1");
-		goto noexe;
-	}
-	eval->exe.full_len = len;
-	len = bpf_probe_read_kernel_str(eval->exe.pre.path,
-	    sizeof(eval->exe.pre.path), eval->exe.full);
-	if (len < 0) {
-		bpf_printk("can't make executable 2");
 		goto noexe;
 	}
 
 	eval->fields |= QUARK_RF_EXE;
 noexe:
 	r = eval_run(eval);
-	r = 0; /* XXX r ignored for now */
 
-	return (r);
+	if (r != QUARK_RA_PASS)
+		goto done;
+
+	exec = output_reserve(&o, sizeof(*exec),
+	    sizeof(*exec) + exe->full_len);
+	if (exec == NULL)
+		goto discard;
+	/*
+	 * Borrow nova_task from eval
+	 */
+	exec->nt = eval->nt;
+	if (output_vl_write(&o, &exec->exe, exe->full,
+	    exe->full_len, PATH_MAX) != 0)
+		goto discard;
+
+	exec->ev.kind = NOVA_EXEC;
+
+	output_submit(&o);
+
+done:
+	return (0);	/* Always pass for now */
+
+discard:
+	output_discard(&o);
+
+	return (0);	/* Always pass for now */
 }
 
 SEC("lsm/bprm_check_security")

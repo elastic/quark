@@ -82,6 +82,60 @@ struct nova_rule {
 struct nova_rule_pcpu {
 	__u64	hits;			/* counter */
 	__u64	evals;			/* counter */
+};
+
+enum nova_kind {
+	NOVA_INVALID,
+	NOVA_FORK,
+	NOVA_EXEC,
+	NOVA_EXIT,
+	NOVA_MAX,
+};
+
+struct nova_vl {
+	__u32	off;
+	__u32	len;
+};
+
+struct nova_task {
+	__u64	cap_perm;
+	__u64	cap_eff;
+	__u64	start_time_ns;
+	__u32	tid;
+	__u32	pid;		/* QUARK_RF_PID */
+	__u32	ppid;		/* QUARK_RF_PPID */
+	__u32	uid;		/* QUARK_RF_UID */
+	__u32	gid;		/* QUARK_RF_GID */
+	__u32	suid;
+	__u32	sgid;
+	__u32	euid;
+	__u32	egid;
+	__u32	pgid;
+	__u32	sid;		/* QUARK_RF_SID */
+	__u32	tty_major;
+	__u32	tty_minor;
+	__u32	uts_inonum;
+	__u32	ipc_inonum;
+	__u32	mnt_inonum;
+	__u32	net_inonum;
+	__u32	cgroup_inonum;
+	__u32	time_inonum;
+	__u32	pid_inonum;
+	char	comm[16];
+};
+
+struct nova_event {
+	__u16	kind;		/* user filled */
+	__u16	pad1;		/* zeroed */
+	__u32	pad2;		/* zeroed */
+	__u64	ts;		/* auto */
+	__u64	ts_boot;	/* auto */
+} __aligned(8);
+
+struct nova_exec {
+	struct nova_event	ev;
+	struct nova_task	nt;
+	struct nova_vl		exe;
 } __aligned(8);
 
 #if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 10))
