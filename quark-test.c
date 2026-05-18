@@ -2370,6 +2370,7 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 	fprintf(stderr, "\nthis test is a placeholder for temporary fiddling!!!\n");
 	fprintf(stderr, "sleeping forevis...\n");
 	for (;;) {
+		(void)quark_queue_get_event(&qq);
 		quark_queue_get_stats(&qq, &stats);
 		for (i = 0; i < qq.ruleset->n_rules; i++) {
 			printf("rule %zd: evals %llu hits %llu\n",

@@ -21,7 +21,8 @@
 #include "nova_skel.h"
 
 struct nova_queue {
-	struct nova	*nova;
+	struct nova		*nova;
+	struct ring_buffer	*ringbuf;
 };
 
 static int	nova_queue_populate(struct quark_queue *);
@@ -100,6 +101,8 @@ alloc_path(struct nova_queue *nqq, int rule_i, struct quark_rule_field *field)
 	key.meta |= META_RF_POSTFIX;
 	key.prefixlen = (sizeof(key.meta) + field->wild.post_len) * 8;
 
+	/* Don't leak pre bytes into post, so zero it */
+	bzero(key.path, sizeof(key.path));
 	if (strlcpy(key.path, field->wild.post, sizeof(key.path)) >= sizeof(key.path))
 		return (errno = E2BIG, -1);
 
@@ -225,6 +228,110 @@ load_ruleset(struct quark_queue *qq, struct nova_queue *nqq)
 	return (0);
 }
 
+static const char *
+nova_kind_str(enum nova_kind kind)
+{
+	switch (kind) {
+	case NOVA_FORK:
+		return ("NOVA_FORK");
+	case NOVA_EXEC:
+		return ("NOVA_EXEC");
+	case NOVA_EXIT:
+		return ("NOVA_EXIT");
+	default:
+		return ("?");
+	}
+}
+
+/*
+ * nova_vl to char *
+ * NOTE: if we pass qq here we could add some basic bound checks for rogue
+ * events.
+ */
+static const char *
+vltoc(void *vnev, struct nova_vl *vl)
+{
+	struct nova_event	*nev = vnev;
+
+	if (vl->len == 0)
+		return (NULL);
+
+	return (((const char *)nev) + vl->off);
+}
+
+static int
+nova_ringbuf_cb(void *vqq, void *vdata, size_t len)
+{
+	/* struct quark_queue	*qq = vqq; */
+	struct nova_event	*nev;
+	struct nova_task	*nt;
+	struct nova_exec	*exec;
+
+	nev = vdata;
+	nt = NULL;
+
+	printf("nova event %s len=%zd ts=%llu ts_boot=%llu ",
+	    nova_kind_str(nev->kind), len, nev->ts, nev->ts_boot);
+
+	switch (nev->kind) {
+	case NOVA_EXEC:
+		exec = (struct nova_exec *)nev;
+		nt = &exec->nt;
+		printf("exe=%s cap_eff=0x%llx cap_perm=0x%llx uid=%d gid=%d comm=%s",
+		    vltoc(exec, &exec->exe), nt->cap_eff, nt->cap_perm, nt->uid,
+		    nt->gid, nt->comm);
+		break;
+	default:
+		putchar('?');
+		break;
+	}
+
+	putchar('\n');
+
+	return (0);
+}
+
+static int
+ringbuf_setup(struct quark_queue *qq, struct nova_queue *nqq)
+{
+	int			ringbuf_fd;
+	struct epoll_event	ev;
+
+	nqq->ringbuf = ring_buffer__new(bpf_map__fd(nqq->nova->maps.output_ring),
+	    nova_ringbuf_cb, qq, NULL);
+	if (nqq->ringbuf == NULL) {
+		qwarn("can't setup ringbuf");
+		goto fail;
+	}
+
+	ringbuf_fd = ring_buffer__epoll_fd(nqq->ringbuf);
+	if (ringbuf_fd < 0) {
+		qwarnx("ring_buffer__epoll_fd failed");
+		goto fail;
+	}
+	bzero(&ev, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.fd = ringbuf_fd;
+	if (epoll_ctl(qq->epollfd, EPOLL_CTL_ADD, ringbuf_fd, &ev) == -1) {
+		qwarn("epoll_ctl");
+		goto fail;
+	}
+	/*
+	 * FUTURE: if you add code here, you must undo the epoll_ctl() above in
+	 * fail:
+	 */
+
+	return (0);
+fail:
+	if (nqq->ringbuf != NULL) {
+		/* this closes ringbuf_fd! */
+		ring_buffer__free(nqq->ringbuf);
+		nqq->ringbuf = NULL;
+	}
+
+	return (-1);
+}
+
 int
 nova_queue_open(struct quark_queue *qq)
 {
@@ -253,6 +360,8 @@ nova_queue_open(struct quark_queue *qq)
 		goto fail;
 	if (load_ruleset(qq, nqq) == -1)
 		goto fail;
+	if (ringbuf_setup(qq, nqq) == -1)
+		goto fail;
 	if (nova__attach(nqq->nova) != 0)
 		goto fail;
 
@@ -268,7 +377,19 @@ fail:
 static int
 nova_queue_populate(struct quark_queue *qq)
 {
-	return (0);
+	struct nova_queue	*nqq = qq->queue_be;
+	int			 npop, space_left;
+
+	space_left =
+	    qq->flags & QQ_BYPASS ? 1 :
+	    qq->length >= qq->max_length ? 0 :
+	    qq->max_length - qq->length;
+	if (space_left == 0)
+		return (0);
+
+	npop = ring_buffer__consume_n(nqq->ringbuf, space_left);
+
+	return (npop < 0 ? -1 : npop);
 }
 
 static int
@@ -301,14 +422,14 @@ nova_queue_update_stats(struct quark_queue *qq)
 	for (i = 0; i < (u32)qq->ruleset->n_rules; i++) {
 		qr = qq->ruleset->rules + i;
 
-		qr->evals = 0;
-		qr->hits = 0;
-
 		if (bpf_map__lookup_elem(nova->maps.ruleset_pcpu, &i,
 		    sizeof(i), rule_pcpu, sizeof(*rule_pcpu) * num_cpus, 0) != 0) {
 			qwarn("bpf_map__lookup_elem");
 			goto fail;
 		}
+
+		qr->evals = 0;
+		qr->hits = 0;
 
 		for (j = 0; j < num_cpus; j++) {
 			qr->evals += rule_pcpu[j].evals;
@@ -332,8 +453,26 @@ nova_queue_close(struct quark_queue *qq)
 
 	if (nqq == NULL)
 		return;
+	if (nqq->nova != NULL) {
+		nova__destroy(nqq->nova);
+		nqq->nova = NULL;
+	}
 
-	nova__destroy(nqq->nova);
+	if (nqq->ringbuf != NULL) {
+		int	ringbuf_fd;
+
+		ringbuf_fd = ring_buffer__epoll_fd(nqq->ringbuf);
+		if (ringbuf_fd >= 0) {
+			if (epoll_ctl(qq->epollfd, EPOLL_CTL_DEL, ringbuf_fd,
+			    NULL) == -1)
+				qwarn("epoll_ctl EPOLL_CTL_DEL");
+		}
+
+		/* this closes ringbuf_fd! */
+		ring_buffer__free(nqq->ringbuf);
+		nqq->ringbuf = NULL;
+	}
+
 	free(nqq);
 	qq->queue_be = NULL;
 }
