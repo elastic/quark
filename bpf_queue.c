@@ -1031,7 +1031,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	struct bpf_queue		*bqq;
 	struct bpf_probes		*p;
 	struct bpf_program		*prog;
-	struct ring_buffer_opts		 ringbuf_opts;
 	int				 cgroup_fd, i, off, ringbuf_fd;
 	char				*cgroup_umount;
 	struct bpf_prog_skeleton	*ps;
@@ -1305,9 +1304,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		goto fail;
 	}
 
-	ringbuf_opts.sz = sizeof(ringbuf_opts);
 	bqq->ringbuf = ring_buffer__new(bpf_map__fd(p->maps.ringbuf),
-	    bpf_ringbuf_cb, qq, &ringbuf_opts);
+	    bpf_ringbuf_cb, qq, NULL);
 	if (bqq->ringbuf == NULL) {
 		qwarn("ring_buffer__new");
 		goto fail;
