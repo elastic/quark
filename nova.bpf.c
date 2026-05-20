@@ -21,6 +21,7 @@ struct bpf_dynptr {
 #define LOOP_STOP	1
 
 #define E2BIG		7
+#define ENOBUFS		105
 #define PATH_MAX	4096
 
 #define MAX(_a, _b)	((_a) > (_b) ? (_a) : (_b))
@@ -59,6 +60,7 @@ struct eval {
 	struct nova_task	nt;
 	struct eval_path	exe;		/* QUARK_RF_EXE */
 	struct eval_path	filepath;	/* QUARK_RF_FILEPATH */
+	struct eval_path	cwd;
 };
 
 struct {
@@ -323,8 +325,10 @@ eval_path_init(struct eval_path *ep)
 	ep->post.prefixlen = PATH_LPM_KEY_BITLEN;
 }
 
+#define EP_BASIC	0
+#define EP_ALL		1
 static int
-eval_path_prepare(struct eval_path *dst, struct path *src)
+eval_path_prepare(struct eval_path *dst, struct path *src, int mode)
 {
 	long	len, full_len;
 
@@ -333,6 +337,8 @@ eval_path_prepare(struct eval_path *dst, struct path *src)
 		bpf_printk("can't make path 1");
 		return (-1);
 	}
+	if (mode == EP_BASIC)
+		goto done;
 	len = bpf_probe_read_kernel_str(dst->pre.path,
 	    sizeof(dst->pre.path), dst->full);
 	if (len < 0) {
@@ -340,6 +346,7 @@ eval_path_prepare(struct eval_path *dst, struct path *src)
 		return (-1);
 	}
 
+done:
 	dst->full_len = full_len;
 
 	return (0);
@@ -426,6 +433,15 @@ output_vl_write(struct output *o, struct nova_vl *nv,
 	return (0);
 }
 
+/*
+ * Writes path into output, fills in nv.
+ */
+static __always_inline long
+output_vl_path(struct output *o, struct nova_vl *nv, struct eval_path *src)
+{
+	return (output_vl_write(o, nv, src->full, src->full_len, PATH_MAX));
+}
+
 static __always_inline void
 output_submit(struct output *o)
 {
@@ -433,13 +449,41 @@ output_submit(struct output *o)
 }
 
 static int
+output_task_event(__u16 kind, struct eval *eval)
+{
+	struct output		 o;
+	struct nova_task_event	*nte;
+
+	nte = output_reserve(&o, sizeof(*nte),
+	    sizeof(*nte) + eval->exe.full_len + eval->cwd.full_len);
+	if (nte == NULL)
+		goto discard;
+	/*
+	 * Borrow nova_task from eval
+	 */
+	nte->nt = eval->nt;
+	if (output_vl_path(&o, &nte->nt.vl_exe, &eval->exe) != 0)
+		goto discard;
+	if (output_vl_path(&o, &nte->nt.vl_cwd, &eval->cwd) != 0)
+		goto discard;
+
+	nte->ev.kind = kind;
+
+	output_submit(&o);
+
+	return (0);
+
+discard:
+	output_discard(&o);
+
+	return (-1);
+}
+
+static int
 bprm_check1(struct linux_binprm *bprm, int ret)
 {
 	struct task_struct	*task = bpf_get_current_task_btf();
 	struct eval		*eval;
-	struct eval_path	*exe;
-	struct output		 o;
-	struct nova_exec	*exec;
 	int			 r;
 
 	if ((eval = eval_init()) == NULL)
@@ -449,42 +493,26 @@ bprm_check1(struct linux_binprm *bprm, int ret)
 	if (bprm->file == NULL)
 		goto noexe;
 
-	exe = &eval->exe;
-	if (eval_path_prepare(exe, &bprm->file->f_path) != 0) {
+	if (eval_path_prepare(&eval->exe, &bprm->file->f_path, EP_ALL) != 0) {
 		bpf_printk("can't make executable 1");
 		goto noexe;
 	}
 
 	eval->fields |= QUARK_RF_EXE;
 noexe:
+	if (eval_path_prepare(&eval->cwd, &task->fs->pwd, EP_BASIC) != 0)
+		bpf_printk("can't cwd");
+
 	r = eval_run(eval);
 
 	if (r != QUARK_RA_PASS)
 		goto done;
 
-	exec = output_reserve(&o, sizeof(*exec),
-	    sizeof(*exec) + exe->full_len);
-	if (exec == NULL)
-		goto discard;
-	/*
-	 * Borrow nova_task from eval
-	 */
-	exec->nt = eval->nt;
-	if (output_vl_write(&o, &exec->exe, exe->full,
-	    exe->full_len, PATH_MAX) != 0)
-		goto discard;
-
-	exec->ev.kind = NOVA_EXEC;
-
-	output_submit(&o);
+	if (output_task_event(NOVA_EXEC, eval) == -1)
+		bpf_printk("can't output NOVA_EXEC");
 
 done:
-	return (0);	/* Always pass for now */
-
-discard:
-	output_discard(&o);
-
-	return (0);	/* Always pass for now */
+	return (ret);	/* Always pass for now */
 }
 
 SEC("lsm/bprm_check_security")
@@ -499,6 +527,93 @@ BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 
 	return (r);
 }
+
+/*
+ * TODO this is wrong, task_alloc() happens before pid allocation, so we have to
+ * emit the event _after_ in another probe, but we have to block and collect
+ * executable here.
+ */
+static int
+task_alloc1(struct task_struct *task, int ret)
+{
+	struct eval		*eval;
+	int			 r;
+
+	if ((eval = eval_init()) == NULL)
+		return (0);
+	eval_init_task(eval, task);
+
+	if (eval_path_prepare(&eval->exe, &task->mm->exe_file->f_path,
+	    EP_ALL) != 0) {
+		bpf_printk("can't make executable 1");
+		goto noexe;
+	}
+	eval->fields |= QUARK_RF_EXE;
+noexe:
+	if (eval_path_prepare(&eval->cwd, &task->fs->pwd, EP_BASIC) != 0)
+		bpf_printk("can't cwd");
+
+	r = eval_run(eval);
+
+	if (r != QUARK_RA_PASS)
+		goto done;
+
+	if (output_task_event(NOVA_FORK, eval) == -1)
+		bpf_printk("can't output NOVA_FORK");
+
+done:
+	return (ret);	/* Always pass for now */
+}
+
+SEC("lsm/task_alloc")
+int
+BPF_PROG(task_alloc, struct task_struct *child, unsigned long clone_flags,
+    int ret)
+{
+	int	r;
+
+	preempt_disable();
+	r = task_alloc1(child, ret);
+	preempt_enable();
+
+	return (r);
+}
+
+static int
+task_exit1(struct task_struct *task)
+{
+	struct eval *eval;
+	int          r;
+
+	if ((eval = eval_init()) == NULL)
+		return (0);
+	eval_init_task(eval, task);
+
+	eval->nt.exit_code = BPF_CORE_READ(task, exit_code);
+
+	r = eval_run(eval);
+	if (r != QUARK_RA_PASS)
+		return (0);
+
+	if (output_task_event(NOVA_EXIT, eval) == -1)
+		bpf_printk("can't output NOVA_EXIT");
+
+	return (0);
+}
+
+SEC("tp_btf/sched_process_exit")
+int
+BPF_PROG(sched_exit, struct task_struct *task)
+{
+	int r;
+
+	preempt_disable();
+	r = task_exit1(task);
+	preempt_enable();
+
+	return (r);
+}
+
 
 #pragma GCC diagnostic pop
 

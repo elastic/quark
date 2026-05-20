@@ -265,21 +265,24 @@ nova_ringbuf_cb(void *vqq, void *vdata, size_t len)
 	/* struct quark_queue	*qq = vqq; */
 	struct nova_event	*nev;
 	struct nova_task	*nt;
-	struct nova_exec	*exec;
+	struct nova_task_event	*nte;
 
 	nev = vdata;
 	nt = NULL;
+	nte = NULL;
 
 	printf("nova event %s len=%zd ts=%llu ts_boot=%llu ",
 	    nova_kind_str(nev->kind), len, nev->ts, nev->ts_boot);
 
 	switch (nev->kind) {
-	case NOVA_EXEC:
-		exec = (struct nova_exec *)nev;
-		nt = &exec->nt;
-		printf("exe=%s cap_eff=0x%llx cap_perm=0x%llx uid=%d gid=%d comm=%s",
-		    vltoc(exec, &exec->exe), nt->cap_eff, nt->cap_perm, nt->uid,
-		    nt->gid, nt->comm);
+	case NOVA_FORK:		/* FALLTHROUGH */
+	case NOVA_EXEC:		/* FALLTHROUGH */
+	case NOVA_EXIT:
+		nte = (struct nova_task_event *)nev;
+		nt = &nte->nt;
+		printf("pid=%d exe=%s cap_eff=0x%llx cap_perm=0x%llx uid=%d gid=%d comm=%s cwd=%s ",
+		    nt->pid, vltoc(nte, &nt->vl_exe), nt->cap_eff, nt->cap_perm, nt->uid,
+		    nt->gid, nt->comm, vltoc(nte, &nt->vl_cwd));
 		break;
 	default:
 		putchar('?');
