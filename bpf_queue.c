@@ -1260,7 +1260,12 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {
-		qwarn("bpf_map__set_max_entries");
+		qwarn("bpf_map__set_max_entries event_buffer_map");
+		goto fail;
+	}
+	if (bpf_map__set_max_entries(p->maps.event_buffer_map_softirq,
+	    get_nprocs_conf()) != 0) {
+		qwarn("bpf_map__set_max_entries event_buffer_map_softirq");
 		goto fail;
 	}
 

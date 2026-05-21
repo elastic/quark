@@ -296,6 +296,9 @@ static int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
 }
 #endif
 
+/*
+ * See cgroub_skb/egress, pretty please.
+ */
 static int skb_in_or_egress(struct __sk_buff *skb, int ingress)
 {
     struct udphdr udp;
@@ -344,10 +347,10 @@ static int skb_in_or_egress(struct __sk_buff *skb, int ingress)
         goto ignore;
 
     /*
-     * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
+     * Needed for kernels prior to cd17d38f8b28f808c368121041c0a4fa91757e0d
      * bpf: Permits pointers on stack for helper calls
      */
-    sk_addr = bpf_map_lookup_elem(&scratch64, &zero);
+    sk_addr = bpf_map_lookup_elem(&scratch64_softirq, &zero);
     if (sk_addr == NULL)
         goto ignore;
     *sk_addr = (u64)sk;
@@ -375,7 +378,7 @@ static int skb_in_or_egress(struct __sk_buff *skb, int ingress)
      * bpf_skb_load_bytes() down below to think cap_len can be zero.
      */
     if (cap_len >= (sizeof(struct iphdr) + sizeof(udp) + 12)) {
-        event = get_event_buffer();
+        event = get_event_buffer_softirq();
         if (event == NULL)
             goto ignore;
 
@@ -409,6 +412,14 @@ ignore:
     return (1);
 }
 
+/*
+ * This probe can and will trigger from softirq, this means it actually
+ * interrupts and runs interleaved with whatever probe the cpu happened to be
+ * running. Therefore you *MUST* not use any of the per cpu data structures that
+ * the other probes do, *DON'T* use get_event_buffer(), use
+ * get_event_buffer_softirq(), make sure you do the same for other scratch maps
+ * or any other shared data.
+ */
 SEC("cgroup_skb/egress")
 int skb_egress(struct __sk_buff *skb)
 {
@@ -421,6 +432,9 @@ int skb_egress(struct __sk_buff *skb)
     return r;
 }
 
+/*
+ * See cgroub_skb/egress, pretty please.
+ */
 SEC("cgroup_skb/ingress")
 int skb_ingress(struct __sk_buff *skb)
 {

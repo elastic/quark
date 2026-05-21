@@ -188,6 +188,13 @@ struct {
     __uint(max_entries, 1);
 } scratch64 SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, u32);
+	__type(value, u64);
+	__uint(max_entries, 1);
+} scratch64_softirq SEC(".maps");
+
 /* Trusted Apps - list of trusted pids */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
