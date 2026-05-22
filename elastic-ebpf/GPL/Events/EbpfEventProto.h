@@ -437,7 +437,7 @@ struct ebpf_dns_event {
     uint32_t cap_len;
     uint32_t orig_len;
     enum ebpf_net_packet_direction direction;
-    struct ebpf_varlen_fields_start vl_fields;
+    char packet[]; // must be last
 } __attribute__((packed));
 
 // Basic event statistics

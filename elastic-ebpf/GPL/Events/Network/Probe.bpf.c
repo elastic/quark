@@ -29,6 +29,50 @@ struct {
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } sk_to_tgid SEC(".maps");
 
+struct dns_ctx {
+    /*
+     * which nest index we are, only meaningful on the first one,
+     * saves having a map just to store an int
+     */
+    u32 nest;
+    u64 scratch64;
+    struct ebpf_dns_event event; /* must be last */
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(key_size, sizeof(u32));
+    __uint(value_size, sizeof(struct dns_ctx) + MAX_DNS_PACKET);
+    __uint(max_entries, 3);
+} dns_ctx_map SEC(".maps");
+
+struct dns_ctx *
+get_dns_ctx(void)
+{
+    struct dns_ctx *ctx, *zero_ctx;
+
+    zero_ctx = bpf_map_lookup_elem(&dns_ctx_map, &(int){0});
+    if (zero_ctx == NULL)
+        return (NULL);
+    ctx = bpf_map_lookup_elem(&dns_ctx_map, &zero_ctx->nest);
+    if (ctx == NULL)
+        return (NULL);
+    zero_ctx->nest++;
+
+    return (ctx);
+}
+
+void
+put_dns_ctx(void)
+{
+	struct dns_ctx *zero_ctx;
+
+	zero_ctx = bpf_map_lookup_elem(&dns_ctx_map, &(int){0});
+	if (zero_ctx == NULL)
+		return;
+	zero_ctx->nest--;
+}
+
 static int inet_csk_accept__exit(struct sock *sk)
 {
     if (!sk)
@@ -299,14 +343,13 @@ static int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
 /*
  * See cgroub_skb/egress, pretty please.
  */
-static int skb_in_or_egress(struct __sk_buff *skb, int ingress)
+static int skb_in_or_egress(struct __sk_buff *skb, int direction,
+    struct dns_ctx *ctx)
 {
     struct udphdr udp;
     struct bpf_sock *sk;
-    u32 *tgid, cap_len, zero = 0;
-    u64 *sk_addr;
+    u32 *tgid, cap_len;
     struct ebpf_dns_event *event;
-    struct ebpf_varlen_field *field;
 
     if (skb->family != AF_INET && skb->family != AF_INET6)
         goto ignore;
@@ -350,11 +393,8 @@ static int skb_in_or_egress(struct __sk_buff *skb, int ingress)
      * Needed for kernels prior to cd17d38f8b28f808c368121041c0a4fa91757e0d
      * bpf: Permits pointers on stack for helper calls
      */
-    sk_addr = bpf_map_lookup_elem(&scratch64_softirq, &zero);
-    if (sk_addr == NULL)
-        goto ignore;
-    *sk_addr = (u64)sk;
-    tgid     = bpf_map_lookup_elem(&sk_to_tgid, sk_addr);
+    ctx->scratch64 = (u64)sk;
+    tgid = bpf_map_lookup_elem(&sk_to_tgid, &ctx->scratch64);
     if (tgid == NULL)
         goto ignore;
 
@@ -378,9 +418,7 @@ static int skb_in_or_egress(struct __sk_buff *skb, int ingress)
      * bpf_skb_load_bytes() down below to think cap_len can be zero.
      */
     if (cap_len >= (sizeof(struct iphdr) + sizeof(udp) + 12)) {
-        event = get_event_buffer_softirq();
-        if (event == NULL)
-            goto ignore;
+        event = &ctx->event;
 
         event->hdr.type    = EBPF_EVENT_NETWORK_DNS_PKT;
         event->hdr.ts      = bpf_ktime_get_ns();
@@ -388,10 +426,8 @@ static int skb_in_or_egress(struct __sk_buff *skb, int ingress)
         event->tgid        = *tgid;
         event->cap_len     = cap_len;
         event->orig_len    = skb->len;
-        event->direction   = ingress ? EBPF_NETWORK_DIR_INGRESS : EBPF_NETWORK_DIR_EGRESS;
+        event->direction   = direction;
 
-        ebpf_vl_fields__init(&event->vl_fields);
-        field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_DNS_BODY);
         /*
          * 5.10 kernels on clang-20+, for $REASONS, will result in code here
          * that loses track of cap_len, so cap_len will be unbound (R4 in
@@ -401,11 +437,10 @@ static int skb_in_or_egress(struct __sk_buff *skb, int ingress)
         if (cap_len > MAX_DNS_PACKET ||
             cap_len < (__u32)(sizeof(struct iphdr) + sizeof(udp) + 12))
                 goto ignore;
-        if (bpf_skb_load_bytes(skb, 0, field->data, cap_len))
+        if (bpf_skb_load_bytes(skb, 0, event->packet, cap_len))
             goto ignore;
-        ebpf_vl_field__set_size(&event->vl_fields, field, cap_len);
 
-        ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+        ebpf_ringbuf_write(&ringbuf, event, sizeof(*event) + cap_len, 0);
     }
 
 ignore:
@@ -413,23 +448,27 @@ ignore:
 }
 
 /*
- * This probe can and will trigger from softirq, this means it actually
- * interrupts and runs interleaved with whatever probe the cpu happened to be
- * running. Therefore you *MUST* not use any of the per cpu data structures that
- * the other probes do, *DON'T* use get_event_buffer(), use
- * get_event_buffer_softirq(), make sure you do the same for other scratch maps
- * or any other shared data.
+ * This probe can and will trigger from softirq as well as process context!
+ * Which means it actually interrupts and runs interleaved with whatever probe
+ * the cpu happened to be running. This also means egress/ingress can nest onto
+ * *anything*, including another egress/ingress, or a fork, exec or
+ * *anything*. Therefore you *MUST* not use any of the per cpu data structures
+ * that the others probes do *DON'T* use get_event_buffer(). Use get_dns_ctx()
+ * and put_dns_ctx() to properly nest it.
  */
 SEC("cgroup_skb/egress")
 int skb_egress(struct __sk_buff *skb)
 {
-    int r;
+    struct dns_ctx *ctx;
 
     preempt_disable();
-    r = skb_in_or_egress(skb, 0);
+    if ((ctx = get_dns_ctx()) != NULL) {
+        skb_in_or_egress(skb, EBPF_NETWORK_DIR_EGRESS, ctx);
+        put_dns_ctx();
+    }
     preempt_enable();
 
-    return r;
+    return 1;
 }
 
 /*
@@ -438,19 +477,22 @@ int skb_egress(struct __sk_buff *skb)
 SEC("cgroup_skb/ingress")
 int skb_ingress(struct __sk_buff *skb)
 {
-    int r;
+    struct dns_ctx *ctx;
 
     preempt_disable();
-    r = skb_in_or_egress(skb, 1);
+    if ((ctx = get_dns_ctx()) != NULL) {
+        skb_in_or_egress(skb, EBPF_NETWORK_DIR_INGRESS, ctx);
+        put_dns_ctx();
+    }
     preempt_enable();
 
-    return r;
+    return 1;
 }
 
 static int sk_maybe_save_tgid(struct bpf_sock *sk)
 {
-    u32 tgid, zero = 0;
-    u64 *sk_addr;
+    u32 tgid;
+    struct dns_ctx *ctx;
 
     if (sk->protocol != IPPROTO_UDP)
         return (1);
@@ -464,11 +506,12 @@ static int sk_maybe_save_tgid(struct bpf_sock *sk)
      * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
      * bpf: Permits pointers on stack for helper calls
      */
-    sk_addr = bpf_map_lookup_elem(&scratch64, &zero);
-    if (sk_addr == NULL)
+    ctx = get_dns_ctx();
+    if (ctx == NULL)
         return (1);
-    *sk_addr = (u64)sk;
-    bpf_map_update_elem(&sk_to_tgid, sk_addr, &tgid, BPF_ANY);
+    ctx->scratch64 = (u64)sk;
+    bpf_map_update_elem(&sk_to_tgid, &ctx->scratch64, &tgid, BPF_ANY);
+    put_dns_ctx();
 
     return (1);
 }
@@ -528,8 +571,7 @@ int sock_create(struct bpf_sock *sk)
 SEC("cgroup/sock_release")
 int sock_release(struct bpf_sock *sk)
 {
-    u32 zero = 0;
-    u64 *sk_addr;
+    struct dns_ctx *ctx;
 
     preempt_disable();
     if (sk->protocol != IPPROTO_UDP)
@@ -539,11 +581,12 @@ int sock_release(struct bpf_sock *sk)
      * Needed for kernels prior to f79efcb0075a20633cbf9b47759f2c0d538f78d8
      * bpf: Permits pointers on stack for helper calls
      */
-    sk_addr = bpf_map_lookup_elem(&scratch64, &zero);
-    if (sk_addr == NULL)
+    ctx = get_dns_ctx();
+    if (ctx == NULL)
         goto out;
-    *sk_addr = (u64)sk;
-    bpf_map_delete_elem(&sk_to_tgid, sk_addr);
+    ctx->scratch64 = (u64)sk;
+    bpf_map_delete_elem(&sk_to_tgid, &ctx->scratch64);
+    put_dns_ctx();
 
 out:
     preempt_enable();

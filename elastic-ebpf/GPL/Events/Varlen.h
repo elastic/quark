@@ -66,19 +66,6 @@ static void *get_event_buffer()
     return bpf_map_lookup_elem(&event_buffer_map, &key);
 }
 
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(key_size, sizeof(int));
-    __uint(value_size, EVENT_BUFFER_SIZE);
-    __uint(max_entries, 0); // Will be resized by userspace to $(nproc)
-} event_buffer_map_softirq SEC(".maps");
-
-static void *get_event_buffer_softirq(void)
-{
-    int key = bpf_get_smp_processor_id();
-    return bpf_map_lookup_elem(&event_buffer_map_softirq, &key);
-}
-
 struct ebpf_varlen_field *ebpf_vl_field__add(struct ebpf_varlen_fields_start *fields,
                                              enum ebpf_varlen_field_type type)
 {
