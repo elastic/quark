@@ -882,3 +882,68 @@ int BPF_KPROBE(kprobe__tty_write, struct kiocb *iocb, struct iov_iter *from)
 
     return r;
 }
+
+static int tty_write_old__enter(struct file *file, const char *buf, size_t count)
+{
+    if (is_consumer()) {
+        goto out;
+    }
+
+    struct tty_file_private *tfp = (struct tty_file_private *)BPF_CORE_READ(file, private_data);
+    struct tty_struct *tty       = BPF_CORE_READ(tfp, tty);
+
+    bool is_master;
+    int type, subtype;
+    struct ebpf_tty_dev master = {};
+    struct ebpf_tty_dev slave  = {};
+    struct tty_driver *driver = BPF_CORE_READ(tty, driver);
+
+    if (driver == NULL)
+        goto out;
+
+    type    = BPF_PROBE_READ(driver, type);
+    subtype = BPF_PROBE_READ(driver, subtype);
+    is_master = type == OLD_TTY_DRIVER_TYPE_PTY && subtype == OLD_PTY_TYPE_MASTER;
+
+    if (is_master) {
+        struct tty_struct *tmp = BPF_CORE_READ(tty, link);
+        ebpf_tty_dev__fill(&master, tty);
+        ebpf_tty_dev__fill(&slave, tmp);
+    } else
+        ebpf_tty_dev__fill(&slave, tty);
+
+    if (slave.major == 0 && slave.minor == 0)
+        goto out;
+
+    if ((is_master && !(master.termios.c_lflag & ECHO)) && !(slave.termios.c_lflag & ECHO))
+        goto out;
+
+    (void)output_tty_event(&slave, buf, count);
+
+out:
+    return 0;
+}
+
+SEC("fentry/tty_write")
+int BPF_PROG(fentry__tty_write_old_sig, struct file *file, const char *buf, size_t count)
+{
+    int r;
+
+    preempt_disable();
+    r = tty_write_old__enter(file, buf, count);
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kprobe/tty_write")
+int BPF_KPROBE(kprobe__tty_write_old_sig, struct file *file, const char *buf, size_t count)
+{
+    int r;
+
+    preempt_disable();
+    r = tty_write_old__enter(file, buf, count);
+    preempt_enable();
+
+    return r;
+}

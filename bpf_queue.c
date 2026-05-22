@@ -1241,10 +1241,18 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	}
 
 	if (qq->flags & QQ_TTY) {
-		if (use_fentry)
-			bpf_program__set_autoload(p->progs.fentry__tty_write, 1);
-		else
-			bpf_program__set_autoload(p->progs.kprobe__tty_write, 1);
+		int tty_write_nparams = btf_number_of_params(btf, "tty_write");
+		if (tty_write_nparams != 4) {
+			if (use_fentry)
+				bpf_program__set_autoload(p->progs.fentry__tty_write, 1);
+			else
+				bpf_program__set_autoload(p->progs.kprobe__tty_write, 1);
+		} else {
+			if (use_fentry)
+				bpf_program__set_autoload(p->progs.fentry__tty_write_old_sig, 1);
+			else
+				bpf_program__set_autoload(p->progs.kprobe__tty_write_old_sig, 1);
+		}
 	}
 
 	if (qq->flags & QQ_PTRACE) {
