@@ -414,17 +414,8 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		packet->origin = QUARK_PACKET_ORIGIN_DNS;
 		packet->orig_len = dns->orig_len;
 		packet->cap_len = cap_len;
+		memcpy(packet->data, dns->packet, cap_len);
 
-		FOR_EACH_VARLEN_FIELD(dns->vl_fields, field) {
-			switch (field->type) {
-			case EBPF_VL_FIELD_DNS_BODY:
-				memcpy(packet->data, field->data, cap_len);
-				break;
-			default:
-				qwarnx("unhandled field type %d", field->type);
-				goto bad;
-			}
-		}
 		break;
 	}
 	case EBPF_EVENT_FILE_CREATE: /* FALLTHROUGH */
@@ -1269,11 +1260,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {
 		qwarn("bpf_map__set_max_entries event_buffer_map");
-		goto fail;
-	}
-	if (bpf_map__set_max_entries(p->maps.event_buffer_map_softirq,
-	    get_nprocs_conf()) != 0) {
-		qwarn("bpf_map__set_max_entries event_buffer_map_softirq");
 		goto fail;
 	}
 
