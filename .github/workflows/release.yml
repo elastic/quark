@@ -1,0 +1,217 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  build-glibc-amd64:
+    name: Build linux-amd64-glibc
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build with Docker (Ubuntu GNU)
+        run: |
+          make docker
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="quark-${TAG}-linux-amd64-glibc"
+          ROOT="stage/${PKG}"
+          mkdir -p "${ROOT}"
+          make dist DESTDIR="${ROOT}"
+          mkdir -p dist
+          tar -C "$ROOT" -czf "dist/${PKG}.tar.gz" .
+          sha256sum "dist/${PKG}.tar.gz" > "dist/${PKG}.tar.gz.sha256"
+          rm -rf "$ROOT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-${{ env.TAG }}-linux-amd64-glibc
+          path: |
+            dist/quark-${{ env.TAG }}-linux-amd64-glibc.tar.gz
+            dist/quark-${{ env.TAG }}-linux-amd64-glibc.tar.gz.sha256
+
+  build-glibc217-amd64:
+    name: Build linux-amd64-glibc217 (CentOS 7)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build with Docker (CentOS 7)
+        run: |
+          make centos7
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="quark-${TAG}-linux-amd64-glibc217"
+          ROOT="stage/${PKG}"
+          mkdir -p "${ROOT}"
+          make dist DESTDIR="${ROOT}"
+          mkdir -p dist
+          tar -C "$ROOT" -czf "dist/${PKG}.tar.gz" .
+          sha256sum "dist/${PKG}.tar.gz" > "dist/${PKG}.tar.gz.sha256"
+          rm -rf "$ROOT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-${{ env.TAG }}-linux-amd64-glibc217
+          path: |
+            dist/quark-${{ env.TAG }}-linux-amd64-glibc217.tar.gz
+            dist/quark-${{ env.TAG }}-linux-amd64-glibc217.tar.gz.sha256
+
+  build-glibc-arm64:
+    name: Build linux-arm64-glibc
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build with Docker (ARM64 cross-compile)
+        run: |
+          make docker-cross-arm64
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="quark-${TAG}-linux-arm64-glibc"
+          ROOT="stage/${PKG}"
+          mkdir -p "${ROOT}"
+          make dist DESTDIR="${ROOT}"
+          mkdir -p dist
+          tar -C "$ROOT" -czf "dist/${PKG}.tar.gz" .
+          sha256sum "dist/${PKG}.tar.gz" > "dist/${PKG}.tar.gz.sha256"
+          rm -rf "$ROOT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-${{ env.TAG }}-linux-arm64-glibc
+          path: |
+            dist/quark-${{ env.TAG }}-linux-arm64-glibc.tar.gz
+            dist/quark-${{ env.TAG }}-linux-arm64-glibc.tar.gz.sha256
+
+  build-musl-amd64:
+    name: Build linux-amd64-musl
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build with Docker (Alpine musl)
+        run: |
+          make alpine
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="quark-${TAG}-linux-amd64-musl"
+          ROOT="stage/${PKG}"
+          mkdir -p "${ROOT}"
+          make dist DESTDIR="${ROOT}"
+          mkdir -p dist
+          tar -C "$ROOT" -czf "dist/${PKG}.tar.gz" .
+          sha256sum "dist/${PKG}.tar.gz" > "dist/${PKG}.tar.gz.sha256"
+          rm -rf "$ROOT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-${{ env.TAG }}-linux-amd64-musl
+          path: |
+            dist/quark-${{ env.TAG }}-linux-amd64-musl.tar.gz
+            dist/quark-${{ env.TAG }}-linux-amd64-musl.tar.gz.sha256
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - build-glibc-amd64
+      - build-glibc217-amd64
+      - build-glibc-arm64
+      - build-musl-amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify QUARK_VERSION vs tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${TAG}"
+          VER_TAG="${TAG#v}"
+          BASE_VER=$(echo "$VER_TAG" | sed -E 's/-rc[0-9]+$//')
+          HDR_VER=$(grep -E '^[[:space:]]*#define[[:space:]]+QUARK_VERSION' quark.h | sed -E 's/.*"([^"]+)".*/\1/')
+          if [[ "$VER_TAG" == *-rc* ]]; then
+            # For -rc tags, expect header to be BASE_VER with trailing 'a'
+            if [[ "$HDR_VER" != "${BASE_VER}a" ]]; then
+              echo "QUARK_VERSION ($HDR_VER) must be ${BASE_VER}a for RC tags ($TAG)" >&2
+              exit 1
+            fi
+          else
+            # For final releases, expect exact match and no trailing 'a'
+            if [[ "$HDR_VER" != "$BASE_VER" ]]; then
+              echo "QUARK_VERSION ($HDR_VER) must equal $BASE_VER for tag $TAG" >&2
+              exit 1
+            fi
+            if [[ "$HDR_VER" == *a ]]; then
+              echo "QUARK_VERSION ($HDR_VER) must not end with 'a' for final release" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate combined SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.TAG }}
+          body_path: CHANGES
+          draft: true
+          prerelease: ${{ contains(env.TAG, '-rc') }}
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/SHA256SUMS

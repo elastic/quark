@@ -1,0 +1,51 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g., 0.6)"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump-version:
+    name: Bump QUARK_VERSION and open PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Create bump branch
+        id: prep
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          BRANCH="release/bump-v${VERSION}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH"
+          # Update QUARK_VERSION to exact VERSION (no trailing 'a')
+          perl -0777 -pe "s/(#define\s+QUARK_VERSION\s+")([^"]+)(")/\1${VERSION}\3/" -i quark.h
+          echo "Updated quark.h to QUARK_VERSION=${VERSION}"
+          git add quark.h
+          git commit -m "release: bump QUARK_VERSION to ${VERSION}"
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: ${{ steps.prep.outputs.branch }}
+          title: "release: bump QUARK_VERSION to ${{ inputs.version }}"
+          body: |
+            This PR bumps QUARK_VERSION to `${{ inputs.version }}` in quark.h.
+
+            After merging, push the release tag `v${{ inputs.version }}` to trigger the release workflow.
+          commit-message: "release: bump QUARK_VERSION to ${{ inputs.version }}"
+          base: ${{ github.ref_name }}
+          labels: release
+
