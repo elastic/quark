@@ -529,6 +529,49 @@ BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 }
 
 /*
+ * TODO stop evaluating things twice, store the result from the lsm probe
+ * somewhere and retrieve here.
+ */
+static int
+sched_process_fork1(struct task_struct *parent, struct task_struct *child)
+{
+	struct eval		*eval;
+	int			 r;
+
+	if ((eval = eval_init()) == NULL)
+		return (0);
+	eval_init_task(eval, child);
+
+	r = eval_run(eval);
+
+	if (r != QUARK_RA_PASS)
+		goto done;
+
+	/*
+	 * TODO: missing cwd
+	 */
+
+	if (output_task_event(NOVA_FORK, eval) == -1)
+		bpf_printk("can't output NOVA_FORK");
+
+done:
+	return (0);
+}
+
+SEC("tp_btf/sched_process_fork")
+int
+BPF_PROG(sched_process_fork, struct task_struct *parent,
+    struct task_struct *child)
+{
+	int	r;
+
+	preempt_disable();
+	r = sched_process_fork1(parent, child);
+	preempt_enable();
+
+	return (r);
+}
+/*
  * TODO this is wrong, task_alloc() happens before pid allocation, so we have to
  * emit the event _after_ in another probe, but we have to block and collect
  * executable here.
@@ -558,8 +601,7 @@ noexe:
 	if (r != QUARK_RA_PASS)
 		goto done;
 
-	if (output_task_event(NOVA_FORK, eval) == -1)
-		bpf_printk("can't output NOVA_FORK");
+	/* output emited from sched_proc_fork */
 
 done:
 	return (ret);	/* Always pass for now */
