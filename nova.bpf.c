@@ -113,6 +113,18 @@ preempt_enable(void)
 		bpf_preempt_enable();
 }
 
+static void
+probe_prologue(void)
+{
+	preempt_disable();
+}
+
+static void
+probe_epilogue(void)
+{
+	preempt_enable();
+}
+
 static __u64
 ktime_get_boot_ns(void)
 {
@@ -521,9 +533,9 @@ BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 {
 	int	r;
 
-	preempt_disable();
+	probe_prologue();
 	r = bprm_check1(bprm, ret);
-	preempt_enable();
+	probe_epilogue();
 
 	return (r);
 }
@@ -565,9 +577,9 @@ BPF_PROG(sched_process_fork, struct task_struct *parent,
 {
 	int	r;
 
-	preempt_disable();
+	probe_prologue();
 	r = sched_process_fork1(parent, child);
-	preempt_enable();
+	probe_epilogue();
 
 	return (r);
 }
@@ -614,9 +626,9 @@ BPF_PROG(task_alloc, struct task_struct *child, unsigned long clone_flags,
 {
 	int	r;
 
-	preempt_disable();
+	probe_prologue();
 	r = task_alloc1(child, ret);
-	preempt_enable();
+	probe_epilogue();
 
 	return (r);
 }
@@ -649,13 +661,12 @@ BPF_PROG(sched_exit, struct task_struct *task)
 {
 	int r;
 
-	preempt_disable();
+	probe_prologue();
 	r = task_exit1(task);
-	preempt_enable();
+	probe_epilogue();
 
 	return (r);
 }
-
 
 #pragma GCC diagnostic pop
 
