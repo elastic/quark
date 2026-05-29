@@ -547,7 +547,7 @@ man-embedder: man-embedder.c
 
 manpages.h: man-embedder display_man.c quark-btf.8 quark-mon.8 quark-test.8
 	$(Q)echo '// SPDX-License-Identifier: Apache-2.0' > $@
-	$(Q)echo '/* Copyright (c) 2024 Elastic NV */' >> $@
+	$(Q)echo '/* Copyright (c) 2024-2026 Elastic NV */' >> $@
 	$(Q)echo '' >> $@
 	$(call msg,MAN-EMB,quark-btf.8)
 	$(Q)./man-embedder quark-btf.8 MAN_QUARK_BTF >> $@

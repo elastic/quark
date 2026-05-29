@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-/* Copyright (c) 2024 Elastic NV */
+/* Copyright (c) 2024-2026 Elastic NV */
 
 #include <asm/termbits.h>
 
@@ -412,7 +412,7 @@ display_version(void)
 {
 	printf("%s-%s\n", program_invocation_short_name, QUARK_VERSION);
 	printf("License: Apache-2.0\n");
-	printf("Copyright (c) 2024 Elastic NV\n");
+	printf("Copyright (c) 2024-2026 Elastic NV\n");
 
 	exit(0);
 }

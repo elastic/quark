@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Copyright (c) 2024 Elastic NV */
+/* Copyright (c) 2024-2026 Elastic NV */
 
 #ifndef _COMPAT_H_
 #define _COMPAT_H_
