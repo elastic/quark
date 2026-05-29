@@ -93,3 +93,7 @@ Changes from 0.5 to 0.6
   o Aggregation matrix can now be tunned via
     quark_Queue_set_agg_matrix(3).
   o libbpf has been updated.
+
+Changes from 0.6 to 0.7
+~~~~~~~~~~~~~~~~~~~~~~~
+  o BPF_CC is gone, just use CLANG='zig cc' now.
