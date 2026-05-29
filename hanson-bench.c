@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-/* Copyright (c) 2024 Elastic NV */
+/* Copyright (c) 2024-2026 Elastic NV */
 
 #include <err.h>
 #include <errno.h>

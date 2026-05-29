@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024 Elastic NV
+// Copyright (c) 2024-2026 Elastic NV
 
 //go:build linux && (amd64 || arm64)
 
