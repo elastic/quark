@@ -3,6 +3,11 @@ PWD= $(shell pwd)
 HTML2MARKDOWN?= html2markdown
 SUDO?= sudo
 GO?= go
+CLANG?= clang
+BPFTOOL?= bpftool
+BPF_ARCH?= bpf # Zig cc calls this bpfel
+DOCKER?= docker
+CLANG_MINVER:= 17 # 16 will produce broken probes
 
 # Normalize ARCH
 ifeq ($(shell uname -m), x86_64)
@@ -44,6 +49,23 @@ endif
 
 define assert_no_syslib
   $(if $(SYSLIB), $(error cant build target $@ with SYSLIB))
+endef
+
+#
+# This is written as a function since we must check it inside the
+# target, not as a dependency, otherwise our fragile container targets
+# will break. centos7 has no clang, we build the probes on a different
+# container, so we can't check_clang before actually deciding to build
+# it.
+#
+define check_clang
+	@CLANG_MAJOR=$$(echo '__clang_major__' | $(CLANG) -E -P -x c - 2>/dev/null); \
+	if test -z "$$CLANG_MAJOR"; then \
+		echo "cannot run $(CLANG), is it installed?"; exit 1; \
+	fi; \
+	if test $$(expr $$CLANG_MAJOR \< $(CLANG_MINVER)) = 1; then \
+		echo "need $(CLANG) >= $(CLANG_MINVER), got $$CLANG_MAJOR"; exit 1; \
+	fi
 endef
 
 ifdef SYSLIB
@@ -108,12 +130,6 @@ CDIAGFLAGS+= -Wno-unused-parameter
 ifdef CENTOS7
 CDIAGFLAGS+= -Wno-inline
 endif
-
-CLANG?= clang
-BPFTOOL?= bpftool
-BPF_CC?= $(CLANG)
-BPF_ARCH?= bpf # Zig cc calls this bpfel
-DOCKER?= docker
 
 # All EEBPF files we track for dependency
 EEBPF_FILES:= $(shell find elastic-ebpf)
@@ -274,8 +290,9 @@ bpf_probes_skel.h: bpf_probes.o
 	$(Q)$(BPFTOOL) gen skeleton $^ > $@
 
 bpf_probes.o: $(BPFPROBES_DEPS)
-	$(call msg,BPF_CC,$@)
-	$(Q)$(BPF_CC)								\
+	$(call check_clang)
+	$(call msg,CLANG,$@)
+	$(Q)$(CLANG)								\
 		-g -O2								\
 		-target $(BPF_ARCH)						\
 		-D__KERNEL__							\
@@ -294,8 +311,9 @@ nova_skel.h: nova.bpf.o
 	$(Q)$(BPFTOOL) gen skeleton $^ name nova > $@
 
 nova.bpf.o: $(NOVA_DEPS)
-	$(call msg,BPF_CC,$@)
-	$(Q)$(BPF_CC)								\
+	$(call check_clang)
+	$(call msg,CLANG,$@)
+	$(Q)$(CLANG)								\
 		-g -O2								\
 		-target $(BPF_ARCH)						\
 		-Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)			\
