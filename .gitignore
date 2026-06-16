@@ -13,6 +13,7 @@ quark-go-test
 /quark-kube-talker
 init
 true
+tags
 hanson-bench
 libquark.a
 libquark_big.a
