@@ -18,10 +18,10 @@ sudo apt-get install -y 				\
 	clang						\
 	cpio						\
 	gcc						\
-	linux-tools-6.11.0-26-generic			\
+	linux-tools-7.0.0-14-generic			\
 	make						\
 	m4						\
 	valgrind
 
-make test-valgrind BPFTOOL="/usr/lib/linux-tools/6.11.0-26-generic/bpftool"
+make test-valgrind BPFTOOL="/usr/lib/linux-tools/7.0.0-14-generic/bpftool"
 exit $?
