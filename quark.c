@@ -754,13 +754,15 @@ static void
 container_delete(struct quark_queue *qq, struct quark_container *container)
 {
 	struct quark_pod	*pod   = container->pod;
-	struct quark_kube	*qkube = qq->qkube;
 	struct quark_process	*qp;
 
-	if (container->linked) {
+	if (container->linked_by_id) {
+		container_by_id_RB_REMOVE(&qq->container_by_id, container);
+		container->linked_by_id = 0;
+	}
+	if (container->linked_by_pod) {
 		pod_containers_RB_REMOVE(&pod->containers, container);
-		container_by_id_RB_REMOVE(&qkube->container_by_id, container);
-		container->linked = 0;
+		container->linked_by_pod = 0;
 	}
 	while ((qp = TAILQ_FIRST(&container->processes)) != NULL) {
 		TAILQ_REMOVE(&container->processes, qp, entry_container);
@@ -780,11 +782,10 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 static struct quark_container *
 container_lookup(struct quark_queue *qq, char *container_id)
 {
-	struct quark_kube	*qkube = qq->qkube;
 	struct quark_container	 key, *k;
 
 	key.container_id = container_id;
-	k = RB_FIND(container_by_id, &qkube->container_by_id, &key);
+	k = RB_FIND(container_by_id, &qq->container_by_id, &key);
 	if (k == NULL)
 		errno = ESRCH;
 
@@ -927,7 +928,6 @@ static int
 kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *container_json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
-	struct quark_kube	*qkube = qq->qkube;
 	cJSON			*name, *image, *imageID, *state;
 	cJSON			*waiting, *running, *terminated;
 	cJSON			*containerID;
@@ -1006,29 +1006,25 @@ kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *cont
 		/*
 		 * Finally try to link it
 		 */
-		container->pod = pod;
-		col = pod_containers_RB_INSERT(&pod->containers,
+		col = container_by_id_RB_INSERT(&qq->container_by_id,
 		    container);
 		if (col != NULL) {
 			qwarnx("unexpected container collision 1");
 			container_delete(qq, container);
 			return (-1);
 		}
-		col = container_by_id_RB_INSERT(&qkube->container_by_id,
-		    container);
-		/*
-		 * If we get a collision on the second insert, we must manually
-		 * unlink the first one, as container->linked means "both" are
-		 * linked.
-		 */
-		if (col != NULL) {
-			qwarnx("unexpected container collision 2");
-			pod_containers_RB_REMOVE(&pod->containers,
+		container->linked_by_id = 1;
+		if (pod != NULL) {
+			container->pod = pod;
+			col = pod_containers_RB_INSERT(&pod->containers,
 			    container);
-			container_delete(qq, container);
-			return (-1);
+			if (col != NULL) {
+				qwarnx("unexpected container collision 2");
+				container_delete(qq, container);
+				return (-1);
+			}
+			container->linked_by_pod = 1;
 		}
-		container->linked = 1;
 	}
 
 	return (0);
@@ -1555,7 +1551,7 @@ kube_read_events(struct quark_queue *qq)
  * Keep this function non static so we can test it.
  */
 int
-kube_parse_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
+parse_container_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
 {
 	char		*dot;
 	const char	*name, *id;
@@ -1624,7 +1620,7 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 		return;
 	if (qp->cgroup == NULL)
 		return;
-	if (kube_parse_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
+	if (parse_container_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
 		return;
 	if ((container = container_lookup(qq, cid)) == NULL)
 		return;
@@ -4132,6 +4128,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	RB_INIT(&qq->socket_by_src_dst);
 	RB_INIT(&qq->passwd_by_uid);
 	RB_INIT(&qq->group_by_gid);
+	RB_INIT(&qq->container_by_id);
 	TAILQ_INIT(&qq->event_gc);
 	qq->flags = qa->flags;
 	qq->max_length = qa->max_length;
@@ -4182,7 +4179,6 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qkube->try_read = 1;
 		qkube->last_read = 0;
 		RB_INIT(&qkube->pod_by_uid);
-		RB_INIT(&qkube->container_by_id);
 
 		if ((fl = fcntl(qkube->fd, F_GETFL)) == -1) {
 			qwarn("can't get kubefd flags");

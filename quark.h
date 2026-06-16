@@ -110,7 +110,7 @@ int			 quark_can_aggregate_tty(struct quark_queue *,
 			     struct raw_event *, struct raw_event *);
 
 /* quark.c: These are exported for testing only */
-int	 kube_parse_cgroup(const char *, char *, size_t);
+int	 parse_container_cgroup(const char *, char *, size_t);
 
 /* btf.c */
 struct quark_btf_target {
@@ -680,7 +680,8 @@ struct quark_container {
 	RB_ENTRY(quark_container)	 entry_qkube;	/* our ""global"" linkage */
 	RB_ENTRY(quark_container)	 entry_pod;	/* our linkage inside a quark_pod */
 	TAILQ_HEAD(, quark_process)	 processes;	/* processes in this container */
-	int				 linked;	/* both entries are linked */
+	int				 linked_by_id;	/* linked in container_id tree */
+	int				 linked_by_pod;	/* linked in pod tree */
 	char				*container_id;	/* unique id */
 	struct quark_pod		*pod;		/* backpointer to owner */
 	char				*name;
@@ -747,7 +748,6 @@ struct quark_kube {
 	size_t			 buf_len;		/* total length */
 	struct quark_kube_node	 node;			/* node we're running on */
 	struct pod_by_uid	 pod_by_uid;		/* uid comes from json */
-	struct container_by_id	 container_by_id;	/* in containerID format from json */
 };
 
 /*
@@ -905,6 +905,7 @@ struct quark_queue {
 	struct socket_by_src_dst	 socket_by_src_dst;
 	struct passwd_by_uid		 passwd_by_uid;
 	struct group_by_gid		 group_by_gid;
+	struct container_by_id		 container_by_id;	/* all known containers */
 	struct quark_sysinfo		 sysinfo;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
