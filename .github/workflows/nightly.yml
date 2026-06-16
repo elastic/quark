@@ -18,11 +18,11 @@ jobs:
 
     steps:
       - name: Check actor permissions
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.publish == true
         run: |
           ROLE=$(gh api repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission --jq '.role_name')
           if [[ "$ROLE" != "admin" ]]; then
-            echo "Only repository admins can trigger this workflow manually (got: $ROLE)"
+            echo "Only repository admins can publish a nightly release (got: $ROLE)"
             exit 1
           fi
         env:
