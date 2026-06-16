@@ -532,6 +532,10 @@ quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
+quark-bin.tar.gz: quark-test quark-test-static quark-mon quark-mon-static quark-btf quark-btf-static
+	$(call msg,TAR,$@)
+	$(Q)tar -czf $@ $^
+
 # kube-talker does not use quark-go
 quark-kube-talker: $(GO_FILES)
 	$(call msg,GO,$@)
@@ -619,6 +623,7 @@ clean:
 		quark-btf-static	\
 		quark-test		\
 		quark-test-static	\
+		quark-bin.tar.gz	\
 		quark-kube-talker	\
 		quark-go-test		\
 		true			\
