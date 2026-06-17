@@ -15,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      artifact_name: ${{ steps.stamp.outputs.artifact_name }}
+      datestamp: ${{ steps.stamp.outputs.datestamp }}
 
     steps:
       - name: Check actor permissions
@@ -33,36 +36,20 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build Ubuntu Docker image
-        run: make docker-image
-
-      - name: Build CentOS 7 Docker image
-        run: make centos7-image
-
-      - name: Build BPF probes in Ubuntu container
+      - name: Make quark-bin.tar.gz
+        id: stamp
         run: |
-          docker run \
-            -v "$(pwd):$(pwd)" \
-            -w "$(pwd)" \
-            -u "$(id -u):$(id -g)" \
-            quark-builder \
-            sh -c "make -C $(pwd) bpf_probes.o bpf_probes_skel.h nova.bpf.o nova_skel.h"
-
-      - name: Build quark-bin.tar.gz in CentOS 7 container
-        run: |
-          docker run \
-            -v "$(pwd):$(pwd)" \
-            -w "$(pwd)" \
-            -u "$(id -u):$(id -g)" \
-            -e CENTOS7=y \
-            centos7-quark-builder \
-            sh -c "make -j1 NO_GO=y -C $(pwd) quark-bin.tar.gz"
+          make quark-bin.tar.gz
+          DATESTAMP=$(date +%Y-%m-%d)
+          mv quark-bin.tar.gz quark-bin-${DATESTAMP}.tar.gz
+          echo "artifact_name=quark-bin-${DATESTAMP}.tar.gz" >> $GITHUB_OUTPUT
+          echo "datestamp=${DATESTAMP}" >> $GITHUB_OUTPUT
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: quark-bin
-          path: quark-bin.tar.gz
+          name: ${{ steps.stamp.outputs.artifact_name }}
+          path: ${{ steps.stamp.outputs.artifact_name }}
 
   release:
     needs: build
@@ -74,16 +61,16 @@ jobs:
 
     steps:
       - name: Download build artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
-          name: quark-bin
+          name: ${{ needs.build.outputs.artifact_name }}
 
       - name: Upload nightly release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: nightly
-          name: Nightly Build
+          name: Nightly Build ${{ needs.build.outputs.datestamp }}
           prerelease: true
           make_latest: false
-          body: "Automated nightly build from commit ${{ github.sha }}"
-          files: quark-bin.tar.gz
+          body: "Automated nightly build ${{ needs.build.outputs.datestamp }} from commit ${{ github.sha }}"
+          files: ${{ needs.build.outputs.artifact_name }}
