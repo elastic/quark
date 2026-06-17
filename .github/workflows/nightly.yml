@@ -13,14 +13,77 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
-      - name: Stub
-        run: echo "nightly build stub"
+      - name: Check actor permissions
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          ROLE=$(gh api repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission --jq '.role_name')
+          if [[ "$ROLE" != "admin" ]]; then
+            echo "Only repository admins can trigger this workflow manually (got: $ROLE)"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Build Ubuntu Docker image
+        run: make docker-image
+
+      - name: Build CentOS 7 Docker image
+        run: make centos7-image
+
+      - name: Build BPF probes in Ubuntu container
+        run: |
+          docker run \
+            -v "$(pwd):$(pwd)" \
+            -w "$(pwd)" \
+            -u "$(id -u):$(id -g)" \
+            quark-builder \
+            sh -c "make -C $(pwd) bpf_probes.o bpf_probes_skel.h nova.bpf.o nova_skel.h"
+
+      - name: Build quark-bin.tar.gz in CentOS 7 container
+        run: |
+          docker run \
+            -v "$(pwd):$(pwd)" \
+            -w "$(pwd)" \
+            -u "$(id -u):$(id -g)" \
+            -e CENTOS7=y \
+            centos7-quark-builder \
+            sh -c "make -j1 NO_GO=y -C $(pwd) quark-bin.tar.gz"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-bin
+          path: quark-bin.tar.gz
 
   release:
     needs: build
     if: github.event_name == 'schedule' || inputs.publish == true
     runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'nightly-release' || '' }}
+    permissions:
+      contents: write
+
     steps:
-      - name: Stub
-        run: echo "nightly release stub"
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: quark-bin
+
+      - name: Upload nightly release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: nightly
+          name: Nightly Build
+          prerelease: true
+          make_latest: false
+          body: "Automated nightly build from commit ${{ github.sha }}"
+          files: quark-bin.tar.gz
