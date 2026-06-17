@@ -1,0 +1,26 @@
+name: Nightly Build
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the nightly release after building'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stub
+        run: echo "nightly build stub"
+
+  release:
+    needs: build
+    if: github.event_name == 'schedule' || inputs.publish == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stub
+        run: echo "nightly release stub"
