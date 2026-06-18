@@ -1,0 +1,76 @@
+name: Nightly Build
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the nightly release after building'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.stamp.outputs.artifact_name }}
+      datestamp: ${{ steps.stamp.outputs.datestamp }}
+
+    steps:
+      - name: Check actor permissions
+        if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+        run: |
+          ROLE=$(gh api repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission --jq '.role_name')
+          if [[ "$ROLE" != "admin" ]]; then
+            echo "Only repository admins can publish a nightly release (got: $ROLE)"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Make quark-bin.tar.gz
+        id: stamp
+        run: |
+          make quark-bin.tar.gz
+          DATESTAMP=$(date +%Y-%m-%d)
+          mv quark-bin.tar.gz quark-bin-${DATESTAMP}.tar.gz
+          echo "artifact_name=quark-bin-${DATESTAMP}.tar.gz" >> $GITHUB_OUTPUT
+          echo "datestamp=${DATESTAMP}" >> $GITHUB_OUTPUT
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.stamp.outputs.artifact_name }}
+          path: ${{ steps.stamp.outputs.artifact_name }}
+
+  release:
+    needs: build
+    if: github.event_name == 'schedule' || inputs.publish == true
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'nightly-release' || '' }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+
+      - name: Upload nightly release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: nightly
+          name: Nightly Build ${{ needs.build.outputs.datestamp }}
+          prerelease: true
+          make_latest: false
+          body: "Automated nightly build ${{ needs.build.outputs.datestamp }} from commit ${{ github.sha }}"
+          files: ${{ needs.build.outputs.artifact_name }}
