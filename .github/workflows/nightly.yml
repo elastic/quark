@@ -9,10 +9,14 @@ on:
         description: 'Publish the nightly release after building'
         type: boolean
         default: false
+      verbose:
+        description: 'Enable verbose build output (V=1)'
+        type: boolean
+        default: false
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     outputs:
@@ -36,10 +40,13 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install build dependencies
+        run: sudo apt update && sudo apt install -y bison bpftool clang
+
       - name: Make quark-bin.tar.gz
         id: stamp
         run: |
-          make quark-bin.tar.gz
+          make quark-bin.tar.gz ${{ inputs.verbose && 'V=1' || '' }}
           DATESTAMP=$(date +%Y-%m-%d)
           mv quark-bin.tar.gz quark-bin-${DATESTAMP}.tar.gz
           echo "artifact_name=quark-bin-${DATESTAMP}.tar.gz" >> $GITHUB_OUTPUT
@@ -54,7 +61,7 @@ jobs:
   release:
     needs: build
     if: github.event_name == 'schedule' || inputs.publish == true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: ${{ github.event_name == 'workflow_dispatch' && 'nightly-release' || '' }}
     permissions:
       contents: write
