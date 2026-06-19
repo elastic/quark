@@ -8,6 +8,16 @@ BPFTOOL?= bpftool
 BPF_ARCH?= bpf # Zig cc calls this bpfel
 DOCKER?= docker
 CLANG_MINVER:= 17 # 16 will produce broken probes
+BIN_FILES=  quark-btf
+BIN_FILES+= quark-mon
+BIN_FILES+= quark-test
+BIN_FILES+= hanson-bench
+ifndef SYSLIB
+BIN_FILES+= quark-btf-static
+BIN_FILES+= quark-mon-static
+BIN_FILES+= quark-test-static
+endif
+TARBALL_FILES=$(BIN_FILES) quark-mon.8 quark-test.8 quark-btf.8
 
 # Normalize ARCH
 ifeq ($(shell uname -m), x86_64)
@@ -233,10 +243,7 @@ DOCS_HTML+= $(patsubst %.7,docs/%.7.html,$(wildcard *.7))
 DOCS_HTML+= $(patsubst %.8,docs/%.8.html,$(wildcard *.8))
 
 ALL_TARGETS+=$(LIBQUARK_TARGET)
-ALL_TARGETS+=quark-mon
-ALL_TARGETS+=quark-btf
-ALL_TARGETS+=quark-test
-ALL_TARGETS+=hanson-bench
+ALL_TARGETS+=$(BIN_FILES)
 ifdef NO_GO
 EXTRA_OPTIONS+= NO_GO=$(NO_GO)
 else
@@ -517,24 +524,40 @@ quark-test: quark-test.c manpages.h $(LIBQUARK_TARGET)
 quark-mon-static: quark-mon.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(call assert_no_syslib)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DNO_PRIVDROP $(CDIAGFLAGS) \
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DSTATIC -DNO_PRIVDROP $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
 quark-btf-static: quark-btf.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(call assert_no_syslib)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DSTATIC $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
 quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(call assert_no_syslib)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DSTATIC $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
-quark-bin.tar.gz: quark-test quark-test-static quark-mon quark-mon-static quark-btf quark-btf-static
+quark-bin.tar.gz: $(TARBALL_FILES)
+	$(call msg,RM,quark-bin)
+	$(Q)rm -rf quark-bin
+	$(call msg,MKDIR,quark-bin)
+	$(Q)mkdir quark-bin
+	$(Q)cp $(TARBALL_FILES) quark-bin/
 	$(call msg,TAR,$@)
-	$(Q)tar -czf $@ $^
+	$(Q)tar -czvf $@ quark-bin
+
+quark-bin-glibc2.17.tar.gz: centos7
+	$(call msg,RM,quark-bin-glibc2.17)
+	$(Q)rm -rf quark-bin-glibc2.17
+	$(call msg,MKDIR,quark-bin-glibc2.17)
+	$(Q)mkdir quark-bin-glibc2.17
+	$(Q)cp $(TARBALL_FILES) quark-bin-glibc2.17/
+	$(call msg,TAR,$@)
+	$(Q)tar -czvf $@ quark-bin-glibc2.17
+	$(call msg,RM,quark-bin-glibc2.17)
+	$(Q)rm -rf quark-bin-glibc2.17
 
 # kube-talker does not use quark-go
 quark-kube-talker: $(GO_FILES)
@@ -624,13 +647,14 @@ clean:
 		quark-test		\
 		quark-test-static	\
 		quark-bin.tar.gz	\
+		quark-bin-glibc2.17.tar.gz \
 		quark-kube-talker	\
 		quark-go-test		\
 		true			\
 		bpf_probes_skel.h	\
 		nova_skel.h		\
 		init
-	$(Q)rm -rf initramfs
+	$(Q)rm -rf initramfs quark-bin quark-bin-glibc2.17
 
 clean-all: clean
 	$(call msg,CLEAN-ALL)
