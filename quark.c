@@ -2741,7 +2741,7 @@ sproc_cgroup(struct quark_process *qp, int dfd)
 {
 	int	 fd;
 	size_t	 len;
-	char	*cgroup, *p;
+	char	*cgroup, *tail, *p;
 
 	cgroup = NULL;
 	if ((fd = openat(dfd, "cgroup", O_RDONLY)) == -1) {
@@ -2753,26 +2753,19 @@ sproc_cgroup(struct quark_process *qp, int dfd)
 	if (cgroup == NULL)
 		return (-1);
 	/*
-	 * Chomp newline
+	 * If v2 or hybrid mode we can get the unified cgroup
+	 * If v1 fall back to the pids cgroup (to match the bpf probe)
 	 */
-	/* if cgroup != NULL, len > 0 */
-	cgroup[len - 1] = 0;
-	/*
-	 * Min string is "0::/"
-	 */
-	if (strlen(cgroup) < 4)
+	if ((p = strstr(cgroup, "0::")) != NULL)		/* v2/hybrid */
+		p += 3;
+	else if ((p = strstr(cgroup, ":pids:")) != NULL)	/* v1 */
+		p += 6;
+	else
 		goto bad;
-	/*
-	 * Only expect cgroup v2
-	 */
-	if ((p = strchr(cgroup, ':')) == NULL)
+
+	if ((tail = strchr(p, '\n')) == NULL)
 		goto bad;
-	p++;
-	if ((p = strchr(p, ':')) == NULL)
-		goto bad;
-	p++;
-	if (*p == 0)
-		goto bad;
+	*tail = 0;
 
 	qp->cgroup = strdup(p);
 	free(cgroup);
