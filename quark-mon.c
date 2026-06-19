@@ -179,6 +179,12 @@ main(int argc, char *argv[])
 	kube_config = NULL;
 	print_event = print_dump;
 
+	if (argc == 2 &&
+	    (!strcmp(argv[1], "--help") ||
+	    !strcmp(argv[1], "-help") ||
+	    !strcmp(argv[1], "help")))
+		display_man();
+
 	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsvV")) != -1) {
 		const char *errstr;
 

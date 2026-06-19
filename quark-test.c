@@ -2822,6 +2822,12 @@ main(int argc, char *argv[])
 	fancy_tty = probe_fancy_tty();
 	in_valgrind = getenv("VALGRIND") != NULL;
 
+	if (argc == 2 &&
+	    (!strcmp(argv[1], "--help") ||
+	    !strcmp(argv[1], "-help") ||
+	    !strcmp(argv[1], "help")))
+		display_man();
+
 	while ((ch = getopt(argc, argv, "1bhklntvVx:")) != -1) {
 		switch (ch) {
 		case '1':

@@ -236,6 +236,12 @@ main(int argc, char *argv[])
 	int			 ch;
 	const char		*path = NULL;
 
+	if (argc == 2 &&
+	    (!strcmp(argv[1], "--help") ||
+	    !strcmp(argv[1], "-help") ||
+	    !strcmp(argv[1], "help")))
+		display_man();
+
 	while ((ch = getopt(argc, argv, "bf:ghlvV")) != -1) {
 		switch (ch) {
 		case 'b':
