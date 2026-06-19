@@ -13,6 +13,10 @@ on:
         description: 'Enable verbose build output (V=1)'
         type: boolean
         default: false
+      force:
+        description: 'Force build even if commit hash has not changed'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -24,8 +28,25 @@ jobs:
       datestamp: ${{ steps.stamp.outputs.datestamp }}
 
     steps:
+      - name: Check if commit changed since last nightly
+        id: check
+        run: |
+          if [[ "${{ inputs.force }}" == "true" ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          LAST_SHA=$(gh release view nightly --json targetCommitish --jq '.targetCommitish' 2>/dev/null || echo "")
+          if [[ -n "$LAST_SHA" && "$LAST_SHA" == "${{ github.sha }}" ]]; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "Commit ${{ github.sha }} already built — skipping."
+          else
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Check actor permissions
-        if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+        if: steps.check.outputs.should_build == 'true' && github.event_name == 'workflow_dispatch' && inputs.publish == true
         run: |
           ROLE=$(gh api repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission --jq '.role_name')
           if [[ "$ROLE" != "admin" ]]; then
@@ -36,14 +57,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Checkout
+        if: steps.check.outputs.should_build == 'true'
         uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Install build dependencies
+        if: steps.check.outputs.should_build == 'true'
         run: sudo apt update && sudo apt install -y bison bpftool clang
 
       - name: Make quark-bin.tar.gz
+        if: steps.check.outputs.should_build == 'true'
         id: stamp
         run: |
           make quark-bin.tar.gz ${{ inputs.verbose && 'V=1' || '' }}
@@ -53,6 +77,7 @@ jobs:
           echo "datestamp=${DATESTAMP}" >> $GITHUB_OUTPUT
 
       - name: Upload build artifact
+        if: steps.check.outputs.should_build == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.stamp.outputs.artifact_name }}
