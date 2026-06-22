@@ -99,7 +99,7 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'schedule' || inputs.publish == true
+    if: (github.event_name == 'schedule' || inputs.publish == true) && needs.build.result == 'success'
     runs-on: ubuntu-26.04
     environment: ${{ github.event_name == 'workflow_dispatch' && 'nightly-release' || '' }}
     permissions:
