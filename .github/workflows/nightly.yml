@@ -113,6 +113,16 @@ jobs:
         with:
           name: ${{ needs.build.outputs.glibc_artifact_name }}
 
+      - name: Update nightly tag to current commit
+        run: |
+          gh api repos/${{ github.repository }}/git/refs/tags/nightly \
+            -X PATCH -f sha=${{ github.sha }} --silent \
+          || gh api repos/${{ github.repository }}/git/refs \
+            -X POST -f ref=refs/tags/nightly -f sha=${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
       - name: Remove old release assets
         run: |
           for asset in $(gh release view nightly --json assets --jq '.assets[].name' 2>/dev/null); do
