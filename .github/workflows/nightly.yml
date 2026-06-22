@@ -97,6 +97,16 @@ jobs:
         with:
           name: ${{ needs.build.outputs.artifact_name }}
 
+      - name: Remove old release assets
+        run: |
+          for asset in $(gh release view nightly --json assets --jq '.assets[].name' 2>/dev/null); do
+            echo "Deleting old asset: $asset"
+            gh release delete-asset nightly "$asset" -y
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
       - name: Upload nightly release
         uses: softprops/action-gh-release@v3
         with:
