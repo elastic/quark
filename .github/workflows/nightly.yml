@@ -19,13 +19,14 @@ on:
         default: false
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-26.04
     permissions:
       contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
     outputs:
-      artifact_name: ${{ steps.stamp.outputs.artifact_name }}
-      datestamp: ${{ steps.stamp.outputs.datestamp }}
+      should_build: ${{ steps.check.outputs.should_build }}
 
     steps:
       - name: Check if commit changed since last nightly
@@ -42,8 +43,6 @@ jobs:
           else
             echo "should_build=true" >> $GITHUB_OUTPUT
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Check actor permissions
         if: steps.check.outputs.should_build == 'true' && github.event_name == 'workflow_dispatch' && inputs.publish == true
@@ -53,39 +52,54 @@ jobs:
             echo "Only repository admins can publish a nightly release (got: $ROLE)"
             exit 1
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
 
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.stamp.outputs.artifact_name }}
+      glibc_artifact_name: ${{ steps.stamp.outputs.glibc_artifact_name }}
+      datestamp: ${{ steps.stamp.outputs.datestamp }}
+
+    steps:
       - name: Checkout
-        if: steps.check.outputs.should_build == 'true'
         uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Install build dependencies
-        if: steps.check.outputs.should_build == 'true'
         run: sudo apt update && sudo apt install -y bison bpftool clang
 
-      - name: Make quark-bin.tar.gz
-        if: steps.check.outputs.should_build == 'true'
+      - name: Make quark-bin.tar.gz and quark-bin-glibc2.17.tar.gz
         id: stamp
         run: |
-          make quark-bin.tar.gz ${{ inputs.verbose && 'V=1' || '' }}
           DATESTAMP=$(date +%Y-%m-%d)
+          make quark-bin.tar.gz ${{ inputs.verbose && 'V=1' || '' }}
           mv quark-bin.tar.gz quark-bin-${DATESTAMP}.tar.gz
           echo "artifact_name=quark-bin-${DATESTAMP}.tar.gz" >> $GITHUB_OUTPUT
+          make quark-bin-glibc2.17.tar.gz ${{ inputs.verbose && 'V=1' || '' }}
+          mv quark-bin-glibc2.17.tar.gz quark-bin-glibc2.17-${DATESTAMP}.tar.gz
+          echo "glibc_artifact_name=quark-bin-glibc2.17-${DATESTAMP}.tar.gz" >> $GITHUB_OUTPUT
           echo "datestamp=${DATESTAMP}" >> $GITHUB_OUTPUT
 
       - name: Upload build artifact
-        if: steps.check.outputs.should_build == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.stamp.outputs.artifact_name }}
           path: ${{ steps.stamp.outputs.artifact_name }}
 
+      - name: Upload glibc build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.stamp.outputs.glibc_artifact_name }}
+          path: ${{ steps.stamp.outputs.glibc_artifact_name }}
+
   release:
     needs: build
-    if: github.event_name == 'schedule' || inputs.publish == true
+    if: (github.event_name == 'schedule' || inputs.publish == true) && needs.build.result == 'success'
     runs-on: ubuntu-26.04
     environment: ${{ github.event_name == 'workflow_dispatch' && 'nightly-release' || '' }}
     permissions:
@@ -97,6 +111,34 @@ jobs:
         with:
           name: ${{ needs.build.outputs.artifact_name }}
 
+      - name: Download glibc build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.glibc_artifact_name }}
+
+      - name: Update nightly tag to current commit
+        run: |
+          if gh api repos/${{ github.repository }}/git/refs/tags/nightly --silent 2>/dev/null; then
+            gh api repos/${{ github.repository }}/git/refs/tags/nightly \
+              -X PATCH -f sha=${{ github.sha }} --silent
+          else
+            gh api repos/${{ github.repository }}/git/refs \
+              -X POST -f ref=refs/tags/nightly -f sha=${{ github.sha }}
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: Remove old release assets
+        run: |
+          for asset in $(gh release view nightly --json assets --jq '.assets[].name' 2>/dev/null); do
+            echo "Deleting old asset: $asset"
+            gh release delete-asset nightly "$asset" -y
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
       - name: Upload nightly release
         uses: softprops/action-gh-release@v3
         with:
@@ -105,4 +147,6 @@ jobs:
           prerelease: true
           make_latest: false
           body: "Automated nightly build ${{ needs.build.outputs.datestamp }} from commit ${{ github.sha }}"
-          files: ${{ needs.build.outputs.artifact_name }}
+          files: |
+            ${{ needs.build.outputs.artifact_name }}
+            ${{ needs.build.outputs.glibc_artifact_name }}
