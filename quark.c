@@ -708,7 +708,8 @@ quark_socket_iter_next(struct quark_socket_iter *qi)
 
 	qsk = qi->qsk;
 	if (qi->qsk != NULL)
-		qi->qsk = RB_NEXT(socket_by_src_dst, &qq->socket_by_src_dst, qi->qsk);
+		qi->qsk = RB_NEXT(socket_by_src_dst,
+		    &qi->qq->socket_by_src_dst, qi->qsk);
 
 	return (qsk);
 }
