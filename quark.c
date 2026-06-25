@@ -3585,8 +3585,8 @@ quark_sysinfo_ifaddrs(struct quark_sysinfo *si)
 				continue;
 			}
 			/* Check if unique */
-			for (i = 0; i < si->ip_addrs_len; i++) {
-				if (!strcmp(eth_buf, si->ip_addrs[i]))
+			for (i = 0; i < si->mac_addrs_len; i++) {
+				if (!strcmp(eth_buf, si->mac_addrs[i]))
 					goto next;
 			}
 			buf_copy = strdup(eth_buf);
