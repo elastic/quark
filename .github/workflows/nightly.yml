@@ -36,7 +36,7 @@ jobs:
             echo "should_build=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          LAST_SHA=$(gh release view nightly --json targetCommitish --jq '.targetCommitish' 2>/dev/null || echo "")
+          LAST_SHA=$(gh api repos/${{ github.repository }}/git/refs/tags/nightly --jq '.object.sha' 2>/dev/null || echo "")
           if [[ -n "$LAST_SHA" && "$LAST_SHA" == "${{ github.sha }}" ]]; then
             echo "should_build=false" >> $GITHUB_OUTPUT
             echo "Commit ${{ github.sha }} already built — skipping."
