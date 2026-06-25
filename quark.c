@@ -1890,7 +1890,7 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 	}
 #undef STARTS_WITH
 
-	if (qp->proc_entry_leader == QUARK_ELT_UNKNOWN)
+	if (qp->proc_entry_leader_type == QUARK_ELT_UNKNOWN)
 		qwarnx("%d (%s) is UNKNOWN (tty=%d)",
 		    qp->pid, qp->exe ? qp->exe : "null", tty);
 
