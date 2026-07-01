@@ -181,10 +181,43 @@ type Tty struct {
 	Data      [][]byte
 }
 
+// TlsConn is delivered once per connection, when SSL_new returns. ConnId is
+// the identifier every subsequent TlsCall for this connection carries; it is
+// globally unique across all connections and processes and never reused, so
+// it may be used as a map key on its own. Tgid is the owning process.
+type TlsConn struct {
+	ConnId uint64
+	Tgid   uint32
+}
+
+// TlsCall is a fully reassembled SSL_read or SSL_write call. Data holds the
+// plaintext as a slice of chunks in the order they were chained by quark's
+// aggregator; concatenate for the full buffer. Truncated is non-zero if
+// CallLen is bigger than the sum of Data's lengths (capped by
+// QueueAttr.MaxTlsCall, or a chunk that failed to read).
+//
+// Gap distinguishes the two ways Truncated can be non-zero: false means a
+// clean trailing cut (Data is a valid, if incomplete, prefix of the
+// original call - safe to parse up to TotalLen). true means some
+// non-trailing chunk never arrived or was unreadable - Data has a hole
+// before its end and is NOT a safe contiguous buffer to parse.
+type TlsCall struct {
+	ConnId    uint64
+	Tgid      uint32
+	Direction int
+	CallSeq   uint64
+	CallLen   uint64
+	TotalLen  uint64
+	Truncated uint64
+	Gap       bool
+	Data      [][]byte
+}
+
 // Events is a bitmask of QUARK_EV_* and expresses what triggered this
 // event, Process is the context of the Event.
 type Event struct {
 	Events     uint64
+	Time       uint64 // wall-clock nanoseconds since the Unix epoch (boot wall time + kernel monotonic ts)
 	Process    Process
 	Socket     *Socket
 	Packet     *Packet
@@ -193,6 +226,8 @@ type Event struct {
 	ModuleLoad *ModuleLoad
 	Shm        *any // ShmGet, MemFd or ShmOpen
 	Tty        *Tty
+	TlsConn    *TlsConn
+	TlsCall    *TlsCall
 }
 
 // Queue holds the state of a quark instance.
@@ -216,21 +251,28 @@ const (
 	QQ_TTY           = int(C.QQ_TTY)
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
+	QQ_TLS           = int(C.QQ_TLS)
 	QQ_ALL_BACKENDS  = int(C.QQ_ALL_BACKENDS)
 
 	// Event.events
-	QUARK_EV_FORK             = uint64(C.QUARK_EV_FORK)
-	QUARK_EV_EXEC             = uint64(C.QUARK_EV_EXEC)
-	QUARK_EV_EXIT             = uint64(C.QUARK_EV_EXIT)
-	QUARK_EV_SETPROCTITLE     = uint64(C.QUARK_EV_SETPROCTITLE)
-	QUARK_EV_SOCK_CONN_CLOSED = uint64(C.QUARK_EV_SOCK_CONN_CLOSED)
-	QUARK_EV_PACKET           = uint64(C.QUARK_EV_PACKET)
-	QUARK_EV_BYPASS           = uint64(C.QUARK_EV_BYPASS)
-	QUARK_EV_FILE             = uint64(C.QUARK_EV_FILE)
-	QUARK_EV_PTRACE           = uint64(C.QUARK_EV_PTRACE)
-	QUARK_EV_MODULE_LOAD      = uint64(C.QUARK_EV_MODULE_LOAD)
-	QUARK_EV_SHM              = uint64(C.QUARK_EV_SHM)
-	QUARK_EV_TTY              = uint64(C.QUARK_EV_TTY)
+	QUARK_EV_FORK                 = uint64(C.QUARK_EV_FORK)
+	QUARK_EV_EXEC                 = uint64(C.QUARK_EV_EXEC)
+	QUARK_EV_EXIT                 = uint64(C.QUARK_EV_EXIT)
+	QUARK_EV_SETPROCTITLE         = uint64(C.QUARK_EV_SETPROCTITLE)
+	QUARK_EV_SOCK_CONN_CLOSED     = uint64(C.QUARK_EV_SOCK_CONN_CLOSED)
+	QUARK_EV_PACKET               = uint64(C.QUARK_EV_PACKET)
+	QUARK_EV_BYPASS               = uint64(C.QUARK_EV_BYPASS)
+	QUARK_EV_FILE                 = uint64(C.QUARK_EV_FILE)
+	QUARK_EV_PTRACE               = uint64(C.QUARK_EV_PTRACE)
+	QUARK_EV_MODULE_LOAD          = uint64(C.QUARK_EV_MODULE_LOAD)
+	QUARK_EV_SHM                  = uint64(C.QUARK_EV_SHM)
+	QUARK_EV_TTY                  = uint64(C.QUARK_EV_TTY)
+	QUARK_EV_TLS_CONN_ESTABLISHED = uint64(C.QUARK_EV_TLS_CONN_ESTABLISHED)
+	QUARK_EV_TLS_CALL             = uint64(C.QUARK_EV_TLS_CALL)
+
+	// TlsCall.Direction
+	QUARK_TLS_DIR_WRITE = int(C.QUARK_TLS_DIR_WRITE)
+	QUARK_TLS_DIR_READ  = int(C.QUARK_TLS_DIR_READ)
 
 	// EntryLeaderType
 	QUARK_ELT_UNKNOWN   = int(C.QUARK_ELT_UNKNOWN)
@@ -268,6 +310,7 @@ type QueueAttr struct {
 	MaxLength      int
 	CacheGraceTime int
 	HoldTime       int
+	MaxTlsCall     int // max bytes captured per TLS call, only used if QQ_TLS is set; 0 == unlimited
 }
 
 // Documented in https://elastic.github.io/quark/quark_queue_get_stats.3.html.
@@ -308,6 +351,7 @@ func DefaultQueueAttr() QueueAttr {
 		MaxLength:      int(attr.max_length),
 		CacheGraceTime: int(attr.cache_grace_time),
 		HoldTime:       int(attr.hold_time),
+		MaxTlsCall:     int(attr.max_tls_call),
 	}
 }
 
@@ -328,6 +372,7 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	cattr.max_length = C.int(attr.MaxLength)
 	cattr.cache_grace_time = C.int(attr.CacheGraceTime)
 	cattr.hold_time = C.int(attr.HoldTime)
+	cattr.max_tls_call = C.size_t(attr.MaxTlsCall)
 	ok, err := C.quark_queue_open(queue.quarkQueue, &cattr)
 	if ok == -1 {
 		C.free(unsafe.Pointer(queue.quarkQueue))
@@ -355,6 +400,7 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	}
 
 	event.Events = uint64(cev.events)
+	event.Time = uint64(cev.time)
 	event.Process = processFromC(cev.process)
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)
@@ -383,8 +429,56 @@ func (queue *Queue) GetEvent() (Event, bool) {
 		tty := ttyFromC(cev.tty)
 		event.Tty = &tty
 	}
+	if cev.tls_conn != nil {
+		tlsConn := tlsConnFromC(cev.tls_conn)
+		event.TlsConn = &tlsConn
+	}
+	if cev.tls_call != nil {
+		tlsCall := tlsCallFromC(cev.tls_call)
+		event.TlsCall = &tlsCall
+	}
 
 	return event, true
+}
+
+// TrackTgid adds tgid to the TLS capture allow-list. All SSL_new/SSL_read/
+// SSL_write activity from tgid (and only tgid, no descendant propagation -
+// callers add children explicitly on fork) is captured once TlsAttach has
+// been called for the binary/library tgid uses.
+func (queue *Queue) TrackTgid(tgid uint32) error {
+	ok, err := C.quark_queue_track_tgid(queue.quarkQueue, C.u32(tgid))
+	if ok == -1 {
+		return wrapErrno(err)
+	}
+
+	return nil
+}
+
+// UntrackTgid removes tgid from the TLS capture allow-list.
+func (queue *Queue) UntrackTgid(tgid uint32) error {
+	ok, err := C.quark_queue_untrack_tgid(queue.quarkQueue, C.u32(tgid))
+	if ok == -1 {
+		return wrapErrno(err)
+	}
+
+	return nil
+}
+
+// TlsAttach attaches the SSL_new/SSL_read/SSL_write uprobes at the given
+// file offsets in path. Attachment is system-wide, not scoped to a single
+// process: call this once per distinct binary/library path even if several
+// tracked tgids share it, not once per tgid.
+func (queue *Queue) TlsAttach(path string, sslNewOff, sslReadOff, sslWriteOff uint64) error {
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+
+	ok, err := C.quark_queue_tls_attach(queue.quarkQueue, cpath,
+		C.u64(sslNewOff), C.u64(sslReadOff), C.u64(sslWriteOff))
+	if ok == -1 {
+		return wrapErrno(err)
+	}
+
+	return nil
 }
 
 func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
@@ -664,4 +758,35 @@ func ttyFromC(cTty *C.struct_quark_tty) Tty {
 	}
 
 	return tty
+}
+
+func tlsConnFromC(cTlsConn *C.struct_quark_tls_conn) TlsConn {
+	var tlsConn TlsConn
+
+	tlsConn.ConnId = uint64(cTlsConn.conn_id)
+	tlsConn.Tgid = uint32(cTlsConn.tgid)
+
+	return tlsConn
+}
+
+func tlsCallFromC(cTlsCall *C.struct_quark_tls_call) TlsCall {
+	var call TlsCall
+	var t *C.struct_quark_tls_call
+
+	call.ConnId = uint64(cTlsCall.conn_id)
+	call.Tgid = uint32(cTlsCall.tgid)
+	call.Direction = int(cTlsCall.direction)
+	call.CallSeq = uint64(cTlsCall.call_seq)
+	call.CallLen = uint64(cTlsCall.call_len)
+	call.TotalLen = uint64(cTlsCall.total_len)
+	call.Truncated = uint64(cTlsCall.truncated)
+	call.Gap = cTlsCall.gap != 0
+
+	for t = cTlsCall; t != nil; t = t.next {
+		data := unsafe.Pointer(uintptr(unsafe.Pointer(t)) + unsafe.Sizeof(*t))
+		chunk := C.GoBytes(data, C.int(t.data_len))
+		call.Data = append(call.Data, chunk)
+	}
+
+	return call
 }
