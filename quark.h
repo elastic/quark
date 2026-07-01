@@ -108,6 +108,8 @@ int			 quark_can_aggregate_file(struct quark_queue *,
 /* Default aggregation for tty events */
 int			 quark_can_aggregate_tty(struct quark_queue *,
 			     struct raw_event *, struct raw_event *);
+int			 quark_can_aggregate_tls(struct quark_queue *,
+			     struct raw_event *, struct raw_event *);
 
 /* quark.c: These are exported for testing only */
 int	 parse_container_cgroup(const char *, char *, size_t);
@@ -141,6 +143,11 @@ int			 bpf_queue_open(struct quark_queue *);
 struct bpf_probes	*quark_get_bpf_probes(struct quark_queue *);
 int			 quark_queue_trusted_pid_add(struct quark_queue *, u32);
 int			 quark_queue_trusted_pid_reset(struct quark_queue *);
+int			 quark_queue_track_tgid(struct quark_queue *, u32);
+int			 quark_queue_untrack_tgid(struct quark_queue *, u32);
+/* path, ssl_new file offset, ssl_read file offset, ssl_write file offset */
+int			 quark_queue_tls_attach(struct quark_queue *, const char *,
+			     u64, u64, u64);
 
 /* kprobe_queue.c */
 int			 kprobe_queue_open(struct quark_queue *);
@@ -252,6 +259,8 @@ enum raw_types {
 	RAW_SHM,
 	RAW_TTY,
 	RAW_GETPID,
+	RAW_TLS_CONN,
+	RAW_TLS_CHUNK,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -428,6 +437,24 @@ struct raw_shm {
 	struct quark_shm	*quark_shm;
 };
 
+enum quark_tls_direction {
+	QUARK_TLS_DIR_INVALID,
+	QUARK_TLS_DIR_WRITE,	/* outgoing request, SSL_write */
+	QUARK_TLS_DIR_READ,	/* incoming response, SSL_read */
+};
+
+struct quark_tls_conn {
+	u64	conn_id;	/* minted at SSL_new; globally unique across all
+				 * connections and processes, never reused, so it
+				 * can be keyed on alone. tgid gives the owning
+				 * process for correlation */
+	u32	tgid;
+};
+
+struct raw_tls_conn {
+	struct quark_tls_conn	*quark_tls_conn;
+};
+
 struct quark_tty {
 	struct quark_tty	*next;
 	size_t			 total_len;	/* total bytes in the agg chain: next */
@@ -446,6 +473,36 @@ struct quark_tty {
 
 struct raw_tty {
 	struct quark_tty	*quark_tty;
+};
+
+struct quark_tls_call {
+	struct quark_tls_call		*next;		/* aggregation chain, like quark_tty */
+	u64				 conn_id;	/* the quark_tls_conn this call belongs to */
+	u32				 tgid;
+	enum quark_tls_direction	 direction;
+	u64				 call_seq;	/* monotonic per (conn_id, direction) */
+	u32				 chunk_idx;	/* this chunk's position; on the head, mutated
+						 * during aggregation to track the last index
+						 * absorbed (same pattern quark_tty.total_len
+						 * already uses) */
+	u32				 chunk_total;	/* total chunks captured for this call */
+	size_t				 call_len;	/* true call length, before any capping */
+	size_t				 total_len;	/* total bytes in the agg chain: next */
+	size_t				 truncated;	/* bytes truncated past the per-call ceiling */
+	int				 dropped;	/* 1 if this specific chunk's bytes are
+						 * known-missing (a bpf_probe_read_user
+						 * failure marker) */
+	int				 gap;		/* 1 if some non-trailing chunk in this chain
+						 * never arrived or was dropped: total_len/data
+						 * is NOT a safe contiguous prefix of the
+						 * original call, unlike a clean trailing
+						 * truncation */
+	size_t				 data_len;
+	char				 data[];
+};
+
+struct raw_tls_chunk {
+	struct quark_tls_call	*quark_tls_call;
 };
 
 struct raw_event {
@@ -471,6 +528,8 @@ struct raw_event {
 		struct raw_module_load		module_load;
 		struct raw_shm			shm;
 		struct raw_tty			tty;
+		struct raw_tls_conn		tls_conn;
+		struct raw_tls_chunk		tls_chunk;
 	};
 };
 
@@ -504,6 +563,8 @@ struct quark_event {
 #define QUARK_EV_SHM			(1 << 12)
 #define QUARK_EV_TTY			(1 << 13)
 #define QUARK_EV_GETPID			(1 << 14)
+#define QUARK_EV_TLS_CONN_ESTABLISHED	(1 << 15)
+#define QUARK_EV_TLS_CALL		(1 << 16)
 	u64				 events;
 	u64				 time;
 	const struct quark_process	*process;
@@ -515,6 +576,8 @@ struct quark_event {
 	struct quark_module_load	*module_load;
 	struct quark_shm		*shm;
 	struct quark_tty		*tty;
+	struct quark_tls_conn		*tls_conn;
+	struct quark_tls_call		*tls_call;
 #define QUARK_ID_CHANGE_SETSID		(1 << 0)
 #define QUARK_ID_CHANGE_SETUID		(1 << 1)
 #define QUARK_ID_CHANGE_SETGID		(1 << 2)
@@ -883,12 +946,14 @@ struct quark_queue_attr {
 #define QQ_MODULE_LOAD		(1 << 12)
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
+#define QQ_TLS			(1 << 15)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)	/* QQ_NOVA excluded for now */
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */
 	int			 hold_time;		/* in ms */
 	size_t			 max_env;		/* max process environment in bytes */
+	size_t			 max_tls_call;		/* max bytes captured per TLS call; 0 == unlimited */
 	int			 kubefd;		/* quark-kube-talker pipe, -1 disables */
 	struct quark_ruleset	*ruleset;		/* active ruleset */
 };
@@ -917,6 +982,7 @@ struct quark_queue {
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
 	size_t				 max_env;		/* max process environment in bytes */
+	size_t				 max_tls_call;		/* max bytes captured per TLS call; 0 == unlimited */
 	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
 	/* Backend related state */

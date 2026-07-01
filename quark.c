@@ -133,6 +133,8 @@ raw_event_alloc(int type)
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
+	case RAW_TLS_CONN:	/* caller allocates */
+	case RAW_TLS_CHUNK:	/* caller allocates */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -196,6 +198,12 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_TTY:
 		free(raw->tty.quark_tty);
+		break;
+	case RAW_TLS_CONN:
+		free(raw->tls_conn.quark_tls_conn);
+		break;
+	case RAW_TLS_CHUNK:
+		free(raw->tls_chunk.quark_tls_call);
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -411,6 +419,22 @@ event_storage_clear(struct quark_queue *qq)
 	}
 	free(qq->event_storage.tty);
 	qq->event_storage.tty = NULL;
+
+	free(qq->event_storage.tls_conn);
+	qq->event_storage.tls_conn = NULL;
+
+	if (qq->event_storage.tls_call != NULL) {
+		struct quark_tls_call *current;
+		struct quark_tls_call *next = qq->event_storage.tls_call->next;
+		while (next != NULL) {
+			current = next;
+			next = current->next;
+			free(current);
+		}
+	}
+	free(qq->event_storage.tls_call);
+	qq->event_storage.tls_call = NULL;
+
 	qq->event_storage.id_change = 0;
 }
 
@@ -3725,6 +3749,7 @@ const quark_can_aggregate_fn base_agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
 
 	[RAW_FILE][RAW_FILE]				= quark_can_aggregate_file,
 	[RAW_TTY][RAW_TTY]				= quark_can_aggregate_tty,
+	[RAW_TLS_CHUNK][RAW_TLS_CHUNK]			= quark_can_aggregate_tls,
 };
 
 /* used if qq->flags & QQ_MIN_AGG */
@@ -4053,6 +4078,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
 	qa->max_env = 4096;		/* one page per process */
+	qa->max_tls_call = 1 << 20;	/* one mebibyte */
 	qa->kubefd = -1;		/* disabled */
 	qa->ruleset = NULL;		/* no rules */
 }
@@ -4129,6 +4155,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
 	qq->hold_time = qa->hold_time;
 	qq->max_env = qa->max_env;
+	qq->max_tls_call = qa->max_tls_call;
 	qq->ruleset = qa->ruleset;
 	qq->length = 0;
 	qq->epollfd = -1;
@@ -4447,6 +4474,61 @@ quark_can_aggregate_tty(struct quark_queue *qq,
 	}
 
 	return (0);
+}
+
+/*
+ * Unlike quark_can_aggregate_tty(), there is no size ceiling here: the BPF
+ * side already caps the total bytes captured per call at qq->max_tls_call
+ * before it ever emits the first chunk, so chunk_total (and therefore the
+ * number of raw_events that will ever offer themselves up for aggregation
+ * here) is bounded by construction. Identity (conn_id, direction, call_seq)
+ * is the only thing that decides whether two chunks belong together.
+ *
+ * pt->chunk_idx is repurposed once aggregation starts, same as
+ * quark_tty.total_len: it stops meaning "this node's own position" and
+ * starts meaning "the last position absorbed into this chain." A gap
+ * between two otherwise-contiguous chunks means one never arrived at all
+ * (e.g. the ring buffer was full); ct->gap means this specific chunk
+ * already knew it was bad at creation time (a non-trailing dropped
+ * marker). Either way, once gap is set, total_len/data is no longer a
+ * safe contiguous prefix of the original call - unlike a clean trailing
+ * truncated, which a consumer can still treat as a valid (if incomplete)
+ * prefix.
+ */
+int
+quark_can_aggregate_tls(struct quark_queue *qq,
+    struct raw_event *p, struct raw_event *c)
+{
+	struct quark_tls_call	*pt, *ct;
+
+	pt = p->tls_chunk.quark_tls_call;
+	ct = c->tls_chunk.quark_tls_call;
+
+	if (pt->conn_id != ct->conn_id)
+		return (0);
+	if (pt->direction != ct->direction)
+		return (0);
+	if (pt->call_seq != ct->call_seq)
+		return (0);
+
+	if (ct->chunk_idx != pt->chunk_idx + 1)
+		pt->gap = 1;
+	if (ct->gap)
+		pt->gap = 1;
+	pt->chunk_idx = ct->chunk_idx;
+
+	/*
+	 * truncated is NOT refined here, on purpose: a call that arrives as
+	 * exactly one chunk never invokes this function at all (there is
+	 * nothing to aggregate it with), so deriving truncated incrementally
+	 * here would leave it stuck at its allocation-time default for the
+	 * common case. total_len, in contrast, is always correct regardless
+	 * of chunk count, so raw_event_tls_call() recomputes truncated from
+	 * it once, unconditionally, at delivery time.
+	 */
+	pt->total_len += ct->data_len;
+
+	return (1);
 }
 
 /*
@@ -4769,6 +4851,69 @@ raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 	/* Steal it */
 	qev->tty = raw->tty.quark_tty;
 	raw->tty.quark_tty = NULL;
+
+	return (qev);
+}
+
+static struct quark_event *
+raw_event_tls_conn(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_TLS_CONN_ESTABLISHED;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	/* Steal it */
+	qev->tls_conn = raw->tls_conn.quark_tls_conn;
+	raw->tls_conn.quark_tls_conn = NULL;
+
+	return (qev);
+}
+
+static struct quark_event *
+raw_event_tls_call(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+	struct raw_event	*agg, *next;
+	struct quark_tls_call	*head;
+
+	if (raw->tls_chunk.quark_tls_call == NULL) {
+		qwarnx("quark_tls_call is null");
+
+		return (NULL);
+	}
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_TLS_CALL;
+	qev->process = quark_process_lookup(qq, raw->pid);
+
+	/* Link raw (our head) to the first chunk in the agg queue */
+	next = TAILQ_FIRST(&raw->agg_queue);
+	if (next != NULL)
+		raw->tls_chunk.quark_tls_call->next = next->tls_chunk.quark_tls_call;
+
+	/* Link the remaining chunks */
+	TAILQ_FOREACH_SAFE(agg, &raw->agg_queue, agg_entry, next) {
+		if (next != NULL)
+			agg->tls_chunk.quark_tls_call->next = next->tls_chunk.quark_tls_call;
+		agg->tls_chunk.quark_tls_call = NULL;
+	}
+
+	/*
+	 * total_len is correct regardless of how many chunks made up this
+	 * call (1 or many), but quark_can_aggregate_tls() only ever runs
+	 * for 2+ chunks, so truncated must be derived from it here,
+	 * unconditionally, rather than relying on that pairwise step.
+	 */
+	head = raw->tls_chunk.quark_tls_call;
+	head->truncated = head->call_len > head->total_len ?
+	    head->call_len - head->total_len : 0;
+
+	/* Steal it */
+	qev->tls_call = head;
+	raw->tls_chunk.quark_tls_call = NULL;
 
 	return (qev);
 }
@@ -5133,6 +5278,12 @@ quark_queue_get_event(struct quark_queue *qq)
 			break;
 		case RAW_TTY:
 			qev = raw_event_tty(qq, raw);
+			break;
+		case RAW_TLS_CONN:
+			qev = raw_event_tls_conn(qq, raw);
+			break;
+		case RAW_TLS_CHUNK:
+			qev = raw_event_tls_call(qq, raw);
 			break;
 		default:
 			qwarnx("unhandled raw->type: %d", raw->type);

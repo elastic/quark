@@ -804,6 +804,85 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_TLS_CONN: {
+		struct ebpf_tls_new_event	*tlsnew;
+		struct quark_tls_conn		*qtc;
+
+		tlsnew = (struct ebpf_tls_new_event *)ev;
+		if ((raw = raw_event_alloc(RAW_TLS_CONN)) == NULL)
+			goto bad;
+
+		raw->pid = tlsnew->pids.tgid;
+		raw->time = ev->ts;
+
+		if ((qtc = malloc(sizeof(*qtc))) == NULL)
+			goto bad;
+		qtc->conn_id = tlsnew->conn_id;
+		qtc->tgid = tlsnew->pids.tgid;
+
+		raw->tls_conn.quark_tls_conn = qtc;
+
+		break;
+	}
+	case EBPF_EVENT_TLS_CHUNK: {
+		struct ebpf_tls_chunk_event	*chunk;
+		struct quark_tls_call		*qtc;
+		size_t				 alloc_len, data_len;
+		void				*data;
+
+		chunk = (struct ebpf_tls_chunk_event *)ev;
+		if ((raw = raw_event_alloc(RAW_TLS_CHUNK)) == NULL)
+			goto bad;
+
+		data = NULL;
+		data_len = 0;
+		if (!chunk->dropped) {
+			FOR_EACH_VARLEN_FIELD(chunk->vl_fields, field) {
+				if (field->type == EBPF_VL_FIELD_TLS_DATA) {
+					data = field->data;
+					data_len = field->size;
+					break;
+				}
+			}
+		}
+
+		raw->pid = chunk->pids.tgid;
+		raw->time = ev->ts;
+
+		alloc_len = sizeof(*qtc) + data_len;
+		if ((qtc = malloc(alloc_len)) == NULL)
+			goto bad;
+
+		qtc->next = NULL;
+		qtc->conn_id = chunk->conn_id;
+		qtc->tgid = chunk->pids.tgid;
+		qtc->direction = chunk->direction == EBPF_TLS_DIR_READ ?
+		    QUARK_TLS_DIR_READ : QUARK_TLS_DIR_WRITE;
+		qtc->call_seq = chunk->call_seq;
+		qtc->chunk_idx = chunk->chunk_idx;
+		qtc->chunk_total = chunk->chunk_total;
+		qtc->call_len = chunk->call_len;
+		qtc->total_len = data_len;
+		qtc->truncated = 0;	/* refined once the chain is aggregated */
+		qtc->dropped = chunk->dropped ? 1 : 0;
+		/*
+		 * A dropped chunk that isn't the last one in the call is a
+		 * hole with more data after it - same hazard as a chunk that
+		 * silently never arrived at all. Only the trailing case is
+		 * safe (equivalent to a clean max_tls_call cap). This covers
+		 * the case where this node ends up being the chain head, or
+		 * a non-head child that was already known-bad before
+		 * quark_can_aggregate_tls() ever runs.
+		 */
+		qtc->gap = (qtc->dropped && chunk->chunk_idx != chunk->chunk_total - 1) ? 1 : 0;
+		qtc->data_len = data_len;
+		if (data != NULL)
+			memcpy(qtc->data, data, data_len);
+
+		raw->tls_chunk.quark_tls_call = qtc;
+
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;
@@ -1058,6 +1137,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 * Maps and other state
 	 */
 	p->rodata->consumer_pid = getpid();
+	p->rodata->max_tls_call = qq->max_tls_call;
 
 	/*
 	 * Unload everything since it has way more than we want
@@ -1256,6 +1336,15 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	if (qq->flags & QQ_GETPID)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
+
+	if (qq->flags & QQ_TLS) {
+		bpf_program__set_autoload(p->progs.uprobe__ssl_new, 1);
+		bpf_program__set_autoload(p->progs.uretprobe__ssl_new, 1);
+		bpf_program__set_autoload(p->progs.uprobe__ssl_write, 1);
+		bpf_program__set_autoload(p->progs.uretprobe__ssl_write, 1);
+		bpf_program__set_autoload(p->progs.uprobe__ssl_read, 1);
+		bpf_program__set_autoload(p->progs.uretprobe__ssl_read, 1);
+	}
 
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {
@@ -1495,4 +1584,109 @@ quark_queue_trusted_pid_add(struct quark_queue *qq, u32 pid)
 		return (-1);
 
 	return (0);
+}
+
+int
+quark_queue_track_tgid(struct quark_queue *qq, u32 tgid)
+{
+	struct bpf_probes	*p;
+	struct bpf_map		*m;
+	u8			 v;
+
+	if ((p = quark_get_bpf_probes(qq)) == NULL)
+		return (-1);
+	if ((m = p->maps.tracked_tgids) == NULL)
+		return (errno = EINVAL, -1);
+	v = 1;
+	if (bpf_map__update_elem(m, &tgid, sizeof(tgid),
+	    &v, sizeof(v), BPF_ANY) < 0)
+		return (-1);
+
+	return (0);
+}
+
+int
+quark_queue_untrack_tgid(struct quark_queue *qq, u32 tgid)
+{
+	struct bpf_probes	*p;
+	struct bpf_map		*m;
+
+	if ((p = quark_get_bpf_probes(qq)) == NULL)
+		return (-1);
+	if ((m = p->maps.tracked_tgids) == NULL)
+		return (errno = EINVAL, -1);
+	if (bpf_map__delete_elem(m, &tgid, sizeof(tgid), 0) < 0)
+		return (-1);
+
+	return (0);
+}
+
+static void
+quark_queue_tls_detach(struct bpf_probes *p)
+{
+	if (p->links.uprobe__ssl_new != NULL) {
+		bpf_link__destroy(p->links.uprobe__ssl_new);
+		p->links.uprobe__ssl_new = NULL;
+	}
+	if (p->links.uretprobe__ssl_new != NULL) {
+		bpf_link__destroy(p->links.uretprobe__ssl_new);
+		p->links.uretprobe__ssl_new = NULL;
+	}
+	if (p->links.uprobe__ssl_write != NULL) {
+		bpf_link__destroy(p->links.uprobe__ssl_write);
+		p->links.uprobe__ssl_write = NULL;
+	}
+	if (p->links.uretprobe__ssl_write != NULL) {
+		bpf_link__destroy(p->links.uretprobe__ssl_write);
+		p->links.uretprobe__ssl_write = NULL;
+	}
+	if (p->links.uprobe__ssl_read != NULL) {
+		bpf_link__destroy(p->links.uprobe__ssl_read);
+		p->links.uprobe__ssl_read = NULL;
+	}
+	if (p->links.uretprobe__ssl_read != NULL) {
+		bpf_link__destroy(p->links.uretprobe__ssl_read);
+		p->links.uretprobe__ssl_read = NULL;
+	}
+}
+
+/*
+ * path, ssl_new file offset, ssl_read file offset, ssl_write file offset.
+ * Attaches system-wide (pid=-1): if multiple tracked processes share the
+ * same binary/library, callers should resolve and attach once per distinct
+ * path, not once per process.
+ */
+int
+quark_queue_tls_attach(struct quark_queue *qq, const char *path,
+    u64 ssl_new_off, u64 ssl_read_off, u64 ssl_write_off)
+{
+	struct bpf_probes	*p;
+
+	if ((p = quark_get_bpf_probes(qq)) == NULL)
+		return (-1);
+
+	if ((p->links.uprobe__ssl_new = bpf_program__attach_uprobe(
+	    p->progs.uprobe__ssl_new, 0, -1, path, ssl_new_off)) == NULL)
+		goto fail;
+	if ((p->links.uretprobe__ssl_new = bpf_program__attach_uprobe(
+	    p->progs.uretprobe__ssl_new, 1, -1, path, ssl_new_off)) == NULL)
+		goto fail;
+	if ((p->links.uprobe__ssl_write = bpf_program__attach_uprobe(
+	    p->progs.uprobe__ssl_write, 0, -1, path, ssl_write_off)) == NULL)
+		goto fail;
+	if ((p->links.uretprobe__ssl_write = bpf_program__attach_uprobe(
+	    p->progs.uretprobe__ssl_write, 1, -1, path, ssl_write_off)) == NULL)
+		goto fail;
+	if ((p->links.uprobe__ssl_read = bpf_program__attach_uprobe(
+	    p->progs.uprobe__ssl_read, 0, -1, path, ssl_read_off)) == NULL)
+		goto fail;
+	if ((p->links.uretprobe__ssl_read = bpf_program__attach_uprobe(
+	    p->progs.uretprobe__ssl_read, 1, -1, path, ssl_read_off)) == NULL)
+		goto fail;
+
+	return (0);
+
+fail:
+	quark_queue_tls_detach(p);
+	return (-1);
 }
