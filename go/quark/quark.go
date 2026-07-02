@@ -181,13 +181,25 @@ type Tty struct {
 	Data      [][]byte
 }
 
-// TlsConn is delivered once per connection, when SSL_new returns. ConnId is
-// the identifier every subsequent TlsCall for this connection carries; it is
-// globally unique across all connections and processes and never reused, so
-// it may be used as a map key on its own. Tgid is the owning process.
+// TlsConn carries a connection lifecycle event. It is delivered with
+// QUARK_EV_TLS_CONN_ESTABLISHED when the connection first becomes known and
+// again with QUARK_EV_TLS_CONN_CLOSED when SSL_free runs; check Event.Events to
+// tell them apart. ConnId is the identifier every subsequent TlsCall for this
+// connection carries; it is globally unique across all connections and
+// processes and never reused, so it may be used as a map key on its own. Tgid
+// is the owning process. A close is not delivered when a process dies without
+// calling SSL_free (e.g. SIGKILL); treat a process exit as closing all its
+// connections.
+//
+// PrefixUnknown is set on an ESTABLISHED event when the connection was adopted
+// mid-stream (its SSL_new was never seen because the probes attached after it
+// was already open) rather than observed from birth. Its captured bytes do not
+// start at the connection's first byte, so CallSeq 0 is not the true start; a
+// consumer that needs the opening bytes should treat it as unreliable.
 type TlsConn struct {
-	ConnId uint64
-	Tgid   uint32
+	ConnId        uint64
+	Tgid          uint32
+	PrefixUnknown bool
 }
 
 // TlsCall is a fully reassembled SSL_read or SSL_write call. Data holds the
@@ -269,6 +281,7 @@ const (
 	QUARK_EV_TTY                  = uint64(C.QUARK_EV_TTY)
 	QUARK_EV_TLS_CONN_ESTABLISHED = uint64(C.QUARK_EV_TLS_CONN_ESTABLISHED)
 	QUARK_EV_TLS_CALL             = uint64(C.QUARK_EV_TLS_CALL)
+	QUARK_EV_TLS_CONN_CLOSED      = uint64(C.QUARK_EV_TLS_CONN_CLOSED)
 
 	// TlsCall.Direction
 	QUARK_TLS_DIR_WRITE = int(C.QUARK_TLS_DIR_WRITE)
@@ -454,7 +467,10 @@ func (queue *Queue) TrackTgid(tgid uint32) error {
 	return nil
 }
 
-// UntrackTgid removes tgid from the TLS capture allow-list.
+// UntrackTgid removes tgid from the TLS capture allow-list and reclaims any
+// connections it still owns. This also happens automatically when quark sees
+// the process exit, so an explicit call is only needed to stop capturing a
+// live process early.
 func (queue *Queue) UntrackTgid(tgid uint32) error {
 	ok, err := C.quark_queue_untrack_tgid(queue.quarkQueue, C.u32(tgid))
 	if ok == -1 {
@@ -464,16 +480,18 @@ func (queue *Queue) UntrackTgid(tgid uint32) error {
 	return nil
 }
 
-// TlsAttach attaches the SSL_new/SSL_read/SSL_write uprobes at the given
-// file offsets in path. Attachment is system-wide, not scoped to a single
-// process: call this once per distinct binary/library path even if several
-// tracked tgids share it, not once per tgid.
-func (queue *Queue) TlsAttach(path string, sslNewOff, sslReadOff, sslWriteOff uint64) error {
+// TlsAttach attaches the SSL_new/SSL_read/SSL_write/SSL_free uprobes at the
+// given file offsets in path. All four offsets are required. Attachment is
+// system-wide, not scoped to a single process: call this once per distinct
+// binary/library path even if several tracked tgids share it, not once per
+// tgid.
+func (queue *Queue) TlsAttach(path string, sslNewOff, sslReadOff, sslWriteOff, sslFreeOff uint64) error {
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
 	ok, err := C.quark_queue_tls_attach(queue.quarkQueue, cpath,
-		C.u64(sslNewOff), C.u64(sslReadOff), C.u64(sslWriteOff))
+		C.u64(sslNewOff), C.u64(sslReadOff), C.u64(sslWriteOff),
+		C.u64(sslFreeOff))
 	if ok == -1 {
 		return wrapErrno(err)
 	}
@@ -765,6 +783,7 @@ func tlsConnFromC(cTlsConn *C.struct_quark_tls_conn) TlsConn {
 
 	tlsConn.ConnId = uint64(cTlsConn.conn_id)
 	tlsConn.Tgid = uint32(cTlsConn.tgid)
+	tlsConn.PrefixUnknown = cTlsConn.flags&C.QUARK_TLS_CONN_F_PREFIX_UNKNOWN != 0
 
 	return tlsConn
 }

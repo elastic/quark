@@ -18,8 +18,14 @@
 #include "Varlen.h"
 
 // Allow-list of TGIDs to capture TLS from. Opposite of trusted_pids (a
-// deny-list): a TGID must be present here for any uprobe below to do
-// anything. Populated by quark_queue_track_tgid()/untrack_tgid().
+// deny-list): a TGID must be present here for a connection to be minted.
+// Populated by quark_queue_track_tgid()/untrack_tgid(). SSL_new consults it on
+// every call. SSL_read/SSL_write consult it only when they miss tls_conns, to
+// decide whether the miss is a tracked connection whose SSL_new was never seen
+// -- which must be adopted, not dropped -- or an untracked caller to ignore.
+// SSL_free needs no check: it only acts on an existing tls_conns entry, and
+// only gated paths ever create one. A tls_conns hit is therefore always
+// capture-worthy, so the capture hot path stays a single lookup.
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(key_size, sizeof(u32));
@@ -35,9 +41,9 @@ static bool ebpf_events_is_tracked_tgid()
 
 // Global monotonic connection-id counter, bumped once per SSL_new. A single
 // array cell (not a per-tgid hash) so conn_id is unique across the whole
-// system -- consumers can key on conn_id alone -- and nothing accumulates or
-// needs cleanup when a process exits. conn_id 0 is never issued, it is
-// reserved as the "unset" sentinel.
+// system -- consumers can key on conn_id alone -- and it is never reused, so a
+// closed-then-reopened SSL object at the same address gets a distinct id.
+// conn_id 0 is never issued, it is reserved as the "unset" sentinel.
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(key_size, sizeof(u32));
@@ -56,61 +62,48 @@ static u64 tls_mint_conn_id(void)
     return __sync_fetch_and_add(ctr, 1) + 1;
 }
 
-// (tgid, ssl_ptr) -> conn_id, completed at SSL_new's uretprobe once the SSL*
-// return value exists. Every SSL_read/SSL_write uprobe looks the conn_id up
-// here. The key must include tgid: an SSL* is only unique within one address
-// space, so two tracked processes can legitimately hold objects at the same
-// virtual address -- keying on the pointer alone would cross-attribute them.
-// LRU (rather than a plain hash) so freed-but-not-reused SSL objects age out
-// on their own -- there is no SSL_free uprobe, so nothing else prunes this --
-// while a reused pointer is corrected by SSL_new overwriting its entry.
+// (tgid, ssl_ptr) -> per-connection state, established at SSL_new's uretprobe
+// (once the SSL* return value exists) and torn down at SSL_free. Every
+// SSL_read/SSL_write return probe looks the connection up here to resolve its
+// conn_id and bump the matching direction's call_seq in place.
+//
+// The key must include tgid: an SSL* is only unique within one address space,
+// so two tracked processes can hold objects at the same virtual address --
+// keying on the pointer alone would cross-attribute them. tgid handles this
+// spatial (concurrent) collision; SSL_free handles temporal reuse within a
+// process by deleting the entry before the address can be recycled.
+//
+// Plain hash + BPF_F_NO_PREALLOC, deleted on SSL_free -- the same shape the
+// network probe's sk_to_tgid uses, freed on tcp_close. Unlike tcp_close,
+// SSL_free is userspace and does not run on SIGKILL, so a killed process's
+// entries are reclaimed instead by the exit-driven sweep in bpf_queue.c
+// (untrack). A reused pointer whose owner was killed is corrected regardless:
+// SSL_new overwrites its entry (BPF_ANY).
 struct tls_ssl_key {
     u32 tgid;
     u64 ssl;
 } __attribute__((packed));
 
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, struct tls_ssl_key);
-    __type(value, u64);
-    __uint(max_entries, 8192);
-} tls_ssl_to_conn SEC(".maps");
-
-static u64 tls_conn_id_for_ssl(u32 tgid, void *ssl)
-{
-    struct tls_ssl_key key = { .tgid = tgid, .ssl = (u64)ssl };
-    u64 *conn_id = bpf_map_lookup_elem(&tls_ssl_to_conn, &key);
-
-    return conn_id ? *conn_id : 0;
-}
-
-// Monotonic call_seq per (conn_id, direction), incremented once per
-// SSL_read/SSL_write call regardless of how many chunks it is split into.
-struct tls_seq_key {
+// call_seq is monotonic per (conn_id, direction), incremented once per
+// SSL_read/SSL_write call regardless of how many chunks it is split into. It
+// lives here, next to conn_id, so the read/write return probe resolves the
+// connection and advances its sequence in a single map lookup. flags carries
+// EBPF_TLS_CONN_F_* (currently only PREFIX_UNKNOWN, set when the connection was
+// adopted mid-stream rather than seen from SSL_new).
+struct tls_conn {
     u64 conn_id;
-    u32 direction;
-} __attribute__((packed));
+    u64 read_seq;
+    u64 write_seq;
+    u32 flags;
+};
 
 struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, struct tls_seq_key);
-    __type(value, u64);
-    __uint(max_entries, 8192);
-} tls_call_seq SEC(".maps");
-
-static u64 tls_next_call_seq(u64 conn_id, enum ebpf_tls_direction direction)
-{
-    struct tls_seq_key key = { .conn_id = conn_id, .direction = direction };
-    u64 init = 0;
-    u64 *ctr;
-
-    bpf_map_update_elem(&tls_call_seq, &key, &init, BPF_NOEXIST);
-    ctr = bpf_map_lookup_elem(&tls_call_seq, &key);
-    if (!ctr)
-        return 0;
-
-    return __sync_fetch_and_add(ctr, 1);
-}
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct tls_ssl_key);
+    __type(value, struct tls_conn);
+    __uint(max_entries, 16384);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} tls_conns SEC(".maps");
 
 // Max bytes captured per SSL_read/SSL_write call, set by quark_queue_open()
 // from quark_queue_attr.max_tls_call before the object is loaded, same
@@ -209,12 +202,12 @@ static long tls_emit_chunk(u32 idx, void *ctx)
     return 0;
 }
 
-// conn_id is resolved and stashed by the SSL_read/SSL_write uprobe at entry;
-// len is the byte count actually transferred, taken from the uretprobe's
-// return value. Both directions capture at return so len reflects what really
-// moved (never a WANT_WRITE retry's full buffer, never an unfilled read).
+// Emits one SSL_read/SSL_write call as one or more chunks. conn_id and
+// call_seq are resolved by the caller from tls_conns; len is the byte count
+// actually transferred (the uretprobe's return value), so it is never a
+// WANT_* retry's full buffer nor an unfilled read.
 static void tls_emit_call(u64 conn_id, const void *base, u32 len,
-                          enum ebpf_tls_direction direction)
+                          enum ebpf_tls_direction direction, u64 call_seq)
 {
     struct tls_chunk_ctx cctx = {};
 
@@ -224,7 +217,7 @@ static void tls_emit_call(u64 conn_id, const void *base, u32 len,
     cctx.base         = base;
     cctx.conn_id      = conn_id;
     cctx.direction    = direction;
-    cctx.call_seq     = tls_next_call_seq(conn_id, direction);
+    cctx.call_seq     = call_seq;
     cctx.call_len     = len;
     cctx.captured_len = max_tls_call != 0 && len > max_tls_call ? max_tls_call : len;
     cctx.chunk_total  = (cctx.captured_len + TLS_CHUNK_MAX - 1) / TLS_CHUNK_MAX;
@@ -232,75 +225,62 @@ static void tls_emit_call(u64 conn_id, const void *base, u32 len,
     bpf_loop(cctx.chunk_total, tls_emit_chunk, &cctx, 0);
 }
 
-SEC("uprobe")
-int BPF_UPROBE(uprobe__ssl_new)
+// Announces a connection becoming known (EBPF_EVENT_TLS_CONN), from either
+// SSL_new (flags 0) or a mid-stream adoption (flags PREFIX_UNKNOWN).
+static void tls_emit_conn(u64 conn_id, u32 flags)
 {
-    struct ebpf_events_state state = {};
-
-    preempt_disable();
-
-    if (ebpf_events_is_trusted_pid())
-        goto out;
-    if (!ebpf_events_is_tracked_tgid())
-        goto out;
-
-    state.ssl_new.conn_id = tls_mint_conn_id();
-    if (state.ssl_new.conn_id == 0)
-        goto out;
-
-    ebpf_events_state__set(EBPF_EVENTS_STATE_SSL_NEW, &state);
-
-out:
-    preempt_enable();
-    return 0;
-}
-
-SEC("uretprobe")
-int BPF_URETPROBE(uretprobe__ssl_new, void *ssl)
-{
-    struct ebpf_events_state *state;
     struct ebpf_tls_new_event *event;
     struct task_struct *task;
-    struct tls_ssl_key key;
-
-    preempt_disable();
-
-    state = ebpf_events_state__get(EBPF_EVENTS_STATE_SSL_NEW);
-    if (!state)
-        goto out;
-    if (!ssl || state->ssl_new.conn_id == 0)
-        goto out;
-
-    key = (struct tls_ssl_key){
-        .tgid = bpf_get_current_pid_tgid() >> 32,
-        .ssl  = (u64)ssl,
-    };
-    bpf_map_update_elem(&tls_ssl_to_conn, &key, &state->ssl_new.conn_id, BPF_ANY);
 
     event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
     if (!event)
-        goto out;
+        return;
 
     task               = (struct task_struct *)bpf_get_current_task();
     event->hdr.type    = EBPF_EVENT_TLS_CONN;
     event->hdr.ts      = bpf_ktime_get_ns();
     event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
     ebpf_pid_info__fill(&event->pids, task);
-    event->conn_id = state->ssl_new.conn_id;
+    event->conn_id = conn_id;
+    event->flags   = flags;
 
     bpf_ringbuf_submit(event, 0);
-
-out:
-    ebpf_events_state__del(EBPF_EVENTS_STATE_SSL_NEW);
-    preempt_enable();
-    return 0;
 }
 
-SEC("uprobe")
-int BPF_UPROBE(uprobe__ssl_write, void *ssl, const void *buf, int num)
+// Adopts a connection whose SSL_new was never observed: mints a fresh conn_id,
+// records it flagged PREFIX_UNKNOWN, and announces it. This is the miss path of
+// SSL_read/SSL_write -- the first captured call on a connection that was
+// already open when the probes attached. Surfacing it (rather than dropping the
+// bytes silently) is deliberate: silence would lose traffic with no signal it
+// happened, while the flag lets a consumer decide per protocol whether the
+// missing prefix is recoverable. The announce is withheld until the insert is
+// confirmed so a full map never yields an establish with no state behind it;
+// the caller re-resolves the entry from the map (rather than this returning a
+// map-value pointer, which not every verifier accepts across a call).
+static void tls_adopt_conn(struct tls_ssl_key *key)
 {
-    struct ebpf_events_state state = {};
-    u32 tgid;
+    struct tls_conn conn = {};
+
+    conn.conn_id = tls_mint_conn_id();
+    if (conn.conn_id == 0)
+        return;
+    conn.flags = EBPF_TLS_CONN_F_PREFIX_UNKNOWN;
+
+    bpf_map_update_elem(&tls_conns, key, &conn, BPF_ANY);
+    if (!bpf_map_lookup_elem(&tls_conns, key))
+        return;
+
+    tls_emit_conn(conn.conn_id, EBPF_TLS_CONN_F_PREFIX_UNKNOWN);
+}
+
+// SSL_new has no entry probe: the SSL* it returns is the map key, so nothing
+// useful can be done until the return. Mint the conn_id, record the
+// connection, and announce it, all here.
+SEC("uretprobe")
+int BPF_URETPROBE(uretprobe__ssl_new, void *ssl)
+{
+    struct tls_ssl_key key;
+    struct tls_conn conn = {};
 
     preempt_disable();
 
@@ -308,17 +288,89 @@ int BPF_UPROBE(uprobe__ssl_write, void *ssl, const void *buf, int num)
         goto out;
     if (!ebpf_events_is_tracked_tgid())
         goto out;
-
-    tgid                    = bpf_get_current_pid_tgid() >> 32;
-    state.ssl_write.buf     = (void *)buf;
-    state.ssl_write.len     = (u32)num;
-    state.ssl_write.conn_id = tls_conn_id_for_ssl(tgid, ssl);
-    if (state.ssl_write.conn_id == 0)
+    if (!ssl)
         goto out;
 
-    ebpf_events_state__set(EBPF_EVENTS_STATE_SSL_WRITE, &state);
+    conn.conn_id = tls_mint_conn_id();
+    if (conn.conn_id == 0)
+        goto out;
+
+    key = (struct tls_ssl_key){
+        .tgid = bpf_get_current_pid_tgid() >> 32,
+        .ssl  = (u64)ssl,
+    };
+    bpf_map_update_elem(&tls_conns, &key, &conn, BPF_ANY);
+
+    tls_emit_conn(conn.conn_id, 0);
 
 out:
+    preempt_enable();
+    return 0;
+}
+
+// SSL_free is the connection teardown. Announce the close and drop the map
+// entry so its (tgid, ssl_ptr) slot can be reused cleanly. If the SSL was
+// never tracked (no entry) this is a no-op.
+SEC("uprobe")
+int BPF_UPROBE(uprobe__ssl_free, void *ssl)
+{
+    struct ebpf_tls_close_event *event;
+    struct task_struct *task;
+    struct tls_ssl_key key;
+    struct tls_conn *conn;
+    u64 conn_id;
+
+    preempt_disable();
+
+    if (!ssl)
+        goto out;
+
+    key = (struct tls_ssl_key){
+        .tgid = bpf_get_current_pid_tgid() >> 32,
+        .ssl  = (u64)ssl,
+    };
+    conn = bpf_map_lookup_elem(&tls_conns, &key);
+    if (!conn)
+        goto out;
+    conn_id = conn->conn_id;
+    bpf_map_delete_elem(&tls_conns, &key);
+
+    event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+    if (!event)
+        goto out;
+
+    task               = (struct task_struct *)bpf_get_current_task();
+    event->hdr.type    = EBPF_EVENT_TLS_CONN_CLOSE;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    ebpf_pid_info__fill(&event->pids, task);
+    event->conn_id = conn_id;
+
+    bpf_ringbuf_submit(event, 0);
+
+out:
+    preempt_enable();
+    return 0;
+}
+
+// The read/write entry probes only stash the arguments; no tracked/trusted
+// gate here on purpose. The matching return probe resolves the connection from
+// tls_conns: a hit is captured, a miss is either adopted (a tracked tgid whose
+// SSL_new was missed) or ignored (any other caller). Keeping the entry
+// gate-free -- it fires for every caller of the probed symbol, tracked or not
+// -- keeps it cheap; the tracked/trusted checks are paid only on the rare miss.
+SEC("uprobe")
+int BPF_UPROBE(uprobe__ssl_write, void *ssl, const void *buf, int num)
+{
+    struct ebpf_events_state state = {};
+
+    preempt_disable();
+
+    state.ssl_write.ssl = ssl;
+    state.ssl_write.buf = (void *)buf;
+    state.ssl_write.len = (u32)num;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_SSL_WRITE, &state);
+
     preempt_enable();
     return 0;
 }
@@ -327,16 +379,40 @@ SEC("uretprobe")
 int BPF_URETPROBE(uretprobe__ssl_write, int ret)
 {
     struct ebpf_events_state *state;
+    struct tls_ssl_key key;
+    struct tls_conn *conn;
+    u64 seq;
 
     preempt_disable();
 
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_SSL_WRITE);
-    if (!state || state->ssl_write.conn_id == 0)
+    if (!state)
+        goto out;
+    if (ret <= 0 || (u32)ret > state->ssl_write.len)
         goto out;
 
-    if (ret > 0 && (u32)ret <= state->ssl_write.len)
-        tls_emit_call(state->ssl_write.conn_id, state->ssl_write.buf,
-                      (u32)ret, EBPF_TLS_DIR_WRITE);
+    key = (struct tls_ssl_key){
+        .tgid = bpf_get_current_pid_tgid() >> 32,
+        .ssl  = (u64)state->ssl_write.ssl,
+    };
+    conn = bpf_map_lookup_elem(&tls_conns, &key);
+    if (!conn) {
+        // Miss: SSL_new was never seen for this object. Adopt it only for a
+        // tracked, non-trusted tgid (an untracked caller of a shared libssl
+        // stays silent); these checks are paid only here, off the hot path.
+        if (ebpf_events_is_trusted_pid())
+            goto out;
+        if (!ebpf_events_is_tracked_tgid())
+            goto out;
+        tls_adopt_conn(&key);
+        conn = bpf_map_lookup_elem(&tls_conns, &key);
+        if (!conn)
+            goto out;
+    }
+
+    seq = __sync_fetch_and_add(&conn->write_seq, 1);
+    tls_emit_call(conn->conn_id, state->ssl_write.buf, (u32)ret,
+                  EBPF_TLS_DIR_WRITE, seq);
 
 out:
     ebpf_events_state__del(EBPF_EVENTS_STATE_SSL_WRITE);
@@ -348,25 +424,14 @@ SEC("uprobe")
 int BPF_UPROBE(uprobe__ssl_read, void *ssl, void *buf, int num)
 {
     struct ebpf_events_state state = {};
-    u32 tgid;
 
     preempt_disable();
 
-    if (ebpf_events_is_trusted_pid())
-        goto out;
-    if (!ebpf_events_is_tracked_tgid())
-        goto out;
-
-    tgid                   = bpf_get_current_pid_tgid() >> 32;
-    state.ssl_read.buf     = buf;
-    state.ssl_read.len     = (u32)num;
-    state.ssl_read.conn_id = tls_conn_id_for_ssl(tgid, ssl);
-    if (state.ssl_read.conn_id == 0)
-        goto out;
-
+    state.ssl_read.ssl = ssl;
+    state.ssl_read.buf = buf;
+    state.ssl_read.len = (u32)num;
     ebpf_events_state__set(EBPF_EVENTS_STATE_SSL_READ, &state);
 
-out:
     preempt_enable();
     return 0;
 }
@@ -375,16 +440,40 @@ SEC("uretprobe")
 int BPF_URETPROBE(uretprobe__ssl_read, int ret)
 {
     struct ebpf_events_state *state;
+    struct tls_ssl_key key;
+    struct tls_conn *conn;
+    u64 seq;
 
     preempt_disable();
 
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_SSL_READ);
-    if (!state || state->ssl_read.conn_id == 0)
+    if (!state)
+        goto out;
+    if (ret <= 0 || (u32)ret > state->ssl_read.len)
         goto out;
 
-    if (ret > 0 && (u32)ret <= state->ssl_read.len)
-        tls_emit_call(state->ssl_read.conn_id, state->ssl_read.buf,
-                      (u32)ret, EBPF_TLS_DIR_READ);
+    key = (struct tls_ssl_key){
+        .tgid = bpf_get_current_pid_tgid() >> 32,
+        .ssl  = (u64)state->ssl_read.ssl,
+    };
+    conn = bpf_map_lookup_elem(&tls_conns, &key);
+    if (!conn) {
+        // Miss: SSL_new was never seen for this object. Adopt it only for a
+        // tracked, non-trusted tgid (an untracked caller of a shared libssl
+        // stays silent); these checks are paid only here, off the hot path.
+        if (ebpf_events_is_trusted_pid())
+            goto out;
+        if (!ebpf_events_is_tracked_tgid())
+            goto out;
+        tls_adopt_conn(&key);
+        conn = bpf_map_lookup_elem(&tls_conns, &key);
+        if (!conn)
+            goto out;
+    }
+
+    seq = __sync_fetch_and_add(&conn->read_seq, 1);
+    tls_emit_call(conn->conn_id, state->ssl_read.buf, (u32)ret,
+                  EBPF_TLS_DIR_READ, seq);
 
 out:
     ebpf_events_state__del(EBPF_EVENTS_STATE_SSL_READ);

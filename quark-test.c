@@ -2028,8 +2028,75 @@ tls_test_client(int fd, int syncfd, const char *req, size_t req_len,
 }
 
 /*
- * Resolves SSL_new/SSL_read/SSL_write to a path + file offset in the loaded
- * libssl and attaches quark's TLS uprobes system-wide. The attach is
+ * Late-adoption variant of tls_test_client(): the SSL_new + SSL_connect
+ * handshake runs *before* the client signals the parent, so the parent tracks
+ * it only afterwards and quark never sees this connection's SSL_new. The first
+ * SSL_write below therefore misses tls_conns and is adopted in place, minting a
+ * conn_id flagged PREFIX_UNKNOWN. rsyncfd carries "you are tracked, proceed"
+ * from the parent; wsyncfd carries "handshake done, track me now" back to it.
+ */
+static void
+tls_test_client_late(int fd, int rsyncfd, int wsyncfd, const char *req,
+    size_t req_len, size_t resp_len)
+{
+	SSL_CTX	*ctx;
+	SSL	*ssl;
+	char	*resp;
+	char	*wbuf;
+	char	 c;
+	size_t	 got;
+	int	 n;
+
+	/* See the matching comment in tls_test_server() */
+	signal(SIGPIPE, SIG_IGN);
+
+	if ((ctx = SSL_CTX_new(TLS_client_method())) == NULL)
+		errx(1, "SSL_CTX_new(client)");
+	SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+
+	ssl = SSL_new(ctx);
+	SSL_set_fd(ssl, fd);
+
+	if (SSL_connect(ssl) != 1)
+		errx(1, "SSL_connect");
+
+	/* Handshake done while still untracked: ask the parent to track us. */
+	if (write(wsyncfd, "", 1) != 1)
+		err(1, "client sync write");
+	close(wsyncfd);
+
+	/* Proceed only once the parent has called quark_queue_track_tgid(). */
+	if (read(rsyncfd, &c, 1) != 1)
+		err(1, "client sync read");
+	close(rsyncfd);
+
+	if ((wbuf = malloc(req_len)) == NULL)
+		err(1, "malloc");
+	memcpy(wbuf, req, req_len);
+	if (SSL_write(ssl, wbuf, (int)req_len) <= 0)
+		errx(1, "client SSL_write");
+	free(wbuf);
+
+	if ((resp = malloc(resp_len)) == NULL)
+		err(1, "malloc");
+	for (got = 0; got < resp_len; got += (size_t)n) {
+		n = SSL_read(ssl, resp + got, (int)(resp_len - got));
+		if (n <= 0)
+			errx(1, "client SSL_read");
+	}
+	free(resp);
+
+	SSL_shutdown(ssl);
+	SSL_free(ssl);
+	SSL_CTX_free(ctx);
+	close(fd);
+
+	exit(0);
+}
+
+/*
+ * Resolves SSL_new/SSL_read/SSL_write/SSL_free to a path + file offset in the
+ * loaded libssl and attaches quark's TLS uprobes system-wide. The attach is
  * per-binary, not per-process (see quark_queue_tls_attach), so this is called
  * exactly once per queue no matter how many tracked clients follow -- a
  * multi-client test attaches once and starts several sessions.
@@ -2038,7 +2105,7 @@ static void
 tls_attach(struct quark_queue *qq)
 {
 	const char	*path;
-	u64		 new_off, read_off, write_off;
+	u64		 new_off, read_off, write_off, free_off;
 
 	if (tls_resolve((void *)SSL_new, &path, &new_off) != 0)
 		errx(1, "can't resolve SSL_new");
@@ -2048,8 +2115,11 @@ tls_attach(struct quark_queue *qq)
 		errx(1, "can't resolve SSL_read");
 	if (tls_resolve((void *)SSL_write, &path, &write_off) != 0)
 		errx(1, "can't resolve SSL_write");
+	if (tls_resolve((void *)SSL_free, &path, &free_off) != 0)
+		errx(1, "can't resolve SSL_free");
 
-	if (quark_queue_tls_attach(qq, path, new_off, read_off, write_off) != 0)
+	if (quark_queue_tls_attach(qq, path, new_off, read_off, write_off,
+	    free_off) != 0)
 		err(1, "quark_queue_tls_attach");
 }
 
@@ -2100,6 +2170,66 @@ tls_session_start(struct tls_session *ts, struct quark_queue *qq,
 	if (write(syncfds[1], "", 1) != 1)
 		err(1, "client sync write");
 	close(syncfds[1]);
+}
+
+/*
+ * Like tls_session_start(), but the client handshakes before it is tracked (see
+ * tls_test_client_late): the parent waits for the client's "handshake done"
+ * signal, tracks it, then releases it into the data phase. The connection is
+ * thus adopted mid-stream rather than seen from SSL_new.
+ */
+static void
+tls_session_start_late(struct tls_session *ts, struct quark_queue *qq,
+    const char *req, size_t req_len, const char *resp, size_t resp_len)
+{
+	int	sv[2];
+	int	up[2];		/* parent -> client: proceed */
+	int	down[2];	/* client -> parent: handshake done */
+	char	c;
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == -1)
+		err(1, "socketpair");
+	if (pipe(up) == -1 || pipe(down) == -1)
+		err(1, "pipe");
+
+	if ((ts->server = fork()) == -1)
+		err(1, "fork");
+	if (ts->server == 0) {
+		close(sv[1]);
+		close(up[0]);
+		close(up[1]);
+		close(down[0]);
+		close(down[1]);
+		tls_test_server(sv[0], req_len, resp, resp_len);
+		/* NOTREACHED */
+	}
+	close(sv[0]);
+
+	if ((ts->client = fork()) == -1)
+		err(1, "fork");
+	if (ts->client == 0) {
+		close(up[1]);
+		close(down[0]);
+		tls_test_client_late(sv[1], up[0], down[1], req, req_len,
+		    resp_len);
+		/* NOTREACHED */
+	}
+	close(sv[1]);
+	close(up[0]);
+	close(down[1]);
+
+	/* Wait for the client to finish its handshake before tracking it. */
+	if (read(down[0], &c, 1) != 1)
+		err(1, "parent sync read");
+	close(down[0]);
+
+	if (quark_queue_track_tgid(qq, ts->client) != 0)
+		err(1, "quark_queue_track_tgid");
+
+	/* Tracking is in place now, let the client proceed to write/read. */
+	if (write(up[1], "", 1) != 1)
+		err(1, "client sync write");
+	close(up[1]);
 }
 
 static void
@@ -2179,6 +2309,7 @@ t_tls_conn(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue		 qq;
 	struct tls_session		 ts;
 	const struct quark_event	*qev;
+	u64				 conn_id;
 
 	qa->flags |= QQ_TLS;
 
@@ -2197,6 +2328,21 @@ t_tls_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert(qev->events == QUARK_EV_TLS_CONN_ESTABLISHED);
 	assert(qev->tls_conn != NULL);
 	assert(qev->tls_conn->conn_id != 0);
+	assert(qev->tls_conn->tgid == (u32)ts.client);
+	/* Seen from SSL_new, so its prefix is intact -- not adopted mid-stream. */
+	assert(qev->tls_conn->flags == 0);
+	conn_id = qev->tls_conn->conn_id;
+
+	/*
+	 * The close is the counterpart to the establish above: SSL_free emits
+	 * it with the same conn_id. Drain past the intervening read/write
+	 * calls to reach it.
+	 */
+	do {
+		qev = drain_for_pid(&qq, ts.client);
+	} while (!(qev->events & QUARK_EV_TLS_CONN_CLOSED));
+	assert(qev->tls_conn != NULL);
+	assert(qev->tls_conn->conn_id == conn_id);
 	assert(qev->tls_conn->tgid == (u32)ts.client);
 
 	tls_session_finish(&qq, &ts);
@@ -2228,6 +2374,7 @@ t_tls_call(const struct test *t, struct quark_queue_attr *qa)
 
 	qev = drain_for_pid(&qq, ts.client);	/* TLS_CONN_ESTABLISHED */
 	assert(qev->events == QUARK_EV_TLS_CONN_ESTABLISHED);
+	assert(qev->tls_conn->flags == 0);
 	conn_id = qev->tls_conn->conn_id;
 
 	qev = drain_for_pid(&qq, ts.client);	/* TLS_CALL: write (request) */
@@ -2239,6 +2386,71 @@ t_tls_call(const struct test *t, struct quark_queue_attr *qa)
 	assert(qev->events == QUARK_EV_TLS_CALL);
 	assert_tls_call(qev->tls_call, QUARK_TLS_DIR_READ, conn_id,
 	    tls_resp_small, strlen(tls_resp_small), 0);
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CONN_CLOSED (SSL_free) */
+	assert(qev->events == QUARK_EV_TLS_CONN_CLOSED);
+	assert(qev->tls_conn != NULL);
+	assert(qev->tls_conn->conn_id == conn_id);
+	assert(qev->tls_conn->tgid == (u32)ts.client);
+
+	tls_session_finish(&qq, &ts);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A connection whose SSL_new the probes never saw (here the client is tracked
+ * only after it has handshaked) must not be dropped silently. Its first
+ * SSL_write adopts the connection on the spot: a conn_id is minted, flagged
+ * PREFIX_UNKNOWN so the missing prefix is visible, and the payload is still
+ * delivered under it. This is the late-attach / re-hook path -- the connection
+ * and its traffic surface instead of being lost. The establish is emitted from
+ * the same probe call as the first chunk, but always ahead of it (submitted
+ * first, so it sorts first even on a timestamp tie), so drain order holds.
+ */
+static int
+t_tls_late_adopt(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct tls_session		 ts;
+	const struct quark_event	*qev;
+	u64				 conn_id;
+
+	qa->flags |= QQ_TLS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	tls_attach(&qq);
+
+	tls_session_start_late(&ts, &qq, tls_req_small, strlen(tls_req_small),
+	    tls_resp_small, strlen(tls_resp_small));
+
+	qev = drain_for_pid(&qq, ts.client);	/* FORK */
+	assert(qev->events & QUARK_EV_FORK);
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CONN_ESTABLISHED (adopted) */
+	assert(qev->events == QUARK_EV_TLS_CONN_ESTABLISHED);
+	assert(qev->tls_conn != NULL);
+	assert(qev->tls_conn->conn_id != 0);
+	assert(qev->tls_conn->tgid == (u32)ts.client);
+	/* Adopted mid-stream, so its prefix was missed. */
+	assert(qev->tls_conn->flags & QUARK_TLS_CONN_F_PREFIX_UNKNOWN);
+	conn_id = qev->tls_conn->conn_id;
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CALL: write (request) */
+	assert(qev->events == QUARK_EV_TLS_CALL);
+	assert_tls_call(qev->tls_call, QUARK_TLS_DIR_WRITE, conn_id,
+	    tls_req_small, strlen(tls_req_small), 0);
+
+	/* SSL_free still closes the adopted connection under the same conn_id. */
+	do {
+		qev = drain_for_pid(&qq, ts.client);
+	} while (!(qev->events & QUARK_EV_TLS_CONN_CLOSED));
+	assert(qev->tls_conn != NULL);
+	assert(qev->tls_conn->conn_id == conn_id);
+	assert(qev->tls_conn->tgid == (u32)ts.client);
 
 	tls_session_finish(&qq, &ts);
 	quark_queue_close(&qq);
@@ -3049,6 +3261,7 @@ struct test all_tests[] = {
 	T_EBPF(t_tls_load),
 	T_EBPF(t_tls_conn),
 	T_EBPF(t_tls_call),
+	T_EBPF(t_tls_late_adopt),
 	T_EBPF(t_tls_multichunk),
 	T_EBPF(t_tls_truncated),
 	T_EBPF(t_tls_multiproc),

@@ -96,6 +96,8 @@ ebpf_ctx_to_task(struct quark_queue *qq, struct ebpf_ctx *ebpf_ctx, struct raw_t
 	}
 }
 
+static void	tls_forget_tgid(struct bpf_probes *, u32);
+
 static struct raw_event *
 ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 {
@@ -174,6 +176,25 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		raw->task.exit_code = exit->exit_code;
 		raw->task.exit_time_event = raw->time;
 		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
+
+		/*
+		 * A tracked process is dying: stop tracking it and reclaim any
+		 * TLS connections it left behind. SSL_free already removes
+		 * entries on a clean close, but a process killed with live SSL
+		 * objects (e.g. SIGKILL) never runs it -- this exit hook, which
+		 * the kernel guarantees even for SIGKILL, is the backstop.
+		 */
+		if (qq->flags & QQ_TLS) {
+			struct bpf_probes	*p;
+			u8			 v;
+
+			if ((p = quark_get_bpf_probes(qq)) != NULL &&
+			    p->maps.tracked_tgids != NULL &&
+			    bpf_map__lookup_elem(p->maps.tracked_tgids,
+			    &exit->pids.tgid, sizeof(exit->pids.tgid),
+			    &v, sizeof(v), 0) == 0)
+				tls_forget_tgid(p, exit->pids.tgid);
+		}
 
 		break;
 	}
@@ -819,6 +840,28 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			goto bad;
 		qtc->conn_id = tlsnew->conn_id;
 		qtc->tgid = tlsnew->pids.tgid;
+		qtc->flags = tlsnew->flags;
+
+		raw->tls_conn.quark_tls_conn = qtc;
+
+		break;
+	}
+	case EBPF_EVENT_TLS_CONN_CLOSE: {
+		struct ebpf_tls_close_event	*tlsclose;
+		struct quark_tls_conn		*qtc;
+
+		tlsclose = (struct ebpf_tls_close_event *)ev;
+		if ((raw = raw_event_alloc(RAW_TLS_CONN_CLOSE)) == NULL)
+			goto bad;
+
+		raw->pid = tlsclose->pids.tgid;
+		raw->time = ev->ts;
+
+		if ((qtc = malloc(sizeof(*qtc))) == NULL)
+			goto bad;
+		qtc->conn_id = tlsclose->conn_id;
+		qtc->tgid = tlsclose->pids.tgid;
+		qtc->flags = 0;
 
 		raw->tls_conn.quark_tls_conn = qtc;
 
@@ -1338,12 +1381,12 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
 
 	if (qq->flags & QQ_TLS) {
-		bpf_program__set_autoload(p->progs.uprobe__ssl_new, 1);
 		bpf_program__set_autoload(p->progs.uretprobe__ssl_new, 1);
 		bpf_program__set_autoload(p->progs.uprobe__ssl_write, 1);
 		bpf_program__set_autoload(p->progs.uretprobe__ssl_write, 1);
 		bpf_program__set_autoload(p->progs.uprobe__ssl_read, 1);
 		bpf_program__set_autoload(p->progs.uretprobe__ssl_read, 1);
+		bpf_program__set_autoload(p->progs.uprobe__ssl_free, 1);
 	}
 
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
@@ -1605,18 +1648,63 @@ quark_queue_track_tgid(struct quark_queue *qq, u32 tgid)
 	return (0);
 }
 
+/*
+ * Stop tracking tgid and reclaim every TLS connection it owns. The tls_conns
+ * key mirrors struct tls_ssl_key in TLS/Probe.bpf.c; keep the layout in sync.
+ * Collect-then-delete because deleting while iterating disturbs get_next_key.
+ */
+static void
+tls_forget_tgid(struct bpf_probes *p, u32 tgid)
+{
+	struct tls_ssl_key {
+		u32	tgid;
+		u64	ssl;
+	} __attribute__((packed)) cur, next, matches[512];
+	struct bpf_map	*m;
+	void		*curp;
+	size_t		 nmatch;
+	int		 i, full;
+
+	/* Drop the allow-list entry first so no new connection is minted. */
+	if ((m = p->maps.tracked_tgids) != NULL)
+		(void)bpf_map__delete_elem(m, &tgid, sizeof(tgid), 0);
+
+	if ((m = p->maps.tls_conns) == NULL)
+		return;
+
+	do {
+		nmatch = 0;
+		full = 0;
+		curp = NULL;
+		while (bpf_map__get_next_key(m, curp, &next,
+		    sizeof(next)) == 0) {
+			if (next.tgid == tgid) {
+				if (nmatch ==
+				    sizeof(matches) / sizeof(matches[0])) {
+					full = 1;
+					break;
+				}
+				matches[nmatch++] = next;
+			}
+			cur = next;
+			curp = &cur;
+		}
+		for (i = 0; i < (int)nmatch; i++)
+			(void)bpf_map__delete_elem(m, &matches[i],
+			    sizeof(matches[i]), 0);
+	} while (full);
+}
+
 int
 quark_queue_untrack_tgid(struct quark_queue *qq, u32 tgid)
 {
 	struct bpf_probes	*p;
-	struct bpf_map		*m;
 
 	if ((p = quark_get_bpf_probes(qq)) == NULL)
 		return (-1);
-	if ((m = p->maps.tracked_tgids) == NULL)
+	if (p->maps.tracked_tgids == NULL)
 		return (errno = EINVAL, -1);
-	if (bpf_map__delete_elem(m, &tgid, sizeof(tgid), 0) < 0)
-		return (-1);
+	tls_forget_tgid(p, tgid);
 
 	return (0);
 }
@@ -1624,13 +1712,13 @@ quark_queue_untrack_tgid(struct quark_queue *qq, u32 tgid)
 static void
 quark_queue_tls_detach(struct bpf_probes *p)
 {
-	if (p->links.uprobe__ssl_new != NULL) {
-		bpf_link__destroy(p->links.uprobe__ssl_new);
-		p->links.uprobe__ssl_new = NULL;
-	}
 	if (p->links.uretprobe__ssl_new != NULL) {
 		bpf_link__destroy(p->links.uretprobe__ssl_new);
 		p->links.uretprobe__ssl_new = NULL;
+	}
+	if (p->links.uprobe__ssl_free != NULL) {
+		bpf_link__destroy(p->links.uprobe__ssl_free);
+		p->links.uprobe__ssl_free = NULL;
 	}
 	if (p->links.uprobe__ssl_write != NULL) {
 		bpf_link__destroy(p->links.uprobe__ssl_write);
@@ -1651,37 +1739,63 @@ quark_queue_tls_detach(struct bpf_probes *p)
 }
 
 /*
- * path, ssl_new file offset, ssl_read file offset, ssl_write file offset.
- * Attaches system-wide (pid=-1): if multiple tracked processes share the
- * same binary/library, callers should resolve and attach once per distinct
- * path, not once per process.
+ * Thin wrapper over bpf_program__attach_uprobe that warns naming the probe on
+ * failure, so a bad offset or missing permission is logged the same way every
+ * other attach in this file is, instead of bubbling up a bare NULL.
+ */
+static struct bpf_link *
+tls_attach_uprobe(struct bpf_program *prog, int retprobe, const char *path,
+    u64 off, const char *name)
+{
+	struct bpf_link	*link;
+
+	link = bpf_program__attach_uprobe(prog, retprobe, -1, path, off);
+	if (link == NULL)
+		qwarn("bpf_program__attach_uprobe %s", name);
+
+	return (link);
+}
+
+/*
+ * path, then SSL_new, SSL_read, SSL_write, SSL_free file offsets. SSL_new is
+ * attached as a uretprobe only (the SSL* it returns is what everything keys
+ * on), SSL_free as a uprobe only, and read/write as entry+return pairs.
+ * Attaches system-wide (pid=-1): if multiple tracked processes share the same
+ * binary/library, callers should resolve and attach once per distinct path,
+ * not once per process.
  */
 int
 quark_queue_tls_attach(struct quark_queue *qq, const char *path,
-    u64 ssl_new_off, u64 ssl_read_off, u64 ssl_write_off)
+    u64 ssl_new_off, u64 ssl_read_off, u64 ssl_write_off, u64 ssl_free_off)
 {
 	struct bpf_probes	*p;
 
 	if ((p = quark_get_bpf_probes(qq)) == NULL)
 		return (-1);
 
-	if ((p->links.uprobe__ssl_new = bpf_program__attach_uprobe(
-	    p->progs.uprobe__ssl_new, 0, -1, path, ssl_new_off)) == NULL)
+	if ((p->links.uretprobe__ssl_new = tls_attach_uprobe(
+	    p->progs.uretprobe__ssl_new, 1, path, ssl_new_off,
+	    "uretprobe__ssl_new")) == NULL)
 		goto fail;
-	if ((p->links.uretprobe__ssl_new = bpf_program__attach_uprobe(
-	    p->progs.uretprobe__ssl_new, 1, -1, path, ssl_new_off)) == NULL)
+	if ((p->links.uprobe__ssl_write = tls_attach_uprobe(
+	    p->progs.uprobe__ssl_write, 0, path, ssl_write_off,
+	    "uprobe__ssl_write")) == NULL)
 		goto fail;
-	if ((p->links.uprobe__ssl_write = bpf_program__attach_uprobe(
-	    p->progs.uprobe__ssl_write, 0, -1, path, ssl_write_off)) == NULL)
+	if ((p->links.uretprobe__ssl_write = tls_attach_uprobe(
+	    p->progs.uretprobe__ssl_write, 1, path, ssl_write_off,
+	    "uretprobe__ssl_write")) == NULL)
 		goto fail;
-	if ((p->links.uretprobe__ssl_write = bpf_program__attach_uprobe(
-	    p->progs.uretprobe__ssl_write, 1, -1, path, ssl_write_off)) == NULL)
+	if ((p->links.uprobe__ssl_read = tls_attach_uprobe(
+	    p->progs.uprobe__ssl_read, 0, path, ssl_read_off,
+	    "uprobe__ssl_read")) == NULL)
 		goto fail;
-	if ((p->links.uprobe__ssl_read = bpf_program__attach_uprobe(
-	    p->progs.uprobe__ssl_read, 0, -1, path, ssl_read_off)) == NULL)
+	if ((p->links.uretprobe__ssl_read = tls_attach_uprobe(
+	    p->progs.uretprobe__ssl_read, 1, path, ssl_read_off,
+	    "uretprobe__ssl_read")) == NULL)
 		goto fail;
-	if ((p->links.uretprobe__ssl_read = bpf_program__attach_uprobe(
-	    p->progs.uretprobe__ssl_read, 1, -1, path, ssl_read_off)) == NULL)
+	if ((p->links.uprobe__ssl_free = tls_attach_uprobe(
+	    p->progs.uprobe__ssl_free, 0, path, ssl_free_off,
+	    "uprobe__ssl_free")) == NULL)
 		goto fail;
 
 	return (0);

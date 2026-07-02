@@ -48,6 +48,7 @@ enum ebpf_event_type {
     EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
     EBPF_EVENT_TLS_CONN                     = (1 << 22),
     EBPF_EVENT_TLS_CHUNK                    = (1 << 23),
+    EBPF_EVENT_TLS_CONN_CLOSE               = (1 << 24),
 };
 
 struct ebpf_event_header {
@@ -443,8 +444,34 @@ struct ebpf_dns_event {
     char packet[]; // must be last
 } __attribute__((packed));
 
-// Fired once at SSL_new entry. Mints conn_id, no payload.
+// ebpf_tls_new_event.flags bits.
+//
+// PREFIX_UNKNOWN marks a connection that was not observed from SSL_new but
+// adopted mid-stream by SSL_read/SSL_write because its SSL_new was never seen
+// (the probes attached, or re-attached, after the connection was already
+// open). Its captured byte stream does not begin at the connection's first
+// byte, so call_seq 0 on it is not the true start -- a consumer that needs the
+// opening bytes (e.g. an HTTP/2 HPACK decoder) must treat such a connection as
+// unreliable rather than trusting it. flags == 0 means the connection was seen
+// from SSL_new and its prefix is intact.
+#define EBPF_TLS_CONN_F_PREFIX_UNKNOWN 0x1
+
+// Fired once when a connection first becomes known: from SSL_new's return probe
+// for connections seen from birth (flags == 0), or from the first
+// SSL_read/SSL_write that adopts a connection whose SSL_new was missed (flags
+// has EBPF_TLS_CONN_F_PREFIX_UNKNOWN). No payload beyond the identity and flags.
 struct ebpf_tls_new_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    uint64_t conn_id;
+    uint32_t flags;
+} __attribute__((packed));
+
+// Fired once from SSL_free, the counterpart to ebpf_tls_new_event. Marks the
+// end of a connection so consumers can release per-conn_id state. Not emitted
+// when a process dies without calling SSL_free (e.g. SIGKILL); consumers must
+// also treat a process exit as closing all of that tgid's connections.
+struct ebpf_tls_close_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
     uint64_t conn_id;

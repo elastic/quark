@@ -134,6 +134,7 @@ raw_event_alloc(int type)
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
 	case RAW_TLS_CONN:	/* caller allocates */
+	case RAW_TLS_CONN_CLOSE:	/* caller allocates */
 	case RAW_TLS_CHUNK:	/* caller allocates */
 		break;
 	default:
@@ -200,6 +201,7 @@ raw_event_free(struct raw_event *raw)
 		free(raw->tty.quark_tty);
 		break;
 	case RAW_TLS_CONN:
+	case RAW_TLS_CONN_CLOSE:
 		free(raw->tls_conn.quark_tls_conn);
 		break;
 	case RAW_TLS_CHUNK:
@@ -4862,7 +4864,8 @@ raw_event_tls_conn(struct quark_queue *qq, struct raw_event *raw)
 
 	qev = &qq->event_storage;
 
-	qev->events = QUARK_EV_TLS_CONN_ESTABLISHED;
+	qev->events = raw->type == RAW_TLS_CONN_CLOSE ?
+	    QUARK_EV_TLS_CONN_CLOSED : QUARK_EV_TLS_CONN_ESTABLISHED;
 	qev->process = quark_process_lookup(qq, raw->pid);
 	/* Steal it */
 	qev->tls_conn = raw->tls_conn.quark_tls_conn;
@@ -5280,6 +5283,7 @@ quark_queue_get_event(struct quark_queue *qq)
 			qev = raw_event_tty(qq, raw);
 			break;
 		case RAW_TLS_CONN:
+		case RAW_TLS_CONN_CLOSE:
 			qev = raw_event_tls_conn(qq, raw);
 			break;
 		case RAW_TLS_CHUNK:

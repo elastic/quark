@@ -145,9 +145,11 @@ int			 quark_queue_trusted_pid_add(struct quark_queue *, u32);
 int			 quark_queue_trusted_pid_reset(struct quark_queue *);
 int			 quark_queue_track_tgid(struct quark_queue *, u32);
 int			 quark_queue_untrack_tgid(struct quark_queue *, u32);
-/* path, ssl_new file offset, ssl_read file offset, ssl_write file offset */
+/* path, then SSL_new, SSL_read, SSL_write, SSL_free file offsets. All four are
+ * required: SSL_new mints the connection, SSL_read/SSL_write carry the data,
+ * and SSL_free tears it down (map cleanup + close event). */
 int			 quark_queue_tls_attach(struct quark_queue *, const char *,
-			     u64, u64, u64);
+			     u64, u64, u64, u64);
 
 /* kprobe_queue.c */
 int			 kprobe_queue_open(struct quark_queue *);
@@ -260,6 +262,7 @@ enum raw_types {
 	RAW_TTY,
 	RAW_GETPID,
 	RAW_TLS_CONN,
+	RAW_TLS_CONN_CLOSE,
 	RAW_TLS_CHUNK,
 	RAW_NUM_TYPES		/* must be last */
 };
@@ -443,12 +446,22 @@ enum quark_tls_direction {
 	QUARK_TLS_DIR_READ,	/* incoming response, SSL_read */
 };
 
+/*
+ * flags bit: the connection was adopted mid-stream (its SSL_new was never
+ * seen, e.g. the probes attached after it was already open) rather than
+ * observed from birth. Its captured byte stream does not start at the
+ * connection's first byte, so call_seq 0 is not the true start. A consumer
+ * that needs the opening bytes should treat such a connection as unreliable.
+ */
+#define QUARK_TLS_CONN_F_PREFIX_UNKNOWN	(1 << 0)
+
 struct quark_tls_conn {
 	u64	conn_id;	/* minted at SSL_new; globally unique across all
 				 * connections and processes, never reused, so it
 				 * can be keyed on alone. tgid gives the owning
 				 * process for correlation */
 	u32	tgid;
+	u32	flags;		/* QUARK_TLS_CONN_F_* */
 };
 
 struct raw_tls_conn {
@@ -565,6 +578,7 @@ struct quark_event {
 #define QUARK_EV_GETPID			(1 << 14)
 #define QUARK_EV_TLS_CONN_ESTABLISHED	(1 << 15)
 #define QUARK_EV_TLS_CALL		(1 << 16)
+#define QUARK_EV_TLS_CONN_CLOSED	(1 << 17)
 	u64				 events;
 	u64				 time;
 	const struct quark_process	*process;

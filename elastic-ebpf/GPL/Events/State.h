@@ -24,8 +24,7 @@ enum ebpf_events_state_op {
     EBPF_EVENTS_STATE_FS_CREATE      = 10,
     EBPF_EVENTS_STATE_MEMFD_CREATE   = 11,
     EBPF_EVENTS_STATE_SSL_READ       = 12,
-    EBPF_EVENTS_STATE_SSL_NEW        = 13,
-    EBPF_EVENTS_STATE_SSL_WRITE      = 14,
+    EBPF_EVENTS_STATE_SSL_WRITE      = 13,
 };
 
 struct ebpf_events_key {
@@ -89,28 +88,18 @@ struct ebpf_events_memfd_create_state {
     unsigned int flags;
 };
 
-struct ebpf_events_ssl_read_state {
+// SSL_read and SSL_write are both captured across entry+return. The entry
+// stashes the SSL object and the caller's buffer plus requested length; the
+// return value gives the bytes actually transferred (min(len, ret)) and drives
+// the per-call sequence bump. Stashing the SSL* lets the return probe re-find
+// the connection, since the return itself only carries the byte count. This
+// keeps capture correct for non-blocking / memory-BIO / partial callers (never
+// a WANT_* retry's full buffer, never an unfilled read) and symmetric for both
+// directions.
+struct ebpf_events_ssl_io_state {
+    void *ssl;
     void *buf;
     u32 len;
-    u64 conn_id;
-};
-
-// SSL_write is captured at uretprobe, not uprobe: entry stashes the caller's
-// buffer and its requested length, and the return value tells us how many
-// bytes were actually consumed (min(len, ret)). This makes capture correct
-// for non-blocking / memory-BIO / partial-write callers, and symmetric with
-// SSL_read, instead of double-counting a buffer that WANT_WRITE retried.
-struct ebpf_events_ssl_write_state {
-    void *buf;
-    u32 len;
-    u64 conn_id;
-};
-
-// SSL_new entry stashes the freshly-minted conn_id here; the return value
-// (the actual SSL* pointer) only exists once the call returns, so the
-// ssl_ptr->conn_id mapping can only be completed at uretprobe time.
-struct ebpf_events_ssl_new_state {
-    u64 conn_id;
 };
 
 struct ebpf_events_state {
@@ -126,9 +115,8 @@ struct ebpf_events_state {
         struct ebpf_events_chown_state chown;
         struct ebpf_events_memfd_create_state memfd;
         /* struct ebpf_events_fs_create fs_create; nada */
-        struct ebpf_events_ssl_read_state ssl_read;
-        struct ebpf_events_ssl_write_state ssl_write;
-        struct ebpf_events_ssl_new_state ssl_new;
+        struct ebpf_events_ssl_io_state ssl_read;
+        struct ebpf_events_ssl_io_state ssl_write;
     };
 };
 
