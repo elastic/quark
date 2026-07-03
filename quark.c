@@ -4080,7 +4080,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
 	qa->max_env = 4096;		/* one page per process */
-	qa->max_tls_call = 1 << 20;	/* one mebibyte */
+	qa->max_tls_call = 0xffffffff;	/* TEMP debug: ~4 GiB, just under the u32 BPF cap so it can't truncate to 0/unlimited (revert to 1 << 20 / one mebibyte) */
 	qa->kubefd = -1;		/* disabled */
 	qa->ruleset = NULL;		/* no rules */
 }

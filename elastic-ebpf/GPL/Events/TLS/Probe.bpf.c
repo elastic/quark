@@ -353,12 +353,15 @@ out:
     return 0;
 }
 
-// The read/write entry probes only stash the arguments; no tracked/trusted
-// gate here on purpose. The matching return probe resolves the connection from
-// tls_conns: a hit is captured, a miss is either adopted (a tracked tgid whose
-// SSL_new was missed) or ignored (any other caller). Keeping the entry
-// gate-free -- it fires for every caller of the probed symbol, tracked or not
-// -- keeps it cheap; the tracked/trusted checks are paid only on the rare miss.
+// The read/write entry probes stash the caller's buffer for the matching
+// return probe. They gate on the same trusted deny-list / tracked allow-list as
+// the capture path: a caller that is not tracked can never be captured at
+// return (a tls_conns miss is only adopted for a tracked tgid), so stashing its
+// arguments would only add churn to the per-task state map -- a bounded LRU
+// shared with the other probes -- and risk evicting in-flight state that can be
+// captured. Gating here keeps that map populated only by callers that may
+// actually be captured. Adoption is unaffected: a tracked tgid whose SSL_new
+// was missed still passes the gate, stashes, and is adopted at return.
 SEC("uprobe")
 int BPF_UPROBE(uprobe__ssl_write, void *ssl, const void *buf, int num)
 {
@@ -366,11 +369,17 @@ int BPF_UPROBE(uprobe__ssl_write, void *ssl, const void *buf, int num)
 
     preempt_disable();
 
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+    if (!ebpf_events_is_tracked_tgid())
+        goto out;
+
     state.ssl_write.ssl = ssl;
     state.ssl_write.buf = (void *)buf;
     state.ssl_write.len = (u32)num;
     ebpf_events_state__set(EBPF_EVENTS_STATE_SSL_WRITE, &state);
 
+out:
     preempt_enable();
     return 0;
 }
@@ -420,6 +429,7 @@ out:
     return 0;
 }
 
+// Same gate rationale as uprobe__ssl_write above.
 SEC("uprobe")
 int BPF_UPROBE(uprobe__ssl_read, void *ssl, void *buf, int num)
 {
@@ -427,11 +437,17 @@ int BPF_UPROBE(uprobe__ssl_read, void *ssl, void *buf, int num)
 
     preempt_disable();
 
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+    if (!ebpf_events_is_tracked_tgid())
+        goto out;
+
     state.ssl_read.ssl = ssl;
     state.ssl_read.buf = buf;
     state.ssl_read.len = (u32)num;
     ebpf_events_state__set(EBPF_EVENTS_STATE_SSL_READ, &state);
 
+out:
     preempt_enable();
     return 0;
 }

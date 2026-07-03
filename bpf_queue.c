@@ -21,9 +21,23 @@
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
+/*
+ * One TLS uprobe attachment: the six links minted by a single
+ * quark_queue_tls_attach for one binary path. Attach is system-wide per
+ * binary, so a process may be asked to instrument several distinct binaries;
+ * each gets its own record on bqq->tls_attachments. The skeleton keeps only a
+ * single link slot per program, which a second path would overwrite and leak,
+ * so the links are owned here instead.
+ */
+struct tls_attachment {
+	TAILQ_ENTRY(tls_attachment)	 entry;
+	struct bpf_link			*links[6];
+};
+
 struct bpf_queue {
-	struct bpf_probes	*probes;
-	struct ring_buffer	*ringbuf;
+	struct bpf_probes		*probes;
+	struct ring_buffer		*ringbuf;
+	TAILQ_HEAD(, tls_attachment)	 tls_attachments;
 };
 
 static int	bpf_queue_populate(struct quark_queue *);
@@ -97,6 +111,8 @@ ebpf_ctx_to_task(struct quark_queue *qq, struct ebpf_ctx *ebpf_ctx, struct raw_t
 }
 
 static void	tls_forget_tgid(struct bpf_probes *, u32);
+static void	tls_attachment_destroy(struct tls_attachment *);
+static void	quark_queue_tls_detach(struct bpf_queue *);
 
 static struct raw_event *
 ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
@@ -1156,6 +1172,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		return (-1);
 
 	qq->queue_be = bqq;
+	TAILQ_INIT(&bqq->tls_attachments);
 	cgroup_fd = -1;
 	cgroup_umount = NULL;
 	btf = NULL;
@@ -1556,6 +1573,7 @@ bpf_queue_close(struct quark_queue *qq)
 
 	if (bqq == NULL)
 		return;
+	quark_queue_tls_detach(bqq);
 	if (bqq->probes != NULL) {
 		bpf_probes__destroy(bqq->probes);
 		bqq->probes = NULL;
@@ -1709,32 +1727,38 @@ quark_queue_untrack_tgid(struct quark_queue *qq, u32 tgid)
 	return (0);
 }
 
+/*
+ * Destroy one attachment's uprobe links and free the record. Safe on a
+ * partially populated record: unset slots are NULL and bpf_link__destroy(NULL)
+ * is a no-op, so this doubles as the rollback for a half-finished attach.
+ */
 static void
-quark_queue_tls_detach(struct bpf_probes *p)
+tls_attachment_destroy(struct tls_attachment *ta)
 {
-	if (p->links.uretprobe__ssl_new != NULL) {
-		bpf_link__destroy(p->links.uretprobe__ssl_new);
-		p->links.uretprobe__ssl_new = NULL;
+	size_t	i;
+
+	for (i = 0; i < nitems(ta->links); i++) {
+		if (ta->links[i] != NULL) {
+			bpf_link__destroy(ta->links[i]);
+			ta->links[i] = NULL;
+		}
 	}
-	if (p->links.uprobe__ssl_free != NULL) {
-		bpf_link__destroy(p->links.uprobe__ssl_free);
-		p->links.uprobe__ssl_free = NULL;
-	}
-	if (p->links.uprobe__ssl_write != NULL) {
-		bpf_link__destroy(p->links.uprobe__ssl_write);
-		p->links.uprobe__ssl_write = NULL;
-	}
-	if (p->links.uretprobe__ssl_write != NULL) {
-		bpf_link__destroy(p->links.uretprobe__ssl_write);
-		p->links.uretprobe__ssl_write = NULL;
-	}
-	if (p->links.uprobe__ssl_read != NULL) {
-		bpf_link__destroy(p->links.uprobe__ssl_read);
-		p->links.uprobe__ssl_read = NULL;
-	}
-	if (p->links.uretprobe__ssl_read != NULL) {
-		bpf_link__destroy(p->links.uretprobe__ssl_read);
-		p->links.uretprobe__ssl_read = NULL;
+	free(ta);
+}
+
+/*
+ * Detach every TLS uprobe attachment. Each quark_queue_tls_attach appended one
+ * record, so tear them all down; the skeleton's single link slot per program
+ * cannot track more than one path. Called from bpf_queue_close.
+ */
+static void
+quark_queue_tls_detach(struct bpf_queue *bqq)
+{
+	struct tls_attachment	*ta;
+
+	while ((ta = TAILQ_FIRST(&bqq->tls_attachments)) != NULL) {
+		TAILQ_REMOVE(&bqq->tls_attachments, ta, entry);
+		tls_attachment_destroy(ta);
 	}
 }
 
@@ -1768,39 +1792,52 @@ int
 quark_queue_tls_attach(struct quark_queue *qq, const char *path,
     u64 ssl_new_off, u64 ssl_read_off, u64 ssl_write_off, u64 ssl_free_off)
 {
+	struct bpf_queue	*bqq = qq->queue_be;
 	struct bpf_probes	*p;
+	struct tls_attachment	*ta;
 
 	if ((p = quark_get_bpf_probes(qq)) == NULL)
 		return (-1);
+	if ((ta = calloc(1, sizeof(*ta))) == NULL)
+		return (-1);
 
-	if ((p->links.uretprobe__ssl_new = tls_attach_uprobe(
+	/*
+	 * The six links go into a per-attach record rather than the skeleton's
+	 * single link slot per program: attach is system-wide per binary, so a
+	 * second path reusing the same program would overwrite the first's link
+	 * and leak it. On any failure the partially populated record is rolled
+	 * back by tls_attachment_destroy.
+	 */
+	if ((ta->links[0] = tls_attach_uprobe(
 	    p->progs.uretprobe__ssl_new, 1, path, ssl_new_off,
 	    "uretprobe__ssl_new")) == NULL)
 		goto fail;
-	if ((p->links.uprobe__ssl_write = tls_attach_uprobe(
+	if ((ta->links[1] = tls_attach_uprobe(
 	    p->progs.uprobe__ssl_write, 0, path, ssl_write_off,
 	    "uprobe__ssl_write")) == NULL)
 		goto fail;
-	if ((p->links.uretprobe__ssl_write = tls_attach_uprobe(
+	if ((ta->links[2] = tls_attach_uprobe(
 	    p->progs.uretprobe__ssl_write, 1, path, ssl_write_off,
 	    "uretprobe__ssl_write")) == NULL)
 		goto fail;
-	if ((p->links.uprobe__ssl_read = tls_attach_uprobe(
+	if ((ta->links[3] = tls_attach_uprobe(
 	    p->progs.uprobe__ssl_read, 0, path, ssl_read_off,
 	    "uprobe__ssl_read")) == NULL)
 		goto fail;
-	if ((p->links.uretprobe__ssl_read = tls_attach_uprobe(
+	if ((ta->links[4] = tls_attach_uprobe(
 	    p->progs.uretprobe__ssl_read, 1, path, ssl_read_off,
 	    "uretprobe__ssl_read")) == NULL)
 		goto fail;
-	if ((p->links.uprobe__ssl_free = tls_attach_uprobe(
+	if ((ta->links[5] = tls_attach_uprobe(
 	    p->progs.uprobe__ssl_free, 0, path, ssl_free_off,
 	    "uprobe__ssl_free")) == NULL)
 		goto fail;
 
+	TAILQ_INSERT_TAIL(&bqq->tls_attachments, ta, entry);
+
 	return (0);
 
 fail:
-	quark_queue_tls_detach(p);
+	tls_attachment_destroy(ta);
 	return (-1);
 }
