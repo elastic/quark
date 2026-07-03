@@ -23,11 +23,9 @@
 
 /*
  * One TLS uprobe attachment: the six links minted by a single
- * quark_queue_tls_attach for one binary path. Attach is system-wide per
- * binary, so a process may be asked to instrument several distinct binaries;
- * each gets its own record on bqq->tls_attachments. The skeleton keeps only a
- * single link slot per program, which a second path would overwrite and leak,
- * so the links are owned here instead.
+ * quark_queue_tls_attach for one binary path. The skeleton keeps only a single
+ * link slot per program, which a second path would overwrite and leak, so the
+ * links are owned here instead.
  */
 struct tls_attachment {
 	TAILQ_ENTRY(tls_attachment)	 entry;
@@ -928,10 +926,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		 * A dropped chunk that isn't the last one in the call is a
 		 * hole with more data after it - same hazard as a chunk that
 		 * silently never arrived at all. Only the trailing case is
-		 * safe (equivalent to a clean max_tls_call cap). This covers
-		 * the case where this node ends up being the chain head, or
-		 * a non-head child that was already known-bad before
-		 * quark_can_aggregate_tls() ever runs.
+		 * safe (equivalent to a clean max_tls_call cap).
 		 */
 		qtc->gap = (qtc->dropped && chunk->chunk_idx != chunk->chunk_total - 1) ? 1 : 0;
 		qtc->data_len = data_len;
@@ -1747,9 +1742,7 @@ tls_attachment_destroy(struct tls_attachment *ta)
 }
 
 /*
- * Detach every TLS uprobe attachment. Each quark_queue_tls_attach appended one
- * record, so tear them all down; the skeleton's single link slot per program
- * cannot track more than one path. Called from bpf_queue_close.
+ * Detach every TLS uprobe attachment. Called from bpf_queue_close.
  */
 static void
 quark_queue_tls_detach(struct bpf_queue *bqq)
@@ -1764,8 +1757,7 @@ quark_queue_tls_detach(struct bpf_queue *bqq)
 
 /*
  * Thin wrapper over bpf_program__attach_uprobe that warns naming the probe on
- * failure, so a bad offset or missing permission is logged the same way every
- * other attach in this file is, instead of bubbling up a bare NULL.
+ * failure.
  */
 static struct bpf_link *
 tls_attach_uprobe(struct bpf_program *prog, int retprobe, const char *path,
@@ -1781,10 +1773,8 @@ tls_attach_uprobe(struct bpf_program *prog, int retprobe, const char *path,
 }
 
 /*
- * path, then SSL_new, SSL_read, SSL_write, SSL_free file offsets. SSL_new is
- * attached as a uretprobe only (the SSL* it returns is what everything keys
- * on), SSL_free as a uprobe only, and read/write as entry+return pairs.
- * Attaches system-wide (pid=-1): if multiple tracked processes share the same
+ * path, then SSL_new, SSL_read, SSL_write, SSL_free file offsets. Attaches
+ * system-wide (pid=-1): if multiple tracked processes share the same
  * binary/library, callers should resolve and attach once per distinct path,
  * not once per process.
  */
@@ -1802,11 +1792,8 @@ quark_queue_tls_attach(struct quark_queue *qq, const char *path,
 		return (-1);
 
 	/*
-	 * The six links go into a per-attach record rather than the skeleton's
-	 * single link slot per program: attach is system-wide per binary, so a
-	 * second path reusing the same program would overwrite the first's link
-	 * and leak it. On any failure the partially populated record is rolled
-	 * back by tls_attachment_destroy.
+	 * On any failure the partially populated record is rolled back by
+	 * tls_attachment_destroy.
 	 */
 	if ((ta->links[0] = tls_attach_uprobe(
 	    p->progs.uretprobe__ssl_new, 1, path, ssl_new_off,

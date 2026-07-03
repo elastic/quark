@@ -19,13 +19,7 @@
 
 // Allow-list of TGIDs to capture TLS from. Opposite of trusted_pids (a
 // deny-list): a TGID must be present here for a connection to be minted.
-// Populated by quark_queue_track_tgid()/untrack_tgid(). SSL_new consults it on
-// every call. SSL_read/SSL_write consult it only when they miss tls_conns, to
-// decide whether the miss is a tracked connection whose SSL_new was never seen
-// -- which must be adopted, not dropped -- or an untracked caller to ignore.
-// SSL_free needs no check: it only acts on an existing tls_conns entry, and
-// only gated paths ever create one. A tls_conns hit is therefore always
-// capture-worthy, so the capture hot path stays a single lookup.
+// Populated by quark_queue_track_tgid()/untrack_tgid().
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(key_size, sizeof(u32));
@@ -39,11 +33,8 @@ static bool ebpf_events_is_tracked_tgid()
     return bpf_map_lookup_elem(&tracked_tgids, &tgid) != NULL;
 }
 
-// Global monotonic connection-id counter, bumped once per SSL_new. A single
-// array cell (not a per-tgid hash) so conn_id is unique across the whole
-// system -- consumers can key on conn_id alone -- and it is never reused, so a
-// closed-then-reopened SSL object at the same address gets a distinct id.
-// conn_id 0 is never issued, it is reserved as the "unset" sentinel.
+// Global monotonic connection-id counter, bumped once per SSL_new. conn_id 0 is
+// never issued, it is reserved as the "unset" sentinel.
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(key_size, sizeof(u32));
@@ -63,33 +54,20 @@ static u64 tls_mint_conn_id(void)
 }
 
 // (tgid, ssl_ptr) -> per-connection state, established at SSL_new's uretprobe
-// (once the SSL* return value exists) and torn down at SSL_free. Every
-// SSL_read/SSL_write return probe looks the connection up here to resolve its
-// conn_id and bump the matching direction's call_seq in place.
+// and torn down at SSL_free.
 //
 // The key must include tgid: an SSL* is only unique within one address space,
 // so two tracked processes can hold objects at the same virtual address --
-// keying on the pointer alone would cross-attribute them. tgid handles this
-// spatial (concurrent) collision; SSL_free handles temporal reuse within a
-// process by deleting the entry before the address can be recycled.
-//
-// Plain hash + BPF_F_NO_PREALLOC, deleted on SSL_free -- the same shape the
-// network probe's sk_to_tgid uses, freed on tcp_close. Unlike tcp_close,
-// SSL_free is userspace and does not run on SIGKILL, so a killed process's
-// entries are reclaimed instead by the exit-driven sweep in bpf_queue.c
-// (untrack). A reused pointer whose owner was killed is corrected regardless:
-// SSL_new overwrites its entry (BPF_ANY).
+// keying on the pointer alone would cross-attribute them.
 struct tls_ssl_key {
     u32 tgid;
     u64 ssl;
 } __attribute__((packed));
 
 // call_seq is monotonic per (conn_id, direction), incremented once per
-// SSL_read/SSL_write call regardless of how many chunks it is split into. It
-// lives here, next to conn_id, so the read/write return probe resolves the
-// connection and advances its sequence in a single map lookup. flags carries
-// EBPF_TLS_CONN_F_* (currently only PREFIX_UNKNOWN, set when the connection was
-// adopted mid-stream rather than seen from SSL_new).
+// SSL_read/SSL_write call regardless of how many chunks it is split into. flags
+// carries EBPF_TLS_CONN_F_* (currently only PREFIX_UNKNOWN, set when the
+// connection was adopted mid-stream rather than seen from SSL_new).
 struct tls_conn {
     u64 conn_id;
     u64 read_seq;
@@ -106,12 +84,11 @@ struct {
 } tls_conns SEC(".maps");
 
 // Max bytes captured per SSL_read/SSL_write call, set by quark_queue_open()
-// from quark_queue_attr.max_tls_call before the object is loaded, same
-// pattern as consumer_pid in Helpers.h.
+// before the object is loaded, same pattern as consumer_pid in Helpers.h.
 const volatile u32 max_tls_call = 0;
 
-// Per-chunk size. Kept well under half of event_buffer_map's 128 KiB ceiling
-// (see Varlen.h), same headroom rule TTY_OUT_MAX follows in Process/Probe.bpf.c.
+// Per-chunk size. Kept well under half of event_buffer_map's 128 KiB ceiling,
+// same headroom rule TTY_OUT_MAX follows in Process/Probe.bpf.c.
 #define TLS_CHUNK_MAX 32768u
 
 struct tls_chunk_ctx {
@@ -170,8 +147,6 @@ static long tls_emit_chunk(u32 idx, void *ctx)
          * This chunk's bytes are unreadable, but later chunks in the same
          * call read from different offsets into the same buffer and may
          * still succeed - keep going rather than aborting the whole call.
-         * quark's aggregation distinguishes this (a known, marked hole)
-         * from a chunk that never arrives at all.
          */
         event->dropped = 1;
         ebpf_vl_field__set_size(&event->vl_fields, field, 0);
@@ -184,13 +159,7 @@ static long tls_emit_chunk(u32 idx, void *ctx)
         /*
          * The full chunk didn't fit - the ring buffer is under enough
          * pressure that quark's existing "lost" stat will already be
-         * incremented for it. Retry with a minimal drop marker instead:
-         * far smaller, so it has a real chance of fitting even when the
-         * full chunk didn't, and it lets quark's aggregation see this
-         * chunk_idx as a known, marked hole rather than a silent gap
-         * that has to be inferred from a missing index. If this second,
-         * much smaller write also fails, the buffer is genuinely
-         * exhausted and there is nothing further to do here.
+         * incremented for it. Retry with a minimal drop marker instead.
          */
         event->dropped = 1;
         ebpf_vl_fields__init(&event->vl_fields);
@@ -202,10 +171,7 @@ static long tls_emit_chunk(u32 idx, void *ctx)
     return 0;
 }
 
-// Emits one SSL_read/SSL_write call as one or more chunks. conn_id and
-// call_seq are resolved by the caller from tls_conns; len is the byte count
-// actually transferred (the uretprobe's return value), so it is never a
-// WANT_* retry's full buffer nor an unfilled read.
+// Emits one SSL_read/SSL_write call as one or more chunks.
 static void tls_emit_call(u64 conn_id, const void *base, u32 len,
                           enum ebpf_tls_direction direction, u64 call_seq)
 {
@@ -248,15 +214,11 @@ static void tls_emit_conn(u64 conn_id, u32 flags)
 }
 
 // Adopts a connection whose SSL_new was never observed: mints a fresh conn_id,
-// records it flagged PREFIX_UNKNOWN, and announces it. This is the miss path of
-// SSL_read/SSL_write -- the first captured call on a connection that was
-// already open when the probes attached. Surfacing it (rather than dropping the
-// bytes silently) is deliberate: silence would lose traffic with no signal it
-// happened, while the flag lets a consumer decide per protocol whether the
-// missing prefix is recoverable. The announce is withheld until the insert is
-// confirmed so a full map never yields an establish with no state behind it;
-// the caller re-resolves the entry from the map (rather than this returning a
-// map-value pointer, which not every verifier accepts across a call).
+// records it flagged PREFIX_UNKNOWN, and announces it. The announce is withheld
+// until the insert is confirmed so a full map never yields an establish with no
+// state behind it; the caller re-resolves the entry from the map (rather than
+// this returning a map-value pointer, which not every verifier accepts across a
+// call).
 static void tls_adopt_conn(struct tls_ssl_key *key)
 {
     struct tls_conn conn = {};
@@ -274,8 +236,7 @@ static void tls_adopt_conn(struct tls_ssl_key *key)
 }
 
 // SSL_new has no entry probe: the SSL* it returns is the map key, so nothing
-// useful can be done until the return. Mint the conn_id, record the
-// connection, and announce it, all here.
+// useful can be done until the return.
 SEC("uretprobe")
 int BPF_URETPROBE(uretprobe__ssl_new, void *ssl)
 {
@@ -308,9 +269,8 @@ out:
     return 0;
 }
 
-// SSL_free is the connection teardown. Announce the close and drop the map
-// entry so its (tgid, ssl_ptr) slot can be reused cleanly. If the SSL was
-// never tracked (no entry) this is a no-op.
+// SSL_free is the connection teardown. If the SSL was never tracked (no entry)
+// this is a no-op.
 SEC("uprobe")
 int BPF_UPROBE(uprobe__ssl_free, void *ssl)
 {
@@ -353,15 +313,9 @@ out:
     return 0;
 }
 
-// The read/write entry probes stash the caller's buffer for the matching
-// return probe. They gate on the same trusted deny-list / tracked allow-list as
-// the capture path: a caller that is not tracked can never be captured at
-// return (a tls_conns miss is only adopted for a tracked tgid), so stashing its
-// arguments would only add churn to the per-task state map -- a bounded LRU
-// shared with the other probes -- and risk evicting in-flight state that can be
-// captured. Gating here keeps that map populated only by callers that may
-// actually be captured. Adoption is unaffected: a tracked tgid whose SSL_new
-// was missed still passes the gate, stashes, and is adopted at return.
+// The read/write entry probes stash the caller's buffer for the matching return
+// probe. They gate on the same trusted deny-list / tracked allow-list as the
+// capture path.
 SEC("uprobe")
 int BPF_UPROBE(uprobe__ssl_write, void *ssl, const void *buf, int num)
 {
@@ -407,8 +361,7 @@ int BPF_URETPROBE(uretprobe__ssl_write, int ret)
     conn = bpf_map_lookup_elem(&tls_conns, &key);
     if (!conn) {
         // Miss: SSL_new was never seen for this object. Adopt it only for a
-        // tracked, non-trusted tgid (an untracked caller of a shared libssl
-        // stays silent); these checks are paid only here, off the hot path.
+        // tracked, non-trusted tgid; these checks are off the hot path.
         if (ebpf_events_is_trusted_pid())
             goto out;
         if (!ebpf_events_is_tracked_tgid())
@@ -474,9 +427,7 @@ int BPF_URETPROBE(uretprobe__ssl_read, int ret)
     };
     conn = bpf_map_lookup_elem(&tls_conns, &key);
     if (!conn) {
-        // Miss: SSL_new was never seen for this object. Adopt it only for a
-        // tracked, non-trusted tgid (an untracked caller of a shared libssl
-        // stays silent); these checks are paid only here, off the hot path.
+        // Miss path, same as uretprobe__ssl_write above.
         if (ebpf_events_is_trusted_pid())
             goto out;
         if (!ebpf_events_is_tracked_tgid())

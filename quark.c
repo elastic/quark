@@ -4481,21 +4481,12 @@ quark_can_aggregate_tty(struct quark_queue *qq,
 /*
  * Unlike quark_can_aggregate_tty(), there is no size ceiling here: the BPF
  * side already caps the total bytes captured per call at qq->max_tls_call
- * before it ever emits the first chunk, so chunk_total (and therefore the
- * number of raw_events that will ever offer themselves up for aggregation
- * here) is bounded by construction. Identity (conn_id, direction, call_seq)
- * is the only thing that decides whether two chunks belong together.
+ * before it ever emits the first chunk. Identity (conn_id, direction,
+ * call_seq) is the only thing that decides whether two chunks belong together.
  *
  * pt->chunk_idx is repurposed once aggregation starts, same as
  * quark_tty.total_len: it stops meaning "this node's own position" and
- * starts meaning "the last position absorbed into this chain." A gap
- * between two otherwise-contiguous chunks means one never arrived at all
- * (e.g. the ring buffer was full); ct->gap means this specific chunk
- * already knew it was bad at creation time (a non-trailing dropped
- * marker). Either way, once gap is set, total_len/data is no longer a
- * safe contiguous prefix of the original call - unlike a clean trailing
- * truncated, which a consumer can still treat as a valid (if incomplete)
- * prefix.
+ * starts meaning "the last position absorbed into this chain."
  */
 int
 quark_can_aggregate_tls(struct quark_queue *qq,
@@ -4522,11 +4513,8 @@ quark_can_aggregate_tls(struct quark_queue *qq,
 	/*
 	 * truncated is NOT refined here, on purpose: a call that arrives as
 	 * exactly one chunk never invokes this function at all (there is
-	 * nothing to aggregate it with), so deriving truncated incrementally
-	 * here would leave it stuck at its allocation-time default for the
-	 * common case. total_len, in contrast, is always correct regardless
-	 * of chunk count, so raw_event_tls_call() recomputes truncated from
-	 * it once, unconditionally, at delivery time.
+	 * nothing to aggregate it with). raw_event_tls_call() derives it from
+	 * total_len at delivery time instead.
 	 */
 	pt->total_len += ct->data_len;
 
@@ -4906,9 +4894,8 @@ raw_event_tls_call(struct quark_queue *qq, struct raw_event *raw)
 
 	/*
 	 * total_len is correct regardless of how many chunks made up this
-	 * call (1 or many), but quark_can_aggregate_tls() only ever runs
-	 * for 2+ chunks, so truncated must be derived from it here,
-	 * unconditionally, rather than relying on that pairwise step.
+	 * call, but quark_can_aggregate_tls() only ever runs for 2+ chunks, so
+	 * truncated must be derived from it here.
 	 */
 	head = raw->tls_chunk.quark_tls_call;
 	head->truncated = head->call_len > head->total_len ?

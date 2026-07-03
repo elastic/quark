@@ -146,8 +146,7 @@ int			 quark_queue_trusted_pid_reset(struct quark_queue *);
 int			 quark_queue_track_tgid(struct quark_queue *, u32);
 int			 quark_queue_untrack_tgid(struct quark_queue *, u32);
 /* path, then SSL_new, SSL_read, SSL_write, SSL_free file offsets. All four are
- * required: SSL_new mints the connection, SSL_read/SSL_write carry the data,
- * and SSL_free tears it down (map cleanup + close event). */
+ * required. */
 int			 quark_queue_tls_attach(struct quark_queue *, const char *,
 			     u64, u64, u64, u64);
 
@@ -450,16 +449,13 @@ enum quark_tls_direction {
  * flags bit: the connection was adopted mid-stream (its SSL_new was never
  * seen, e.g. the probes attached after it was already open) rather than
  * observed from birth. Its captured byte stream does not start at the
- * connection's first byte, so call_seq 0 is not the true start. A consumer
- * that needs the opening bytes should treat such a connection as unreliable.
+ * connection's first byte, so call_seq 0 is not the true start.
  */
 #define QUARK_TLS_CONN_F_PREFIX_UNKNOWN	(1 << 0)
 
 struct quark_tls_conn {
-	u64	conn_id;	/* minted at SSL_new; globally unique across all
-				 * connections and processes, never reused, so it
-				 * can be keyed on alone. tgid gives the owning
-				 * process for correlation */
+	u64	conn_id;	/* minted at SSL_new; globally unique and never
+				 * reused, so it can be keyed on alone */
 	u32	tgid;
 	u32	flags;		/* QUARK_TLS_CONN_F_* */
 };
@@ -496,20 +492,17 @@ struct quark_tls_call {
 	u64				 call_seq;	/* monotonic per (conn_id, direction) */
 	u32				 chunk_idx;	/* this chunk's position; on the head, mutated
 						 * during aggregation to track the last index
-						 * absorbed (same pattern quark_tty.total_len
-						 * already uses) */
+						 * absorbed */
 	u32				 chunk_total;	/* total chunks captured for this call */
 	size_t				 call_len;	/* true call length, before any capping */
 	size_t				 total_len;	/* total bytes in the agg chain: next */
 	size_t				 truncated;	/* bytes truncated past the per-call ceiling */
-	int				 dropped;	/* 1 if this specific chunk's bytes are
-						 * known-missing (a bpf_probe_read_user
-						 * failure marker) */
+	int				 dropped;	/* 1 if this chunk's bytes are known-missing
+						 * (a bpf_probe_read_user failure marker) */
 	int				 gap;		/* 1 if some non-trailing chunk in this chain
 						 * never arrived or was dropped: total_len/data
 						 * is NOT a safe contiguous prefix of the
-						 * original call, unlike a clean trailing
-						 * truncation */
+						 * original call */
 	size_t				 data_len;
 	char				 data[];
 };

@@ -1820,9 +1820,9 @@ t_dns(const struct test *t, struct quark_queue_attr *qa)
 #ifdef WITH_TLS_TESTS
 
 /*
- * Self-signed EC P-256 cert+key, valid 100 years from generation, used only
- * to give the in-process TLS handshake below something to present. CN is
- * irrelevant since the client never verifies it (SSL_VERIFY_NONE).
+ * Self-signed EC P-256 cert+key, used only to give the in-process TLS
+ * handshake below something to present. CN is irrelevant since the client
+ * never verifies it (SSL_VERIFY_NONE).
  */
 static const char tls_test_cert_pem[] =
 "-----BEGIN CERTIFICATE-----\n"
@@ -1858,9 +1858,7 @@ struct tls_session {
  * object backs a given address and that object's load bias. For an ET_DYN
  * ELF (any .so), vaddr and file offset are numerically identical, so
  * subtracting the load bias from the runtime address gives exactly the
- * file offset quark_queue_tls_attach() wants -- the same quantity an
- * external resolver (build-id registry, ELF symbol table) would have to
- * produce for a stripped binary it can't run code in.
+ * file offset quark_queue_tls_attach() wants.
  */
 static int
 tls_resolve(void *sym, const char **path, u64 *off)
@@ -1919,8 +1917,8 @@ tls_test_server_ctx(void)
 
 /*
  * Untracked TLS server: never added to tracked_tgids, so none of its own
- * SSL_new/SSL_read/SSL_write activity is ever captured by quark. It exists
- * purely to give the tracked client something real to handshake with.
+ * activity is ever captured by quark. It exists purely to give the tracked
+ * client something real to handshake with.
  */
 static void
 tls_test_server(int fd, size_t req_len, const char *resp, size_t resp_len)
@@ -1996,12 +1994,8 @@ tls_test_client(int fd, int syncfd, const char *req, size_t req_len,
 		errx(1, "SSL_connect");
 
 	/*
-	 * Callers pass static string literals for the small fixed-content
-	 * tests; copy into a heap buffer this process just wrote before
-	 * SSL_write(), since req's page may otherwise have never been
-	 * touched by us at all. A real request body is always built into
-	 * memory the app just wrote, so this matches that -- it isn't
-	 * working around anything on quark's side.
+	 * Copy into a heap buffer this process just wrote before SSL_write(),
+	 * since req's page may otherwise have never been touched by us at all.
 	 */
 	if ((wbuf = malloc(req_len)) == NULL)
 		err(1, "malloc");
@@ -2032,8 +2026,7 @@ tls_test_client(int fd, int syncfd, const char *req, size_t req_len,
  * handshake runs *before* the client signals the parent, so the parent tracks
  * it only afterwards and quark never sees this connection's SSL_new. The first
  * SSL_write below therefore misses tls_conns and is adopted in place, minting a
- * conn_id flagged PREFIX_UNKNOWN. rsyncfd carries "you are tracked, proceed"
- * from the parent; wsyncfd carries "handshake done, track me now" back to it.
+ * conn_id flagged PREFIX_UNKNOWN.
  */
 static void
 tls_test_client_late(int fd, int rsyncfd, int wsyncfd, const char *req,
@@ -2096,10 +2089,7 @@ tls_test_client_late(int fd, int rsyncfd, int wsyncfd, const char *req,
 
 /*
  * Resolves SSL_new/SSL_read/SSL_write/SSL_free to a path + file offset in the
- * loaded libssl and attaches quark's TLS uprobes system-wide. The attach is
- * per-binary, not per-process (see quark_queue_tls_attach), so this is called
- * exactly once per queue no matter how many tracked clients follow -- a
- * multi-client test attaches once and starts several sessions.
+ * loaded libssl and attaches quark's TLS uprobes system-wide.
  */
 static void
 tls_attach(struct quark_queue *qq)
@@ -2125,10 +2115,8 @@ tls_attach(struct quark_queue *qq)
 
 /*
  * Forks an untracked TLS server and a tracked TLS client connected over a
- * socketpair, and tracks only the client's tgid: the client is added to the
- * allow-list while the peer it talks to is deliberately left off it, so the
- * capture path is exercised end to end alongside the tgid gating. The
- * uprobes must already be attached via tls_attach().
+ * socketpair, and tracks only the client's tgid. The uprobes must already be
+ * attached via tls_attach().
  */
 static void
 tls_session_start(struct tls_session *ts, struct quark_queue *qq,
@@ -2175,8 +2163,7 @@ tls_session_start(struct tls_session *ts, struct quark_queue *qq,
 /*
  * Like tls_session_start(), but the client handshakes before it is tracked (see
  * tls_test_client_late): the parent waits for the client's "handshake done"
- * signal, tracks it, then releases it into the data phase. The connection is
- * thus adopted mid-stream rather than seen from SSL_new.
+ * signal, tracks it, then releases it into the data phase.
  */
 static void
 tls_session_start_late(struct tls_session *ts, struct quark_queue *qq,
@@ -2270,10 +2257,8 @@ assert_tls_call(struct quark_tls_call *qtc, enum quark_tls_direction direction,
 	assert(qtc->truncated == want_truncated);
 	assert(qtc->total_len == want_total);
 	/*
-	 * None of these tests engineer a mid-chain drop (that needs either a
-	 * real bpf_probe_read_user failure or a saturated ring buffer,
-	 * neither of which is reproducible deterministically here) -- gap
-	 * must be clean, and so must every individual chunk in the chain.
+	 * None of these tests engineer a mid-chain drop -- gap must be clean,
+	 * and so must every individual chunk in the chain.
 	 */
 	assert(qtc->gap == 0);
 
@@ -2404,10 +2389,7 @@ t_tls_call(const struct test *t, struct quark_queue_attr *qa)
  * only after it has handshaked) must not be dropped silently. Its first
  * SSL_write adopts the connection on the spot: a conn_id is minted, flagged
  * PREFIX_UNKNOWN so the missing prefix is visible, and the payload is still
- * delivered under it. This is the late-attach / re-hook path -- the connection
- * and its traffic surface instead of being lost. The establish is emitted from
- * the same probe call as the first chunk, but always ahead of it (submitted
- * first, so it sorts first even on a timestamp tie), so drain order holds.
+ * delivered under it.
  */
 static int
 t_tls_late_adopt(const struct test *t, struct quark_queue_attr *qa)
@@ -2459,12 +2441,11 @@ t_tls_late_adopt(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
- * A single SSL_write() call sees the whole application buffer atomically
- * (the uprobe reads it straight from the call's argument before the
- * library fragments it into TLS records), so the write direction is where
- * multi-chunk reassembly is deterministic to test. SSL_read() returns
- * whatever happens to be decrypted at call time, bounded by TLS's own
- * 16KiB per-record plaintext ceiling, so it isn't used here.
+ * A single SSL_write() call sees the whole application buffer atomically, so
+ * the write direction is where multi-chunk reassembly is deterministic to
+ * test. SSL_read() returns whatever happens to be decrypted at call time,
+ * bounded by TLS's own 16KiB per-record plaintext ceiling, so it isn't used
+ * here.
  */
 static int
 t_tls_multichunk(const struct test *t, struct quark_queue_attr *qa)
@@ -2567,9 +2548,7 @@ t_tls_truncated(const struct test *t, struct quark_queue_attr *qa)
  * Two tracked clients talking through the same system-wide uprobes at the
  * same time must never bleed into each other: each SSL_new mints its own
  * globally-unique conn_id, and each client's captured request bytes must come
- * back tagged with that client's conn_id and tgid. A regression to a per-tgid
- * conn_id counter, or an ssl->conn_id key that dropped tgid, would surface
- * here as a shared conn_id or a swapped payload.
+ * back tagged with that client's conn_id and tgid.
  */
 static int
 t_tls_multiproc(const struct test *t, struct quark_queue_attr *qa)

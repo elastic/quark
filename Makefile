@@ -143,9 +143,8 @@ endif
 
 # OpenSSL is only used by quark-test's TLS e2e tests, and only linked into
 # the dynamic quark-test binary, never quark-test-static: OpenSSL 3.x loads
-# providers dynamically at runtime, so static-linking it is not viable.
-# Detected via pkg-config; if absent, the TLS e2e tests are simply not
-# compiled in (see HAVE_OPENSSL guards in quark-test.c).
+# providers dynamically at runtime, so static-linking it is not viable. If
+# absent, the TLS e2e tests are simply not compiled in.
 PKG_CONFIG?= pkg-config
 HAVE_OPENSSL:= $(shell $(PKG_CONFIG) --exists openssl 2>/dev/null && echo 1)
 ifeq ($(HAVE_OPENSSL),1)
@@ -473,18 +472,13 @@ test-kernel: initramfs.gz
 # loading these BTF modules, making valgrind spit thousands of false
 # positives.
 #
-#
-# The TLS e2e tests (t_tls_load/t_tls_conn/t_tls_call/t_tls_multichunk/
-# t_tls_truncated/t_tls_multiproc) are excluded here: uprobes and valgrind's ptrace-based
+# The TLS e2e tests are excluded here: uprobes and valgrind's ptrace-based
 # tracing fundamentally conflict at the kernel breakpoint (int3/SIGTRAP)
 # level, independent of --trace-children=no (a forked child still dies
 # with SIGTRAP the instant it hits an attached uprobe, e.g. SSL_new). This
 # is a documented upstream limitation, not something fixable from quark's
 # or the test's side; see valgrind bug 466172 for the same pattern with
-# bpftrace. Re-enabling these under valgrind isn't on the table; getting
-# real dynamic leak coverage for the TLS path needs a non-ptrace-based
-# tool (AddressSanitizer/LeakSanitizer is the candidate) -- tracked as a
-# backlog item, not done yet.
+# bpftrace.
 #
 test-valgrind: quark-test
 	$(SUDO) VALGRIND=1 QUARK_BTF_PATH=/sys/kernel/btf/vmlinux	\

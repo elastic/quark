@@ -92,10 +92,7 @@ struct ebpf_events_memfd_create_state {
 // stashes the SSL object and the caller's buffer plus requested length; the
 // return value gives the bytes actually transferred (min(len, ret)) and drives
 // the per-call sequence bump. Stashing the SSL* lets the return probe re-find
-// the connection, since the return itself only carries the byte count. This
-// keeps capture correct for non-blocking / memory-BIO / partial callers (never
-// a WANT_* retry's full buffer, never an unfilled read) and symmetric for both
-// directions.
+// the connection, since the return itself only carries the byte count.
 struct ebpf_events_ssl_io_state {
     void *ssl;
     void *buf;

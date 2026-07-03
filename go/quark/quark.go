@@ -184,18 +184,13 @@ type Tty struct {
 // TlsConn carries a connection lifecycle event. It is delivered with
 // QUARK_EV_TLS_CONN_ESTABLISHED when the connection first becomes known and
 // again with QUARK_EV_TLS_CONN_CLOSED when SSL_free runs; check Event.Events to
-// tell them apart. ConnId is the identifier every subsequent TlsCall for this
-// connection carries; it is globally unique across all connections and
-// processes and never reused, so it may be used as a map key on its own. Tgid
-// is the owning process. A close is not delivered when a process dies without
-// calling SSL_free (e.g. SIGKILL); treat a process exit as closing all its
-// connections.
+// tell them apart. ConnId is globally unique across all connections and
+// processes and never reused, so it may be used as a map key on its own. A
+// close is not delivered when a process dies without calling SSL_free (e.g.
+// SIGKILL); treat a process exit as closing all its connections.
 //
 // PrefixUnknown is set on an ESTABLISHED event when the connection was adopted
-// mid-stream (its SSL_new was never seen because the probes attached after it
-// was already open) rather than observed from birth. Its captured bytes do not
-// start at the connection's first byte, so CallSeq 0 is not the true start; a
-// consumer that needs the opening bytes should treat it as unreliable.
+// mid-stream (its SSL_new was never seen) rather than observed from birth.
 type TlsConn struct {
 	ConnId        uint64
 	Tgid          uint32
@@ -455,9 +450,8 @@ func (queue *Queue) GetEvent() (Event, bool) {
 }
 
 // TrackTgid adds tgid to the TLS capture allow-list. All SSL_new/SSL_read/
-// SSL_write activity from tgid (and only tgid, no descendant propagation -
-// callers add children explicitly on fork) is captured once TlsAttach has
-// been called for the binary/library tgid uses.
+// SSL_write activity from tgid (and only tgid, no descendant propagation) is
+// captured once TlsAttach has been called for the binary/library tgid uses.
 func (queue *Queue) TrackTgid(tgid uint32) error {
 	ok, err := C.quark_queue_track_tgid(queue.quarkQueue, C.u32(tgid))
 	if ok == -1 {
