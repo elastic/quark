@@ -29,14 +29,11 @@
  * the optional SSL_read_ex/SSL_write_ex pair). Unused slots stay NULL.
  *
  * pid is the process the uprobes are scoped to, or -1 for a system-wide attach.
- * auto_tracked is set when the attach added pid to the tracked_tgids allow-list
- * itself (every pid-scoped attach does), so detach knows to undo it.
  */
 struct quark_tls_attachment {
 	TAILQ_ENTRY(quark_tls_attachment)	 entry;
 	struct bpf_link				*links[10];
 	int					 pid;
-	int					 auto_tracked;
 };
 
 struct bpf_queue {
@@ -115,8 +112,7 @@ ebpf_ctx_to_task(struct quark_queue *qq, struct ebpf_ctx *ebpf_ctx, struct raw_t
 	}
 }
 
-static int	tls_track_tgid(struct bpf_probes *, u32);
-static void	tls_forget_tgid(struct bpf_probes *, u32);
+static void	tls_reclaim_conns(struct bpf_probes *, u32);
 static void	tls_attachment_destroy(struct quark_tls_attachment *);
 static void	tls_detach_all(struct bpf_queue *);
 
@@ -200,22 +196,24 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
 
 		/*
-		 * A tracked process is dying: stop tracking it and reclaim any
-		 * TLS connections it left behind. SSL_free already removes
-		 * entries on a clean close, but a process killed with live SSL
-		 * objects (e.g. SIGKILL) never runs it -- this exit hook, which
-		 * the kernel guarantees even for SIGKILL, is the backstop.
+		 * A process that opened TLS connections is dying: reclaim any
+		 * it left behind. SSL_free already removes entries on a clean
+		 * close, but a process killed with live SSL objects (e.g.
+		 * SIGKILL) never runs it -- this exit hook, which the kernel
+		 * guarantees even for SIGKILL, is the backstop. The probe-
+		 * maintained tls_conn_tgids index gates the sweep with an O(1)
+		 * lookup so unrelated exits don't scan the connection map.
 		 */
 		if (qq->flags & QQ_TLS) {
 			struct bpf_probes	*p;
 			u8			 v;
 
 			if ((p = quark_get_bpf_probes(qq)) != NULL &&
-			    p->maps.tracked_tgids != NULL &&
-			    bpf_map__lookup_elem(p->maps.tracked_tgids,
+			    p->maps.tls_conn_tgids != NULL &&
+			    bpf_map__lookup_elem(p->maps.tls_conn_tgids,
 			    &exit->pids.tgid, sizeof(exit->pids.tgid),
 			    &v, sizeof(v), 0) == 0)
-				tls_forget_tgid(p, exit->pids.tgid);
+				tls_reclaim_conns(p, exit->pids.tgid);
 		}
 
 		break;
@@ -1655,43 +1653,13 @@ quark_queue_trusted_pid_add(struct quark_queue *qq, u32 pid)
 }
 
 /*
- * Add tgid to the TLS capture allow-list. Shared by the public track call and
- * by every pid-scoped attach, which tracks its target itself.
- */
-static int
-tls_track_tgid(struct bpf_probes *p, u32 tgid)
-{
-	struct bpf_map	*m;
-	u8		 v;
-
-	if ((m = p->maps.tracked_tgids) == NULL)
-		return (errno = EINVAL, -1);
-	v = 1;
-	if (bpf_map__update_elem(m, &tgid, sizeof(tgid),
-	    &v, sizeof(v), BPF_ANY) < 0)
-		return (-1);
-
-	return (0);
-}
-
-int
-quark_queue_track_tgid(struct quark_queue *qq, u32 tgid)
-{
-	struct bpf_probes	*p;
-
-	if ((p = quark_get_bpf_probes(qq)) == NULL)
-		return (-1);
-
-	return (tls_track_tgid(p, tgid));
-}
-
-/*
- * Stop tracking tgid and reclaim every TLS connection it owns. The tls_conns
- * key mirrors struct tls_ssl_key in TLS/Probe.bpf.c; keep the layout in sync.
- * Collect-then-delete because deleting while iterating disturbs get_next_key.
+ * Reclaim every TLS connection tgid owns and drop it from the tls_conn_tgids
+ * GC index. The tls_conns key mirrors struct tls_ssl_key in TLS/Probe.bpf.c;
+ * keep the layout in sync. Collect-then-delete because deleting while iterating
+ * disturbs get_next_key.
  */
 static void
-tls_forget_tgid(struct bpf_probes *p, u32 tgid)
+tls_reclaim_conns(struct bpf_probes *p, u32 tgid)
 {
 	struct tls_ssl_key {
 		u32	tgid;
@@ -1702,8 +1670,7 @@ tls_forget_tgid(struct bpf_probes *p, u32 tgid)
 	size_t		 nmatch;
 	int		 i, full;
 
-	/* Drop the allow-list entry first so no new connection is minted. */
-	if ((m = p->maps.tracked_tgids) != NULL)
+	if ((m = p->maps.tls_conn_tgids) != NULL)
 		(void)bpf_map__delete_elem(m, &tgid, sizeof(tgid), 0);
 
 	if ((m = p->maps.tls_conns) == NULL)
@@ -1732,20 +1699,6 @@ tls_forget_tgid(struct bpf_probes *p, u32 tgid)
 	} while (full);
 }
 
-int
-quark_queue_untrack_tgid(struct quark_queue *qq, u32 tgid)
-{
-	struct bpf_probes	*p;
-
-	if ((p = quark_get_bpf_probes(qq)) == NULL)
-		return (-1);
-	if (p->maps.tracked_tgids == NULL)
-		return (errno = EINVAL, -1);
-	tls_forget_tgid(p, tgid);
-
-	return (0);
-}
-
 /*
  * Destroy one attachment's uprobe links and free the record. Safe on a
  * partially populated record: unset slots are NULL and bpf_link__destroy(NULL)
@@ -1767,8 +1720,7 @@ tls_attachment_destroy(struct quark_tls_attachment *ta)
 
 /*
  * Detach every TLS uprobe attachment. Called from bpf_queue_close, where the
- * maps are about to be destroyed anyway, so it only frees the links and skips
- * the per-attachment untrack/sweep that quark_queue_tls_detach does.
+ * maps are about to be destroyed anyway, so it only frees the links.
  */
 static void
 tls_detach_all(struct bpf_queue *bqq)
@@ -1782,36 +1734,19 @@ tls_detach_all(struct bpf_queue *bqq)
 }
 
 /*
- * Detach a single attachment and reclaim what it owns. A pid-scoped attach
- * tracked its target itself; drop that tracking (which also sweeps the tgid's
- * live connections) unless another attachment still covers the same pid.
+ * Detach a single attachment: remove it and destroy its uprobe links. Any
+ * connections its process still holds are reclaimed when that process exits
+ * (via the tls_conn_tgids-gated exit sweep), so nothing is swept here.
  */
 void
 quark_queue_tls_detach(struct quark_queue *qq, struct quark_tls_attachment *ta)
 {
-	struct bpf_queue		*bqq = qq->queue_be;
-	struct quark_tls_attachment	*other;
-	struct bpf_probes		*p;
-	int				 still_tracked;
+	struct bpf_queue	*bqq = qq->queue_be;
 
 	if (ta == NULL)
 		return;
 
 	TAILQ_REMOVE(&bqq->tls_attachments, ta, entry);
-
-	if (ta->auto_tracked && ta->pid >= 0 &&
-	    (p = quark_get_bpf_probes(qq)) != NULL) {
-		still_tracked = 0;
-		TAILQ_FOREACH(other, &bqq->tls_attachments, entry) {
-			if (other->pid == ta->pid) {
-				still_tracked = 1;
-				break;
-			}
-		}
-		if (!still_tracked)
-			tls_forget_tgid(p, (u32)ta->pid);
-	}
-
 	tls_attachment_destroy(ta);
 }
 
@@ -1854,38 +1789,13 @@ tls_attach_uprobe_sym(struct bpf_program *prog, int retprobe, int pid,
 }
 
 /*
- * Finish an attach: for a pid-scoped attach, track the target so the shared
- * probes capture it and its connections are swept on exit. Links the record
- * into the queue on success, rolls it back on failure.
- */
-static struct quark_tls_attachment *
-tls_attach_commit(struct bpf_queue *bqq, struct bpf_probes *p,
-    struct quark_tls_attachment *ta)
-{
-	if (ta->pid >= 0) {
-		if (tls_track_tgid(p, (u32)ta->pid) != 0)
-			goto fail;
-		ta->auto_tracked = 1;
-	}
-
-	TAILQ_INSERT_TAIL(&bqq->tls_attachments, ta, entry);
-
-	return (ta);
-
-fail:
-	tls_attachment_destroy(ta);
-	return (NULL);
-}
-
-/*
  * Offset attach: path plus SSL_new, SSL_read, SSL_write, SSL_free file offsets,
- * all required. pid == -1 attaches system-wide, and capture is then gated by
- * the tracked_tgids allow-list the caller manages with quark_queue_track_tgid.
- * pid >= 0 scopes the uprobes to that process and tracks it automatically.
- * Callers are recommended to track attachments by (dev, inode, offset) and
- * attach once per such tuple, not once per process; the kernel refcounts
- * uprobes by (inode, offset) only. Returns an opaque handle, or NULL with
- * errno set on failure.
+ * all required. pid == -1 attaches system-wide, so every process hitting these
+ * offsets is captured (subject only to the trusted-pid deny-list); pid >= 0
+ * scopes the uprobes to that process. Callers are recommended to track
+ * attachments by (dev, inode, offset) and attach once per such tuple, not once
+ * per process; the kernel refcounts uprobes by (inode, offset) only. Returns an
+ * opaque handle, or NULL with errno set on failure.
  */
 struct quark_tls_attachment *
 quark_queue_tls_attach(struct quark_queue *qq, int pid, const char *path,
@@ -1930,7 +1840,9 @@ quark_queue_tls_attach(struct quark_queue *qq, int pid, const char *path,
 	    "uprobe__ssl_free")) == NULL)
 		goto fail;
 
-	return (tls_attach_commit(bqq, p, ta));
+	TAILQ_INSERT_TAIL(&bqq->tls_attachments, ta, entry);
+
+	return (ta);
 
 fail:
 	tls_attachment_destroy(ta);
@@ -1969,9 +1881,8 @@ tls_attach_sym_ex(struct bpf_probes *p, struct quark_tls_attachment *ta,
 /*
  * Symbol attach for a shared library (e.g. libssl). Resolves SSL_new, SSL_free,
  * SSL_read, SSL_write (required) and SSL_read_ex, SSL_write_ex (optional) by
- * name in path. pid must be >= 0: the uprobes are scoped to that process and it
- * is tracked automatically, so no allow-list management is needed. Returns an
- * opaque handle, or NULL with errno set on failure.
+ * name in path. pid must be >= 0: the uprobes are scoped to that process.
+ * Returns an opaque handle, or NULL with errno set on failure.
  */
 struct quark_tls_attachment *
 quark_queue_tls_attach_sym(struct quark_queue *qq, int pid, const char *path)
@@ -2012,7 +1923,9 @@ quark_queue_tls_attach_sym(struct quark_queue *qq, int pid, const char *path)
 	tls_attach_sym_ex(p, ta, pid, path, p->progs.uprobe__ssl_read_ex,
 	    p->progs.uretprobe__ssl_read_ex, "SSL_read_ex", 8, 9);
 
-	return (tls_attach_commit(bqq, p, ta));
+	TAILQ_INSERT_TAIL(&bqq->tls_attachments, ta, entry);
+
+	return (ta);
 
 fail:
 	tls_attachment_destroy(ta);

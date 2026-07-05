@@ -144,24 +144,22 @@ int			 bpf_queue_open(struct quark_queue *);
 struct bpf_probes	*quark_get_bpf_probes(struct quark_queue *);
 int			 quark_queue_trusted_pid_add(struct quark_queue *, u32);
 int			 quark_queue_trusted_pid_reset(struct quark_queue *);
-int			 quark_queue_track_tgid(struct quark_queue *, u32);
-int			 quark_queue_untrack_tgid(struct quark_queue *, u32);
 /*
  * Offset attach: pid (-1 for system-wide), path, then SSL_new, SSL_read,
- * SSL_write, SSL_free file offsets, all required. A system-wide attach is gated
- * by the tracked_tgids allow-list (quark_queue_track_tgid); a pid-scoped attach
- * (pid >= 0) tracks its target itself. Callers are recommended to track
- * attachments by (dev, inode, offset) and attach once per such tuple; the
- * kernel refcounts uprobes by (inode, offset) only. Returns an opaque handle
- * or NULL.
+ * SSL_write, SSL_free file offsets, all required. A system-wide attach (pid ==
+ * -1) captures every process hitting these offsets, subject only to the
+ * trusted-pid deny-list; a pid-scoped attach (pid >= 0) captures only that
+ * process. Callers are recommended to track attachments by (dev, inode, offset)
+ * and attach once per such tuple; the kernel refcounts uprobes by (inode,
+ * offset) only. Returns an opaque handle or NULL.
  */
 struct quark_tls_attachment *quark_queue_tls_attach(struct quark_queue *, int,
 			     const char *, u64, u64, u64, u64);
 /*
  * Symbol attach: pid (must be >= 0) and a library path. Resolves SSL_new,
  * SSL_free, SSL_read, SSL_write (required) and SSL_read_ex, SSL_write_ex
- * (optional) by name. Scopes the uprobes to pid and tracks it itself. Returns
- * an opaque handle or NULL.
+ * (optional) by name. Scopes the uprobes to pid. Returns an opaque handle or
+ * NULL.
  */
 struct quark_tls_attachment *quark_queue_tls_attach_sym(struct quark_queue *,
 			     int, const char *);

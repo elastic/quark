@@ -1916,9 +1916,9 @@ tls_test_server_ctx(void)
 }
 
 /*
- * Untracked TLS server: never added to tracked_tgids, so none of its own
- * activity is ever captured by quark. It exists purely to give the tracked
- * client something real to handshake with.
+ * TLS server: exists purely to give the client something real to handshake
+ * with. Its own SSL activity is captured too under a system-wide attach, but
+ * the tests drain by the client's pid, so the server's events are ignored.
  */
 static void
 tls_test_server(int fd, size_t req_len, const char *resp, size_t resp_len)
@@ -1978,7 +1978,12 @@ tls_test_client(int fd, int syncfd, const char *req, size_t req_len,
 	/* See the matching comment in tls_test_server() */
 	signal(SIGPIPE, SIG_IGN);
 
-	/* Wait until the parent has called quark_queue_track_tgid() on us */
+	/*
+	 * Wait until the parent has released us. For the offset tests the
+	 * probes are already attached system-wide; for the symbol test the
+	 * parent attaches to our pid first, so we must not SSL_new until it
+	 * signals, or the connection would be missed and adopted mid-stream.
+	 */
 	if (read(syncfd, &c, 1) != 1)
 		err(1, "client sync read");
 	close(syncfd);
@@ -2023,10 +2028,10 @@ tls_test_client(int fd, int syncfd, const char *req, size_t req_len,
 
 /*
  * Late-adoption variant of tls_test_client(): the SSL_new + SSL_connect
- * handshake runs *before* the client signals the parent, so the parent tracks
- * it only afterwards and quark never sees this connection's SSL_new. The first
- * SSL_write below therefore misses tls_conns and is adopted in place, minting a
- * conn_id flagged PREFIX_UNKNOWN.
+ * handshake runs *before* the client signals the parent, so the parent attaches
+ * the probes only afterwards and quark never sees this connection's SSL_new. The
+ * first SSL_write below therefore misses tls_conns and is adopted in place,
+ * minting a conn_id flagged PREFIX_UNKNOWN.
  */
 static void
 tls_test_client_late(int fd, int rsyncfd, int wsyncfd, const char *req,
@@ -2053,12 +2058,12 @@ tls_test_client_late(int fd, int rsyncfd, int wsyncfd, const char *req,
 	if (SSL_connect(ssl) != 1)
 		errx(1, "SSL_connect");
 
-	/* Handshake done while still untracked: ask the parent to track us. */
+	/* Handshake done before any probe is attached: tell the parent. */
 	if (write(wsyncfd, "", 1) != 1)
 		err(1, "client sync write");
 	close(wsyncfd);
 
-	/* Proceed only once the parent has called quark_queue_track_tgid(). */
+	/* Proceed only once the parent has attached the probes. */
 	if (read(rsyncfd, &c, 1) != 1)
 		err(1, "client sync read");
 	close(rsyncfd);
@@ -2108,16 +2113,16 @@ tls_attach(struct quark_queue *qq)
 	if (tls_resolve((void *)SSL_free, &path, &free_off) != 0)
 		errx(1, "can't resolve SSL_free");
 
-	/* pid -1: system-wide, gated by the tracked_tgids allow-list. */
+	/* pid -1: system-wide, every process hitting these offsets is captured. */
 	if (quark_queue_tls_attach(qq, -1, path, new_off, read_off, write_off,
 	    free_off) == NULL)
 		err(1, "quark_queue_tls_attach");
 }
 
 /*
- * Forks an untracked TLS server and a tracked TLS client connected over a
- * socketpair, and tracks only the client's tgid. The uprobes must already be
- * attached via tls_attach().
+ * Forks a TLS server and a TLS client connected over a socketpair. The uprobes
+ * must already be attached via tls_attach(); the client blocks until we release
+ * it, purely to keep the harness in step with the symbol-attach variant.
  */
 static void
 tls_session_start(struct tls_session *ts, struct quark_queue *qq,
@@ -2152,19 +2157,19 @@ tls_session_start(struct tls_session *ts, struct quark_queue *qq,
 	close(sv[1]);
 	close(syncfds[0]);
 
-	if (quark_queue_track_tgid(qq, ts->client) != 0)
-		err(1, "quark_queue_track_tgid");
-
-	/* Tracking is in place now, let the client proceed */
+	/* Probes are already attached, let the client proceed */
 	if (write(syncfds[1], "", 1) != 1)
 		err(1, "client sync write");
 	close(syncfds[1]);
 }
 
 /*
- * Like tls_session_start(), but the client handshakes before it is tracked (see
- * tls_test_client_late): the parent waits for the client's "handshake done"
- * signal, tracks it, then releases it into the data phase.
+ * Like tls_session_start(), but the client handshakes before the probes are
+ * attached (see tls_test_client_late): the parent waits for the client's
+ * "handshake done" signal, attaches system-wide only then, and releases it into
+ * the data phase. The connection's SSL_new is thus missed and its first
+ * SSL_write is adopted mid-stream. Attaches itself, so callers must not
+ * pre-attach via tls_attach().
  */
 static void
 tls_session_start_late(struct tls_session *ts, struct quark_queue *qq,
@@ -2206,15 +2211,15 @@ tls_session_start_late(struct tls_session *ts, struct quark_queue *qq,
 	close(up[0]);
 	close(down[1]);
 
-	/* Wait for the client to finish its handshake before tracking it. */
+	/* Wait for the client to finish its handshake before attaching. */
 	if (read(down[0], &c, 1) != 1)
 		err(1, "parent sync read");
 	close(down[0]);
 
-	if (quark_queue_track_tgid(qq, ts->client) != 0)
-		err(1, "quark_queue_track_tgid");
+	/* Attach only now, so the already-open connection's SSL_new is missed. */
+	tls_attach(qq);
 
-	/* Tracking is in place now, let the client proceed to write/read. */
+	/* Probes are in place now, let the client proceed to write/read. */
 	if (write(up[1], "", 1) != 1)
 		err(1, "client sync write");
 	close(up[1]);
@@ -2234,8 +2239,6 @@ tls_session_finish(struct quark_queue *qq, struct tls_session *ts)
 		err(1, "waitpid server");
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		errx(1, "tls server didn't exit cleanly");
-
-	(void)quark_queue_untrack_tgid(qq, ts->client);
 }
 
 /*
@@ -2386,8 +2389,8 @@ t_tls_call(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
- * A connection whose SSL_new the probes never saw (here the client is tracked
- * only after it has handshaked) must not be dropped silently. Its first
+ * A connection whose SSL_new the probes never saw (here the probes attach only
+ * after the client has handshaked) must not be dropped silently. Its first
  * SSL_write adopts the connection on the spot: a conn_id is minted, flagged
  * PREFIX_UNKNOWN so the missing prefix is visible, and the payload is still
  * delivered under it.
@@ -2405,8 +2408,7 @@ t_tls_late_adopt(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	tls_attach(&qq);
-
+	/* tls_session_start_late() attaches late itself; don't pre-attach. */
 	tls_session_start_late(&ts, &qq, tls_req_small, strlen(tls_req_small),
 	    tls_resp_small, strlen(tls_resp_small));
 
@@ -2546,10 +2548,10 @@ t_tls_truncated(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
- * Two tracked clients talking through the same system-wide uprobes at the
- * same time must never bleed into each other: each SSL_new mints its own
- * globally-unique conn_id, and each client's captured request bytes must come
- * back tagged with that client's conn_id and tgid.
+ * Two clients talking through the same system-wide uprobes at the same time
+ * must never bleed into each other: each SSL_new mints its own globally-unique
+ * conn_id, and each client's captured request bytes must come back tagged with
+ * that client's conn_id and tgid.
  */
 static int
 t_tls_multiproc(const struct test *t, struct quark_queue_attr *qa)
@@ -2627,9 +2629,8 @@ t_tls_multiproc(const struct test *t, struct quark_queue_attr *qa)
 
 /*
  * Like tls_session_start(), but attaches by symbol name to the client's own
- * libssl scoped to its pid (which quark_queue_tls_attach_sym tracks itself),
- * instead of the system-wide offset attach + explicit track the offset tests
- * use. Returns the attachment handle so the caller can detach it.
+ * libssl scoped to its pid, instead of the system-wide offset attach the other
+ * offset tests use. Returns the attachment handle so the caller can detach it.
  */
 static struct quark_tls_attachment *
 tls_session_start_sym(struct tls_session *ts, struct quark_queue *qq,

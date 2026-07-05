@@ -449,31 +449,6 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	return event, true
 }
 
-// TrackTgid adds tgid to the TLS capture allow-list. All SSL_new/SSL_read/
-// SSL_write activity from tgid (and only tgid, no descendant propagation) is
-// captured once TlsAttach has been called for the binary/library tgid uses.
-func (queue *Queue) TrackTgid(tgid uint32) error {
-	ok, err := C.quark_queue_track_tgid(queue.quarkQueue, C.u32(tgid))
-	if ok == -1 {
-		return wrapErrno(err)
-	}
-
-	return nil
-}
-
-// UntrackTgid removes tgid from the TLS capture allow-list and reclaims any
-// connections it still owns. This also happens automatically when quark sees
-// the process exit, so an explicit call is only needed to stop capturing a
-// live process early.
-func (queue *Queue) UntrackTgid(tgid uint32) error {
-	ok, err := C.quark_queue_untrack_tgid(queue.quarkQueue, C.u32(tgid))
-	if ok == -1 {
-		return wrapErrno(err)
-	}
-
-	return nil
-}
-
 // TlsAttachment is an opaque handle to a set of TLS uprobes, returned by
 // TlsAttach/TlsAttachSym and passed to TlsDetach.
 type TlsAttachment struct {
@@ -484,9 +459,8 @@ type TlsAttachment struct {
 // given file offsets in path; all four are required. Callers are recommended
 // to track attachments by (dev, inode, offset) and attach once per such tuple;
 // the kernel refcounts uprobes by (inode, offset) only. pid == -1 attaches
-// system-wide, and capture is then gated by the allow-list managed with
-// TrackTgid; pid >= 0 scopes the uprobes to that process and tracks it
-// automatically.
+// system-wide, capturing every process hitting these offsets (subject only to
+// the trusted-pid deny-list); pid >= 0 scopes the uprobes to that process.
 func (queue *Queue) TlsAttach(pid int, path string, sslNewOff, sslReadOff, sslWriteOff, sslFreeOff uint64) (*TlsAttachment, error) {
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
@@ -504,7 +478,7 @@ func (queue *Queue) TlsAttach(pid int, path string, sslNewOff, sslReadOff, sslWr
 // TlsAttachSym attaches the TLS uprobes to a shared library (e.g. libssl) by
 // symbol name. SSL_new/SSL_free/SSL_read/SSL_write are required and
 // SSL_read_ex/SSL_write_ex are attached if present. pid must be >= 0: the
-// uprobes are scoped to that process and it is tracked automatically.
+// uprobes are scoped to that process.
 func (queue *Queue) TlsAttachSym(pid int, path string) (*TlsAttachment, error) {
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))

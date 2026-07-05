@@ -17,20 +17,25 @@
 #include "State.h"
 #include "Varlen.h"
 
-// Allow-list of TGIDs to capture TLS from. Opposite of trusted_pids (a
-// deny-list): a TGID must be present here for a connection to be minted.
-// Populated by quark_queue_track_tgid()/untrack_tgid().
+// GC index of TGIDs that have opened at least one TLS connection. The probe
+// maintains it (insert on SSL_new and on mid-stream adopt); it does NOT gate
+// capture. Userspace consults it once per process exit to decide whether to
+// sweep leftover tls_conns entries for a process that died without SSL_free
+// (e.g. SIGKILL), so unrelated exits don't scan the map. Membership-only: an
+// entry may outlive the tgid's connections (it is cleared on process exit), so
+// a stale hit costs at most one wasted sweep, never a leak.
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(key_size, sizeof(u32));
     __uint(value_size, sizeof(u8));
-    __uint(max_entries, 512);
-} tracked_tgids SEC(".maps");
+    __uint(max_entries, 16384);
+} tls_conn_tgids SEC(".maps");
 
-static bool ebpf_events_is_tracked_tgid()
+static void tls_mark_conn_tgid(u32 tgid)
 {
-    u32 tgid = bpf_get_current_pid_tgid() >> 32;
-    return bpf_map_lookup_elem(&tracked_tgids, &tgid) != NULL;
+    u8 one = 1;
+
+    bpf_map_update_elem(&tls_conn_tgids, &tgid, &one, BPF_ANY);
 }
 
 // Global monotonic connection-id counter, bumped once per SSL_new. conn_id 0 is
@@ -232,6 +237,7 @@ static void tls_adopt_conn(struct tls_ssl_key *key)
     if (!bpf_map_lookup_elem(&tls_conns, key))
         return;
 
+    tls_mark_conn_tgid(key->tgid);
     tls_emit_conn(conn.conn_id, EBPF_TLS_CONN_F_PREFIX_UNKNOWN);
 }
 
@@ -247,8 +253,6 @@ int BPF_URETPROBE(uretprobe__ssl_new, void *ssl)
 
     if (ebpf_events_is_trusted_pid())
         goto out;
-    if (!ebpf_events_is_tracked_tgid())
-        goto out;
     if (!ssl)
         goto out;
 
@@ -262,6 +266,7 @@ int BPF_URETPROBE(uretprobe__ssl_new, void *ssl)
     };
     bpf_map_update_elem(&tls_conns, &key, &conn, BPF_ANY);
 
+    tls_mark_conn_tgid(key.tgid);
     tls_emit_conn(conn.conn_id, 0);
 
 out:
@@ -315,8 +320,8 @@ out:
 
 // Resolves the connection for a completed read/write and emits its payload.
 // Shared by the plain and _ex return probes: a hit is captured directly (the
-// hit is the filter), a miss is adopted mid-stream for a tracked, non-trusted
-// tgid, and the per-direction call_seq is advanced only for a captured call.
+// hit is the filter), a miss is adopted mid-stream for a non-trusted tgid, and
+// the per-direction call_seq is advanced only for a captured call.
 static void tls_capture_io(void *ssl, const void *buf, u32 len,
                            enum ebpf_tls_direction direction)
 {
@@ -332,8 +337,6 @@ static void tls_capture_io(void *ssl, const void *buf, u32 len,
     if (!conn) {
         if (ebpf_events_is_trusted_pid())
             return;
-        if (!ebpf_events_is_tracked_tgid())
-            return;
         tls_adopt_conn(&key);
         conn = bpf_map_lookup_elem(&tls_conns, &key);
         if (!conn)
@@ -348,8 +351,7 @@ static void tls_capture_io(void *ssl, const void *buf, u32 len,
 }
 
 // The read/write entry probes stash the caller's buffer for the matching return
-// probe. They gate on the same trusted deny-list / tracked allow-list as the
-// capture path.
+// probe. They gate on the trusted deny-list, same as the capture path.
 SEC("uprobe")
 int BPF_UPROBE(uprobe__ssl_write, void *ssl, const void *buf, int num)
 {
@@ -358,8 +360,6 @@ int BPF_UPROBE(uprobe__ssl_write, void *ssl, const void *buf, int num)
     preempt_disable();
 
     if (ebpf_events_is_trusted_pid())
-        goto out;
-    if (!ebpf_events_is_tracked_tgid())
         goto out;
 
     state.ssl_write.ssl = ssl;
@@ -403,8 +403,6 @@ int BPF_UPROBE(uprobe__ssl_read, void *ssl, void *buf, int num)
     preempt_disable();
 
     if (ebpf_events_is_trusted_pid())
-        goto out;
-    if (!ebpf_events_is_tracked_tgid())
         goto out;
 
     state.ssl_read.ssl = ssl;
@@ -454,8 +452,6 @@ int BPF_UPROBE(uprobe__ssl_write_ex, void *ssl, const void *buf, u64 num,
 
     if (ebpf_events_is_trusted_pid())
         goto out;
-    if (!ebpf_events_is_tracked_tgid())
-        goto out;
 
     state.ssl_write_ex.ssl       = ssl;
     state.ssl_write_ex.buf       = (void *)buf;
@@ -504,8 +500,6 @@ int BPF_UPROBE(uprobe__ssl_read_ex, void *ssl, void *buf, u64 num,
     preempt_disable();
 
     if (ebpf_events_is_trusted_pid())
-        goto out;
-    if (!ebpf_events_is_tracked_tgid())
         goto out;
 
     state.ssl_read_ex.ssl       = ssl;
