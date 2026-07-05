@@ -45,6 +45,7 @@ struct quark_queue_stats;
 struct quark_ruleset;
 struct quark_rule;
 struct quark_rule_field;
+struct quark_tls_attachment;
 typedef int (*quark_can_aggregate_fn)(struct quark_queue *,
     struct raw_event *, struct raw_event *);
 struct raw_event	*raw_event_alloc(int);
@@ -145,10 +146,28 @@ int			 quark_queue_trusted_pid_add(struct quark_queue *, u32);
 int			 quark_queue_trusted_pid_reset(struct quark_queue *);
 int			 quark_queue_track_tgid(struct quark_queue *, u32);
 int			 quark_queue_untrack_tgid(struct quark_queue *, u32);
-/* path, then SSL_new, SSL_read, SSL_write, SSL_free file offsets. All four are
- * required. */
-int			 quark_queue_tls_attach(struct quark_queue *, const char *,
-			     u64, u64, u64, u64);
+/*
+ * Offset attach: pid (-1 for system-wide), path, then SSL_new, SSL_read,
+ * SSL_write, SSL_free file offsets, all required. A system-wide attach is gated
+ * by the tracked_tgids allow-list (quark_queue_track_tgid); a pid-scoped attach
+ * (pid >= 0) tracks its target itself. Callers are recommended to track
+ * attachments by (dev, inode, offset) and attach once per such tuple; the
+ * kernel refcounts uprobes by (inode, offset) only. Returns an opaque handle
+ * or NULL.
+ */
+struct quark_tls_attachment *quark_queue_tls_attach(struct quark_queue *, int,
+			     const char *, u64, u64, u64, u64);
+/*
+ * Symbol attach: pid (must be >= 0) and a library path. Resolves SSL_new,
+ * SSL_free, SSL_read, SSL_write (required) and SSL_read_ex, SSL_write_ex
+ * (optional) by name. Scopes the uprobes to pid and tracks it itself. Returns
+ * an opaque handle or NULL.
+ */
+struct quark_tls_attachment *quark_queue_tls_attach_sym(struct quark_queue *,
+			     int, const char *);
+/* Detach a single attachment created by the two functions above. */
+void			 quark_queue_tls_detach(struct quark_queue *,
+			     struct quark_tls_attachment *);
 
 /* kprobe_queue.c */
 int			 kprobe_queue_open(struct quark_queue *);
