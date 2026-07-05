@@ -474,23 +474,57 @@ func (queue *Queue) UntrackTgid(tgid uint32) error {
 	return nil
 }
 
+// TlsAttachment is an opaque handle to a set of TLS uprobes, returned by
+// TlsAttach/TlsAttachSym and passed to TlsDetach.
+type TlsAttachment struct {
+	handle *C.struct_quark_tls_attachment
+}
+
 // TlsAttach attaches the SSL_new/SSL_read/SSL_write/SSL_free uprobes at the
-// given file offsets in path. All four offsets are required. Attachment is
-// system-wide, not scoped to a single process: call this once per distinct
-// binary/library path even if several tracked tgids share it, not once per
-// tgid.
-func (queue *Queue) TlsAttach(path string, sslNewOff, sslReadOff, sslWriteOff, sslFreeOff uint64) error {
+// given file offsets in path; all four are required. Callers are recommended
+// to track attachments by (dev, inode, offset) and attach once per such tuple;
+// the kernel refcounts uprobes by (inode, offset) only. pid == -1 attaches
+// system-wide, and capture is then gated by the allow-list managed with
+// TrackTgid; pid >= 0 scopes the uprobes to that process and tracks it
+// automatically.
+func (queue *Queue) TlsAttach(pid int, path string, sslNewOff, sslReadOff, sslWriteOff, sslFreeOff uint64) (*TlsAttachment, error) {
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
-	ok, err := C.quark_queue_tls_attach(queue.quarkQueue, cpath,
+	h, err := C.quark_queue_tls_attach(queue.quarkQueue, C.int(pid), cpath,
 		C.u64(sslNewOff), C.u64(sslReadOff), C.u64(sslWriteOff),
 		C.u64(sslFreeOff))
-	if ok == -1 {
-		return wrapErrno(err)
+	if h == nil {
+		return nil, wrapErrno(err)
 	}
 
-	return nil
+	return &TlsAttachment{handle: h}, nil
+}
+
+// TlsAttachSym attaches the TLS uprobes to a shared library (e.g. libssl) by
+// symbol name. SSL_new/SSL_free/SSL_read/SSL_write are required and
+// SSL_read_ex/SSL_write_ex are attached if present. pid must be >= 0: the
+// uprobes are scoped to that process and it is tracked automatically.
+func (queue *Queue) TlsAttachSym(pid int, path string) (*TlsAttachment, error) {
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+
+	h, err := C.quark_queue_tls_attach_sym(queue.quarkQueue, C.int(pid), cpath)
+	if h == nil {
+		return nil, wrapErrno(err)
+	}
+
+	return &TlsAttachment{handle: h}, nil
+}
+
+// TlsDetach detaches a single attachment obtained from TlsAttach/TlsAttachSym
+// and reclaims what it owns. Calling it twice, or with a nil handle, is a no-op.
+func (queue *Queue) TlsDetach(a *TlsAttachment) {
+	if a == nil || a.handle == nil {
+		return
+	}
+	C.quark_queue_tls_detach(queue.quarkQueue, a.handle)
+	a.handle = nil
 }
 
 func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
