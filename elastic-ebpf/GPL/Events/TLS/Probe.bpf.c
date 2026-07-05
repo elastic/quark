@@ -313,6 +313,40 @@ out:
     return 0;
 }
 
+// Resolves the connection for a completed read/write and emits its payload.
+// Shared by the plain and _ex return probes: a hit is captured directly (the
+// hit is the filter), a miss is adopted mid-stream for a tracked, non-trusted
+// tgid, and the per-direction call_seq is advanced only for a captured call.
+static void tls_capture_io(void *ssl, const void *buf, u32 len,
+                           enum ebpf_tls_direction direction)
+{
+    struct tls_ssl_key key;
+    struct tls_conn *conn;
+    u64 seq;
+
+    key = (struct tls_ssl_key){
+        .tgid = bpf_get_current_pid_tgid() >> 32,
+        .ssl  = (u64)ssl,
+    };
+    conn = bpf_map_lookup_elem(&tls_conns, &key);
+    if (!conn) {
+        if (ebpf_events_is_trusted_pid())
+            return;
+        if (!ebpf_events_is_tracked_tgid())
+            return;
+        tls_adopt_conn(&key);
+        conn = bpf_map_lookup_elem(&tls_conns, &key);
+        if (!conn)
+            return;
+    }
+
+    if (direction == EBPF_TLS_DIR_WRITE)
+        seq = __sync_fetch_and_add(&conn->write_seq, 1);
+    else
+        seq = __sync_fetch_and_add(&conn->read_seq, 1);
+    tls_emit_call(conn->conn_id, buf, len, direction, seq);
+}
+
 // The read/write entry probes stash the caller's buffer for the matching return
 // probe. They gate on the same trusted deny-list / tracked allow-list as the
 // capture path.
@@ -342,9 +376,6 @@ SEC("uretprobe")
 int BPF_URETPROBE(uretprobe__ssl_write, int ret)
 {
     struct ebpf_events_state *state;
-    struct tls_ssl_key key;
-    struct tls_conn *conn;
-    u64 seq;
 
     preempt_disable();
 
@@ -354,27 +385,8 @@ int BPF_URETPROBE(uretprobe__ssl_write, int ret)
     if (ret <= 0 || (u32)ret > state->ssl_write.len)
         goto out;
 
-    key = (struct tls_ssl_key){
-        .tgid = bpf_get_current_pid_tgid() >> 32,
-        .ssl  = (u64)state->ssl_write.ssl,
-    };
-    conn = bpf_map_lookup_elem(&tls_conns, &key);
-    if (!conn) {
-        // Miss: SSL_new was never seen for this object. Adopt it only for a
-        // tracked, non-trusted tgid; these checks are off the hot path.
-        if (ebpf_events_is_trusted_pid())
-            goto out;
-        if (!ebpf_events_is_tracked_tgid())
-            goto out;
-        tls_adopt_conn(&key);
-        conn = bpf_map_lookup_elem(&tls_conns, &key);
-        if (!conn)
-            goto out;
-    }
-
-    seq = __sync_fetch_and_add(&conn->write_seq, 1);
-    tls_emit_call(conn->conn_id, state->ssl_write.buf, (u32)ret,
-                  EBPF_TLS_DIR_WRITE, seq);
+    tls_capture_io(state->ssl_write.ssl, state->ssl_write.buf, (u32)ret,
+                   EBPF_TLS_DIR_WRITE);
 
 out:
     ebpf_events_state__del(EBPF_EVENTS_STATE_SSL_WRITE);
@@ -409,9 +421,6 @@ SEC("uretprobe")
 int BPF_URETPROBE(uretprobe__ssl_read, int ret)
 {
     struct ebpf_events_state *state;
-    struct tls_ssl_key key;
-    struct tls_conn *conn;
-    u64 seq;
 
     preempt_disable();
 
@@ -421,29 +430,118 @@ int BPF_URETPROBE(uretprobe__ssl_read, int ret)
     if (ret <= 0 || (u32)ret > state->ssl_read.len)
         goto out;
 
-    key = (struct tls_ssl_key){
-        .tgid = bpf_get_current_pid_tgid() >> 32,
-        .ssl  = (u64)state->ssl_read.ssl,
-    };
-    conn = bpf_map_lookup_elem(&tls_conns, &key);
-    if (!conn) {
-        // Miss path, same as uretprobe__ssl_write above.
-        if (ebpf_events_is_trusted_pid())
-            goto out;
-        if (!ebpf_events_is_tracked_tgid())
-            goto out;
-        tls_adopt_conn(&key);
-        conn = bpf_map_lookup_elem(&tls_conns, &key);
-        if (!conn)
-            goto out;
-    }
-
-    seq = __sync_fetch_and_add(&conn->read_seq, 1);
-    tls_emit_call(conn->conn_id, state->ssl_read.buf, (u32)ret,
-                  EBPF_TLS_DIR_READ, seq);
+    tls_capture_io(state->ssl_read.ssl, state->ssl_read.buf, (u32)ret,
+                   EBPF_TLS_DIR_READ);
 
 out:
     ebpf_events_state__del(EBPF_EVENTS_STATE_SSL_READ);
+    preempt_enable();
+    return 0;
+}
+
+// SSL_read_ex(SSL *ssl, void *buf, size_t num, size_t *readbytes) and
+// SSL_write_ex(SSL *ssl, const void *buf, size_t num, size_t *written) report
+// the transferred count through the out-parameter and return 1 on success,
+// unlike SSL_read/SSL_write which return the count directly. The entry stashes
+// the count pointer alongside the buffer; the return reads it once ret == 1.
+SEC("uprobe")
+int BPF_UPROBE(uprobe__ssl_write_ex, void *ssl, const void *buf, u64 num,
+               void *written)
+{
+    struct ebpf_events_state state = {};
+
+    preempt_disable();
+
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+    if (!ebpf_events_is_tracked_tgid())
+        goto out;
+
+    state.ssl_write_ex.ssl       = ssl;
+    state.ssl_write_ex.buf       = (void *)buf;
+    state.ssl_write_ex.count_ptr = written;
+    state.ssl_write_ex.len       = (u32)num;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_SSL_WRITE_EX, &state);
+
+out:
+    preempt_enable();
+    return 0;
+}
+
+SEC("uretprobe")
+int BPF_URETPROBE(uretprobe__ssl_write_ex, int ret)
+{
+    struct ebpf_events_state *state;
+    u64 count;
+
+    preempt_disable();
+
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_SSL_WRITE_EX);
+    if (!state)
+        goto out;
+    if (ret != 1 || !state->ssl_write_ex.count_ptr)
+        goto out;
+    if (bpf_probe_read_user(&count, sizeof(count), state->ssl_write_ex.count_ptr))
+        goto out;
+    if (count == 0 || count > state->ssl_write_ex.len)
+        goto out;
+
+    tls_capture_io(state->ssl_write_ex.ssl, state->ssl_write_ex.buf,
+                   (u32)count, EBPF_TLS_DIR_WRITE);
+
+out:
+    ebpf_events_state__del(EBPF_EVENTS_STATE_SSL_WRITE_EX);
+    preempt_enable();
+    return 0;
+}
+
+SEC("uprobe")
+int BPF_UPROBE(uprobe__ssl_read_ex, void *ssl, void *buf, u64 num,
+               void *readbytes)
+{
+    struct ebpf_events_state state = {};
+
+    preempt_disable();
+
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+    if (!ebpf_events_is_tracked_tgid())
+        goto out;
+
+    state.ssl_read_ex.ssl       = ssl;
+    state.ssl_read_ex.buf       = buf;
+    state.ssl_read_ex.count_ptr = readbytes;
+    state.ssl_read_ex.len       = (u32)num;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_SSL_READ_EX, &state);
+
+out:
+    preempt_enable();
+    return 0;
+}
+
+SEC("uretprobe")
+int BPF_URETPROBE(uretprobe__ssl_read_ex, int ret)
+{
+    struct ebpf_events_state *state;
+    u64 count;
+
+    preempt_disable();
+
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_SSL_READ_EX);
+    if (!state)
+        goto out;
+    if (ret != 1 || !state->ssl_read_ex.count_ptr)
+        goto out;
+    if (bpf_probe_read_user(&count, sizeof(count), state->ssl_read_ex.count_ptr))
+        goto out;
+    if (count == 0 || count > state->ssl_read_ex.len)
+        goto out;
+
+    tls_capture_io(state->ssl_read_ex.ssl, state->ssl_read_ex.buf,
+                   (u32)count, EBPF_TLS_DIR_READ);
+
+out:
+    ebpf_events_state__del(EBPF_EVENTS_STATE_SSL_READ_EX);
     preempt_enable();
     return 0;
 }

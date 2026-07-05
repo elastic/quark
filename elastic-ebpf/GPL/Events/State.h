@@ -25,6 +25,8 @@ enum ebpf_events_state_op {
     EBPF_EVENTS_STATE_MEMFD_CREATE   = 11,
     EBPF_EVENTS_STATE_SSL_READ       = 12,
     EBPF_EVENTS_STATE_SSL_WRITE      = 13,
+    EBPF_EVENTS_STATE_SSL_READ_EX    = 14,
+    EBPF_EVENTS_STATE_SSL_WRITE_EX   = 15,
 };
 
 struct ebpf_events_key {
@@ -93,9 +95,14 @@ struct ebpf_events_memfd_create_state {
 // return value gives the bytes actually transferred (min(len, ret)) and drives
 // the per-call sequence bump. Stashing the SSL* lets the return probe re-find
 // the connection, since the return itself only carries the byte count.
+//
+// The SSL_read_ex/SSL_write_ex variants report the transferred count through an
+// out-parameter instead of the return value, so count_ptr holds that pointer
+// for the return probe to read; it is unused (NULL) for plain SSL_read/write.
 struct ebpf_events_ssl_io_state {
     void *ssl;
     void *buf;
+    void *count_ptr;
     u32 len;
 };
 
@@ -114,6 +121,8 @@ struct ebpf_events_state {
         /* struct ebpf_events_fs_create fs_create; nada */
         struct ebpf_events_ssl_io_state ssl_read;
         struct ebpf_events_ssl_io_state ssl_write;
+        struct ebpf_events_ssl_io_state ssl_read_ex;
+        struct ebpf_events_ssl_io_state ssl_write_ex;
     };
 };
 
