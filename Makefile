@@ -489,9 +489,11 @@ test-valgrind: quark-test
 		--error-exitcode=1					\
 		./quark-test -1						\
 		-x t_tls_load -x t_tls_conn -x t_tls_call		\
+		-x t_tls_late_adopt					\
 		-x t_tls_multichunk -x t_tls_truncated			\
 		-x t_tls_multiproc					\
-		2>&1 |grep -v "^--.*WARNING: unhandled eBPF command"
+		-x t_tls_attach_sym -x t_tls_attach_sym_missing		\
+		2>&1 |grep -vE "^--[0-9]+-- WARNING: unhandled eBPF command"
 
 initramfs:
 	mkdir -p initramfs/bin

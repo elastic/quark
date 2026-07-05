@@ -2108,8 +2108,9 @@ tls_attach(struct quark_queue *qq)
 	if (tls_resolve((void *)SSL_free, &path, &free_off) != 0)
 		errx(1, "can't resolve SSL_free");
 
-	if (quark_queue_tls_attach(qq, path, new_off, read_off, write_off,
-	    free_off) != 0)
+	/* pid -1: system-wide, gated by the tracked_tgids allow-list. */
+	if (quark_queue_tls_attach(qq, -1, path, new_off, read_off, write_off,
+	    free_off) == NULL)
 		err(1, "quark_queue_tls_attach");
 }
 
@@ -2619,6 +2620,137 @@ t_tls_multiproc(const struct test *t, struct quark_queue_attr *qa)
 
 	tls_session_finish(&qq, &ts0);
 	tls_session_finish(&qq, &ts1);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Like tls_session_start(), but attaches by symbol name to the client's own
+ * libssl scoped to its pid (which quark_queue_tls_attach_sym tracks itself),
+ * instead of the system-wide offset attach + explicit track the offset tests
+ * use. Returns the attachment handle so the caller can detach it.
+ */
+static struct quark_tls_attachment *
+tls_session_start_sym(struct tls_session *ts, struct quark_queue *qq,
+    const char *path, const char *req, size_t req_len,
+    const char *resp, size_t resp_len)
+{
+	struct quark_tls_attachment	*att;
+	int				 sv[2];
+	int				 syncfds[2];
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == -1)
+		err(1, "socketpair");
+	if (pipe(syncfds) == -1)
+		err(1, "pipe");
+
+	if ((ts->server = fork()) == -1)
+		err(1, "fork");
+	if (ts->server == 0) {
+		close(sv[1]);
+		close(syncfds[0]);
+		close(syncfds[1]);
+		tls_test_server(sv[0], req_len, resp, resp_len);
+		/* NOTREACHED */
+	}
+	close(sv[0]);
+
+	if ((ts->client = fork()) == -1)
+		err(1, "fork");
+	if (ts->client == 0) {
+		close(syncfds[1]);
+		tls_test_client(sv[1], syncfds[0], req, req_len, resp_len);
+		/* NOTREACHED */
+	}
+	close(sv[1]);
+	close(syncfds[0]);
+
+	/* The client blocks on syncfds until we've attached to its pid. */
+	if ((att = quark_queue_tls_attach_sym(qq, ts->client, path)) == NULL)
+		err(1, "quark_queue_tls_attach_sym");
+
+	if (write(syncfds[1], "", 1) != 1)
+		err(1, "client sync write");
+	close(syncfds[1]);
+
+	return (att);
+}
+
+/*
+ * Symbol-based attach against the client's real libssl: resolves SSL_* by name
+ * (not by pre-computed offset) and captures the same establish + write.
+ */
+static int
+t_tls_attach_sym(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct tls_session		 ts;
+	struct quark_tls_attachment	*att;
+	const struct quark_event	*qev;
+	const char			*path;
+	u64				 conn_id, new_off;
+
+	qa->flags |= QQ_TLS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Only need libssl's path here; the symbols are resolved by name. */
+	if (tls_resolve((void *)SSL_new, &path, &new_off) != 0)
+		errx(1, "can't resolve SSL_new");
+	if (path[0] != '/')
+		errx(1, "resolved non-absolute path: %s", path);
+
+	att = tls_session_start_sym(&ts, &qq, path, tls_req_small,
+	    strlen(tls_req_small), tls_resp_small, strlen(tls_resp_small));
+
+	qev = drain_for_pid(&qq, ts.client);	/* FORK */
+	assert(qev->events & QUARK_EV_FORK);
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CONN_ESTABLISHED */
+	assert(qev->events == QUARK_EV_TLS_CONN_ESTABLISHED);
+	assert(qev->tls_conn->flags == 0);
+	conn_id = qev->tls_conn->conn_id;
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CALL: write (request) */
+	assert(qev->events == QUARK_EV_TLS_CALL);
+	assert_tls_call(qev->tls_call, QUARK_TLS_DIR_WRITE, conn_id,
+	    tls_req_small, strlen(tls_req_small), 0);
+
+	/* Detach via the handle mid-session; the rest just drains out. */
+	quark_queue_tls_detach(&qq, att);
+
+	tls_session_finish(&qq, &ts);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A symbol attach against a target with no SSL_* symbols (and against a path
+ * that doesn't exist) must fail cleanly rather than crash or half-attach.
+ */
+static int
+t_tls_attach_sym_missing(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_tls_attachment	*att;
+
+	qa->flags |= QQ_TLS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* A real ELF that only imports SSL_* (undefined here), so none resolve. */
+	att = quark_queue_tls_attach_sym(&qq, getpid(), "/proc/self/exe");
+	assert(att == NULL);
+
+	/* A path that doesn't exist at all. */
+	att = quark_queue_tls_attach_sym(&qq, getpid(),
+	    "/nonexistent/definitely/not/a/library.so");
+	assert(att == NULL);
+
 	quark_queue_close(&qq);
 
 	return (0);
@@ -3244,6 +3376,8 @@ struct test all_tests[] = {
 	T_EBPF(t_tls_multichunk),
 	T_EBPF(t_tls_truncated),
 	T_EBPF(t_tls_multiproc),
+	T_EBPF(t_tls_attach_sym),
+	T_EBPF(t_tls_attach_sym_missing),
 #endif /* WITH_TLS_TESTS */
 	T_EBPF(t_cgroup_parse),
 	T_EBPF(t_namespace),
