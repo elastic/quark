@@ -18,12 +18,10 @@
 #include "Varlen.h"
 
 // GC index of TGIDs that have opened at least one TLS connection. The probe
-// maintains it (insert on SSL_new and on mid-stream adopt); it does NOT gate
-// capture. Userspace consults it once per process exit to decide whether to
+// maintains it (insert on SSL_new and on mid-stream adopt); 
+// Userspace consults it once per process exit to decide whether to
 // sweep leftover tls_conns entries for a process that died without SSL_free
-// (e.g. SIGKILL), so unrelated exits don't scan the map. Membership-only: an
-// entry may outlive the tgid's connections (it is cleared on process exit), so
-// a stale hit costs at most one wasted sweep, never a leak.
+// (e.g. SIGKILL), so unrelated exits don't scan the map. 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(key_size, sizeof(u32));
@@ -32,9 +30,7 @@ struct {
 } tls_conn_tgids SEC(".maps");
 
 // Returns 1 if the tgid is recorded in the index, 0 if the insert failed (map
-// full). Callers must not create a tls_conns entry for a tgid this fails on:
-// the process-exit sweep skips unrecorded tgids, so such an entry could never
-// be reclaimed.
+// full).
 static int tls_mark_conn_tgid(u32 tgid)
 {
     u8 one = 1;
