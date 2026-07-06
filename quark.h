@@ -146,28 +146,13 @@ int			 quark_queue_trusted_pid_add(struct quark_queue *, u32);
 int			 quark_queue_trusted_pid_reset(struct quark_queue *);
 /*
  * Offset attach: pid (-1 for system-wide), path, then SSL_new, SSL_read,
- * SSL_write, SSL_free file offsets, all required. A system-wide attach (pid ==
- * -1) captures every process hitting these offsets, subject only to the
- * trusted-pid deny-list; a pid-scoped attach (pid >= 0) captures only that
- * process. Callers are recommended to track attachments by (dev, inode, offset)
- * and attach once per such tuple; the kernel refcounts uprobes by (inode,
- * offset) only. Returns an opaque handle or NULL.
+ * SSL_write, SSL_free file offsets, all required.
  */
 struct quark_tls_attachment *quark_queue_tls_attach(struct quark_queue *, int,
 			     const char *, u64, u64, u64, u64);
-/*
- * Symbol attach: pid (must be >= 0) and a library path. Resolves SSL_new,
- * SSL_free, SSL_read, SSL_write (required) and SSL_read_ex, SSL_write_ex
- * (optional) by name. Scopes the uprobes to pid. Returns an opaque handle or
- * NULL.
- */
+
 struct quark_tls_attachment *quark_queue_tls_attach_sym(struct quark_queue *,
 			     int, const char *);
-/*
- * Detach a single attachment created by the two functions above. Idempotent and
- * self-validating: a repeated detach, a handle from another queue, or a NULL
- * handle is a no-op. Must be called on the thread that drains the queue.
- */
 void			 quark_queue_tls_detach(struct quark_queue *,
 			     struct quark_tls_attachment *);
 
@@ -462,23 +447,16 @@ struct raw_shm {
 
 enum quark_tls_direction {
 	QUARK_TLS_DIR_INVALID,
-	QUARK_TLS_DIR_WRITE,	/* outgoing request, SSL_write */
-	QUARK_TLS_DIR_READ,	/* incoming response, SSL_read */
+	QUARK_TLS_DIR_WRITE,
+	QUARK_TLS_DIR_READ,
 };
 
-/*
- * flags bit: the connection was adopted mid-stream (its SSL_new was never
- * seen, e.g. the probes attached after it was already open) rather than
- * observed from birth. Its captured byte stream does not start at the
- * connection's first byte, so call_seq 0 is not the true start.
- */
 #define QUARK_TLS_CONN_F_PREFIX_UNKNOWN	(1 << 0)
 
 struct quark_tls_conn {
-	u64	conn_id;	/* minted at SSL_new; globally unique and never
-				 * reused, so it can be keyed on alone */
+	u64	conn_id;
 	u32	tgid;
-	u32	flags;		/* QUARK_TLS_CONN_F_* */
+	u32	flags;
 };
 
 struct raw_tls_conn {
@@ -981,7 +959,7 @@ struct quark_queue_attr {
 	int			 cache_grace_time;	/* in ms */
 	int			 hold_time;		/* in ms */
 	size_t			 max_env;		/* max process environment in bytes */
-	size_t			 max_tls_call;		/* max bytes captured per TLS call; 0 == unlimited */
+	size_t			 max_tls_call;
 	int			 kubefd;		/* quark-kube-talker pipe, -1 disables */
 	struct quark_ruleset	*ruleset;		/* active ruleset */
 };
@@ -1010,7 +988,7 @@ struct quark_queue {
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
 	size_t				 max_env;		/* max process environment in bytes */
-	size_t				 max_tls_call;		/* max bytes captured per TLS call; 0 == unlimited */
+	size_t				 max_tls_call;
 	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
 	/* Backend related state */

@@ -183,11 +183,7 @@ type Tty struct {
 
 // TlsConn carries a connection lifecycle event. It is delivered with
 // QUARK_EV_TLS_CONN_ESTABLISHED when the connection first becomes known and
-// again with QUARK_EV_TLS_CONN_CLOSED when SSL_free runs; check Event.Events to
-// tell them apart. ConnId is globally unique across all connections and
-// processes and never reused, so it may be used as a map key on its own. A
-// close is not delivered when a process dies without calling SSL_free (e.g.
-// SIGKILL); treat a process exit as closing all its connections.
+// again with QUARK_EV_TLS_CONN_CLOSED when SSL_free runs;
 //
 // PrefixUnknown is set on an ESTABLISHED event when the connection was adopted
 // mid-stream (its SSL_new was never seen) rather than observed from birth.
@@ -197,17 +193,10 @@ type TlsConn struct {
 	PrefixUnknown bool
 }
 
-// TlsCall is a fully reassembled SSL_read or SSL_write call. Data holds the
-// plaintext as a slice of chunks in the order they were chained by quark's
-// aggregator; concatenate for the full buffer. Truncated is non-zero if
-// CallLen is bigger than the sum of Data's lengths (capped by
-// QueueAttr.MaxTlsCall, or a chunk that failed to read).
+// TlsCall is a fully reassembled SSL_read or SSL_write call.
 //
-// Gap distinguishes the two ways Truncated can be non-zero: false means a
-// clean trailing cut (Data is a valid, if incomplete, prefix of the
-// original call - safe to parse up to TotalLen). true means some
-// non-trailing chunk never arrived or was unreadable - Data has a hole
-// before its end and is NOT a safe contiguous buffer to parse.
+// Gap distinguishes the two ways Truncated can be non-zero.
+// false means truncate was clean at the end, while true means there was a gap in the data.
 type TlsCall struct {
 	ConnId    uint64
 	Tgid      uint32
@@ -224,7 +213,7 @@ type TlsCall struct {
 // event, Process is the context of the Event.
 type Event struct {
 	Events     uint64
-	Time       uint64 // wall-clock nanoseconds since the Unix epoch (boot wall time + kernel monotonic ts)
+	Time       uint64
 	Process    Process
 	Socket     *Socket
 	Packet     *Packet
@@ -455,12 +444,9 @@ type TlsAttachment struct {
 	handle *C.struct_quark_tls_attachment
 }
 
-// TlsAttach attaches the SSL_new/SSL_read/SSL_write/SSL_free uprobes at the
-// given file offsets in path; all four are required. Callers are recommended
-// to track attachments by (dev, inode, offset) and attach once per such tuple;
-// the kernel refcounts uprobes by (inode, offset) only. pid == -1 attaches
-// system-wide, capturing every process hitting these offsets (subject only to
-// the trusted-pid deny-list); pid >= 0 scopes the uprobes to that process.
+// TlsAttach attaches the uprobes at the given file offsets in path; all four are required.
+// Callers are recommended to track attachments by (dev, inode, offset) and attach once per such tuple;
+// Use -1 pid to attach system-wide, recommended but do not use against shared system libraries (libssl.so etc)
 func (queue *Queue) TlsAttach(pid int, path string, sslNewOff, sslReadOff, sslWriteOff, sslFreeOff uint64) (*TlsAttachment, error) {
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
@@ -476,9 +462,8 @@ func (queue *Queue) TlsAttach(pid int, path string, sslNewOff, sslReadOff, sslWr
 }
 
 // TlsAttachSym attaches the TLS uprobes to a shared library (e.g. libssl) by
-// symbol name. SSL_new/SSL_free/SSL_read/SSL_write are required and
-// SSL_read_ex/SSL_write_ex are attached if present. pid must be >= 0: the
-// uprobes are scoped to that process.
+// symbol name. All four are required. pid must be >= 0: the uprobes are scoped to that process.
+// It is safe to call this multiple times with different PIDs as uprobes are refcounted by (inode, offset).
 func (queue *Queue) TlsAttachSym(pid int, path string) (*TlsAttachment, error) {
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))

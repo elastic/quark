@@ -4483,10 +4483,6 @@ quark_can_aggregate_tty(struct quark_queue *qq,
  * side already caps the total bytes captured per call at qq->max_tls_call
  * before it ever emits the first chunk. Identity (conn_id, direction,
  * call_seq) is the only thing that decides whether two chunks belong together.
- *
- * pt->chunk_idx is repurposed once aggregation starts, same as
- * quark_tty.total_len: it stops meaning "this node's own position" and
- * starts meaning "the last position absorbed into this chain."
  */
 int
 quark_can_aggregate_tls(struct quark_queue *qq,
@@ -4511,10 +4507,7 @@ quark_can_aggregate_tls(struct quark_queue *qq,
 	pt->chunk_idx = ct->chunk_idx;
 
 	/*
-	 * truncated is NOT refined here, on purpose: a call that arrives as
-	 * exactly one chunk never invokes this function at all (there is
-	 * nothing to aggregate it with). raw_event_tls_call() derives it from
-	 * total_len at delivery time instead.
+	 * truncated is defined during aggregation.
 	 */
 	pt->total_len += ct->data_len;
 
@@ -4892,11 +4885,6 @@ raw_event_tls_call(struct quark_queue *qq, struct raw_event *raw)
 		agg->tls_chunk.quark_tls_call = NULL;
 	}
 
-	/*
-	 * total_len is correct regardless of how many chunks made up this
-	 * call, but quark_can_aggregate_tls() only ever runs for 2+ chunks, so
-	 * truncated must be derived from it here.
-	 */
 	head = raw->tls_chunk.quark_tls_call;
 	head->truncated = head->call_len > head->total_len ?
 	    head->call_len - head->total_len : 0;
