@@ -24,9 +24,7 @@
 /*
  * One TLS uprobe attachment: the links minted by a single attach call. The
  * skeleton keeps only a single link slot per program, which a second attach
- * would overwrite and leak, so the links are owned here instead. Offset attach
- * uses six (SSL_new/read/write/free); symbol attach can use up to ten (adding
- * the optional SSL_read_ex/SSL_write_ex pair). Unused slots stay NULL.
+ * would overwrite and leak, so the links are owned here instead. Unused slots stay NULL.
  *
  * pid is the process the uprobes are scoped to, or -1 for a system-wide attach.
  */
@@ -196,13 +194,9 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
 
 		/*
-		 * A process that opened TLS connections is dying: reclaim any
-		 * it left behind. SSL_free already removes entries on a clean
-		 * close, but a process killed with live SSL objects (e.g.
-		 * SIGKILL) never runs it -- this exit hook, which the kernel
-		 * guarantees even for SIGKILL, is the backstop. The probe-
-		 * maintained tls_conn_tgids index gates the sweep with an O(1)
-		 * lookup so unrelated exits don't scan the connection map.
+		 * This does an O(1) lookup to check if the related tgid has any connections left behind.
+		 * It's better to do this here than in users-space (which would be similar to the existing socket cache).
+		 * The reclaim has some slight overhead, but only runs when necessary and only when enabled.
 		 */
 		if (qq->flags & QQ_TLS) {
 			struct bpf_probes	*p;
@@ -930,9 +924,8 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		qtc->dropped = chunk->dropped ? 1 : 0;
 		/*
 		 * A dropped chunk that isn't the last one in the call is a
-		 * hole with more data after it - same hazard as a chunk that
-		 * silently never arrived at all. Only the trailing case is
-		 * safe (equivalent to a clean max_tls_call cap).
+		 * hole with more data after it, mainly useful for userspace that
+		 * is interested in parsing the raw data to reconstruct the call.
 		 */
 		qtc->gap = (qtc->dropped && chunk->chunk_idx != chunk->chunk_total - 1) ? 1 : 0;
 		qtc->data_len = data_len;
@@ -1250,7 +1243,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		    "inet_csk_accept") == -1)
 			goto fail;
 	}
-
+	
 	if (qq->flags & QQ_FILE) {
 		int use_fsnotify =
 		    (btf_number_of_params_of_ptr(btf, "inode_operations", "atomic_open") == 6);

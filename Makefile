@@ -474,14 +474,9 @@ test-kernel: initramfs.gz
 # loading these BTF modules, making valgrind spit thousands of false
 # positives.
 #
-# The TLS e2e tests are excluded here: uprobes and valgrind's ptrace-based
-# tracing fundamentally conflict at the kernel breakpoint (int3/SIGTRAP)
-# level, independent of --trace-children=no (a forked child still dies
-# with SIGTRAP the instant it hits an attached uprobe, e.g. SSL_new). This
-# is a documented upstream limitation, not something fixable from quark's
-# or the test's side; see valgrind bug 466172 for the same pattern with
-# bpftrace.
-#
+# The TLS e2e tests are excluded here: uprobes and valgrind's ptrace-based will cause a SIGTRAP to be sent to the child process.
+# Any recommendations on how to approach it?
+
 test-valgrind: quark-test
 	$(SUDO) VALGRIND=1 QUARK_BTF_PATH=/sys/kernel/btf/vmlinux	\
 		valgrind						\

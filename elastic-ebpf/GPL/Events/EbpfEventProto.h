@@ -446,16 +446,13 @@ struct ebpf_dns_event {
 
 // ebpf_tls_new_event.flags bits.
 //
-// PREFIX_UNKNOWN marks a connection that was not observed from SSL_new but
-// adopted mid-stream by SSL_read/SSL_write because its SSL_new was never seen.
-// Its captured byte stream does not begin at the connection's first byte, so
-// call_seq 0 on it is not the true start.
+// Can always call this something else, it's meant to flag that we have received
+// bytes from Read/Write from a connection that was missed, this can happen if
+// for example we attach in the middle of a connection.
 #define EBPF_TLS_CONN_F_PREFIX_UNKNOWN 0x1
 
-// Fired once when a connection first becomes known: from SSL_new's return probe
-// for connections seen from birth (flags == 0), or from the first
-// SSL_read/SSL_write that adopts a connection whose SSL_new was missed (flags
-// has EBPF_TLS_CONN_F_PREFIX_UNKNOWN).
+// A new connection established, flag is 0 if we attached from the start,
+// If flag is not 0 the connection was adopted mid-stream.
 struct ebpf_tls_new_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
@@ -463,9 +460,8 @@ struct ebpf_tls_new_event {
     uint32_t flags;
 } __attribute__((packed));
 
-// Fired once from SSL_free, the counterpart to ebpf_tls_new_event. Not emitted
-// when a process dies without calling SSL_free (e.g. SIGKILL); consumers must
-// also treat a process exit as closing all of that tgid's connections.
+// Emitted only when a connection is closed properly, if a process is killed
+// with a live connection this will not be emitted.
 struct ebpf_tls_close_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
@@ -484,12 +480,12 @@ struct ebpf_tls_chunk_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
     uint64_t conn_id;
-    uint8_t direction;     // enum ebpf_tls_direction, fixed-width on the wire
-    uint64_t call_seq;     // monotonic per (conn_id, direction)
+    uint8_t direction;
+    uint64_t call_seq;
     uint32_t call_len;     // true SSL_read/SSL_write length, before any capping
-    uint32_t chunk_idx;    // index within this SSL call (0-based)
+    uint32_t chunk_idx;
     uint32_t chunk_total;  // total chunks actually captured (capped by max_tls_call)
-    uint8_t dropped;       // 1 if this is a drop marker with no data
+    uint8_t dropped;
 
     // Variable length fields: tls_data
     struct ebpf_varlen_fields_start vl_fields;
