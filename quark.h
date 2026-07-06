@@ -163,7 +163,11 @@ struct quark_tls_attachment *quark_queue_tls_attach(struct quark_queue *, int,
  */
 struct quark_tls_attachment *quark_queue_tls_attach_sym(struct quark_queue *,
 			     int, const char *);
-/* Detach a single attachment created by the two functions above. */
+/*
+ * Detach a single attachment created by the two functions above. Idempotent and
+ * self-validating: a repeated detach, a handle from another queue, or a NULL
+ * handle is a no-op. Must be called on the thread that drains the queue.
+ */
 void			 quark_queue_tls_detach(struct quark_queue *,
 			     struct quark_tls_attachment *);
 

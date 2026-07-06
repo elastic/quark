@@ -31,11 +31,15 @@ struct {
     __uint(max_entries, 16384);
 } tls_conn_tgids SEC(".maps");
 
-static void tls_mark_conn_tgid(u32 tgid)
+// Returns 1 if the tgid is recorded in the index, 0 if the insert failed (map
+// full). Callers must not create a tls_conns entry for a tgid this fails on:
+// the process-exit sweep skips unrecorded tgids, so such an entry could never
+// be reclaimed.
+static int tls_mark_conn_tgid(u32 tgid)
 {
     u8 one = 1;
 
-    bpf_map_update_elem(&tls_conn_tgids, &tgid, &one, BPF_ANY);
+    return bpf_map_update_elem(&tls_conn_tgids, &tgid, &one, BPF_ANY) == 0;
 }
 
 // Global monotonic connection-id counter, bumped once per SSL_new. conn_id 0 is
@@ -219,10 +223,13 @@ static void tls_emit_conn(u64 conn_id, u32 flags)
 }
 
 // Adopts a connection whose SSL_new was never observed: mints a fresh conn_id,
-// records it flagged PREFIX_UNKNOWN, and announces it. The announce is withheld
-// until the insert is confirmed so a full map never yields an establish with no
-// state behind it; the caller re-resolves the entry from the map (rather than
-// this returning a map-value pointer, which not every verifier accepts across a
+// records it flagged PREFIX_UNKNOWN, and announces it. The tgid is recorded in
+// the GC index before the connection is inserted: an unrecorded tgid is skipped
+// by the process-exit sweep, so a connection tracked under a failed mark could
+// never be reclaimed -- drop it instead. The announce is withheld until the
+// insert is confirmed so a full map never yields an establish with no state
+// behind it; the caller re-resolves the entry from the map (rather than this
+// returning a map-value pointer, which not every verifier accepts across a
 // call).
 static void tls_adopt_conn(struct tls_ssl_key *key)
 {
@@ -233,11 +240,13 @@ static void tls_adopt_conn(struct tls_ssl_key *key)
         return;
     conn.flags = EBPF_TLS_CONN_F_PREFIX_UNKNOWN;
 
+    if (!tls_mark_conn_tgid(key->tgid))
+        return;
+
     bpf_map_update_elem(&tls_conns, key, &conn, BPF_ANY);
     if (!bpf_map_lookup_elem(&tls_conns, key))
         return;
 
-    tls_mark_conn_tgid(key->tgid);
     tls_emit_conn(conn.conn_id, EBPF_TLS_CONN_F_PREFIX_UNKNOWN);
 }
 
@@ -264,9 +273,16 @@ int BPF_URETPROBE(uretprobe__ssl_new, void *ssl)
         .tgid = bpf_get_current_pid_tgid() >> 32,
         .ssl  = (u64)ssl,
     };
+
+    /*
+     * Record the tgid before inserting: the process-exit sweep skips
+     * unrecorded tgids, so a tls_conns entry created under a failed mark
+     * could never be reclaimed. Drop the connection instead of stranding it.
+     */
+    if (!tls_mark_conn_tgid(key.tgid))
+        goto out;
     bpf_map_update_elem(&tls_conns, &key, &conn, BPF_ANY);
 
-    tls_mark_conn_tgid(key.tgid);
     tls_emit_conn(conn.conn_id, 0);
 
 out:

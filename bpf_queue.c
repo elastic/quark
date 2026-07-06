@@ -1737,17 +1737,30 @@ tls_detach_all(struct bpf_queue *bqq)
  * Detach a single attachment: remove it and destroy its uprobe links. Any
  * connections its process still holds are reclaimed when that process exits
  * (via the tls_conn_tgids-gated exit sweep), so nothing is swept here.
+ *
+ * The handle is validated against this queue's list before it is touched: a
+ * repeated detach, a handle belonging to another queue, or a NULL handle is a
+ * no-op rather than a use-after-free or a foreign-node removal. Only addresses
+ * are compared, ta is never dereferenced, so a stale (freed) handle is safe to
+ * pass. Detach is not a hot path and attachments are few, so the linear walk
+ * is free. Must be called on the thread that drains the queue.
  */
 void
 quark_queue_tls_detach(struct quark_queue *qq, struct quark_tls_attachment *ta)
 {
-	struct bpf_queue	*bqq = qq->queue_be;
+	struct bpf_queue		*bqq = qq->queue_be;
+	struct quark_tls_attachment	*cur;
 
 	if (ta == NULL)
 		return;
 
-	TAILQ_REMOVE(&bqq->tls_attachments, ta, entry);
-	tls_attachment_destroy(ta);
+	TAILQ_FOREACH(cur, &bqq->tls_attachments, entry) {
+		if (cur == ta) {
+			TAILQ_REMOVE(&bqq->tls_attachments, ta, entry);
+			tls_attachment_destroy(ta);
+			return;
+		}
+	}
 }
 
 /*
