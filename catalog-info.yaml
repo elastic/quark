@@ -24,6 +24,7 @@ spec:
       repository: elastic/quark
       pipeline_file: ".buildkite/pipeline.yml"
       teams:
+        endpoint-ci-admin: {}
         sec-linux-platform:
           access_level: MANAGE_BUILD_AND_READ
         everyone:
