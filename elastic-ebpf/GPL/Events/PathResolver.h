@@ -38,7 +38,14 @@
 // the number of states that need to be explored by the verifier, which, if
 // high enough, will bump up against BPF_COMPLEXITY_LIMIT_INSNS in the kernel
 // (set to 1,000,000 as of 5.3).
-#define PATH_RESOLVER_MAX_COMPONENTS 100
+//
+// Must be a power of two: depth is masked with PATH_RESOLVER_MAX_COMPONENTS_MASK
+// right before each scratch array access in ebpf_resolve_kernfs_node_to_string().
+// Newer verifiers lose the bound on that counter once it round-trips through a
+// stack spill inside the loop, and only an and-mask (not a comparison) reliably
+// keeps the access provably in range.
+#define PATH_RESOLVER_MAX_COMPONENTS 128
+#define PATH_RESOLVER_MAX_COMPONENTS_MASK (PATH_RESOLVER_MAX_COMPONENTS - 1)
 
 #define KERNFS_NODE_COMPONENT_MAX_LEN 250
 
@@ -221,7 +228,7 @@ static size_t ebpf_resolve_kernfs_node_to_string(char *buf, struct kernfs_node *
         if (!kn)
             break;
 
-        kna[depth] = kn;
+        kna[depth & PATH_RESOLVER_MAX_COMPONENTS_MASK] = kn;
 
         /*
          * Verifier gets confused if we do an if else chain here and doesn't
@@ -245,7 +252,7 @@ static size_t ebpf_resolve_kernfs_node_to_string(char *buf, struct kernfs_node *
 
     while (depth > 0) {
         depth--;
-        struct kernfs_node *curr = kna[depth];
+        struct kernfs_node *curr = kna[depth & PATH_RESOLVER_MAX_COMPONENTS_MASK];
 
         read_len = bpf_probe_read_kernel_str(&name, KERNFS_NODE_COMPONENT_MAX_LEN,
                                              (void *)BPF_CORE_READ(curr, name));
