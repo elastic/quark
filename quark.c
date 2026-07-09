@@ -2050,6 +2050,21 @@ file_op_mask_str(u32 op_mask, char *buf, size_t len)
 	}
 }
 
+static void
+module_taints_str(u64 taints, char *buf, size_t len)
+{
+	/* One letter per taint bit, see struct taint_flag in kernel/panic.c */
+	const char	*tnts = "PFSRMBUDAWCIOELKXTN";
+	size_t		 i, n;
+
+	*buf = 0;
+	for (i = 0, n = 0; tnts[i] != 0 && n + 1 < len; i++) {
+		if (taints & ((u64)1 << i))
+			buf[n++] = tnts[i];
+	}
+	buf[n] = 0;
+}
+
 #define P(...)						\
 	do {						\
 		if (fprintf(f, __VA_ARGS__) < 0)	\
@@ -2075,6 +2090,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_pod		*pod;
 	const struct quark_container	*container;
 	const struct quark_ptrace	*ptrace;
+	const struct quark_module_load	*qml;
 	int				 pid;
 
 	if (qev->events == QUARK_EV_BYPASS) {
@@ -2158,6 +2174,19 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		PF(fl, "pid=%d request=0x%llx addr=0x%llx data=0x%llx\n",
 		    ptrace->child_pid, ptrace->request,
 		    ptrace->addr, ptrace->data);
+	}
+
+	if (qev->events & QUARK_EV_MODULE_LOAD) {
+		fl = "MODULE";
+
+		qml = qev->module_load;
+		if (qml == NULL)
+			return (-1);
+
+		module_taints_str(qml->taints, buf, sizeof(buf));
+		PF(fl, "name=%s version=%s srcversion=%s taints=0x%llx (%s)\n",
+		    qml->name, qml->version, qml->src_version,
+		    qml->taints, buf);
 	}
 
 	if (qp == NULL)

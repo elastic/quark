@@ -341,6 +341,7 @@ int BPF_PROG(module_load, struct module *mod)
     event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
 
     ebpf_pid_info__fill(&event->pids, task);
+    event->taints = BPF_CORE_READ(mod, taints);
 
     pid_t ppid      = BPF_CORE_READ(task, group_leader, real_parent, tgid);
     pid_t curr_tgid = BPF_CORE_READ(task, tgid);

@@ -376,6 +376,7 @@ struct ebpf_process_ptrace_event {
 struct ebpf_process_load_module_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
+    uint64_t taints;
     // Variable length fields: filename, mod version, mod srcversion
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));

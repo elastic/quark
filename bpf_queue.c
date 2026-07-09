@@ -641,6 +641,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		qml->name = filename;
 		qml->version = version;
 		qml->src_version = src_version;
+		qml->taints = module->taints;
 		raw->module_load.quark_module_load = qml;
 
 		break;
