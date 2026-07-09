@@ -401,6 +401,7 @@ struct quark_module_load {
 	char *name;
 	char *version;
 	char *src_version;
+	u64   taints;
 };
 
 struct raw_module_load {
