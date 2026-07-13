@@ -344,8 +344,6 @@ parse.tab.c: parse.y quark.h
 	$(call msg,BISON,$@)
 	$(Q)bison parse.y
 
-parse.tab.o: CDIAGFLAGS += -Wno-unused-but-set-variable
-
 DOCKER_RUN_ARGS=$(QDOCKER)				\
 		-v $(PWD):$(PWD)			\
 		-w $(PWD)				\
