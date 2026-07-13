@@ -474,9 +474,6 @@ test-kernel: initramfs.gz
 # loading these BTF modules, making valgrind spit thousands of false
 # positives.
 #
-# The TLS e2e tests are excluded here: uprobes and valgrind's ptrace-based will cause a SIGTRAP to be sent to the child process.
-# Any recommendations on how to approach it?
-
 test-valgrind: quark-test
 	$(SUDO) VALGRIND=1 QUARK_BTF_PATH=/sys/kernel/btf/vmlinux	\
 		valgrind						\
@@ -484,13 +481,7 @@ test-valgrind: quark-test
 		--child-silent-after-fork=yes				\
 		--leak-check=full					\
 		--error-exitcode=1					\
-		./quark-test -1						\
-		-x t_tls_load -x t_tls_conn -x t_tls_call		\
-		-x t_tls_late_adopt					\
-		-x t_tls_multichunk -x t_tls_truncated			\
-		-x t_tls_multiproc					\
-		-x t_tls_attach_sym -x t_tls_attach_sym_missing		\
-		2>&1 |grep -vE "^--[0-9]+-- WARNING: unhandled eBPF command"
+		./quark-test -1
 
 initramfs:
 	mkdir -p initramfs/bin

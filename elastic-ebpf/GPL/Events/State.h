@@ -25,8 +25,6 @@ enum ebpf_events_state_op {
     EBPF_EVENTS_STATE_MEMFD_CREATE   = 11,
     EBPF_EVENTS_STATE_SSL_READ       = 12,
     EBPF_EVENTS_STATE_SSL_WRITE      = 13,
-    EBPF_EVENTS_STATE_SSL_READ_EX    = 14,
-    EBPF_EVENTS_STATE_SSL_WRITE_EX   = 15,
 };
 
 struct ebpf_events_key {
@@ -98,7 +96,6 @@ struct ebpf_events_memfd_create_state {
 struct ebpf_events_ssl_io_state {
     void *ssl;
     void *buf;
-    void *count_ptr;
     u32 len;
 };
 
@@ -117,8 +114,6 @@ struct ebpf_events_state {
         /* struct ebpf_events_fs_create fs_create; nada */
         struct ebpf_events_ssl_io_state ssl_read;
         struct ebpf_events_ssl_io_state ssl_write;
-        struct ebpf_events_ssl_io_state ssl_read_ex;
-        struct ebpf_events_ssl_io_state ssl_write_ex;
     };
 };
 

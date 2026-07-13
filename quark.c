@@ -4080,7 +4080,6 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
 	qa->max_env = 4096;		/* one page per process */
-	qa->max_tls_call = 1 << 20;	/* 1 MiB; 0 == unlimited */
 	qa->kubefd = -1;		/* disabled */
 	qa->ruleset = NULL;		/* no rules */
 }
@@ -4157,7 +4156,6 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
 	qq->hold_time = qa->hold_time;
 	qq->max_env = qa->max_env;
-	qq->max_tls_call = qa->max_tls_call;
 	qq->ruleset = qa->ruleset;
 	qq->length = 0;
 	qq->epollfd = -1;
@@ -4248,6 +4246,18 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	    bpf_queue_open(qq) != 0 &&
 	    kprobe_queue_open(qq) != 0) {
 		qwarnx("all backends failed");
+		goto fail;
+	}
+
+	/*
+	 * TLS capture is implemented only in the eBPF backend. If the caller
+	 * asked for it but QQ_ALL_BACKENDS fell back to a non-eBPF backend,
+	 * fail cleanly rather than hand back a queue whose tls_attach APIs
+	 * can't work.
+	 */
+	if ((qq->flags & QQ_TLS) && qq->stats.backend != QQ_EBPF) {
+		qwarnx("QQ_TLS requires the eBPF backend");
+		errno = ENOTSUP;
 		goto fail;
 	}
 
@@ -4479,10 +4489,10 @@ quark_can_aggregate_tty(struct quark_queue *qq,
 }
 
 /*
- * Unlike quark_can_aggregate_tty(), there is no size ceiling here: the BPF
- * side already caps the total bytes captured per call at qq->max_tls_call
- * before it ever emits the first chunk. Identity (conn_id, direction,
- * call_seq) is the only thing that decides whether two chunks belong together.
+ * Unlike quark_can_aggregate_tty(), there is no size ceiling here: a call is
+ * reassembled in full from however many chunks the BPF side split it into.
+ * Identity (conn_id, direction, call_seq) is the only thing that decides
+ * whether two chunks belong together.
  */
 int
 quark_can_aggregate_tls(struct quark_queue *qq,

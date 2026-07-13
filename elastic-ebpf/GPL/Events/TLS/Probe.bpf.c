@@ -88,12 +88,9 @@ struct {
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } tls_conns SEC(".maps");
 
-// Max bytes captured per SSL_read/SSL_write call, set by quark_queue_open()
-// before the object is loaded, same pattern as consumer_pid in Helpers.h.
-const volatile u32 max_tls_call = 0;
-
-// Per-chunk size. Kept well under half of event_buffer_map's 128 KiB ceiling,
-// same headroom rule TTY_OUT_MAX follows in Process/Probe.bpf.c.
+// Per-chunk size. A single SSL_read/SSL_write call can transfer far more than
+// fits one ring-buffer event (num is an int), and max is 128KB.
+// Similar to Process TTY_OUT_MAX.
 #define TLS_CHUNK_MAX 32768u
 
 struct tls_chunk_ctx {
@@ -101,8 +98,7 @@ struct tls_chunk_ctx {
     u64 conn_id;
     enum ebpf_tls_direction direction;
     u64 call_seq;
-    u32 call_len;     // true call length, before max_tls_call capping
-    u32 captured_len; // min(call_len, max_tls_call)
+    u32 call_len;
     u32 chunk_total;
 };
 
@@ -144,7 +140,7 @@ static long tls_emit_chunk(u32 idx, void *ctx)
      * Process/Probe.bpf.c's output_tty_event(): narrowing 64->32bit loses
      * verifier bound tracking on older verifiers, keep this all 32bit.
      */
-    len_cap = (u32)cctx->captured_len - off;
+    len_cap = (u32)cctx->call_len - off;
     len_cap = (u32)(len_cap > TLS_CHUNK_MAX ? TLS_CHUNK_MAX : len_cap);
 
     if (bpf_probe_read_user(field->data, len_cap, (const char *)cctx->base + off)) {
@@ -190,8 +186,7 @@ static void tls_emit_call(u64 conn_id, const void *base, u32 len,
     cctx.direction    = direction;
     cctx.call_seq     = call_seq;
     cctx.call_len     = len;
-    cctx.captured_len = max_tls_call != 0 && len > max_tls_call ? max_tls_call : len;
-    cctx.chunk_total  = (cctx.captured_len + TLS_CHUNK_MAX - 1) / TLS_CHUNK_MAX;
+    cctx.chunk_total  = (len + TLS_CHUNK_MAX - 1) / TLS_CHUNK_MAX;
 
     bpf_loop(cctx.chunk_total, tls_emit_chunk, &cctx, 0);
 }
@@ -278,6 +273,14 @@ int BPF_URETPROBE(uretprobe__ssl_new, void *ssl)
     if (!tls_mark_conn_tgid(key.tgid))
         goto out;
     bpf_map_update_elem(&tls_conns, &key, &conn, BPF_ANY);
+    /*
+     * Withhold the announce until the insert is confirmed: a full map must
+     * never yield an ESTABLISHED with no state behind it, since the later
+     * read/write/free probes would never find the connection and no close
+     * would follow. Same guard as tls_adopt_conn.
+     */
+    if (!bpf_map_lookup_elem(&tls_conns, &key))
+        goto out;
 
     tls_emit_conn(conn.conn_id, 0);
 
@@ -331,7 +334,7 @@ out:
 }
 
 // Resolves the connection for a completed read/write and emits its payload.
-// Shared by the plain and _ex return probes: a hit is captured directly (the
+// Shared by the read and write return probes: a hit is captured directly (the
 // hit is the filter), a miss is adopted mid-stream for a non-trusted tgid, and
 // the per-direction call_seq is advanced only for a captured call.
 static void tls_capture_io(void *ssl, const void *buf, u32 len,
@@ -449,105 +452,70 @@ out:
     return 0;
 }
 
-// SSL_read_ex(SSL *ssl, void *buf, size_t num, size_t *readbytes) and
-// SSL_write_ex(SSL *ssl, const void *buf, size_t num, size_t *written) report
-// the transferred count through the out-parameter and return 1 on success,
-// unlike SSL_read/SSL_write which return the count directly. The entry stashes
-// the count pointer alongside the buffer; the return reads it once ret == 1.
-SEC("uprobe")
-int BPF_UPROBE(uprobe__ssl_write_ex, void *ssl, const void *buf, u64 num,
-               void *written)
+// bpf_for_each_map_elem callback: deletes every tls_conns entry owned by the
+// tgid carried in ctx. Deleting the current element mid-iteration is RCU-safe
+// for a HASH map.
+static long
+tls_reclaim_conn(struct bpf_map *map, const void *key, void *value, void *ctx)
 {
-    struct ebpf_events_state state = {};
+    const struct tls_ssl_key *k = key;
+    u32 tgid = *(u32 *)ctx;
 
-    preempt_disable();
+    if (k->tgid == tgid)
+        bpf_map_delete_elem(&tls_conns, key);
 
-    if (ebpf_events_is_trusted_pid())
-        goto out;
-
-    state.ssl_write_ex.ssl       = ssl;
-    state.ssl_write_ex.buf       = (void *)buf;
-    state.ssl_write_ex.count_ptr = written;
-    state.ssl_write_ex.len       = (u32)num;
-    ebpf_events_state__set(EBPF_EVENTS_STATE_SSL_WRITE_EX, &state);
-
-out:
-    preempt_enable();
     return 0;
 }
 
-SEC("uretprobe")
-int BPF_URETPROBE(uretprobe__ssl_write_ex, int ret)
+// Reclaims the connections of a process that exited without SSL_free (e.g.
+// SIGKILL). Runs entirely in-kernel from the process-exit hook so the userspace
+// drain path never issues a syscall for it. tls_conn_tgids is the O(1) gate:
+// an unrecorded tgid (the common case) costs a single lookup and stops, so only
+// a process that actually opened a TLS connection ever triggers the sweep.
+static void
+tls_reclaim_tgid(u32 tgid)
 {
-    struct ebpf_events_state *state;
-    u64 count;
+    if (bpf_map_lookup_elem(&tls_conn_tgids, &tgid) == NULL)
+        return;
 
-    preempt_disable();
+    bpf_for_each_map_elem(&tls_conns, tls_reclaim_conn, &tgid, 0);
+    bpf_map_delete_elem(&tls_conn_tgids, &tgid);
+}
 
-    state = ebpf_events_state__get(EBPF_EVENTS_STATE_SSL_WRITE_EX);
-    if (!state)
-        goto out;
-    if (ret != 1 || !state->ssl_write_ex.count_ptr)
-        goto out;
-    if (bpf_probe_read_user(&count, sizeof(count), state->ssl_write_ex.count_ptr))
-        goto out;
-    if (count == 0 || count > state->ssl_write_ex.len)
-        goto out;
+// Mirrors the Process probe's disassociate_ctty hook: on_exit is true only on
+// the last thread of a thread group exiting, which is exactly when the tgid's
+// SSL objects are gone for good.
+static int
+tls_disassociate_ctty(int on_exit)
+{
+    if (!on_exit)
+        return 0;
 
-    tls_capture_io(state->ssl_write_ex.ssl, state->ssl_write_ex.buf,
-                   (u32)count, EBPF_TLS_DIR_WRITE);
+    tls_reclaim_tgid(bpf_get_current_pid_tgid() >> 32);
 
-out:
-    ebpf_events_state__del(EBPF_EVENTS_STATE_SSL_WRITE_EX);
-    preempt_enable();
     return 0;
 }
 
-SEC("uprobe")
-int BPF_UPROBE(uprobe__ssl_read_ex, void *ssl, void *buf, u64 num,
-               void *readbytes)
+SEC("fentry/disassociate_ctty")
+int BPF_PROG(fentry__disassociate_ctty_tls, int on_exit)
 {
-    struct ebpf_events_state state = {};
+    int r;
 
     preempt_disable();
-
-    if (ebpf_events_is_trusted_pid())
-        goto out;
-
-    state.ssl_read_ex.ssl       = ssl;
-    state.ssl_read_ex.buf       = buf;
-    state.ssl_read_ex.count_ptr = readbytes;
-    state.ssl_read_ex.len       = (u32)num;
-    ebpf_events_state__set(EBPF_EVENTS_STATE_SSL_READ_EX, &state);
-
-out:
+    r = tls_disassociate_ctty(on_exit);
     preempt_enable();
-    return 0;
+
+    return r;
 }
 
-SEC("uretprobe")
-int BPF_URETPROBE(uretprobe__ssl_read_ex, int ret)
+SEC("kprobe/disassociate_ctty")
+int BPF_KPROBE(kprobe__disassociate_ctty_tls, int on_exit)
 {
-    struct ebpf_events_state *state;
-    u64 count;
+    int r;
 
     preempt_disable();
-
-    state = ebpf_events_state__get(EBPF_EVENTS_STATE_SSL_READ_EX);
-    if (!state)
-        goto out;
-    if (ret != 1 || !state->ssl_read_ex.count_ptr)
-        goto out;
-    if (bpf_probe_read_user(&count, sizeof(count), state->ssl_read_ex.count_ptr))
-        goto out;
-    if (count == 0 || count > state->ssl_read_ex.len)
-        goto out;
-
-    tls_capture_io(state->ssl_read_ex.ssl, state->ssl_read_ex.buf,
-                   (u32)count, EBPF_TLS_DIR_READ);
-
-out:
-    ebpf_events_state__del(EBPF_EVENTS_STATE_SSL_READ_EX);
+    r = tls_disassociate_ctty(on_exit);
     preempt_enable();
-    return 0;
+
+    return r;
 }

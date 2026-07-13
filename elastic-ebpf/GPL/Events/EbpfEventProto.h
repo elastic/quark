@@ -482,9 +482,9 @@ struct ebpf_tls_chunk_event {
     uint64_t conn_id;
     uint8_t direction;
     uint64_t call_seq;
-    uint32_t call_len;     // true SSL_read/SSL_write length, before any capping
+    uint32_t call_len;     // true SSL_read/SSL_write length
     uint32_t chunk_idx;
-    uint32_t chunk_total;  // total chunks actually captured (capped by max_tls_call)
+    uint32_t chunk_total;  // total chunks the call was split into
     uint8_t dropped;
 
     // Variable length fields: tls_data

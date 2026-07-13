@@ -150,9 +150,6 @@ int			 quark_queue_trusted_pid_reset(struct quark_queue *);
  */
 struct quark_tls_attachment *quark_queue_tls_attach(struct quark_queue *, int,
 			     const char *, u64, u64, u64, u64);
-
-struct quark_tls_attachment *quark_queue_tls_attach_sym(struct quark_queue *,
-			     int, const char *);
 void			 quark_queue_tls_detach(struct quark_queue *,
 			     struct quark_tls_attachment *);
 
@@ -495,7 +492,8 @@ struct quark_tls_call {
 	u32				 chunk_total;	/* total chunks captured for this call */
 	size_t				 call_len;	/* true call length, before any capping */
 	size_t				 total_len;	/* total bytes in the agg chain: next */
-	size_t				 truncated;	/* bytes truncated past the per-call ceiling */
+	size_t				 truncated;	/* bytes not delivered: call_len - total_len
+						 * (e.g. chunks lost to ring-buffer pressure) */
 	int				 dropped;	/* 1 if this chunk's bytes are known-missing
 						 * (a bpf_probe_read_user failure marker) */
 	int				 gap;		/* 1 if some non-trailing chunk in this chain
@@ -959,7 +957,6 @@ struct quark_queue_attr {
 	int			 cache_grace_time;	/* in ms */
 	int			 hold_time;		/* in ms */
 	size_t			 max_env;		/* max process environment in bytes */
-	size_t			 max_tls_call;
 	int			 kubefd;		/* quark-kube-talker pipe, -1 disables */
 	struct quark_ruleset	*ruleset;		/* active ruleset */
 };
@@ -988,7 +985,6 @@ struct quark_queue {
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
 	size_t				 max_env;		/* max process environment in bytes */
-	size_t				 max_tls_call;
 	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
 	/* Backend related state */

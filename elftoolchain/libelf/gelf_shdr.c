@@ -157,55 +157,10 @@ gelf_getverdaux(UD Elf_Data *_data, UD int _offset, UD GElf_Verdaux *_dst)
 	return (NULL);
 }
 
-/*
- * Real implementation (not a stub): libbpf's uprobe symbol resolution walks a
- * versioned .dynsym and skips every entry whose gelf_getversym() fails, so a
- * NULL stub makes attach-by-symbol miss all libc/libssl symbols.
- */
 GElf_Versym *
-gelf_getversym(Elf_Data *ed, int ndx, GElf_Versym *dst)
+gelf_getversym(UD Elf_Data *_data, UD int _ndx, UD GElf_Versym *_dst)
 {
-	int ec;
-	Elf *e;
-	size_t msz;
-	Elf_Scn *scn;
-	uint32_t sh_type;
-	struct _Libelf_Data *d;
-
-	d = (struct _Libelf_Data *) ed;
-
-	if (d == NULL || ndx < 0 || dst == NULL ||
-	    (scn = d->d_scn) == NULL ||
-	    (e = scn->s_elf) == NULL) {
-		LIBELF_SET_ERROR(ARGUMENT, 0);
-		return (NULL);
-	}
-
-	ec = e->e_class;
-	assert(ec == ELFCLASS32 || ec == ELFCLASS64);
-
-	if (ec == ELFCLASS32)
-		sh_type = scn->s_shdr.s_shdr32.sh_type;
-	else
-		sh_type = scn->s_shdr.s_shdr64.sh_type;
-
-	if (_libelf_xlate_shtype(sh_type) != ELF_T_HALF) {
-		LIBELF_SET_ERROR(ARGUMENT, 0);
-		return (NULL);
-	}
-
-	if ((msz = _libelf_msize(ELF_T_HALF, ec, e->e_version)) == 0)
-		return (NULL);
-
-	if (msz * (size_t) ndx >= d->d_data.d_size) {
-		LIBELF_SET_ERROR(ARGUMENT, 0);
-		return (NULL);
-	}
-
-	/* Elf32_Versym and Elf64_Versym are both 16-bit halves. */
-	*dst = ((Elf64_Versym *) d->d_data.d_buf)[ndx];
-
-	return (dst);
+	return (NULL);
 }
 
 #undef UD

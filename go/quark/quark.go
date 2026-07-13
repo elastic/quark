@@ -307,7 +307,6 @@ type QueueAttr struct {
 	MaxLength      int
 	CacheGraceTime int
 	HoldTime       int
-	MaxTlsCall     int // max bytes captured per TLS call, only used if QQ_TLS is set; 0 == unlimited
 }
 
 // Documented in https://elastic.github.io/quark/quark_queue_get_stats.3.html.
@@ -348,7 +347,6 @@ func DefaultQueueAttr() QueueAttr {
 		MaxLength:      int(attr.max_length),
 		CacheGraceTime: int(attr.cache_grace_time),
 		HoldTime:       int(attr.hold_time),
-		MaxTlsCall:     int(attr.max_tls_call),
 	}
 }
 
@@ -369,7 +367,6 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	cattr.max_length = C.int(attr.MaxLength)
 	cattr.cache_grace_time = C.int(attr.CacheGraceTime)
 	cattr.hold_time = C.int(attr.HoldTime)
-	cattr.max_tls_call = C.size_t(attr.MaxTlsCall)
 	ok, err := C.quark_queue_open(queue.quarkQueue, &cattr)
 	if ok == -1 {
 		C.free(unsafe.Pointer(queue.quarkQueue))
@@ -439,7 +436,7 @@ func (queue *Queue) GetEvent() (Event, bool) {
 }
 
 // TlsAttachment is an opaque handle to a set of TLS uprobes, returned by
-// TlsAttach/TlsAttachSym and passed to TlsDetach.
+// TlsAttach and passed to TlsDetach.
 type TlsAttachment struct {
 	handle *C.struct_quark_tls_attachment
 }
@@ -461,22 +458,7 @@ func (queue *Queue) TlsAttach(pid int, path string, sslNewOff, sslReadOff, sslWr
 	return &TlsAttachment{handle: h}, nil
 }
 
-// TlsAttachSym attaches the TLS uprobes to a shared library (e.g. libssl) by
-// symbol name. All four are required. pid must be >= 0: the uprobes are scoped to that process.
-// It is safe to call this multiple times with different PIDs as uprobes are refcounted by (inode, offset).
-func (queue *Queue) TlsAttachSym(pid int, path string) (*TlsAttachment, error) {
-	cpath := C.CString(path)
-	defer C.free(unsafe.Pointer(cpath))
-
-	h, err := C.quark_queue_tls_attach_sym(queue.quarkQueue, C.int(pid), cpath)
-	if h == nil {
-		return nil, wrapErrno(err)
-	}
-
-	return &TlsAttachment{handle: h}, nil
-}
-
-// TlsDetach detaches a single attachment obtained from TlsAttach/TlsAttachSym
+// TlsDetach detaches a single attachment obtained from TlsAttach
 // and reclaims what it owns. Calling it twice, or with a nil handle, is a no-op.
 func (queue *Queue) TlsDetach(a *TlsAttachment) {
 	if a == nil || a.handle == nil {
