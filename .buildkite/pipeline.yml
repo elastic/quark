@@ -512,3 +512,14 @@ steps:
       provider: gcp
       machineType: n2-standard-2
       enableNestedVirtualization: true
+
+  - label: "quark-test on archlinux (rolling)"
+    key: test_archlinux
+    command: "./.buildkite/runtest_distro.sh archlinux rolling"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
