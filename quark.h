@@ -459,6 +459,7 @@ struct raw_event {
 	u32					tid;
 	u32					cpu;
 	u64					time;
+	u64					time_boot; /* CLOCK_BOOTTIME variant. zero if unsupported */
 	int					type;
 	union {
 		struct raw_exec			exec;

@@ -172,7 +172,8 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		}
 
 		raw->task.exit_code = exit->exit_code;
-		raw->task.exit_time_event = raw->time;
+		raw->task.exit_time_event =
+		    ev->ts_boot ? ev->ts_boot : ev->ts;
 		ebpf_ctx_to_task(qq, &ebpf_ctx, &raw->task);
 
 		break;
@@ -814,6 +815,8 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		qwarnx("raw->pid is not set, did you forget me :( ?");
 		goto bad;
 	}
+
+	raw->time_boot = ev->ts_boot;
 
 	return (raw);
 

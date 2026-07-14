@@ -5169,7 +5169,8 @@ quark_queue_get_event(struct quark_queue *qq)
 		}
 
 		if (qev != NULL)
-			qev->time = quark.boottime + raw->time;
+			qev->time = quark.boottime +
+			    (raw->time_boot ? raw->time_boot : raw->time);
 		raw_event_free(raw);
 	}
 
