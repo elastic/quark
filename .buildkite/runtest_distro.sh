@@ -28,14 +28,16 @@ sudo apt-get -qq install -y --no-install-recommends	\
      qemu-system-x86					\
      qemu-kvm						\
      rpm2cpio						\
+     zstd						\
      > /dev/null
 
 # Make sure we can run things on KVM
 sudo kvm-ok
 
 case "$DISTRO" in
-fedora)	sudo ./krun-fedora.sh initramfs.gz "$DISTROVER" quark-test $@;;
-rhel)	sudo ./krun-rhel.sh initramfs.gz "$DISTROVER" quark-test $@;;
-ubuntu)	sudo ./krun-ubuntu.sh initramfs.gz "$DISTROVER" quark-test $@;;
-*)	echo bad distribution "$DISTROVER" 1>&2;;
+fedora)		sudo ./krun-fedora.sh initramfs.gz "$DISTROVER" quark-test $@;;
+rhel)		sudo ./krun-rhel.sh initramfs.gz "$DISTROVER" quark-test $@;;
+ubuntu)		sudo ./krun-ubuntu.sh initramfs.gz "$DISTROVER" quark-test $@;;
+archlinux)	sudo ./krun-archlinux.sh initramfs.gz quark-test $@;;
+*)		echo bad distribution "$DISTROVER" 1>&2;;
 esac
