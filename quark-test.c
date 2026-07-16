@@ -84,7 +84,6 @@ static int	bflag;		/* run bpf tests */
 static int	kflag;		/* run kprobe tests */
 static int	nflag;		/* run nova tests */
 static int	tflag;		/* listen to the tracepipe */
-static u64	boottime;
 static int	fancy_tty;
 static int	in_valgrind;
 
@@ -270,7 +269,7 @@ show_cursor(void)
 }
 
 static u64
-ns_since_epoch(const struct quark_queue *qq)
+ns_clock(const struct quark_queue *qq)
 {
 	struct timespec ts;
 	clockid_t	clk;
@@ -279,7 +278,7 @@ ns_since_epoch(const struct quark_queue *qq)
 	if (clock_gettime(clk, &ts) == -1)
 		err(1, "clock_gettime");
 
-	return boottime + ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
+	return ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
 }
 
 static u32
@@ -911,10 +910,10 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	before = ns_since_epoch(&qq);
+	before = ns_clock(&qq);
 	child = fork_exec_nop1(relative, 0);
 	qev = drain_for_pid(&qq, child);
-	after = ns_since_epoch(&qq);
+	after = ns_clock(&qq);
 
 	/* check qev.events */
 	assert(qev->events & QUARK_EV_FORK);
@@ -1138,10 +1137,10 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	before = ns_since_epoch(&qq);
+	before = ns_clock(&qq);
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
-	after = ns_since_epoch(&qq);
+	after = ns_clock(&qq);
 	assert(write(fd, "1", 1) == 1);
 	assert(write(fd, "2", 1) == 1);
 	assert(write(fd, "3", 1) == 1);
@@ -3137,8 +3136,6 @@ main(int argc, char *argv[])
 
 	if (tflag && noforkflag)
 		usage();
-
-	boottime = fetch_boottime();
 
 	/*
 	 * Run bpf and kprobe by default, don't run nova
