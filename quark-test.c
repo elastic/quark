@@ -269,11 +269,13 @@ show_cursor(void)
 }
 
 static u64
-ns_since_epoch(void)
+ns_since_epoch(const struct quark_queue *qq)
 {
 	struct timespec ts;
+	clockid_t	clk;
 
-	if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
+	clk = qq->flags & QQ_MONOTONIC ? CLOCK_MONOTONIC : CLOCK_BOOTTIME;
+	if (clock_gettime(clk, &ts) == -1)
 		err(1, "clock_gettime");
 
 	return boottime + ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
@@ -840,6 +842,30 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_monotonic(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_queue_attr	 attr;
+
+	/* Informational only, refused as configuration */
+	attr = *qa;
+	attr.flags |= QQ_MONOTONIC;
+	assert(quark_queue_open(&qq, &attr) == -1 && errno == EINVAL);
+
+	/* On an open queue it relays the backend's time domain */
+	attr = *qa;
+	if (quark_queue_open(&qq, &attr) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	if (qq.stats.backend == QQ_KPROBE)
+		assert(qq.flags & QQ_MONOTONIC);
+	else
+		assert((qq.flags & QQ_MONOTONIC) == 0);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
 t_os_release(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue	 qq;
@@ -884,10 +910,10 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	before = ns_since_epoch();
+	before = ns_since_epoch(&qq);
 	child = fork_exec_nop1(relative, 0);
 	qev = drain_for_pid(&qq, child);
-	after = ns_since_epoch();
+	after = ns_since_epoch(&qq);
 
 	/* check qev.events */
 	assert(qev->events & QUARK_EV_FORK);
@@ -1111,10 +1137,10 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	before = ns_since_epoch();
+	before = ns_since_epoch(&qq);
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
-	after = ns_since_epoch();
+	after = ns_since_epoch(&qq);
 	assert(write(fd, "1", 1) == 1);
 	assert(write(fd, "2", 1) == 1);
 	assert(write(fd, "3", 1) == 1);
@@ -2398,6 +2424,9 @@ struct test all_tests[] = {
 	T_EBPF(t_probe),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
+	T_EBPF(t_monotonic),
+	T_KPROBE(t_monotonic),
+	T_NOVA(t_monotonic),
 	T_EBPF(t_os_release),
 	T_KPROBE(t_os_release),
 	T_EBPF(t_fork_exec_exit),

@@ -132,8 +132,7 @@ struct nova_event {
 	__u16	kind;		/* user filled */
 	__u16	pad1;		/* zeroed */
 	__u32	pad2;		/* zeroed */
-	__u64	ts;		/* auto */
-	__u64	ts_boot;	/* auto */
+	__u64	ts;		/* auto, ns since boot (CLOCK_BOOTTIME) */
 } __aligned(8);
 
 struct nova_task_event {

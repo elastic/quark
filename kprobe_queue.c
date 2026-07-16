@@ -1370,6 +1370,8 @@ kprobe_queue_open(struct quark_queue *qq)
 
 	if ((qq->flags & QQ_KPROBE) == 0)
 		return (errno = ENOTSUP, -1);
+	/* Perf stamps samples with the monotonic-ish sched clock */
+	qq->flags |= QQ_MONOTONIC;
 	qid = __atomic_fetch_add(&qids, 1, __ATOMIC_RELAXED);
 	if (kprobe_install_all(qid) == -1)
 		goto fail;
