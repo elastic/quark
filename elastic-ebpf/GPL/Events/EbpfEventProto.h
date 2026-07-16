@@ -49,8 +49,7 @@ enum ebpf_event_type {
 };
 
 struct ebpf_event_header {
-    uint64_t ts;
-    uint64_t ts_boot;
+    uint64_t ts; /* ns since boot, CLOCK_BOOTTIME (bpf_ktime_get_boot_ns) */
     uint64_t type;
 } __attribute__((packed));
 

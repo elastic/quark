@@ -884,6 +884,11 @@ struct quark_queue_attr {
 #define QQ_MODULE_LOAD		(1 << 12)
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
+/*
+ * Informational only, not configuration: if set, event times are
+ * CLOCK_MONOTONIC, else CLOCK_BOOTTIME.
+ */
+#define QQ_MONOTONIC		(1 << 15)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)	/* QQ_NOVA excluded for now */
 	int			 flags;
 	int			 max_length;

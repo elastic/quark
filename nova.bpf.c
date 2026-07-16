@@ -125,15 +125,6 @@ probe_epilogue(void)
 	preempt_enable();
 }
 
-static __u64
-ktime_get_boot_ns(void)
-{
-	if (bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_ktime_get_boot_ns))
-		return (bpf_ktime_get_boot_ns());
-	else
-		return (0);
-}
-
 static void
 task_to_nova(struct task_struct *task, struct nova_task *nt)
 {
@@ -404,8 +395,7 @@ output_reserve(struct output *o, __u32 head_len, __u32 total_len)
 
 	__builtin_memset(ev, 0, head_len);
 
-	ev->ts = bpf_ktime_get_ns();
-	ev->ts_boot = ktime_get_boot_ns();
+	ev->ts = bpf_ktime_get_boot_ns();
 
 	return (ev);
 }
