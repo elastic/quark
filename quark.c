@@ -106,6 +106,37 @@ struct quark {
 	u64		boottime;
 } quark;
 
+int
+quark_update_boottime(void)
+{
+	u64	boottime;
+
+	if ((boottime = fetch_boottime()) == 0) {
+		qwarn("can't refetch btime");
+		return (-1);
+	}
+	if (boottime != quark.boottime) {
+		qwarnx("boottime updated %llu -> %llu",
+		    (unsigned long long)quark.boottime,
+		    (unsigned long long)boottime);
+		quark.boottime = boottime;
+	}
+
+	return (0);
+}
+
+u64
+quark_get_boottime(void)
+{
+	return (quark.boottime);
+}
+
+u64
+quark_time_to_wallclock(u64 time_since_boot)
+{
+	return (quark.boottime + time_since_boot);
+}
+
 struct raw_event *
 raw_event_alloc(int type)
 {
@@ -2404,7 +2435,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		qp->flags |= QUARK_F_EXIT;
 		qp->exit_code = raw_task->exit_code;
 		if (src->task.exit_time_event)
-			qp->exit_time_event = quark.boottime + raw_task->exit_time_event;
+			qp->exit_time_event = raw_task->exit_time_event;
 		break;
 	case RAW_COMM:
 		dst->events |= QUARK_EV_SETPROCTITLE;
@@ -2447,8 +2478,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		 * precision one.
 		 */
 		if (qp->proc_time_boot == 0)
-			qp->proc_time_boot = quark.boottime +
-			    raw_task->start_boottime;
+			qp->proc_time_boot = raw_task->start_boottime;
 		qp->proc_ppid = raw_task->ppid;
 		qp->proc_uid = raw_task->uid;
 		qp->proc_gid = raw_task->gid;
@@ -2683,7 +2713,6 @@ sproc_stat(struct quark_process *qp, int dfd)
 		qp->proc_tty_major = (tty >> 8) & 0xff;
 		qp->proc_tty_minor = ((tty >> 12) & 0xfff00) | (tty & 0xff);
 		qp->proc_time_boot =
-		    quark.boottime +
 		    ((starttime / (u64)quark.hz) * NS_PER_S) +
 		    (((starttime % (u64)quark.hz) * NS_PER_S) / (u64)quark.hz);
 
@@ -5169,7 +5198,7 @@ quark_queue_get_event1(struct quark_queue *qq)
 		}
 
 		if (qev != NULL)
-			qev->time = quark.boottime + raw->time;
+			qev->time = raw->time;
 		raw_event_free(raw);
 	}
 
