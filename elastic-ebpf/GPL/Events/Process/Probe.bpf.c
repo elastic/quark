@@ -456,6 +456,52 @@ int BPF_KPROBE(kprobe__arch_ptrace,
     return r;
 }
 
+SEC("tracepoint/syscalls/sys_enter_mprotect")
+int tracepoint_syscalls_sys_enter_mprotect(struct syscall_trace_enter *ctx)
+{
+    preempt_disable();
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+
+    struct mprotect_args {
+        short common_type;
+        char common_flags;
+        char common_preempt_count;
+        int common_pid;
+        int __syscall_nr;
+        unsigned long start;
+        size_t len;
+        unsigned long prot;
+    };
+    struct mprotect_args *ex_args    = (struct mprotect_args *)ctx;
+    const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+    if (is_kernel_thread(task))
+        goto out;
+
+    /* Only RW (prot 3) and RWX (prot 7): require both READ and WRITE. */
+    if ((ex_args->prot & 0x3) != 0x3)
+        goto out;
+
+    struct ebpf_process_mprotect_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+    if (!event)
+        goto out;
+
+    event->hdr.type    = EBPF_EVENT_PROCESS_MPROTECT;
+    event->hdr.ts      = bpf_ktime_get_ns();
+    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    ebpf_pid_info__fill(&event->pids, task);
+
+    event->addr = ex_args->start;
+    event->len  = ex_args->len;
+    event->prot = ex_args->prot;
+
+    bpf_ringbuf_submit(event, 0);
+out:
+    preempt_enable();
+    return 0;
+}
+
 SEC("tracepoint/syscalls/sys_enter_shmget")
 int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
 {

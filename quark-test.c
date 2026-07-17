@@ -1351,6 +1351,78 @@ t_shmget(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_mprotect(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_mprotect	*qmprotect;
+	void				*addr;
+	void				*addr_rw;
+	const size_t			 len = 4096;
+	const int			 prot_rwx = PROT_READ | PROT_WRITE | PROT_EXEC;
+	const int			 prot_rw = PROT_READ | PROT_WRITE;
+	int				 saw_rw = 0;
+	int				 saw_rwx = 0;
+
+	qa->flags |= QQ_MPROTECT;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	addr = mmap(NULL, len, PROT_READ | PROT_WRITE,
+	    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (addr == MAP_FAILED)
+		err(1, "mmap");
+	addr_rw = mmap(NULL, len, PROT_READ | PROT_WRITE,
+	    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (addr_rw == MAP_FAILED)
+		err(1, "mmap");
+
+	/* Suppressed: NONE and R-only must not enter the ring buffer. */
+	if (mprotect(addr, len, PROT_NONE) == -1)
+		err(1, "mprotect");
+	if (mprotect(addr, len, PROT_READ) == -1)
+		err(1, "mprotect");
+
+	if (mprotect(addr_rw, len, prot_rw) == -1)
+		err(1, "mprotect");
+	if (mprotect(addr, len, prot_rwx) == -1)
+		err(1, "mprotect");
+
+	for (;;) {
+		qev = drain_for_pid(&qq, getpid());
+		if (!(qev->events & QUARK_EV_MPROTECT))
+			continue;
+		qmprotect = &qev->mprotect;
+		if (qmprotect->prot == prot_rw) {
+			assert((uintptr_t)qmprotect->addr == (uintptr_t)addr_rw);
+			assert(qmprotect->len == len);
+			saw_rw = 1;
+			continue;
+		}
+		if (qmprotect->prot == prot_rwx) {
+			assert((uintptr_t)qmprotect->addr == (uintptr_t)addr);
+			assert(qmprotect->len == len);
+			saw_rwx = 1;
+			break;
+		}
+		errx(1, "unexpected mprotect prot 0x%llx", (unsigned long long)qmprotect->prot);
+	}
+
+	assert(saw_rw);
+	assert(saw_rwx);
+
+	if (munmap(addr_rw, len) == -1)
+		err(1, "munmap");
+	if (munmap(addr, len) == -1)
+		err(1, "munmap");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
 t_shm_open(const struct test *t, struct quark_queue_attr *qa)
 {
 #ifdef NO_SHM_OPEN
@@ -2412,6 +2484,7 @@ struct test all_tests[] = {
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_shmget),
+	T_EBPF(t_mprotect),
 	T_EBPF(t_shm_open),
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),

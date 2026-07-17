@@ -591,6 +591,24 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_PROCESS_MPROTECT: {
+		struct ebpf_process_mprotect_event *mprotect;
+		struct quark_mprotect *qmprotect;
+
+		mprotect = (struct ebpf_process_mprotect_event *)ev;
+		if ((raw = raw_event_alloc(RAW_MPROTECT)) == NULL)
+			goto bad;
+
+		raw->pid = mprotect->pids.tgid;
+		raw->time = ev->ts;
+
+		qmprotect = &raw->mprotect.quark_mprotect;
+		qmprotect->addr = mprotect->addr;
+		qmprotect->len = mprotect->len;
+		qmprotect->prot = mprotect->prot;
+
+		break;
+	}
 	case EBPF_EVENT_PROCESS_LOAD_MODULE: {
 		struct ebpf_process_load_module_event *module;
 		struct quark_module_load	*qml;
@@ -1254,6 +1272,9 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
+
+	if (qq->flags & QQ_MPROTECT)
+		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_mprotect, 1);
 
 	if (qq->flags & QQ_GETPID)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
