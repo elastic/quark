@@ -98,5 +98,5 @@ Changes from 0.6 to 0.7
 ~~~~~~~~~~~~~~~~~~~~~~~
   o BPF_CC is gone, just use CLANG='zig cc' now.
   o Added mprotect() syscall events (QUARK_EV_MPROTECT, -u on quark-mon).
-    The eBPF probe emits only RW (prot 3) and RWX (prot 7) calls; NONE, R-only,
-    and other masks are suppressed before ring-buffer submission.
+    The eBPF probe requires both read and write protection (RW, with execute
+    optional); masks missing either permission are suppressed before submission.

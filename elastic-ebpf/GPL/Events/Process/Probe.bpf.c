@@ -473,7 +473,7 @@ int tracepoint_syscalls_sys_enter_mprotect(struct syscall_trace_enter *ctx)
     if (is_kernel_thread(task))
         goto out;
 
-    /* Only RW (prot 3) and RWX (prot 7): require both READ and WRITE. */
+    /* Require READ and WRITE; EXECUTE and other modifiers are optional. */
     if ((ex_args->prot & 0x3) != 0x3)
         goto out;
 
