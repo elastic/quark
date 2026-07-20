@@ -397,7 +397,7 @@ struct quark_ptrace {
 struct quark_mprotect {
 	u64	addr;
 	u64	len;
-	s64	prot;
+	u64	prot;
 };
 
 struct raw_ptrace {

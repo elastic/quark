@@ -1387,6 +1387,15 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	const size_t			 len = 4096;
 	const int			 prot_rwx = PROT_READ | PROT_WRITE | PROT_EXEC;
 	const int			 prot_rw = PROT_READ | PROT_WRITE;
+	const int			 suppressed[] = {
+		PROT_NONE,
+		PROT_READ,
+		PROT_WRITE,
+		PROT_EXEC,
+		PROT_READ | PROT_EXEC,
+		PROT_WRITE | PROT_EXEC,
+	};
+	size_t				 i;
 	int				 saw_rw = 0;
 	int				 saw_rwx = 0;
 
@@ -1404,11 +1413,11 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	if (addr_rw == MAP_FAILED)
 		err(1, "mmap");
 
-	/* Suppressed: NONE and R-only must not enter the ring buffer. */
-	if (mprotect(addr, len, PROT_NONE) == -1)
-		err(1, "mprotect");
-	if (mprotect(addr, len, PROT_READ) == -1)
-		err(1, "mprotect");
+	/* Non-RW protections must not enter the ring buffer. */
+	for (i = 0; i < nitems(suppressed); i++) {
+		if (mprotect(addr, len, suppressed[i]) == -1)
+			err(1, "mprotect");
+	}
 
 	if (mprotect(addr_rw, len, prot_rw) == -1)
 		err(1, "mprotect");
@@ -1424,15 +1433,16 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 			assert((uintptr_t)qmprotect->addr == (uintptr_t)addr_rw);
 			assert(qmprotect->len == len);
 			saw_rw = 1;
-			continue;
-		}
-		if (qmprotect->prot == prot_rwx) {
+		} else if (qmprotect->prot == prot_rwx) {
 			assert((uintptr_t)qmprotect->addr == (uintptr_t)addr);
 			assert(qmprotect->len == len);
 			saw_rwx = 1;
-			break;
+		} else {
+			errx(1, "unexpected mprotect prot 0x%llx",
+			    (unsigned long long)qmprotect->prot);
 		}
-		errx(1, "unexpected mprotect prot 0x%llx", (unsigned long long)qmprotect->prot);
+		if (saw_rw && saw_rwx)
+			break;
 	}
 
 	assert(saw_rw);

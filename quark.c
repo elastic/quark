@@ -391,6 +391,7 @@ event_storage_clear(struct quark_queue *qq)
 	free(qq->event_storage.file);
 	qq->event_storage.file = NULL;
 	bzero(&qq->event_storage.ptrace, sizeof(qq->event_storage.ptrace));
+	bzero(&qq->event_storage.mprotect, sizeof(qq->event_storage.mprotect));
 	if (qq->event_storage.module_load != NULL) {
 		free(qq->event_storage.module_load->name);
 		free(qq->event_storage.module_load->version);
@@ -2072,7 +2073,7 @@ module_taints_str(u64 taints, char *buf, size_t len)
 }
 
 static void
-mprotect_prot_str(s64 prot, char *buf, size_t len)
+mprotect_prot_str(u64 prot, char *buf, size_t len)
 {
 	size_t	n;
 

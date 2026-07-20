@@ -386,7 +386,7 @@ struct ebpf_process_mprotect_event {
     struct ebpf_pid_info pids;
     uint64_t addr;
     uint64_t len;
-    int64_t prot;
+    uint64_t prot;
 } __attribute__((packed));
 
 enum ebpf_net_info_transport {
