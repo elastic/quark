@@ -421,8 +421,7 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
         event = &ctx->event;
 
         event->hdr.type    = EBPF_EVENT_NETWORK_DNS_PKT;
-        event->hdr.ts      = bpf_ktime_get_ns();
-        event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+        event->hdr.ts      = bpf_ktime_get_boot_ns();
         event->tgid        = *tgid;
         event->cap_len     = cap_len;
         event->orig_len    = skb->len;

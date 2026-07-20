@@ -89,6 +89,15 @@ EBPF is attempted first and falls back to KPROBE if both were specified.
 Enable the KPROBE backend, see above.
 .It Dv QQ_ALL_BACKENDS
 Shorthand for (QQ_EBPF | QQ_KPROBE).
+.It Dv QQ_MONOTONIC
+Informational, not configuration: specifying it fails with
+.Er EINVAL .
+The backend that opens sets it on the opened queue's
+.Em flags
+when its event times are CLOCK_MONOTONIC instead of CLOCK_BOOTTIME, which
+only the KPROBE backend does.
+Monotonic times undercount by the total suspended time, users that care
+about suspend must compensate.
 .It Dv QQ_THREAD_EVENTS
 Include per-thread events, instead of per-process events.
 This option will be removed in the future, but it may be useful for debugging.
