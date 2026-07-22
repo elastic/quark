@@ -122,7 +122,6 @@ static long tls_emit_chunk(u32 idx, void *ctx)
     task               = (struct task_struct *)bpf_get_current_task();
     event->hdr.type    = EBPF_EVENT_TLS_CHUNK;
     event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
     ebpf_pid_info__fill(&event->pids, task);
     event->conn_id      = cctx->conn_id;
     event->direction    = (uint8_t)cctx->direction;
@@ -205,7 +204,6 @@ static void tls_emit_conn(u64 conn_id, u32 flags)
     task               = (struct task_struct *)bpf_get_current_task();
     event->hdr.type    = EBPF_EVENT_TLS_CONN;
     event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
     ebpf_pid_info__fill(&event->pids, task);
     event->conn_id = conn_id;
     event->flags   = flags;
@@ -322,7 +320,6 @@ int BPF_UPROBE(uprobe__ssl_free, void *ssl)
     task               = (struct task_struct *)bpf_get_current_task();
     event->hdr.type    = EBPF_EVENT_TLS_CONN_CLOSE;
     event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
     ebpf_pid_info__fill(&event->pids, task);
     event->conn_id = conn_id;
 
