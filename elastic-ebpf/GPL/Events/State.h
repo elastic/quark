@@ -23,6 +23,7 @@ enum ebpf_events_state_op {
     EBPF_EVENTS_STATE_CHOWN          = 9,
     EBPF_EVENTS_STATE_FS_CREATE      = 10,
     EBPF_EVENTS_STATE_MEMFD_CREATE   = 11,
+    EBPF_EVENTS_STATE_MPROTECT       = 12,
 };
 
 struct ebpf_events_key {
@@ -86,6 +87,12 @@ struct ebpf_events_memfd_create_state {
     unsigned int flags;
 };
 
+struct ebpf_events_mprotect_state {
+    u64 addr;
+    u64 len;
+    u64 prot;
+};
+
 struct ebpf_events_state {
     union {
         struct ebpf_events_unlink_state unlink;
@@ -98,6 +105,7 @@ struct ebpf_events_state {
         struct ebpf_events_writev_state writev;
         struct ebpf_events_chown_state chown;
         struct ebpf_events_memfd_create_state memfd;
+        struct ebpf_events_mprotect_state mprotect;
         /* struct ebpf_events_fs_create fs_create; nada */
     };
 };

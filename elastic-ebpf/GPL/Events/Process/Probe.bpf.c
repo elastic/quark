@@ -24,6 +24,7 @@ DECL_FIELD_OFFSET(iov_iter, __iov);
 
 #define S_ISUID 0004000
 #define S_ISGID 0002000
+#define PROT_EXEC 0x4
 
 SEC("tp_btf/sched_process_fork")
 int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct task_struct *child)
@@ -473,8 +474,42 @@ int tracepoint_syscalls_sys_enter_mprotect(struct syscall_trace_enter *ctx)
     if (is_kernel_thread(task))
         goto out;
 
-    /* Require READ and WRITE; EXECUTE and other modifiers are optional. */
-    if ((ex_args->prot & 0x3) != 0x3)
+    if (!(ex_args->prot & PROT_EXEC))
+        goto out;
+
+    struct ebpf_events_state state = {};
+    state.mprotect.addr = ex_args->start;
+    state.mprotect.len  = ex_args->len;
+    state.mprotect.prot = ex_args->prot;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_MPROTECT, &state);
+
+out:
+    preempt_enable();
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_mprotect")
+int tracepoint_syscalls_sys_exit_mprotect(struct syscall_trace_exit *args)
+{
+    preempt_disable();
+
+    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_MPROTECT);
+    if (!state)
+        goto out;
+
+    u64 addr = state->mprotect.addr;
+    u64 len  = state->mprotect.len;
+    u64 prot = state->mprotect.prot;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_MPROTECT);
+
+    if (BPF_CORE_READ(args, ret) != 0)
+        goto out;
+
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+
+    const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (is_kernel_thread(task))
         goto out;
 
     struct ebpf_process_mprotect_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
@@ -485,9 +520,9 @@ int tracepoint_syscalls_sys_enter_mprotect(struct syscall_trace_enter *ctx)
     event->hdr.ts   = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->pids, task);
 
-    event->addr = ex_args->start;
-    event->len  = ex_args->len;
-    event->prot = ex_args->prot;
+    event->addr = addr;
+    event->len  = len;
+    event->prot = prot;
 
     bpf_ringbuf_submit(event, 0);
 out:

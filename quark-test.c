@@ -1382,76 +1382,83 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
 	const struct quark_mprotect	*qmprotect;
-	void				*addr;
-	void				*addr_rw;
+	void				*addr[4];
+	void				*suppressed_addr;
 	const size_t			 len = 4096;
-	const int			 prot_rwx = PROT_READ | PROT_WRITE | PROT_EXEC;
-	const int			 prot_rw = PROT_READ | PROT_WRITE;
+	const int			 expected[] = {
+		PROT_EXEC,
+		PROT_READ | PROT_EXEC,
+		PROT_WRITE | PROT_EXEC,
+		PROT_READ | PROT_WRITE | PROT_EXEC,
+	};
 	const int			 suppressed[] = {
 		PROT_NONE,
 		PROT_READ,
 		PROT_WRITE,
-		PROT_EXEC,
-		PROT_READ | PROT_EXEC,
-		PROT_WRITE | PROT_EXEC,
+		PROT_READ | PROT_WRITE,
 	};
-	size_t				 i;
-	int				 saw_rw = 0;
-	int				 saw_rwx = 0;
+	int				 saw[nitems(expected)] = { 0 };
+	size_t				 i, j;
+	int				 seen = 0;
 
 	qa->flags |= QQ_MPROTECT;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	addr = mmap(NULL, len, PROT_READ | PROT_WRITE,
+	suppressed_addr = mmap(NULL, len, PROT_READ | PROT_WRITE,
 	    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (addr == MAP_FAILED)
-		err(1, "mmap");
-	addr_rw = mmap(NULL, len, PROT_READ | PROT_WRITE,
-	    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (addr_rw == MAP_FAILED)
+	if (suppressed_addr == MAP_FAILED)
 		err(1, "mmap");
 
-	/* Non-RW protections must not enter the ring buffer. */
+	/* Non-executable protections must not enter the ring buffer. */
 	for (i = 0; i < nitems(suppressed); i++) {
-		if (mprotect(addr, len, suppressed[i]) == -1)
+		if (mprotect(suppressed_addr, len, suppressed[i]) == -1)
 			err(1, "mprotect");
 	}
 
-	if (mprotect(addr_rw, len, prot_rw) == -1)
-		err(1, "mprotect");
-	if (mprotect(addr, len, prot_rwx) == -1)
-		err(1, "mprotect");
+	/* Failed executable requests must not enter the ring buffer. */
+	if (mprotect((void *)(uintptr_t)1, len, PROT_EXEC) != -1)
+		errx(1, "unaligned mprotect unexpectedly succeeded");
 
-	for (;;) {
+	for (i = 0; i < nitems(expected); i++) {
+		addr[i] = mmap(NULL, len, PROT_READ | PROT_WRITE,
+		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (addr[i] == MAP_FAILED)
+			err(1, "mmap");
+		if (mprotect(addr[i], len, expected[i]) == -1)
+			err(1, "mprotect");
+	}
+
+	while (seen < (int)nitems(expected)) {
 		qev = drain_for_pid(&qq, getpid());
 		if (!(qev->events & QUARK_EV_MPROTECT))
 			continue;
 		qmprotect = &qev->mprotect;
-		if (qmprotect->prot == prot_rw) {
-			assert((uintptr_t)qmprotect->addr == (uintptr_t)addr_rw);
-			assert(qmprotect->len == len);
-			saw_rw = 1;
-		} else if (qmprotect->prot == prot_rwx) {
-			assert((uintptr_t)qmprotect->addr == (uintptr_t)addr);
-			assert(qmprotect->len == len);
-			saw_rwx = 1;
-		} else {
+		for (i = 0; i < nitems(expected); i++) {
+			if (qmprotect->prot == (u64)expected[i] &&
+			    qmprotect->addr == (u64)(uintptr_t)addr[i])
+				break;
+		}
+		if (i == nitems(expected)) {
 			errx(1, "unexpected mprotect prot 0x%llx",
 			    (unsigned long long)qmprotect->prot);
 		}
-		if (saw_rw && saw_rwx)
-			break;
+		assert(qmprotect->len == len);
+		assert(!saw[i]);
+		saw[i] = 1;
+		seen++;
 	}
 
-	assert(saw_rw);
-	assert(saw_rwx);
+	for (i = 0; i < nitems(saw); i++)
+		assert(saw[i]);
 
-	if (munmap(addr_rw, len) == -1)
+	if (munmap(suppressed_addr, len) == -1)
 		err(1, "munmap");
-	if (munmap(addr, len) == -1)
-		err(1, "munmap");
+	for (j = 0; j < nitems(addr); j++) {
+		if (munmap(addr[j], len) == -1)
+			err(1, "munmap");
+	}
 
 	quark_queue_close(&qq);
 

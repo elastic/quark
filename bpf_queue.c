@@ -1273,8 +1273,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
 
-	if (qq->flags & QQ_MPROTECT)
+	if (qq->flags & QQ_MPROTECT) {
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_mprotect, 1);
+		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_mprotect, 1);
+	}
 
 	if (qq->flags & QQ_GETPID)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
