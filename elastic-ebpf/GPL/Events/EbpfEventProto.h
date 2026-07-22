@@ -52,8 +52,7 @@ enum ebpf_event_type {
 };
 
 struct ebpf_event_header {
-    uint64_t ts;
-    uint64_t ts_boot;
+    uint64_t ts; /* ns since boot, CLOCK_BOOTTIME (bpf_ktime_get_boot_ns) */
     uint64_t type;
 } __attribute__((packed));
 
@@ -380,6 +379,7 @@ struct ebpf_process_ptrace_event {
 struct ebpf_process_load_module_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
+    uint64_t taints;
     // Variable length fields: filename, mod version, mod srcversion
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));

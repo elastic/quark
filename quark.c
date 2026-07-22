@@ -250,11 +250,13 @@ raw_event_by_pidtime_cmp(struct raw_event *a, struct raw_event *b)
 }
 
 static inline u64
-now64(void)
+now64(const struct quark_queue *qq)
 {
 	struct timespec ts;
+	clockid_t	clk;
 
-	if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
+	clk = qq->flags & QQ_MONOTONIC ? CLOCK_MONOTONIC : CLOCK_BOOTTIME;
+	if (clock_gettime(clk, &ts) == -1)
 		return (0);
 
 	return ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
@@ -447,7 +449,7 @@ gc_mark(struct quark_queue *qq, struct gc_link *gc, enum gc_type type)
 	if (gc->gc_time)
 		return;
 
-	gc->gc_time = now64();
+	gc->gc_time = now64(qq);
 	gc->gc_type = type;
 	TAILQ_INSERT_TAIL(&qq->event_gc, gc, gc_entry);
 }
@@ -468,7 +470,7 @@ gc_collect(struct quark_queue *qq)
 	u64		 now;
 	int		 n;
 
-	now = now64();
+	now = now64(qq);
 	n = 0;
 	while ((gc = TAILQ_FIRST(&qq->event_gc)) != NULL) {
 		if (AGE(gc->gc_time, now) < qq->cache_grace_time)
@@ -1537,7 +1539,7 @@ kube_read_events(struct quark_queue *qq)
 	 * hammering with one syscall per event.
 	 */
 	if (!qkube->try_read) {
-		if ((now64() - qkube->last_read) >= (u64)MS_TO_NS(10))
+		if ((now64(qq) - qkube->last_read) >= (u64)MS_TO_NS(10))
 			qkube->try_read = 1;
 		else
 			return;
@@ -1550,7 +1552,7 @@ kube_read_events(struct quark_queue *qq)
 		return;
 	}
 	n = qread(qkube->fd, qkube->buf + qkube->buf_w, left_towrite);
-	qkube->last_read = now64();
+	qkube->last_read = now64(qq);
 	qkube->try_read = 0;
 	if (n == -1) {
 		if (errno == EAGAIN)
@@ -1676,7 +1678,7 @@ kube_prime(struct quark_queue *qq)
 	pfd.events = POLLIN;
 
 	qwarnx("priming kube events...");
-	deadline = now64() + (u64)MS_TO_NS(3000);
+	deadline = now64(qq) + (u64)MS_TO_NS(3000);
 	do {
 		if ((r = poll(&pfd, 1, 25)) == -1) {
 			qwarn("poll");
@@ -1691,7 +1693,7 @@ kube_prime(struct quark_queue *qq)
 		 */
 		if (qkube->fd == -1)
 			break;
-	} while (now64() < deadline);
+	} while (now64(qq) < deadline);
 
 	/*
 	 * We must have received at least the node information.
@@ -2076,6 +2078,21 @@ file_op_mask_str(u32 op_mask, char *buf, size_t len)
 	}
 }
 
+static void
+module_taints_str(u64 taints, char *buf, size_t len)
+{
+	/* One letter per taint bit, see struct taint_flag in kernel/panic.c */
+	const char	*tnts = "PFSRMBUDAWCIOELKXTN";
+	size_t		 i, n;
+
+	*buf = 0;
+	for (i = 0, n = 0; tnts[i] != 0 && n + 1 < len; i++) {
+		if (taints & ((u64)1 << i))
+			buf[n++] = tnts[i];
+	}
+	buf[n] = 0;
+}
+
 #define P(...)						\
 	do {						\
 		if (fprintf(f, __VA_ARGS__) < 0)	\
@@ -2101,6 +2118,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_pod		*pod;
 	const struct quark_container	*container;
 	const struct quark_ptrace	*ptrace;
+	const struct quark_module_load	*qml;
 	int				 pid;
 
 	if (qev->events == QUARK_EV_BYPASS) {
@@ -2184,6 +2202,19 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		PF(fl, "pid=%d request=0x%llx addr=0x%llx data=0x%llx\n",
 		    ptrace->child_pid, ptrace->request,
 		    ptrace->addr, ptrace->data);
+	}
+
+	if (qev->events & QUARK_EV_MODULE_LOAD) {
+		fl = "MODULE";
+
+		qml = qev->module_load;
+		if (qml == NULL)
+			return (-1);
+
+		module_taints_str(qml->taints, buf, sizeof(buf));
+		PF(fl, "name=%s version=%s srcversion=%s taints=0x%llx (%s)\n",
+		    qml->name, qml->version, qml->src_version,
+		    qml->taints, buf);
 	}
 
 	if (qp == NULL)
@@ -2938,7 +2969,7 @@ sproc_pid_sockets(struct quark_queue *qq,
 			continue;
 
 		qsk = socket_alloc_and_insert(qq, &ss->socket.local,
-		    &ss->socket.remote, SOCK_CONN_SCRAPE, 0, 0, pid, now64());
+		    &ss->socket.remote, SOCK_CONN_SCRAPE, 0, 0, pid, now64(qq));
 		if (qsk == NULL) {
 			qwarn("socket_alloc");
 			continue;
@@ -4131,6 +4162,10 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qa->max_length = 1;
 	}
 
+	/* QQ_MONOTONIC is informational, not configuration */
+	if (qa->flags & QQ_MONOTONIC)
+		return (errno = EINVAL, -1);
+
 	/* XXX hardcode QQ_NOVA for now XXX */
 	if ((qa->flags & (QQ_ALL_BACKENDS | QQ_NOVA)) == 0 ||
 	    qa->max_length <= 0 ||
@@ -4608,7 +4643,7 @@ quark_queue_pop_raw(struct quark_queue *qq)
 	 */
 	(void)quark_queue_populate(qq);
 
-	now = now64();
+	now = now64(qq);
 	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
 	if (min == NULL || !raw_event_expired(qq, min, now)) {
 		/* qq->idle++; */

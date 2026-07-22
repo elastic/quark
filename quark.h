@@ -415,6 +415,7 @@ struct quark_module_load {
 	char *name;
 	char *version;
 	char *src_version;
+	u64   taints;
 };
 
 struct raw_module_load {
@@ -951,6 +952,11 @@ struct quark_queue_attr {
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
 #define QQ_TLS			(1 << 15)
+/*
+ * Informational only, not configuration: if set, event times are
+ * CLOCK_MONOTONIC, else CLOCK_BOOTTIME.
+ */
+#define QQ_MONOTONIC		(1 << 16)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)	/* QQ_NOVA excluded for now */
 	int			 flags;
 	int			 max_length;

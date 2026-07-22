@@ -271,8 +271,8 @@ nova_ringbuf_cb(void *vqq, void *vdata, size_t len)
 	nt = NULL;
 	nte = NULL;
 
-	printf("nova event %s len=%zd ts=%llu ts_boot=%llu ",
-	    nova_kind_str(nev->kind), len, nev->ts, nev->ts_boot);
+	printf("nova event %s len=%zd ts=%llu ",
+	    nova_kind_str(nev->kind), len, nev->ts);
 
 	switch (nev->kind) {
 	case NOVA_FORK:		/* FALLTHROUGH */

@@ -45,8 +45,7 @@ int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct 
         goto out;
 
     event->hdr.type    = EBPF_EVENT_PROCESS_FORK;
-    event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    event->hdr.ts      = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->parent_pids, parent);
     ebpf_pid_info__fill(&event->child_pids, child);
     ebpf_cred_info__fill(&event->creds, parent);
@@ -99,8 +98,7 @@ int BPF_PROG(sched_process_exec,
         goto out;
 
     event->hdr.type    = EBPF_EVENT_PROCESS_EXEC;
-    event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    event->hdr.ts      = bpf_ktime_get_boot_ns();
 
     ebpf_pid_info__fill(&event->pids, task);
     ebpf_cred_info__fill(&event->creds, task);
@@ -211,8 +209,7 @@ static int disassociate_ctty__enter(int on_exit)
         return 0;
 
     event->hdr.type    = EBPF_EVENT_PROCESS_EXIT;
-    event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    event->hdr.ts      = bpf_ktime_get_boot_ns();
 
     // The exit _status_ is stored in the second byte of task->exit_code
     int exit_code    = BPF_CORE_READ(task, exit_code);
@@ -274,8 +271,7 @@ static int setsid__exit(int evtype)
         goto out;
 
     event->hdr.type    = evtype;
-    event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    event->hdr.ts      = bpf_ktime_get_boot_ns();
 
     ebpf_pid_info__fill(&event->pids, task);
     ebpf_cred_info__fill(&event->creds, task);
@@ -337,10 +333,10 @@ int BPF_PROG(module_load, struct module *mod)
         goto out;
 
     event->hdr.type    = EBPF_EVENT_PROCESS_LOAD_MODULE;
-    event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    event->hdr.ts      = bpf_ktime_get_boot_ns();
 
     ebpf_pid_info__fill(&event->pids, task);
+    event->taints = BPF_CORE_READ(mod, taints);
 
     pid_t ppid      = BPF_CORE_READ(task, group_leader, real_parent, tgid);
     pid_t curr_tgid = BPF_CORE_READ(task, tgid);
@@ -407,8 +403,7 @@ static int ptrace_event(struct task_struct *child,
         goto out;
 
     event->hdr.type    = EBPF_EVENT_PROCESS_PTRACE;
-    event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    event->hdr.ts      = bpf_ktime_get_boot_ns();
 
     ebpf_pid_info__fill(&event->pids, task);
 
@@ -483,8 +478,7 @@ int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
         goto out;
 
     event->hdr.type    = EBPF_EVENT_PROCESS_SHMGET;
-    event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    event->hdr.ts      = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->pids, task);
 
     event->key    = ex_args->key;
@@ -539,8 +533,7 @@ static int emit_memfd_create_event(const char *name)
         goto out;
 
     event->hdr.type    = EBPF_EVENT_PROCESS_MEMFD_CREATE;
-    event->hdr.ts      = bpf_ktime_get_ns();
-    event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+    event->hdr.ts      = bpf_ktime_get_boot_ns();
     event->flags       = state->memfd.flags;
 
     ebpf_pid_info__fill(&event->pids, task);
@@ -630,8 +623,7 @@ static int commit_creds__enter(struct cred *new)
             goto out;
 
         event->hdr.type    = EBPF_EVENT_PROCESS_SETUID;
-        event->hdr.ts      = bpf_ktime_get_ns();
-        event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+        event->hdr.ts      = bpf_ktime_get_boot_ns();
 
         ebpf_pid_info__fill(&event->pids, task);
         ebpf_cred_info__fill(&event->creds, task);
@@ -660,8 +652,7 @@ static int commit_creds__enter(struct cred *new)
             goto out;
 
         event->hdr.type    = EBPF_EVENT_PROCESS_SETGID;
-        event->hdr.ts      = bpf_ktime_get_ns();
-        event->hdr.ts_boot = bpf_ktime_get_boot_ns_helper();
+        event->hdr.ts      = bpf_ktime_get_boot_ns();
 
         ebpf_pid_info__fill(&event->pids, task);
         ebpf_cred_info__fill(&event->creds, task);
@@ -729,8 +720,7 @@ static int output_tty_event(struct ebpf_tty_dev *slave, const void *base, size_t
 
     task                     = (struct task_struct *)bpf_get_current_task();
     event->hdr.type          = EBPF_EVENT_PROCESS_TTY_WRITE;
-    event->hdr.ts            = bpf_ktime_get_ns();
-    event->hdr.ts_boot       = bpf_ktime_get_boot_ns_helper();
+    event->hdr.ts            = bpf_ktime_get_boot_ns();
     event->tty_out_truncated = base_len > TTY_OUT_MAX ? base_len - TTY_OUT_MAX : 0;
     event->tty               = *slave;
     ebpf_pid_info__fill(&event->pids, task);

@@ -89,6 +89,13 @@
       <dd>Enable the KPROBE backend, see above.</dd>
       <dt id="QQ_ALL_BACKENDS"><a class="permalink" href="#QQ_ALL_BACKENDS"><code class="Dv">QQ_ALL_BACKENDS</code></a></dt>
       <dd>Shorthand for (QQ_EBPF | QQ_KPROBE).</dd>
+      <dt id="QQ_MONOTONIC"><a class="permalink" href="#QQ_MONOTONIC"><code class="Dv">QQ_MONOTONIC</code></a></dt>
+      <dd>Informational, not configuration: specifying it fails with
+          <code class="Er">EINVAL</code>. The backend that opens sets it on the
+          opened queue's <i class="Em">flags</i> when its event times are
+          CLOCK_MONOTONIC instead of CLOCK_BOOTTIME, which only the KPROBE
+          backend does. Monotonic times undercount by the total suspended time,
+          users that care about suspend must compensate.</dd>
       <dt id="QQ_THREAD_EVENTS"><a class="permalink" href="#QQ_THREAD_EVENTS"><code class="Dv">QQ_THREAD_EVENTS</code></a></dt>
       <dd>Include per-thread events, instead of per-process events. This option
           will be removed in the future, but it may be useful for
@@ -164,7 +171,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">February 11, 2025</td>
+    <td class="foot-date">July 17, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
