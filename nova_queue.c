@@ -163,6 +163,11 @@ nova_rule_from_quark(struct nova_queue *nqq,
 		case QUARK_RF_POISON:
 			nr->poison_tag = field->poison_tag;
 			break;
+		case QUARK_RF_FILE_EXEC_CHANGE:
+			errno = ENOTSUP;
+			qwarn("file.exec_change is not supported in nova backend");
+			return (-1);
+			break;
 		default:
 			errno = EINVAL;
 			qwarn("bad field->code %llu", field->code);

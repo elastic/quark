@@ -34,6 +34,7 @@
 #define QUARK_RF_EXE		(1ULL << 6)
 #define QUARK_RF_FILEPATH	(1ULL << 7)
 #define QUARK_RF_POISON		(1ULL << 8)
+#define QUARK_RF_FILE_EXEC_CHANGE (1ULL << 9)
 
 enum quark_rule_action {
 	QUARK_RA_INVALID,

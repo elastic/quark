@@ -366,6 +366,11 @@ struct raw_packet {
 #define QUARK_FILE_OP_REMOVE	(1 << 2)
 #define QUARK_FILE_OP_MOVE	(1 << 3)
 
+#define QUARK_FILE_CH_CONTENT	(1 << 0)
+#define QUARK_FILE_CH_PERMS	(1 << 1)
+#define QUARK_FILE_CH_OWNER	(1 << 2)
+#define QUARK_FILE_CH_XATTRS	(1 << 3)
+
 struct quark_file {
 	const char	*path;		/* points to storage + 0 */
 	const char	*old_path;	/* NULL or points to storage + strlen(path) */
@@ -379,6 +384,7 @@ struct quark_file {
 	u32		 uid;
 	u32		 gid;
 	u32		 op_mask;	/* mask of QUARK_FILE_OP_* */
+	u32		 change_mask;	/* mask of QUARK_FILE_CH_* */
 	char		 storage[];	/* paths point here */
 };
 
