@@ -55,7 +55,7 @@ int	quark_lex(YYSTYPE *, struct quark_parser_ctx *);
 
 %token PASS DROP POISON ON ANY STRING
 %token PROCESS_PID PROCESS_PPID PROCESS_UID PROCESS_GID PROCESS_SID
-%token PROCESS_EXE FILE_PATH
+%token PROCESS_EXE FILE_PATH FILE_EXEC_CHANGE
 
 %%
 grammar:	/* empty  */
@@ -121,6 +121,8 @@ matchfield:	PROCESS_PID num_u32 {
 		} | FILE_PATH STRING {
 			$$.rf.code = QUARK_RF_FILEPATH;
 			$$.rf.wild.pre = (char *)$2.str;
+		} | FILE_EXEC_CHANGE {
+			$$.rf.code = QUARK_RF_FILE_EXEC_CHANGE;
 		} | POISON num_u64 {
 			$$.rf.code = QUARK_RF_POISON;
 			$$.rf.poison_tag = $2.num_u64;
@@ -194,6 +196,7 @@ static struct keyword {
 	{ "process.sid",	PROCESS_SID },
 	{ "process.exe",	PROCESS_EXE },
 	{ "file.path",		FILE_PATH },
+	{ "file.exec_change",	FILE_EXEC_CHANGE },
 };
 
 /*

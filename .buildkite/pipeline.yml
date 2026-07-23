@@ -295,7 +295,7 @@ steps:
 
   - label: "quark-test on rhel 8.5 (no file)"
     key: test_rhel_8_5
-    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2"
+    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change"
     depends_on:
       - make_docker
     agents:
@@ -306,7 +306,7 @@ steps:
 
   - label: "quark-test on rhel 8.6 (no file)"
     key: test_rhel_8_6
-    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2"
+    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change"
     depends_on:
       - make_docker
     agents:
@@ -317,7 +317,7 @@ steps:
 
   - label: "quark-test on rhel 8.7 (no file)"
     key: test_rhel_8_7
-    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2"
+    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change"
     depends_on:
       - make_docker
     agents:

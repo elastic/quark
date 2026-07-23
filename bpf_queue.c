@@ -428,7 +428,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		size_t				 path_len, sym_target_len, old_path_len;
 		size_t				 alloc_len, tmp_len;
 		struct quark_file		*file;
-		u32				 op_mask, dummy;
+		u32				 op_mask, change_mask, dummy;
 
 		if ((raw = raw_event_alloc(RAW_FILE)) == NULL)
 			goto bad;
@@ -441,6 +441,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		info = NULL;
 		vl = NULL;
 		op_mask = 0;
+		change_mask = 0;
 		switch (ev->type) {
 		case EBPF_EVENT_FILE_CREATE: {
 			struct ebpf_file_create_event *create =
@@ -467,6 +468,22 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			vl = &modify->vl_fields;
 			raw->pid = modify->pids.tgid;
 			op_mask = QUARK_FILE_OP_MODIFY;
+			switch (modify->change_type) {
+			case EBPF_FILE_CHANGE_TYPE_CONTENT:
+				change_mask = QUARK_FILE_CH_CONTENT;
+				break;
+			case EBPF_FILE_CHANGE_TYPE_PERMISSIONS:
+				change_mask = QUARK_FILE_CH_PERMS;
+				break;
+			case EBPF_FILE_CHANGE_TYPE_OWNER:
+				change_mask = QUARK_FILE_CH_OWNER;
+				break;
+			case EBPF_FILE_CHANGE_TYPE_XATTRS:
+				change_mask = QUARK_FILE_CH_XATTRS;
+				break;
+			default:
+				break;
+			}
 			break;
 		}
 		case EBPF_EVENT_FILE_RENAME: {
@@ -569,6 +586,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		file->uid = info->uid;
 		file->gid = info->gid;
 		file->op_mask = op_mask;
+		file->change_mask = change_mask;
 
 		break;
 	}
