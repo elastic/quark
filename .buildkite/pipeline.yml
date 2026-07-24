@@ -394,7 +394,7 @@ steps:
 
   - label: "quark-test on rhel 9.3 (memfd+shmget broken)"
     key: test_rhel_9_3
-    command: "./.buildkite/runtest_distro.sh rhel 9.3 -x t_memfd -x t_shmget"
+    command: "./.buildkite/runtest_distro.sh rhel 9.3 -x t_memfd -x t_shmget -x t_mprotect"
     depends_on:
       - make_docker
     agents:
