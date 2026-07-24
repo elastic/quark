@@ -491,18 +491,30 @@ out:
 SEC("tracepoint/syscalls/sys_exit_mprotect")
 int tracepoint_syscalls_sys_exit_mprotect(struct syscall_trace_exit *args)
 {
+    struct mprotect_exit_args {
+        short common_type;
+        char common_flags;
+        char common_preempt_count;
+        int common_pid;
+        int __syscall_nr;
+        long ret;
+    };
+    struct mprotect_exit_args *ex_args = (struct mprotect_exit_args *)args;
+    long ret;
+
     preempt_disable();
 
     struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_MPROTECT);
     if (!state)
         goto out;
 
-    u64 addr = state->mprotect.addr;
-    u64 len  = state->mprotect.len;
-    u64 prot = state->mprotect.prot;
+    ret               = ex_args->ret;
+    u64 addr          = state->mprotect.addr;
+    u64 len           = state->mprotect.len;
+    u64 prot          = state->mprotect.prot;
     ebpf_events_state__del(EBPF_EVENTS_STATE_MPROTECT);
 
-    if (BPF_CORE_READ(args, ret) != 0)
+    if (ret < 0)
         goto out;
 
     if (ebpf_events_is_trusted_pid())
