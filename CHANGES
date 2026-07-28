@@ -123,3 +123,16 @@ Changes from 0.6 to 0.7
     system.
   o The quark utilities now display their manpage when invoked with
     "help", "-help" or "--help".
+
+Changes from 0.7 to 0.8
+~~~~~~~~~~~~~~~~~~~~~~~
+  o BREAKING, SILENTLY: quark_process.proc_time_boot,
+    quark_process.exit_time_event and quark_event.time are now
+    expressed in nanoseconds since boot instead of nanoseconds since
+    the epoch. Existing code compiles unchanged but any user treating
+    these fields as wallclock will emit timestamps that are off by
+    the boot time. Users that want wallclock time must convert with
+    the new quark_time_to_wallclock(). quark_get_boottime() and
+    quark_update_boottime() were also added, the latter refetches
+    boottime in case the host clock changed. The JSON ECS output is
+    unaffected and still emits wallclock dates.
