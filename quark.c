@@ -2408,6 +2408,100 @@ quark_container_lookup(struct quark_queue *qq, const char *container_id)
 	return (container_lookup(qq, (char *)container_id));
 }
 
+struct quark_pod *
+quark_pod_create(struct quark_queue *qq, const char *uid,
+    const char *name, const char *ns, const char *phase)
+{
+	struct quark_pod	*pod;
+
+	if (pod_lookup_by_uid(qq, (char *)uid) != NULL)
+		return (errno = EEXIST, NULL);
+
+	pod = calloc(1, sizeof(*pod));
+	if (pod == NULL)
+		return (NULL);
+	RB_INIT(&pod->containers);
+	RB_INIT(&pod->labels);
+	pod->uid = strdup(uid);
+	if (pod->uid == NULL)
+		goto fail;
+	if (name != NULL && (pod->name = strdup(name)) == NULL)
+		goto fail;
+	if (ns != NULL && (pod->ns = strdup(ns)) == NULL)
+		goto fail;
+	if (phase != NULL && (pod->phase = strdup(phase)) == NULL)
+		goto fail;
+	if (pod_insert(qq, pod) == -1)
+		goto fail;
+
+	return (pod);
+fail:
+	free(pod->uid);
+	free(pod->name);
+	free(pod->ns);
+	free(pod->phase);
+	free(pod);
+	return (NULL);
+}
+
+struct quark_container *
+quark_container_create(struct quark_queue *qq, const char *container_id,
+    const char *pod_uid, const char *name, const char *image)
+{
+	struct quark_container	*container, *col;
+	struct quark_pod	*pod = NULL;
+
+	if (pod_uid != NULL) {
+		pod = pod_lookup_by_uid(qq, (char *)pod_uid);
+		if (pod == NULL)
+			return (NULL);
+	}
+
+	if (container_lookup(qq, (char *)container_id) != NULL)
+		return (errno = EEXIST, NULL);
+
+	container = calloc(1, sizeof(*container));
+	if (container == NULL)
+		return (NULL);
+	TAILQ_INIT(&container->processes);
+	container->container_id = strdup(container_id);
+	if (container->container_id == NULL)
+		goto fail;
+	if (name != NULL && (container->name = strdup(name)) == NULL)
+		goto fail;
+	if (image != NULL && (container->image = strdup(image)) == NULL)
+		goto fail;
+
+	col = container_by_id_RB_INSERT(&qq->container_by_id, container);
+	if (unlikely(col != NULL)) {
+		errno = EEXIST;
+		goto fail;
+	}
+	container->linked_by_id = 1;
+
+	if (pod != NULL) {
+		container->pod = pod;
+		col = pod_containers_RB_INSERT(&pod->containers, container);
+		if (unlikely(col != NULL)) {
+			errno = EEXIST;
+			goto fail;
+		}
+		container->linked_by_pod = 1;
+	}
+
+	return (container);
+fail:
+	if (container->linked_by_id)
+		container_delete(qq, container);
+	else {
+		free(container->container_id);
+		free(container->name);
+		free(container->image);
+		free(container);
+	}
+	return (NULL);
+}
+
 void
 quark_process_iter_init(struct quark_process_iter *qi, struct quark_queue *qq)
 {
