@@ -90,6 +90,11 @@ struct quark_container	*quark_container_get(struct quark_queue *,
 			     const char *, const char *);
 const struct quark_container *quark_container_lookup(struct quark_queue *,
 			     const char *);
+struct quark_pod	*quark_pod_create(struct quark_queue *, const char *,
+			     const char *, const char *, const char *);
+struct quark_container	*quark_container_create(struct quark_queue *,
+			     const char *, const char *, const char *,
+			     const char *);
 void			 quark_ruleset_init(struct quark_ruleset *);
 void			 quark_ruleset_clear(struct quark_ruleset *);
 int			 quark_ruleset_parse(struct quark_ruleset *, FILE *,
