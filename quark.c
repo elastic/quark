@@ -805,11 +805,10 @@ pod_by_uid_cmp(struct quark_pod *a, struct quark_pod *b)
 static struct quark_pod *
 pod_lookup_by_uid(struct quark_queue *qq, char *uid)
 {
-	struct quark_kube	*qkube = qq->qkube;
 	struct quark_pod	 key, *k;
 
 	key.uid = uid;
-	k = RB_FIND(pod_by_uid, &qkube->pod_by_uid, &key);
+	k = RB_FIND(pod_by_uid, &qq->pod_by_uid, &key);
 	if (k == NULL)
 		errno = ESRCH;
 
@@ -819,7 +818,6 @@ pod_lookup_by_uid(struct quark_queue *qq, char *uid)
 static int
 pod_insert(struct quark_queue *qq, struct quark_pod *pod)
 {
-	struct quark_kube	*qkube = qq->qkube;
 	struct quark_pod	*col;
 
 	if (pod->linked) {
@@ -827,7 +825,7 @@ pod_insert(struct quark_queue *qq, struct quark_pod *pod)
 		return (-1);
 	}
 
-	col = RB_INSERT(pod_by_uid, &qkube->pod_by_uid, pod);
+	col = RB_INSERT(pod_by_uid, &qq->pod_by_uid, pod);
 	if (unlikely(col != NULL))
 		return (errno = EEXIST, -1);
 
@@ -839,12 +837,11 @@ pod_insert(struct quark_queue *qq, struct quark_pod *pod)
 static void
 pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 {
-	struct quark_kube	*qkube = qq->qkube;
 	struct quark_container	*container;
 	struct label_node	*node;
 
 	if (pod->linked) {
-		RB_REMOVE(pod_by_uid, &qkube->pod_by_uid, pod);
+		RB_REMOVE(pod_by_uid, &qq->pod_by_uid, pod);
 		pod->linked = 0;
 	}
 	gc_unlink(qq, &pod->gc);
@@ -2311,6 +2308,104 @@ const struct quark_process *
 quark_process_lookup(struct quark_queue *qq, int pid)
 {
 	return (process_cache_get(qq, pid, 0));
+}
+
+/*
+ * Get or create a pod by uid. Returns the existing pod if already present,
+ * otherwise allocates and inserts a minimal pod (uid set, containers/labels
+ * initialized). Caller fills in remaining fields (name, ns, phase, etc.).
+ */
+struct quark_pod *
+quark_pod_get(struct quark_queue *qq, const char *uid)
+{
+	struct quark_pod	*pod;
+
+	pod = pod_lookup_by_uid(qq, (char *)uid);
+	if (pod != NULL)
+		return (pod);
+
+	pod = calloc(1, sizeof(*pod));
+	if (pod == NULL)
+		return (NULL);
+	RB_INIT(&pod->containers);
+	RB_INIT(&pod->labels);
+	pod->uid = strdup(uid);
+	if (pod->uid == NULL) {
+		free(pod);
+		return (NULL);
+	}
+	if (pod_insert(qq, pod) == -1) {
+		free(pod->uid);
+		free(pod);
+		return (NULL);
+	}
+
+	return (pod);
+}
+
+const struct quark_pod *
+quark_pod_lookup(struct quark_queue *qq, const char *uid)
+{
+	return (pod_lookup_by_uid(qq, (char *)uid));
+}
+
+/*
+ * Get or create a container by container_id. If pod_uid is non-NULL the
+ * container is linked to that pod (which must already exist). Returns the
+ * existing container if already present, otherwise allocates and inserts one.
+ * Caller fills in remaining fields (name, image, etc.).
+ */
+struct quark_container *
+quark_container_get(struct quark_queue *qq, const char *container_id,
+    const char *pod_uid)
+{
+	struct quark_container	*container, *col;
+	struct quark_pod	*pod = NULL;
+
+	if (pod_uid != NULL) {
+		pod = pod_lookup_by_uid(qq, (char *)pod_uid);
+		if (pod == NULL)
+			return (NULL);
+	}
+
+	container = container_lookup(qq, (char *)container_id);
+	if (container != NULL)
+		return (container);
+
+	container = calloc(1, sizeof(*container));
+	if (container == NULL)
+		return (NULL);
+	TAILQ_INIT(&container->processes);
+	container->container_id = strdup(container_id);
+	if (container->container_id == NULL) {
+		free(container);
+		return (NULL);
+	}
+
+	col = container_by_id_RB_INSERT(&qq->container_by_id, container);
+	if (unlikely(col != NULL)) {
+		container_delete(qq, container);
+		return (errno = EEXIST, NULL);
+	}
+	container->linked_by_id = 1;
+
+	if (pod != NULL) {
+		container->pod = pod;
+		col = pod_containers_RB_INSERT(&pod->containers, container);
+		if (unlikely(col != NULL)) {
+			container_delete(qq, container);
+			return (errno = EEXIST, NULL);
+		}
+		container->linked_by_pod = 1;
+	}
+
+	return (container);
+}
+
+const struct quark_container *
+quark_container_lookup(struct quark_queue *qq, const char *container_id)
+{
+	return (container_lookup(qq, (char *)container_id));
 }
 
 void
@@ -4159,6 +4254,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	RB_INIT(&qq->passwd_by_uid);
 	RB_INIT(&qq->group_by_gid);
 	RB_INIT(&qq->container_by_id);
+	RB_INIT(&qq->pod_by_uid);
 	TAILQ_INIT(&qq->event_gc);
 	qq->flags = qa->flags;
 	qq->max_length = qa->max_length;
@@ -4208,8 +4304,6 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qkube->fd = qa->kubefd;
 		qkube->try_read = 1;
 		qkube->last_read = 0;
-		RB_INIT(&qkube->pod_by_uid);
-
 		if ((fl = fcntl(qkube->fd, F_GETFL)) == -1) {
 			qwarn("can't get kubefd flags");
 			free(qkube);
@@ -4334,6 +4428,7 @@ quark_queue_close(struct quark_queue *qq)
 	struct quark_process	*qp;
 	struct quark_socket	*qsk;
 	struct quark_pod	*pod;
+	struct quark_container	*container;
 	struct quark_passwd	*qpw;
 	struct quark_group	*qgrp;
 
@@ -4356,11 +4451,15 @@ quark_queue_close(struct quark_queue *qq)
 	/* Clean up backend */
 	if (qq->queue_ops != NULL)
 		qq->queue_ops->close(qq);
+	/* Clean up all pods (transitively cleans up their containers) */
+	while ((pod = RB_ROOT(&qq->pod_by_uid)) != NULL)
+		pod_delete(qq, pod);
+	/* Clean up any orphaned containers not linked to a pod */
+	while ((container = RB_ROOT(&qq->container_by_id)) != NULL)
+		container_delete(qq, container);
 	/* Clean up qkube */
 	if (qq->qkube != NULL) {
 		kube_stop(qq);
-		while ((pod = RB_ROOT(&qq->qkube->pod_by_uid)) != NULL)
-			pod_delete(qq, pod);
 		free(qq->qkube->node.name);
 		free(qq->qkube->node.uid);
 		free(qq->qkube->node.zone);

@@ -81,6 +81,12 @@ const struct quark_socket *quark_socket_lookup(struct quark_queue *,
 			     struct quark_sockaddr *, struct quark_sockaddr *);
 struct quark_passwd	*quark_passwd_lookup(struct quark_queue *, uid_t);
 struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
+struct quark_pod	*quark_pod_get(struct quark_queue *, const char *);
+const struct quark_pod	*quark_pod_lookup(struct quark_queue *, const char *);
+struct quark_container	*quark_container_get(struct quark_queue *,
+			     const char *, const char *);
+const struct quark_container *quark_container_lookup(struct quark_queue *,
+			     const char *);
 void			 quark_ruleset_init(struct quark_ruleset *);
 void			 quark_ruleset_clear(struct quark_ruleset *);
 int			 quark_ruleset_parse(struct quark_ruleset *, FILE *,
@@ -754,7 +760,6 @@ struct quark_kube {
 	size_t			 buf_r;			/* read pointer */
 	size_t			 buf_len;		/* total length */
 	struct quark_kube_node	 node;			/* node we're running on */
-	struct pod_by_uid	 pod_by_uid;		/* uid comes from json */
 };
 
 /*
@@ -918,6 +923,7 @@ struct quark_queue {
 	struct passwd_by_uid		 passwd_by_uid;
 	struct group_by_gid		 group_by_gid;
 	struct container_by_id		 container_by_id;	/* all known containers */
+	struct pod_by_uid		 pod_by_uid;		/* all known pods */
 	struct quark_sysinfo		 sysinfo;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;
