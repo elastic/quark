@@ -932,7 +932,7 @@ kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *cont
 	cJSON			*name, *image, *imageID, *state;
 	cJSON			*waiting, *running, *terminated;
 	cJSON			*containerID;
-	struct quark_container	*container, *col;
+	struct quark_container	*container;
 
 	name	    = GET(container_json, "name");
 	image	    = GET(container_json, "image");
@@ -974,25 +974,12 @@ kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *cont
 	}
 	container = pod_lookup_container(pod, containerID->valuestring);
 	if (container == NULL) {
-		container = calloc(1, sizeof(*container));
+		container = quark_container_create(qq,
+		    containerID->valuestring,
+		    pod != NULL ? pod->uid : NULL,
+		    name->valuestring, image->valuestring);
 		if (container == NULL)
 			return (-1);
-		TAILQ_INIT(&container->processes);
-		container->container_id = strdup(containerID->valuestring);
-		if (container->container_id == NULL) {
-			container_delete(qq, container);
-			return (-1);
-		}
-		container->name = strdup(name->valuestring);
-		if (container->name == NULL) {
-			container_delete(qq, container);
-			return (-1);
-		}
-		container->image = strdup(image->valuestring);
-		if (container->image == NULL) {
-			container_delete(qq, container);
-			return (-1);
-		}
 		container->image_id = strdup(imageID->valuestring);
 		if (container->image_id == NULL) {
 			container_delete(qq, container);
@@ -1001,30 +988,6 @@ kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *cont
 		if (demux_image(container) == -1) {
 			container_delete(qq, container);
 			return (-1);
-		}
-		/* XXX fill moar stuff */
-
-		/*
-		 * Finally try to link it
-		 */
-		col = container_by_id_RB_INSERT(&qq->container_by_id,
-		    container);
-		if (col != NULL) {
-			qwarnx("unexpected container collision 1");
-			container_delete(qq, container);
-			return (-1);
-		}
-		container->linked_by_id = 1;
-		if (pod != NULL) {
-			container->pod = pod;
-			col = pod_containers_RB_INSERT(&pod->containers,
-			    container);
-			if (col != NULL) {
-				qwarnx("unexpected container collision 2");
-				container_delete(qq, container);
-				return (-1);
-			}
-			container->linked_by_pod = 1;
 		}
 	}
 
@@ -1042,7 +1005,7 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 	cJSON			*deletionTimestamp, *containerStatuses, *label;
 	cJSON			*container_json, *podIPs, *ipobj, *ip;
 	char			*tmp;
-	int			 new_pod, ip_found;
+	int			 ip_found;
 	struct label_node	*node, *node_aux;
 
 	metadata	  = GET(json, "metadata");
@@ -1125,30 +1088,13 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 		return (-1);
 	}
 
-	new_pod = 0;
 	if (pod == NULL) {
-		new_pod = 1;
 		if (0)
 			debug_json(json);
-		pod = calloc(1, sizeof(*pod));
+		pod = quark_pod_create(qq, uid->valuestring,
+		    name->valuestring, namespace->valuestring, NULL);
 		if (pod == NULL)
 			return (-1);
-		/*
-		 * Only fill immutable data, the rest is filled and/or
-		 * replaced below, so we have the same code for new pods and
-		 * updates.
-		 */
-		RB_INIT(&pod->containers);
-		RB_INIT(&pod->labels);
-		pod->name = strdup(name->valuestring);
-		pod->ns = strdup(namespace->valuestring);
-		pod->uid = strdup(uid->valuestring);
-		if (pod->name == NULL ||
-		    pod->ns == NULL ||
-		    pod->uid == NULL) {
-			pod_delete(qq, pod);
-			return (-1);
-		}
 	}
 
 	/* Mutable data */
@@ -1248,15 +1194,6 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 	cJSON_ArrayForEach(container_json, containerStatuses) {
 		if (kube_handle_container(qq, pod, container_json) == -1)
 			qwarnx("kube_handle_containers failed");
-	}
-
-	/*
-	 * Link pod
-	 */
-	if (new_pod && pod_insert(qq, pod) == -1) {
-		qwarn("can't insert pod %s", pod->uid);
-		pod_delete(qq, pod);
-		return (-1);
 	}
 
 	return (0);
