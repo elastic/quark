@@ -4502,12 +4502,60 @@ quark_can_aggregate_tty(struct quark_queue *qq,
  * The user can modify the callbacks via quark_queue_set_agg_matrix().
  */
 static int
+raw_event_task(const struct raw_event *raw, const struct raw_task **task)
+{
+	*task = NULL;
+
+	switch (raw->type) {
+	case RAW_WAKE_UP_NEW_TASK:	/* FALLTHROUGH */
+	case RAW_EXIT_THREAD:		/* FALLTHROUGH */
+	case RAW_ID_CHANGE:		/* FALLTHROUGH */
+	case RAW_GETPID:
+		*task = &raw->task;
+		break;
+	case RAW_EXEC:
+		if (raw->exec.flags & RAW_EXEC_F_EXT)
+			*task = &raw->exec.ext.task;
+		break;
+	case RAW_EXEC_CONNECTOR:
+		*task = &raw->exec_connector.task;
+		break;
+	default:
+		break;
+	}
+
+	return (*task != NULL);
+}
+
+/*
+ * A PID is not a process identity: it can be reused while raw events are
+ * still buffered.  Only aggregate process events when both carry the same
+ * immutable start time and cgroup.  Events without either value fail closed.
+ */
+static int
+same_process_instance(const struct raw_event *p, const struct raw_event *c)
+{
+	const struct raw_task	*pt, *ct;
+
+	if (!raw_event_task(p, &pt) || !raw_event_task(c, &ct))
+		return (0);
+	if (pt->start_boottime != ct->start_boottime)
+		return (0);
+	if (pt->cgroup == NULL || ct->cgroup == NULL)
+		return (0);
+
+	return (strcmp(pt->cgroup, ct->cgroup) == 0);
+}
+
+static int
 can_aggregate(struct quark_queue *qq, struct raw_event *p, struct raw_event *c)
 {
 	quark_can_aggregate_fn	 can_agg_fn;
 
 	/* Different pids can't aggregate */
 	if (p->pid != c->pid)
+		return (0);
+	if (!same_process_instance(p, c))
 		return (0);
 
 	if (p->type >= RAW_NUM_TYPES || c->type >= RAW_NUM_TYPES ||
