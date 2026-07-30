@@ -12,3 +12,4 @@ struct {
 #include "Process/Probe.bpf.c"
 #include "Network/Probe.bpf.c"
 #include "File/Probe.bpf.c"
+#include "TLS/Probe.bpf.c"

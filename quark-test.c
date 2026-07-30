@@ -27,6 +27,7 @@
 #include <ifaddrs.h>
 #include <limits.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,15 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
+
+#if !defined(STATIC) && defined(HAVE_OPENSSL)
+#define WITH_TLS_TESTS
+#include <dlfcn.h>
+#include <openssl/err.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#endif /* !STATIC && HAVE_OPENSSL */
 
 #include "quark.h"
 
@@ -1833,6 +1843,805 @@ t_dns(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+#ifdef WITH_TLS_TESTS
+
+/*
+ * Self-signed EC P-256 cert+key, used only to give the in-process TLS
+ * handshake below something to present. CN is irrelevant since the client
+ * never verifies it (SSL_VERIFY_NONE).
+ */
+static const char tls_test_cert_pem[] =
+"-----BEGIN CERTIFICATE-----\n"
+"MIIBlzCCAT2gAwIBAgIUIsxJCdwn9Bk3ytpQh78igIk2EdUwCgYIKoZIzj0EAwIw\n"
+"FTETMBEGA1UEAwwKcXVhcmstdGVzdDAgFw0yNjA2MzAyMTU0MzlaGA8yMTI2MDYw\n"
+"NjIxNTQzOVowFTETMBEGA1UEAwwKcXVhcmstdGVzdDBZMBMGByqGSM49AgEGCCqG\n"
+"SM49AwEHA0IABAoKixIVb5LuFwx88POgva0Ef6nEsjg2bieR7CwGHxxQnF9QfPqa\n"
+"ths6HegBeCQsvNfG5npgBWSL4erK0mtvP82jaTBnMB0GA1UdDgQWBBQMJKDCZCv8\n"
+"KZ/edHBQjhB7LJrlZjAfBgNVHSMEGDAWgBQMJKDCZCv8KZ/edHBQjhB7LJrlZjAP\n"
+"BgNVHRMBAf8EBTADAQH/MBQGA1UdEQQNMAuCCWxvY2FsaG9zdDAKBggqhkjOPQQD\n"
+"AgNIADBFAiAtklGw3Y4+Gt0pkQzlQW499VPnnEKUh5pzbQKJhf74eQIhAMBWxjjW\n"
+"b9mjQ5YMeCEJVw+q7Bon1UhWn/qT59X/PJI6\n"
+"-----END CERTIFICATE-----\n";
+
+static const char tls_test_key_pem[] =
+"-----BEGIN EC PRIVATE KEY-----\n"
+"MHcCAQEEIGjD4WqMPVIM/yaVJ4LR51eTW9MQYeFwDH/vwvJ1PEjzoAoGCCqGSM49\n"
+"AwEHoUQDQgAECgqLEhVvku4XDHzw86C9rQR/qcSyODZuJ5HsLAYfHFCcX1B8+pq2\n"
+"Gzod6AF4JCy818bmemAFZIvh6srSa28/zQ==\n"
+"-----END EC PRIVATE KEY-----\n";
+
+static const char tls_req_small[] = "GET /v1/messages HTTP/1.1\r\n";
+static const char tls_resp_small[] = "HTTP/1.1 200 OK\r\n";
+
+struct tls_session {
+	pid_t	client;
+	pid_t	server;
+};
+
+/*
+ * SSL_new/SSL_read/SSL_write are already resolved addresses in our own
+ * address space (we link libssl directly). dladdr() tells us which shared
+ * object backs a given address and that object's load bias. For an ET_DYN
+ * ELF (any .so), vaddr and file offset are numerically identical, so
+ * subtracting the load bias from the runtime address gives exactly the
+ * file offset quark_queue_tls_attach() wants.
+ */
+static int
+tls_resolve(void *sym, const char **path, u64 *off)
+{
+	Dl_info	info;
+
+	if (dladdr(sym, &info) == 0 || info.dli_fname == NULL ||
+	    info.dli_fbase == NULL)
+		return (-1);
+
+	*path = info.dli_fname;
+	*off = (u64)((uintptr_t)sym - (uintptr_t)info.dli_fbase);
+
+	return (0);
+}
+
+static void
+fill_pattern(char *buf, size_t len)
+{
+	size_t	i, plen;
+
+	plen = strlen(PATTERN);
+	for (i = 0; i < len; i++)
+		buf[i] = PATTERN[i % plen];
+}
+
+static SSL_CTX *
+tls_test_server_ctx(void)
+{
+	SSL_CTX		*ctx;
+	BIO		*bio;
+	X509		*cert;
+	EVP_PKEY	*key;
+
+	if ((ctx = SSL_CTX_new(TLS_server_method())) == NULL)
+		errx(1, "SSL_CTX_new(server)");
+
+	if ((bio = BIO_new_mem_buf(tls_test_cert_pem, -1)) == NULL)
+		errx(1, "BIO_new_mem_buf(cert)");
+	cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+	BIO_free(bio);
+	if (cert == NULL || SSL_CTX_use_certificate(ctx, cert) != 1)
+		errx(1, "SSL_CTX_use_certificate");
+	X509_free(cert);
+
+	if ((bio = BIO_new_mem_buf(tls_test_key_pem, -1)) == NULL)
+		errx(1, "BIO_new_mem_buf(key)");
+	key = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+	BIO_free(bio);
+	if (key == NULL || SSL_CTX_use_PrivateKey(ctx, key) != 1)
+		errx(1, "SSL_CTX_use_PrivateKey");
+	EVP_PKEY_free(key);
+
+	return (ctx);
+}
+
+/*
+ * TLS server: exists purely to give the client something real to handshake
+ * with. Its own SSL activity is captured too under a system-wide attach, but
+ * the tests drain by the client's pid, so the server's events are ignored.
+ */
+static void
+tls_test_server(int fd, size_t req_len, const char *resp, size_t resp_len)
+{
+	SSL_CTX	*ctx;
+	SSL	*ssl;
+	char	*req;
+	size_t	 got;
+	int	 n;
+
+	/*
+	 * SSL_shutdown() can still try to write a close_notify after the peer
+	 * has already gone away; without this the default SIGPIPE disposition
+	 * kills this child right after it has otherwise succeeded.
+	 */
+	signal(SIGPIPE, SIG_IGN);
+
+	ctx = tls_test_server_ctx();
+	ssl = SSL_new(ctx);
+	SSL_set_fd(ssl, fd);
+
+	if (SSL_accept(ssl) != 1)
+		errx(1, "SSL_accept");
+
+	if ((req = malloc(req_len)) == NULL)
+		err(1, "malloc");
+	for (got = 0; got < req_len; got += (size_t)n) {
+		n = SSL_read(ssl, req + got, (int)(req_len - got));
+		if (n <= 0)
+			errx(1, "server SSL_read");
+	}
+	free(req);
+
+	if (SSL_write(ssl, resp, (int)resp_len) <= 0)
+		errx(1, "server SSL_write");
+
+	SSL_shutdown(ssl);
+	SSL_free(ssl);
+	SSL_CTX_free(ctx);
+	close(fd);
+
+	exit(0);
+}
+
+static void
+tls_test_client(int fd, int syncfd, const char *req, size_t req_len,
+    size_t resp_len)
+{
+	SSL_CTX	*ctx;
+	SSL	*ssl;
+	char	*resp;
+	char	*wbuf;
+	char	 c;
+	size_t	 got;
+	int	 n;
+
+	/* See the matching comment in tls_test_server() */
+	signal(SIGPIPE, SIG_IGN);
+
+	/*
+	 * Wait until the parent has released us. The probes are already
+	 * attached system-wide by the time we are signalled, so SSL_new is
+	 * observed from birth rather than adopted mid-stream.
+	 */
+	if (read(syncfd, &c, 1) != 1)
+		err(1, "client sync read");
+	close(syncfd);
+
+	if ((ctx = SSL_CTX_new(TLS_client_method())) == NULL)
+		errx(1, "SSL_CTX_new(client)");
+	SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+
+	ssl = SSL_new(ctx);
+	SSL_set_fd(ssl, fd);
+
+	if (SSL_connect(ssl) != 1)
+		errx(1, "SSL_connect");
+
+	/*
+	 * Copy into a heap buffer this process just wrote before SSL_write(),
+	 * since req's page may otherwise have never been touched by us at all.
+	 */
+	if ((wbuf = malloc(req_len)) == NULL)
+		err(1, "malloc");
+	memcpy(wbuf, req, req_len);
+	if (SSL_write(ssl, wbuf, (int)req_len) <= 0)
+		errx(1, "client SSL_write");
+	free(wbuf);
+
+	if ((resp = malloc(resp_len)) == NULL)
+		err(1, "malloc");
+	for (got = 0; got < resp_len; got += (size_t)n) {
+		n = SSL_read(ssl, resp + got, (int)(resp_len - got));
+		if (n <= 0)
+			errx(1, "client SSL_read");
+	}
+	free(resp);
+
+	SSL_shutdown(ssl);
+	SSL_free(ssl);
+	SSL_CTX_free(ctx);
+	close(fd);
+
+	exit(0);
+}
+
+/*
+ * Late-adoption variant of tls_test_client(): the SSL_new + SSL_connect
+ * handshake runs *before* the client signals the parent, so the parent attaches
+ * the probes only afterwards and quark never sees this connection's SSL_new. The
+ * first SSL_write below therefore misses tls_conns and is adopted in place,
+ * minting a conn_id flagged PREFIX_UNKNOWN.
+ */
+static void
+tls_test_client_late(int fd, int rsyncfd, int wsyncfd, const char *req,
+    size_t req_len, size_t resp_len)
+{
+	SSL_CTX	*ctx;
+	SSL	*ssl;
+	char	*resp;
+	char	*wbuf;
+	char	 c;
+	size_t	 got;
+	int	 n;
+
+	/* See the matching comment in tls_test_server() */
+	signal(SIGPIPE, SIG_IGN);
+
+	if ((ctx = SSL_CTX_new(TLS_client_method())) == NULL)
+		errx(1, "SSL_CTX_new(client)");
+	SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+
+	ssl = SSL_new(ctx);
+	SSL_set_fd(ssl, fd);
+
+	if (SSL_connect(ssl) != 1)
+		errx(1, "SSL_connect");
+
+	/* Handshake done before any probe is attached: tell the parent. */
+	if (write(wsyncfd, "", 1) != 1)
+		err(1, "client sync write");
+	close(wsyncfd);
+
+	/* Proceed only once the parent has attached the probes. */
+	if (read(rsyncfd, &c, 1) != 1)
+		err(1, "client sync read");
+	close(rsyncfd);
+
+	if ((wbuf = malloc(req_len)) == NULL)
+		err(1, "malloc");
+	memcpy(wbuf, req, req_len);
+	if (SSL_write(ssl, wbuf, (int)req_len) <= 0)
+		errx(1, "client SSL_write");
+	free(wbuf);
+
+	if ((resp = malloc(resp_len)) == NULL)
+		err(1, "malloc");
+	for (got = 0; got < resp_len; got += (size_t)n) {
+		n = SSL_read(ssl, resp + got, (int)(resp_len - got));
+		if (n <= 0)
+			errx(1, "client SSL_read");
+	}
+	free(resp);
+
+	SSL_shutdown(ssl);
+	SSL_free(ssl);
+	SSL_CTX_free(ctx);
+	close(fd);
+
+	exit(0);
+}
+
+/*
+ * Resolves SSL_new/SSL_read/SSL_write/SSL_free to a path + file offset in the
+ * loaded libssl and attaches quark's TLS uprobes system-wide.
+ */
+static void
+tls_attach(struct quark_queue *qq)
+{
+	const char	*path;
+	u64		 new_off, read_off, write_off, free_off;
+
+	if (tls_resolve((void *)SSL_new, &path, &new_off) != 0)
+		errx(1, "can't resolve SSL_new");
+	if (path[0] != '/')
+		errx(1, "resolved non-absolute path: %s", path);
+	if (tls_resolve((void *)SSL_read, &path, &read_off) != 0)
+		errx(1, "can't resolve SSL_read");
+	if (tls_resolve((void *)SSL_write, &path, &write_off) != 0)
+		errx(1, "can't resolve SSL_write");
+	if (tls_resolve((void *)SSL_free, &path, &free_off) != 0)
+		errx(1, "can't resolve SSL_free");
+
+	/* pid -1: system-wide, every process hitting these offsets is captured. */
+	if (quark_queue_tls_attach(qq, -1, path, new_off, read_off, write_off,
+	    free_off) == NULL)
+		err(1, "quark_queue_tls_attach");
+}
+
+/*
+ * Forks a TLS server and a TLS client connected over a socketpair. The uprobes
+ * must already be attached via tls_attach(); the client blocks until we release
+ * it, purely to keep the harness in step with the symbol-attach variant.
+ */
+static void
+tls_session_start(struct tls_session *ts, struct quark_queue *qq,
+    const char *req, size_t req_len, const char *resp, size_t resp_len)
+{
+	int		 sv[2];
+	int		 syncfds[2];
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == -1)
+		err(1, "socketpair");
+	if (pipe(syncfds) == -1)
+		err(1, "pipe");
+
+	if ((ts->server = fork()) == -1)
+		err(1, "fork");
+	if (ts->server == 0) {
+		close(sv[1]);
+		close(syncfds[0]);
+		close(syncfds[1]);
+		tls_test_server(sv[0], req_len, resp, resp_len);
+		/* NOTREACHED */
+	}
+	close(sv[0]);
+
+	if ((ts->client = fork()) == -1)
+		err(1, "fork");
+	if (ts->client == 0) {
+		close(syncfds[1]);
+		tls_test_client(sv[1], syncfds[0], req, req_len, resp_len);
+		/* NOTREACHED */
+	}
+	close(sv[1]);
+	close(syncfds[0]);
+
+	/* Probes are already attached, let the client proceed */
+	if (write(syncfds[1], "", 1) != 1)
+		err(1, "client sync write");
+	close(syncfds[1]);
+}
+
+/*
+ * Like tls_session_start(), but the client handshakes before the probes are
+ * attached (see tls_test_client_late): the parent waits for the client's
+ * "handshake done" signal, attaches system-wide only then, and releases it into
+ * the data phase. The connection's SSL_new is thus missed and its first
+ * SSL_write is adopted mid-stream. Attaches itself, so callers must not
+ * pre-attach via tls_attach().
+ */
+static void
+tls_session_start_late(struct tls_session *ts, struct quark_queue *qq,
+    const char *req, size_t req_len, const char *resp, size_t resp_len)
+{
+	int	sv[2];
+	int	up[2];		/* parent -> client: proceed */
+	int	down[2];	/* client -> parent: handshake done */
+	char	c;
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == -1)
+		err(1, "socketpair");
+	if (pipe(up) == -1 || pipe(down) == -1)
+		err(1, "pipe");
+
+	if ((ts->server = fork()) == -1)
+		err(1, "fork");
+	if (ts->server == 0) {
+		close(sv[1]);
+		close(up[0]);
+		close(up[1]);
+		close(down[0]);
+		close(down[1]);
+		tls_test_server(sv[0], req_len, resp, resp_len);
+		/* NOTREACHED */
+	}
+	close(sv[0]);
+
+	if ((ts->client = fork()) == -1)
+		err(1, "fork");
+	if (ts->client == 0) {
+		close(up[1]);
+		close(down[0]);
+		tls_test_client_late(sv[1], up[0], down[1], req, req_len,
+		    resp_len);
+		/* NOTREACHED */
+	}
+	close(sv[1]);
+	close(up[0]);
+	close(down[1]);
+
+	/* Wait for the client to finish its handshake before attaching. */
+	if (read(down[0], &c, 1) != 1)
+		err(1, "parent sync read");
+	close(down[0]);
+
+	/* Attach only now, so the already-open connection's SSL_new is missed. */
+	tls_attach(qq);
+
+	/* Probes are in place now, let the client proceed to write/read. */
+	if (write(up[1], "", 1) != 1)
+		err(1, "client sync write");
+	close(up[1]);
+}
+
+static void
+tls_session_finish(struct quark_queue *qq, struct tls_session *ts)
+{
+	int	status;
+
+	if (waitpid(ts->client, &status, 0) == -1)
+		err(1, "waitpid client");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "tls client didn't exit cleanly");
+
+	if (waitpid(ts->server, &status, 0) == -1)
+		err(1, "waitpid server");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "tls server didn't exit cleanly");
+}
+
+/*
+ * Asserts a fully reassembled quark_tls_call chain against the buffer the
+ * application actually passed to SSL_read/SSL_write (call_len). want_truncated
+ * is how many bytes are expected to be missing from the tail (0 when the whole
+ * call was captured).
+ */
+static void
+assert_tls_call(struct quark_tls_call *qtc, enum quark_tls_direction direction,
+    u64 conn_id, const char *expect, size_t call_len, size_t want_truncated)
+{
+	size_t	off, want_total;
+	u32	chunk_total;
+
+	want_total = call_len - want_truncated;
+
+	assert(qtc->conn_id == conn_id);
+	assert(qtc->direction == direction);
+	assert(qtc->call_len == call_len);
+	assert(qtc->truncated == want_truncated);
+	assert(qtc->total_len == want_total);
+	/*
+	 * None of these tests engineer a mid-chain drop -- gap must be clean,
+	 * and so must every individual chunk in the chain.
+	 */
+	assert(qtc->gap == 0);
+
+	chunk_total = qtc->chunk_total;
+	for (off = 0; qtc != NULL; qtc = qtc->next) {
+		assert(qtc->chunk_total == chunk_total);
+		assert(qtc->dropped == 0);
+		assert(off + qtc->data_len <= want_total);
+		assert(!memcmp(qtc->data, expect + off, qtc->data_len));
+		off += qtc->data_len;
+	}
+	assert(off == want_total);
+}
+
+static int
+t_tls_load(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	qq;
+
+	if (in_valgrind) {
+		warnx("%s: skipping under valgrind: valgrind's ptrace use "
+		    "delivers a SIGTRAP that breaks uprobes", __func__);
+		return (0);
+	}
+
+	qa->flags |= QQ_TLS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_tls_conn(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct tls_session		 ts;
+	const struct quark_event	*qev;
+	u64				 conn_id;
+
+	if (in_valgrind) {
+		warnx("%s: skipping under valgrind: valgrind's ptrace use "
+		    "delivers a SIGTRAP that breaks uprobes", __func__);
+		return (0);
+	}
+
+	qa->flags |= QQ_TLS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	tls_attach(&qq);
+
+	tls_session_start(&ts, &qq, tls_req_small, strlen(tls_req_small),
+	    tls_resp_small, strlen(tls_resp_small));
+
+	qev = drain_for_pid(&qq, ts.client);	/* FORK */
+	assert(qev->events & QUARK_EV_FORK);
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CONN_ESTABLISHED */
+	assert(qev->events == QUARK_EV_TLS_CONN_ESTABLISHED);
+	assert(qev->tls_conn != NULL);
+	assert(qev->tls_conn->conn_id != 0);
+	assert(qev->tls_conn->tgid == (u32)ts.client);
+	/* Seen from SSL_new, so its prefix is intact -- not adopted mid-stream. */
+	assert(qev->tls_conn->flags == 0);
+	conn_id = qev->tls_conn->conn_id;
+
+	/*
+	 * The close is the counterpart to the establish above: SSL_free emits
+	 * it with the same conn_id. Drain past the intervening read/write
+	 * calls to reach it.
+	 */
+	do {
+		qev = drain_for_pid(&qq, ts.client);
+	} while (!(qev->events & QUARK_EV_TLS_CONN_CLOSED));
+	assert(qev->tls_conn != NULL);
+	assert(qev->tls_conn->conn_id == conn_id);
+	assert(qev->tls_conn->tgid == (u32)ts.client);
+
+	tls_session_finish(&qq, &ts);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_tls_call(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct tls_session		 ts;
+	const struct quark_event	*qev;
+	u64				 conn_id;
+
+	if (in_valgrind) {
+		warnx("%s: skipping under valgrind: valgrind's ptrace use "
+		    "delivers a SIGTRAP that breaks uprobes", __func__);
+		return (0);
+	}
+
+	qa->flags |= QQ_TLS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	tls_attach(&qq);
+
+	tls_session_start(&ts, &qq, tls_req_small, strlen(tls_req_small),
+	    tls_resp_small, strlen(tls_resp_small));
+
+	qev = drain_for_pid(&qq, ts.client);	/* FORK */
+	assert(qev->events & QUARK_EV_FORK);
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CONN_ESTABLISHED */
+	assert(qev->events == QUARK_EV_TLS_CONN_ESTABLISHED);
+	assert(qev->tls_conn->flags == 0);
+	conn_id = qev->tls_conn->conn_id;
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CALL: write (request) */
+	assert(qev->events == QUARK_EV_TLS_CALL);
+	assert_tls_call(qev->tls_call, QUARK_TLS_DIR_WRITE, conn_id,
+	    tls_req_small, strlen(tls_req_small), 0);
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CALL: read (response) */
+	assert(qev->events == QUARK_EV_TLS_CALL);
+	assert_tls_call(qev->tls_call, QUARK_TLS_DIR_READ, conn_id,
+	    tls_resp_small, strlen(tls_resp_small), 0);
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CONN_CLOSED (SSL_free) */
+	assert(qev->events == QUARK_EV_TLS_CONN_CLOSED);
+	assert(qev->tls_conn != NULL);
+	assert(qev->tls_conn->conn_id == conn_id);
+	assert(qev->tls_conn->tgid == (u32)ts.client);
+
+	tls_session_finish(&qq, &ts);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A connection whose SSL_new the probes never saw (here the probes attach only
+ * after the client has handshaked) must not be dropped silently. Its first
+ * SSL_write adopts the connection on the spot: a conn_id is minted, flagged
+ * PREFIX_UNKNOWN so the missing prefix is visible, and the payload is still
+ * delivered under it.
+ */
+static int
+t_tls_late_adopt(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct tls_session		 ts;
+	const struct quark_event	*qev;
+	u64				 conn_id;
+
+	if (in_valgrind) {
+		warnx("%s: skipping under valgrind: valgrind's ptrace use "
+		    "delivers a SIGTRAP that breaks uprobes", __func__);
+		return (0);
+	}
+
+	qa->flags |= QQ_TLS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* tls_session_start_late() attaches late itself; don't pre-attach. */
+	tls_session_start_late(&ts, &qq, tls_req_small, strlen(tls_req_small),
+	    tls_resp_small, strlen(tls_resp_small));
+
+	qev = drain_for_pid(&qq, ts.client);	/* FORK */
+	assert(qev->events & QUARK_EV_FORK);
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CONN_ESTABLISHED (adopted) */
+	assert(qev->events == QUARK_EV_TLS_CONN_ESTABLISHED);
+	assert(qev->tls_conn != NULL);
+	assert(qev->tls_conn->conn_id != 0);
+	assert(qev->tls_conn->tgid == (u32)ts.client);
+	/* Adopted mid-stream, so its prefix was missed. */
+	assert(qev->tls_conn->flags & QUARK_TLS_CONN_F_PREFIX_UNKNOWN);
+	conn_id = qev->tls_conn->conn_id;
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CALL: write (request) */
+	assert(qev->events == QUARK_EV_TLS_CALL);
+	assert_tls_call(qev->tls_call, QUARK_TLS_DIR_WRITE, conn_id,
+	    tls_req_small, strlen(tls_req_small), 0);
+
+	/* SSL_free still closes the adopted connection under the same conn_id. */
+	do {
+		qev = drain_for_pid(&qq, ts.client);
+	} while (!(qev->events & QUARK_EV_TLS_CONN_CLOSED));
+	assert(qev->tls_conn != NULL);
+	assert(qev->tls_conn->conn_id == conn_id);
+	assert(qev->tls_conn->tgid == (u32)ts.client);
+
+	tls_session_finish(&qq, &ts);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A single SSL_write() call sees the whole application buffer atomically, so
+ * the write direction is where multi-chunk reassembly is deterministic to
+ * test. SSL_read() returns whatever happens to be decrypted at call time,
+ * bounded by TLS's own 16KiB per-record plaintext ceiling, so it isn't used
+ * here.
+ */
+static int
+t_tls_multichunk(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct tls_session		 ts;
+	const struct quark_event	*qev;
+	char				*req;
+	size_t				 req_len;
+	u64				 conn_id;
+
+	if (in_valgrind) {
+		warnx("%s: skipping under valgrind: valgrind's ptrace use "
+		    "delivers a SIGTRAP that breaks uprobes", __func__);
+		return (0);
+	}
+
+	req_len = 70000;	/* > TLS_CHUNK_MAX (32768): forces 3 chunks */
+	if ((req = malloc(req_len)) == NULL)
+		err(1, "malloc");
+	fill_pattern(req, req_len);
+
+	qa->flags |= QQ_TLS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	tls_attach(&qq);
+
+	tls_session_start(&ts, &qq, req, req_len, tls_resp_small,
+	    strlen(tls_resp_small));
+
+	qev = drain_for_pid(&qq, ts.client);	/* FORK */
+	assert(qev->events & QUARK_EV_FORK);
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CONN_ESTABLISHED */
+	assert(qev->events == QUARK_EV_TLS_CONN_ESTABLISHED);
+	conn_id = qev->tls_conn->conn_id;
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CALL: write (request) */
+	assert(qev->events == QUARK_EV_TLS_CALL);
+	assert(qev->tls_call->next != NULL);	/* must actually be chunked */
+	assert_tls_call(qev->tls_call, QUARK_TLS_DIR_WRITE, conn_id,
+	    req, req_len, 0);
+
+	qev = drain_for_pid(&qq, ts.client);	/* TLS_CALL: read (response) */
+	assert(qev->events == QUARK_EV_TLS_CALL);
+
+	tls_session_finish(&qq, &ts);
+	quark_queue_close(&qq);
+	free(req);
+
+	return (0);
+}
+
+/*
+ * Two clients talking through the same system-wide uprobes at the same time
+ * must never bleed into each other: each SSL_new mints its own globally-unique
+ * conn_id, and each client's captured request bytes must come back tagged with
+ * that client's conn_id and tgid.
+ */
+static int
+t_tls_multiproc(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct tls_session		 ts0, ts1;
+	const struct quark_event	*qev;
+	const char			*req0 = "GET /aaaaaa HTTP/1.1\r\n\r\n";
+	const char			*req1 = "POST /bbbbbbbbbbbb HTTP/1.1\r\n\r\n";
+	u64				 conn0, conn1;
+	int				 got0, got1;
+
+	if (in_valgrind) {
+		warnx("%s: skipping under valgrind: valgrind's ptrace use "
+		    "delivers a SIGTRAP that breaks uprobes", __func__);
+		return (0);
+	}
+
+	conn0 = conn1 = 0;
+	got0 = got1 = 0;
+
+	qa->flags |= QQ_TLS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	tls_attach(&qq);
+
+	tls_session_start(&ts0, &qq, req0, strlen(req0),
+	    tls_resp_small, strlen(tls_resp_small));
+	tls_session_start(&ts1, &qq, req1, strlen(req1),
+	    tls_resp_small, strlen(tls_resp_small));
+
+	/*
+	 * The two clients' events interleave, so drain in arrival order and
+	 * dispatch by pid -- draining one client to completion would make
+	 * drain_for_pid() discard the other's events.
+	 */
+	while (!got0 || !got1) {
+		qev = drain_any(&qq);
+		if (qev->process == NULL)
+			continue;
+
+		if (qev->events == QUARK_EV_TLS_CONN_ESTABLISHED) {
+			if (qev->process->pid == (u32)ts0.client)
+				conn0 = qev->tls_conn->conn_id;
+			else if (qev->process->pid == (u32)ts1.client)
+				conn1 = qev->tls_conn->conn_id;
+			continue;
+		}
+
+		if (qev->events != QUARK_EV_TLS_CALL)
+			continue;
+		if (qev->tls_call->direction != QUARK_TLS_DIR_WRITE)
+			continue;
+
+		if (qev->process->pid == (u32)ts0.client) {
+			assert(conn0 != 0);
+			assert(qev->tls_call->tgid == (u32)ts0.client);
+			assert_tls_call(qev->tls_call, QUARK_TLS_DIR_WRITE,
+			    conn0, req0, strlen(req0), 0);
+			got0 = 1;
+		} else if (qev->process->pid == (u32)ts1.client) {
+			assert(conn1 != 0);
+			assert(qev->tls_call->tgid == (u32)ts1.client);
+			assert_tls_call(qev->tls_call, QUARK_TLS_DIR_WRITE,
+			    conn1, req1, strlen(req1), 0);
+			got1 = 1;
+		}
+	}
+
+	assert(conn0 != 0 && conn1 != 0);
+	assert(conn0 != conn1);
+
+	tls_session_finish(&qq, &ts0);
+	tls_session_finish(&qq, &ts1);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+#endif /* WITH_TLS_TESTS */
+
 static int
 t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -2531,6 +3340,14 @@ struct test all_tests[] = {
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
+#ifdef WITH_TLS_TESTS
+	T_EBPF(t_tls_load),
+	T_EBPF(t_tls_conn),
+	T_EBPF(t_tls_call),
+	T_EBPF(t_tls_late_adopt),
+	T_EBPF(t_tls_multichunk),
+	T_EBPF(t_tls_multiproc),
+#endif /* WITH_TLS_TESTS */
 	T_EBPF(t_cgroup_parse),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),

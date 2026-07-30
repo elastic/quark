@@ -46,6 +46,9 @@ enum ebpf_event_type {
     EBPF_EVENT_PROCESS_LOAD_MODULE          = (1 << 19),
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
     EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
+    EBPF_EVENT_TLS_CONN                     = (1 << 22),
+    EBPF_EVENT_TLS_CHUNK                    = (1 << 23),
+    EBPF_EVENT_TLS_CONN_CLOSE               = (1 << 24),
 };
 
 struct ebpf_event_header {
@@ -73,6 +76,7 @@ enum ebpf_varlen_field_type {
     EBPF_VL_FIELD_MOD_VERSION,
     EBPF_VL_FIELD_MOD_SRCVERSION,
     EBPF_VL_FIELD_DNS_BODY,
+    EBPF_VL_FIELD_TLS_DATA,
 };
 
 // Convenience macro to iterate all the variable length fields in an event
@@ -438,6 +442,53 @@ struct ebpf_dns_event {
     uint32_t orig_len;
     enum ebpf_net_packet_direction direction;
     char packet[]; // must be last
+} __attribute__((packed));
+
+// ebpf_tls_new_event.flags bits.
+//
+// Can always call this something else, it's meant to flag that we have received
+// bytes from Read/Write from a connection that was missed, this can happen if
+// for example we attach in the middle of a connection.
+#define EBPF_TLS_CONN_F_PREFIX_UNKNOWN 0x1
+
+// A new connection established, flag is 0 if we attached from the start,
+// If flag is not 0 the connection was adopted mid-stream.
+struct ebpf_tls_new_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    uint64_t conn_id;
+    uint32_t flags;
+} __attribute__((packed));
+
+// Emitted only when a connection is closed properly, if a process is killed
+// with a live connection this will not be emitted.
+struct ebpf_tls_close_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    uint64_t conn_id;
+} __attribute__((packed));
+
+enum ebpf_tls_direction {
+    EBPF_TLS_DIR_WRITE = 0, // outgoing request, SSL_write
+    EBPF_TLS_DIR_READ  = 1, // incoming response, SSL_read
+};
+
+// One ring buffer record per chunk of an SSL_read/SSL_write call. Quark
+// aggregates same (conn_id, direction, call_seq) chunks into one
+// quark_tls_call, mirroring EBPF_EVENT_PROCESS_TTY_WRITE's chain.
+struct ebpf_tls_chunk_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    uint64_t conn_id;
+    uint8_t direction;
+    uint64_t call_seq;
+    uint32_t call_len;     // true SSL_read/SSL_write length
+    uint32_t chunk_idx;
+    uint32_t chunk_total;  // total chunks the call was split into
+    uint8_t dropped;
+
+    // Variable length fields: tls_data
+    struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 
 // Basic event statistics

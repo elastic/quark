@@ -134,6 +134,9 @@ raw_event_alloc(int type)
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
+	case RAW_TLS_CONN:	/* caller allocates */
+	case RAW_TLS_CONN_CLOSE:	/* caller allocates */
+	case RAW_TLS_CHUNK:	/* caller allocates */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -197,6 +200,13 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_TTY:
 		free(raw->tty.quark_tty);
+		break;
+	case RAW_TLS_CONN:
+	case RAW_TLS_CONN_CLOSE:
+		free(raw->tls_conn.quark_tls_conn);
+		break;
+	case RAW_TLS_CHUNK:
+		free(raw->tls_chunk.quark_tls_call);
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -414,6 +424,22 @@ event_storage_clear(struct quark_queue *qq)
 	}
 	free(qq->event_storage.tty);
 	qq->event_storage.tty = NULL;
+
+	free(qq->event_storage.tls_conn);
+	qq->event_storage.tls_conn = NULL;
+
+	if (qq->event_storage.tls_call != NULL) {
+		struct quark_tls_call *current;
+		struct quark_tls_call *next = qq->event_storage.tls_call->next;
+		while (next != NULL) {
+			current = next;
+			next = current->next;
+			free(current);
+		}
+	}
+	free(qq->event_storage.tls_call);
+	qq->event_storage.tls_call = NULL;
+
 	qq->event_storage.id_change = 0;
 }
 
@@ -3757,6 +3783,7 @@ const quark_can_aggregate_fn base_agg_matrix[RAW_NUM_TYPES][RAW_NUM_TYPES] = {
 
 	[RAW_FILE][RAW_FILE]				= quark_can_aggregate_file,
 	[RAW_TTY][RAW_TTY]				= quark_can_aggregate_tty,
+	[RAW_TLS_CHUNK][RAW_TLS_CHUNK]			= quark_can_aggregate_tls,
 };
 
 /* used if qq->flags & QQ_MIN_AGG */
@@ -4258,6 +4285,18 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		goto fail;
 	}
 
+	/*
+	 * TLS capture is implemented only in the eBPF backend. If the caller
+	 * asked for it but QQ_ALL_BACKENDS fell back to a non-eBPF backend,
+	 * fail cleanly rather than hand back a queue whose tls_attach APIs
+	 * can't work.
+	 */
+	if ((qq->flags & QQ_TLS) && qq->stats.backend != QQ_EBPF) {
+		qwarnx("QQ_TLS requires the eBPF backend");
+		errno = ENOTSUP;
+		goto fail;
+	}
+
 	if ((qq->flags & QQ_BYPASS) == 0) {
 		/*
 		 * Now that the rings are opened, we can scrape proc. If we would scrape
@@ -4483,6 +4522,42 @@ quark_can_aggregate_tty(struct quark_queue *qq,
 	}
 
 	return (0);
+}
+
+/*
+ * Unlike quark_can_aggregate_tty(), there is no size ceiling here: a call is
+ * reassembled in full from however many chunks the BPF side split it into.
+ * Identity (conn_id, direction, call_seq) is the only thing that decides
+ * whether two chunks belong together.
+ */
+int
+quark_can_aggregate_tls(struct quark_queue *qq,
+    struct raw_event *p, struct raw_event *c)
+{
+	struct quark_tls_call	*pt, *ct;
+
+	pt = p->tls_chunk.quark_tls_call;
+	ct = c->tls_chunk.quark_tls_call;
+
+	if (pt->conn_id != ct->conn_id)
+		return (0);
+	if (pt->direction != ct->direction)
+		return (0);
+	if (pt->call_seq != ct->call_seq)
+		return (0);
+
+	if (ct->chunk_idx != pt->chunk_idx + 1)
+		pt->gap = 1;
+	if (ct->gap)
+		pt->gap = 1;
+	pt->chunk_idx = ct->chunk_idx;
+
+	/*
+	 * truncated is defined during aggregation.
+	 */
+	pt->total_len += ct->data_len;
+
+	return (1);
 }
 
 /*
@@ -4808,6 +4883,64 @@ raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 	/* Steal it */
 	qev->tty = raw->tty.quark_tty;
 	raw->tty.quark_tty = NULL;
+
+	return (qev);
+}
+
+static struct quark_event *
+raw_event_tls_conn(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = raw->type == RAW_TLS_CONN_CLOSE ?
+	    QUARK_EV_TLS_CONN_CLOSED : QUARK_EV_TLS_CONN_ESTABLISHED;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	/* Steal it */
+	qev->tls_conn = raw->tls_conn.quark_tls_conn;
+	raw->tls_conn.quark_tls_conn = NULL;
+
+	return (qev);
+}
+
+static struct quark_event *
+raw_event_tls_call(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+	struct raw_event	*agg, *next;
+	struct quark_tls_call	*head;
+
+	if (raw->tls_chunk.quark_tls_call == NULL) {
+		qwarnx("quark_tls_call is null");
+
+		return (NULL);
+	}
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_TLS_CALL;
+	qev->process = quark_process_lookup(qq, raw->pid);
+
+	/* Link raw (our head) to the first chunk in the agg queue */
+	next = TAILQ_FIRST(&raw->agg_queue);
+	if (next != NULL)
+		raw->tls_chunk.quark_tls_call->next = next->tls_chunk.quark_tls_call;
+
+	/* Link the remaining chunks */
+	TAILQ_FOREACH_SAFE(agg, &raw->agg_queue, agg_entry, next) {
+		if (next != NULL)
+			agg->tls_chunk.quark_tls_call->next = next->tls_chunk.quark_tls_call;
+		agg->tls_chunk.quark_tls_call = NULL;
+	}
+
+	head = raw->tls_chunk.quark_tls_call;
+	head->truncated = head->call_len > head->total_len ?
+	    head->call_len - head->total_len : 0;
+
+	/* Steal it */
+	qev->tls_call = head;
+	raw->tls_chunk.quark_tls_call = NULL;
 
 	return (qev);
 }
@@ -5180,6 +5313,13 @@ quark_queue_get_event(struct quark_queue *qq)
 			break;
 		case RAW_TTY:
 			qev = raw_event_tty(qq, raw);
+			break;
+		case RAW_TLS_CONN:
+		case RAW_TLS_CONN_CLOSE:
+			qev = raw_event_tls_conn(qq, raw);
+			break;
+		case RAW_TLS_CHUNK:
+			qev = raw_event_tls_call(qq, raw);
 			break;
 		default:
 			qwarnx("unhandled raw->type: %d", raw->type);

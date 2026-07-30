@@ -21,9 +21,25 @@
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
+/*
+ * One TLS uprobe attachment: the six links minted by a single attach call
+ * (SSL_new return, SSL_write entry+return, SSL_read entry+return, SSL_free
+ * entry). The skeleton keeps only a single link slot per program, which a
+ * second attach would overwrite and leak, so the links are owned here instead.
+ * Unused slots stay NULL.
+ *
+ * pid is the process the uprobes are scoped to, or -1 for a system-wide attach.
+ */
+struct quark_tls_attachment {
+	TAILQ_ENTRY(quark_tls_attachment)	 entry;
+	struct bpf_link				*links[6];
+	int					 pid;
+};
+
 struct bpf_queue {
-	struct bpf_probes	*probes;
-	struct ring_buffer	*ringbuf;
+	struct bpf_probes			*probes;
+	struct ring_buffer			*ringbuf;
+	TAILQ_HEAD(, quark_tls_attachment)	 tls_attachments;
 };
 
 static int	bpf_queue_populate(struct quark_queue *);
@@ -95,6 +111,9 @@ ebpf_ctx_to_task(struct quark_queue *qq, struct ebpf_ctx *ebpf_ctx, struct raw_t
 		}
 	}
 }
+
+static void	tls_attachment_destroy(struct quark_tls_attachment *);
+static void	tls_detach_all(struct bpf_queue *);
 
 static struct raw_event *
 ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
@@ -823,6 +842,103 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_TLS_CONN: {
+		struct ebpf_tls_new_event	*tlsnew;
+		struct quark_tls_conn		*qtc;
+
+		tlsnew = (struct ebpf_tls_new_event *)ev;
+		if ((raw = raw_event_alloc(RAW_TLS_CONN)) == NULL)
+			goto bad;
+
+		raw->pid = tlsnew->pids.tgid;
+		raw->time = ev->ts;
+
+		if ((qtc = malloc(sizeof(*qtc))) == NULL)
+			goto bad;
+		qtc->conn_id = tlsnew->conn_id;
+		qtc->tgid = tlsnew->pids.tgid;
+		qtc->flags = tlsnew->flags;
+
+		raw->tls_conn.quark_tls_conn = qtc;
+
+		break;
+	}
+	case EBPF_EVENT_TLS_CONN_CLOSE: {
+		struct ebpf_tls_close_event	*tlsclose;
+		struct quark_tls_conn		*qtc;
+
+		tlsclose = (struct ebpf_tls_close_event *)ev;
+		if ((raw = raw_event_alloc(RAW_TLS_CONN_CLOSE)) == NULL)
+			goto bad;
+
+		raw->pid = tlsclose->pids.tgid;
+		raw->time = ev->ts;
+
+		if ((qtc = malloc(sizeof(*qtc))) == NULL)
+			goto bad;
+		qtc->conn_id = tlsclose->conn_id;
+		qtc->tgid = tlsclose->pids.tgid;
+		qtc->flags = 0;
+
+		raw->tls_conn.quark_tls_conn = qtc;
+
+		break;
+	}
+	case EBPF_EVENT_TLS_CHUNK: {
+		struct ebpf_tls_chunk_event	*chunk;
+		struct quark_tls_call		*qtc;
+		size_t				 alloc_len, data_len;
+		void				*data;
+
+		chunk = (struct ebpf_tls_chunk_event *)ev;
+		if ((raw = raw_event_alloc(RAW_TLS_CHUNK)) == NULL)
+			goto bad;
+
+		data = NULL;
+		data_len = 0;
+		if (!chunk->dropped) {
+			FOR_EACH_VARLEN_FIELD(chunk->vl_fields, field) {
+				if (field->type == EBPF_VL_FIELD_TLS_DATA) {
+					data = field->data;
+					data_len = field->size;
+					break;
+				}
+			}
+		}
+
+		raw->pid = chunk->pids.tgid;
+		raw->time = ev->ts;
+
+		alloc_len = sizeof(*qtc) + data_len;
+		if ((qtc = malloc(alloc_len)) == NULL)
+			goto bad;
+
+		qtc->next = NULL;
+		qtc->conn_id = chunk->conn_id;
+		qtc->tgid = chunk->pids.tgid;
+		qtc->direction = chunk->direction == EBPF_TLS_DIR_READ ?
+		    QUARK_TLS_DIR_READ : QUARK_TLS_DIR_WRITE;
+		qtc->call_seq = chunk->call_seq;
+		qtc->chunk_idx = chunk->chunk_idx;
+		qtc->chunk_total = chunk->chunk_total;
+		qtc->call_len = chunk->call_len;
+		qtc->total_len = data_len;
+		qtc->truncated = 0;	/* refined once the chain is aggregated */
+		qtc->dropped = chunk->dropped ? 1 : 0;
+		/*
+		 * A dropped chunk that isn't the last one in the call is a
+		 * hole with more data after it, mainly useful for userspace that
+		 * is interested in parsing the raw data to reconstruct the call.
+		 */
+		qtc->gap = (qtc->dropped && chunk->chunk_idx != chunk->chunk_total - 1) ? 1 : 0;
+		qtc->data_len = data_len;
+		if (data != NULL)
+			memcpy(qtc->data, data, data_len);
+
+		raw->tls_chunk.quark_tls_call = qtc;
+
+		break;
+	}
 	default:
 		qwarnx("unhandled type %lu", ev->type);
 		goto bad;
@@ -1053,6 +1169,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		return (-1);
 
 	qq->queue_be = bqq;
+	TAILQ_INIT(&bqq->tls_attachments);
 	cgroup_fd = -1;
 	cgroup_umount = NULL;
 	btf = NULL;
@@ -1128,7 +1245,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		    "inet_csk_accept") == -1)
 			goto fail;
 	}
-
+	
 	if (qq->flags & QQ_FILE) {
 		int use_fsnotify =
 		    (btf_number_of_params_of_ptr(btf, "inode_operations", "atomic_open") == 6);
@@ -1275,6 +1392,21 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	if (qq->flags & QQ_GETPID)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
+
+	if (qq->flags & QQ_TLS) {
+		bpf_program__set_autoload(p->progs.uretprobe__ssl_new, 1);
+		bpf_program__set_autoload(p->progs.uprobe__ssl_write, 1);
+		bpf_program__set_autoload(p->progs.uretprobe__ssl_write, 1);
+		bpf_program__set_autoload(p->progs.uprobe__ssl_read, 1);
+		bpf_program__set_autoload(p->progs.uretprobe__ssl_read, 1);
+		bpf_program__set_autoload(p->progs.uprobe__ssl_free, 1);
+		if (use_fentry)
+			bpf_program__set_autoload(
+			    p->progs.fentry__disassociate_ctty_tls, 1);
+		else
+			bpf_program__set_autoload(
+			    p->progs.kprobe__disassociate_ctty_tls, 1);
+	}
 
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
 	    get_nprocs_conf()) != 0) {
@@ -1443,6 +1575,7 @@ bpf_queue_close(struct quark_queue *qq)
 
 	if (bqq == NULL)
 		return;
+	tls_detach_all(bqq);
 	if (bqq->probes != NULL) {
 		bpf_probes__destroy(bqq->probes);
 		bqq->probes = NULL;
@@ -1469,10 +1602,18 @@ bpf_queue_close(struct quark_queue *qq)
 struct bpf_probes *
 quark_get_bpf_probes(struct quark_queue *qq)
 {
-	struct bpf_queue *bqq = qq->queue_be;
+	struct bpf_queue *bqq;
 
-	if (!(qq->flags & QQ_EBPF))
+	/*
+	 * Gate on the backend that actually opened, not on the requested
+	 * flags: QQ_ALL_BACKENDS can request eBPF but fall back to kprobe, in
+	 * which case qq->queue_be is a struct kprobe_queue. Treating that as a
+	 * struct bpf_queue would dereference the wrong layout.
+	 */
+	if (qq->stats.backend != QQ_EBPF)
 		return (errno = EINVAL, NULL);
+
+	bqq = qq->queue_be;
 
 	return (bqq->probes);
 }
@@ -1514,4 +1655,146 @@ quark_queue_trusted_pid_add(struct quark_queue *qq, u32 pid)
 		return (-1);
 
 	return (0);
+}
+
+/*
+ * Destroy one attachment's uprobe links and free the record. Safe on a
+ * partially populated record: unset slots are NULL and bpf_link__destroy(NULL)
+ * is a no-op, so this doubles as the rollback for a half-finished attach.
+ */
+static void
+tls_attachment_destroy(struct quark_tls_attachment *ta)
+{
+	size_t	i;
+
+	for (i = 0; i < nitems(ta->links); i++) {
+		if (ta->links[i] != NULL) {
+			bpf_link__destroy(ta->links[i]);
+			ta->links[i] = NULL;
+		}
+	}
+	free(ta);
+}
+
+/*
+ * Detach every TLS uprobe attachment. Called from bpf_queue_close, where the
+ * maps are about to be destroyed anyway, so it only frees the links.
+ */
+static void
+tls_detach_all(struct bpf_queue *bqq)
+{
+	struct quark_tls_attachment	*ta;
+
+	while ((ta = TAILQ_FIRST(&bqq->tls_attachments)) != NULL) {
+		TAILQ_REMOVE(&bqq->tls_attachments, ta, entry);
+		tls_attachment_destroy(ta);
+	}
+}
+
+/*
+ * Detach a single attachment: remove it and destroy its uprobe links. Any
+ * connections its process still holds are reclaimed when that process exits
+ * (via the tls_conn_tgids-gated exit sweep), so nothing is swept here.
+ *
+ * The handle is validated against this queue's list before it is touched: a
+ * repeated detach, a handle belonging to another queue, or a NULL handle is a
+ * no-op rather than a use-after-free or a foreign-node removal. Only addresses
+ * are compared, ta is never dereferenced, so a stale (freed) handle is safe to
+ * pass. Detach is not a hot path and attachments are few, so the linear walk
+ * is free. Must be called on the thread that drains the queue.
+ */
+void
+quark_queue_tls_detach(struct quark_queue *qq, struct quark_tls_attachment *ta)
+{
+	struct bpf_queue		*bqq = qq->queue_be;
+	struct quark_tls_attachment	*cur;
+
+	if (ta == NULL)
+		return;
+
+	TAILQ_FOREACH(cur, &bqq->tls_attachments, entry) {
+		if (cur == ta) {
+			TAILQ_REMOVE(&bqq->tls_attachments, ta, entry);
+			tls_attachment_destroy(ta);
+			return;
+		}
+	}
+}
+
+/*
+ * Attach one uprobe by file offset. pid == -1 is system-wide. Warns naming the
+ * probe on failure.
+ */
+static struct bpf_link *
+tls_attach_uprobe_off(struct bpf_program *prog, int retprobe, int pid,
+    const char *path, u64 off, const char *name)
+{
+	struct bpf_link	*link;
+
+	link = bpf_program__attach_uprobe(prog, retprobe, pid, path, off);
+	if (link == NULL)
+		qwarn("bpf_program__attach_uprobe %s", name);
+
+	return (link);
+}
+
+/*
+ * Offset attach: path plus SSL_new, SSL_read, SSL_write, SSL_free file offsets,
+ * all required. pid == -1 attaches system-wide, so every process hitting these
+ * offsets is captured (subject only to the trusted-pid deny-list); pid >= 0
+ * scopes the uprobes to that process. Callers are recommended to track
+ * attachments by (dev, inode, offset) and attach once per such tuple, not once
+ * per process; the kernel refcounts uprobes by (inode, offset) only. Returns an
+ * opaque handle, or NULL with errno set on failure.
+ */
+struct quark_tls_attachment *
+quark_queue_tls_attach(struct quark_queue *qq, int pid, const char *path,
+    u64 ssl_new_off, u64 ssl_read_off, u64 ssl_write_off, u64 ssl_free_off)
+{
+	struct bpf_queue		*bqq = qq->queue_be;
+	struct bpf_probes		*p;
+	struct quark_tls_attachment	*ta;
+
+	if ((p = quark_get_bpf_probes(qq)) == NULL)
+		return (NULL);
+	if ((ta = calloc(1, sizeof(*ta))) == NULL)
+		return (NULL);
+	ta->pid = pid;
+
+	/*
+	 * On any failure the partially populated record is rolled back by
+	 * tls_attachment_destroy.
+	 */
+	if ((ta->links[0] = tls_attach_uprobe_off(
+	    p->progs.uretprobe__ssl_new, 1, pid, path, ssl_new_off,
+	    "uretprobe__ssl_new")) == NULL)
+		goto fail;
+	if ((ta->links[1] = tls_attach_uprobe_off(
+	    p->progs.uprobe__ssl_write, 0, pid, path, ssl_write_off,
+	    "uprobe__ssl_write")) == NULL)
+		goto fail;
+	if ((ta->links[2] = tls_attach_uprobe_off(
+	    p->progs.uretprobe__ssl_write, 1, pid, path, ssl_write_off,
+	    "uretprobe__ssl_write")) == NULL)
+		goto fail;
+	if ((ta->links[3] = tls_attach_uprobe_off(
+	    p->progs.uprobe__ssl_read, 0, pid, path, ssl_read_off,
+	    "uprobe__ssl_read")) == NULL)
+		goto fail;
+	if ((ta->links[4] = tls_attach_uprobe_off(
+	    p->progs.uretprobe__ssl_read, 1, pid, path, ssl_read_off,
+	    "uretprobe__ssl_read")) == NULL)
+		goto fail;
+	if ((ta->links[5] = tls_attach_uprobe_off(
+	    p->progs.uprobe__ssl_free, 0, pid, path, ssl_free_off,
+	    "uprobe__ssl_free")) == NULL)
+		goto fail;
+
+	TAILQ_INSERT_TAIL(&bqq->tls_attachments, ta, entry);
+
+	return (ta);
+
+fail:
+	tls_attachment_destroy(ta);
+	return (NULL);
 }

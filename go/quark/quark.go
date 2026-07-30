@@ -181,10 +181,39 @@ type Tty struct {
 	Data      [][]byte
 }
 
+// TlsConn carries a connection lifecycle event. It is delivered with
+// QUARK_EV_TLS_CONN_ESTABLISHED when the connection first becomes known and
+// again with QUARK_EV_TLS_CONN_CLOSED when SSL_free runs;
+//
+// PrefixUnknown is set on an ESTABLISHED event when the connection was adopted
+// mid-stream (its SSL_new was never seen) rather than observed from birth.
+type TlsConn struct {
+	ConnId        uint64
+	Tgid          uint32
+	PrefixUnknown bool
+}
+
+// TlsCall is a fully reassembled SSL_read or SSL_write call.
+//
+// Gap distinguishes the two ways Truncated can be non-zero.
+// false means truncate was clean at the end, while true means there was a gap in the data.
+type TlsCall struct {
+	ConnId    uint64
+	Tgid      uint32
+	Direction int
+	CallSeq   uint64
+	CallLen   uint64
+	TotalLen  uint64
+	Truncated uint64
+	Gap       bool
+	Data      [][]byte
+}
+
 // Events is a bitmask of QUARK_EV_* and expresses what triggered this
 // event, Process is the context of the Event.
 type Event struct {
 	Events     uint64
+	Time       uint64
 	Process    Process
 	Socket     *Socket
 	Packet     *Packet
@@ -193,6 +222,8 @@ type Event struct {
 	ModuleLoad *ModuleLoad
 	Shm        *any // ShmGet, MemFd or ShmOpen
 	Tty        *Tty
+	TlsConn    *TlsConn
+	TlsCall    *TlsCall
 }
 
 // Queue holds the state of a quark instance.
@@ -216,21 +247,29 @@ const (
 	QQ_TTY           = int(C.QQ_TTY)
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
+	QQ_TLS           = int(C.QQ_TLS)
 	QQ_ALL_BACKENDS  = int(C.QQ_ALL_BACKENDS)
 
 	// Event.events
-	QUARK_EV_FORK             = uint64(C.QUARK_EV_FORK)
-	QUARK_EV_EXEC             = uint64(C.QUARK_EV_EXEC)
-	QUARK_EV_EXIT             = uint64(C.QUARK_EV_EXIT)
-	QUARK_EV_SETPROCTITLE     = uint64(C.QUARK_EV_SETPROCTITLE)
-	QUARK_EV_SOCK_CONN_CLOSED = uint64(C.QUARK_EV_SOCK_CONN_CLOSED)
-	QUARK_EV_PACKET           = uint64(C.QUARK_EV_PACKET)
-	QUARK_EV_BYPASS           = uint64(C.QUARK_EV_BYPASS)
-	QUARK_EV_FILE             = uint64(C.QUARK_EV_FILE)
-	QUARK_EV_PTRACE           = uint64(C.QUARK_EV_PTRACE)
-	QUARK_EV_MODULE_LOAD      = uint64(C.QUARK_EV_MODULE_LOAD)
-	QUARK_EV_SHM              = uint64(C.QUARK_EV_SHM)
-	QUARK_EV_TTY              = uint64(C.QUARK_EV_TTY)
+	QUARK_EV_FORK                 = uint64(C.QUARK_EV_FORK)
+	QUARK_EV_EXEC                 = uint64(C.QUARK_EV_EXEC)
+	QUARK_EV_EXIT                 = uint64(C.QUARK_EV_EXIT)
+	QUARK_EV_SETPROCTITLE         = uint64(C.QUARK_EV_SETPROCTITLE)
+	QUARK_EV_SOCK_CONN_CLOSED     = uint64(C.QUARK_EV_SOCK_CONN_CLOSED)
+	QUARK_EV_PACKET               = uint64(C.QUARK_EV_PACKET)
+	QUARK_EV_BYPASS               = uint64(C.QUARK_EV_BYPASS)
+	QUARK_EV_FILE                 = uint64(C.QUARK_EV_FILE)
+	QUARK_EV_PTRACE               = uint64(C.QUARK_EV_PTRACE)
+	QUARK_EV_MODULE_LOAD          = uint64(C.QUARK_EV_MODULE_LOAD)
+	QUARK_EV_SHM                  = uint64(C.QUARK_EV_SHM)
+	QUARK_EV_TTY                  = uint64(C.QUARK_EV_TTY)
+	QUARK_EV_TLS_CONN_ESTABLISHED = uint64(C.QUARK_EV_TLS_CONN_ESTABLISHED)
+	QUARK_EV_TLS_CALL             = uint64(C.QUARK_EV_TLS_CALL)
+	QUARK_EV_TLS_CONN_CLOSED      = uint64(C.QUARK_EV_TLS_CONN_CLOSED)
+
+	// TlsCall.Direction
+	QUARK_TLS_DIR_WRITE = int(C.QUARK_TLS_DIR_WRITE)
+	QUARK_TLS_DIR_READ  = int(C.QUARK_TLS_DIR_READ)
 
 	// EntryLeaderType
 	QUARK_ELT_UNKNOWN   = int(C.QUARK_ELT_UNKNOWN)
@@ -355,6 +394,7 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	}
 
 	event.Events = uint64(cev.events)
+	event.Time = uint64(cev.time)
 	event.Process = processFromC(cev.process)
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)
@@ -383,8 +423,49 @@ func (queue *Queue) GetEvent() (Event, bool) {
 		tty := ttyFromC(cev.tty)
 		event.Tty = &tty
 	}
+	if cev.tls_conn != nil {
+		tlsConn := tlsConnFromC(cev.tls_conn)
+		event.TlsConn = &tlsConn
+	}
+	if cev.tls_call != nil {
+		tlsCall := tlsCallFromC(cev.tls_call)
+		event.TlsCall = &tlsCall
+	}
 
 	return event, true
+}
+
+// TlsAttachment is an opaque handle to a set of TLS uprobes, returned by
+// TlsAttach and passed to TlsDetach.
+type TlsAttachment struct {
+	handle *C.struct_quark_tls_attachment
+}
+
+// TlsAttach attaches the uprobes at the given file offsets in path; all four are required.
+// Callers are recommended to track attachments by (dev, inode, offset) and attach once per such tuple;
+// Use -1 pid to attach system-wide, recommended but do not use against shared system libraries (libssl.so etc)
+func (queue *Queue) TlsAttach(pid int, path string, sslNewOff, sslReadOff, sslWriteOff, sslFreeOff uint64) (*TlsAttachment, error) {
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+
+	h, err := C.quark_queue_tls_attach(queue.quarkQueue, C.int(pid), cpath,
+		C.u64(sslNewOff), C.u64(sslReadOff), C.u64(sslWriteOff),
+		C.u64(sslFreeOff))
+	if h == nil {
+		return nil, wrapErrno(err)
+	}
+
+	return &TlsAttachment{handle: h}, nil
+}
+
+// TlsDetach detaches a single attachment obtained from TlsAttach
+// and reclaims what it owns. Calling it twice, or with a nil handle, is a no-op.
+func (queue *Queue) TlsDetach(a *TlsAttachment) {
+	if a == nil || a.handle == nil {
+		return
+	}
+	C.quark_queue_tls_detach(queue.quarkQueue, a.handle)
+	a.handle = nil
 }
 
 func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
@@ -664,4 +745,36 @@ func ttyFromC(cTty *C.struct_quark_tty) Tty {
 	}
 
 	return tty
+}
+
+func tlsConnFromC(cTlsConn *C.struct_quark_tls_conn) TlsConn {
+	var tlsConn TlsConn
+
+	tlsConn.ConnId = uint64(cTlsConn.conn_id)
+	tlsConn.Tgid = uint32(cTlsConn.tgid)
+	tlsConn.PrefixUnknown = cTlsConn.flags&C.QUARK_TLS_CONN_F_PREFIX_UNKNOWN != 0
+
+	return tlsConn
+}
+
+func tlsCallFromC(cTlsCall *C.struct_quark_tls_call) TlsCall {
+	var call TlsCall
+	var t *C.struct_quark_tls_call
+
+	call.ConnId = uint64(cTlsCall.conn_id)
+	call.Tgid = uint32(cTlsCall.tgid)
+	call.Direction = int(cTlsCall.direction)
+	call.CallSeq = uint64(cTlsCall.call_seq)
+	call.CallLen = uint64(cTlsCall.call_len)
+	call.TotalLen = uint64(cTlsCall.total_len)
+	call.Truncated = uint64(cTlsCall.truncated)
+	call.Gap = cTlsCall.gap != 0
+
+	for t = cTlsCall; t != nil; t = t.next {
+		data := unsafe.Pointer(uintptr(unsafe.Pointer(t)) + unsafe.Sizeof(*t))
+		chunk := C.GoBytes(data, C.int(t.data_len))
+		call.Data = append(call.Data, chunk)
+	}
+
+	return call
 }

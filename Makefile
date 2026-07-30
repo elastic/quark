@@ -141,6 +141,17 @@ ifdef CENTOS7
 CDIAGFLAGS+= -Wno-inline
 endif
 
+# OpenSSL is only used by quark-test's TLS e2e tests, and only linked into
+# the dynamic quark-test binary, never quark-test-static: OpenSSL 3.x loads
+# providers dynamically at runtime, so static-linking it is not viable. If
+# absent, the TLS e2e tests are simply not compiled in.
+PKG_CONFIG?= pkg-config
+HAVE_OPENSSL:= $(shell $(PKG_CONFIG) --exists openssl 2>/dev/null && echo 1)
+ifeq ($(HAVE_OPENSSL),1)
+OPENSSL_CFLAGS:= $(shell $(PKG_CONFIG) --cflags openssl) -DHAVE_OPENSSL
+OPENSSL_LIBS:= $(shell $(PKG_CONFIG) --libs openssl) -ldl
+endif
+
 # All EEBPF files we track for dependency
 EEBPF_FILES:= $(shell find elastic-ebpf)
 EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)
@@ -468,9 +479,7 @@ test-valgrind: quark-test
 		--child-silent-after-fork=yes				\
 		--leak-check=full					\
 		--error-exitcode=1					\
-		./quark-test -1						\
-		2>&1
-# | grep -v "^--.*WARNING: unhandled eBPF command"
+		./quark-test -1
 
 initramfs:
 	mkdir -p initramfs/bin
@@ -518,8 +527,8 @@ quark-btf: quark-btf.c manpages.h $(LIBQUARK_TARGET)
 
 quark-test: quark-test.c manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
-		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(OPENSSL_CFLAGS) $(CDIAGFLAGS) \
+		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS) $(OPENSSL_LIBS)
 
 quark-mon-static: quark-mon.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
