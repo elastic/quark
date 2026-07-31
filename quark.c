@@ -5107,7 +5107,7 @@ bad:
 	return (-1);
 }
 
-static const struct quark_event *
+static struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
@@ -5127,12 +5127,11 @@ get_bypass_event(struct quark_queue *qq)
 	return (qev);
 }
 
-const struct quark_event *
-quark_queue_get_event(struct quark_queue *qq)
+static struct quark_event *
+quark_queue_get_event1(struct quark_queue *qq)
 {
 	struct raw_event	*raw;
 	struct quark_event	*qev;
-	struct quark_rule	*rule;
 
 	/* GC all processes and sockets that exited after some grace time */
 	gc_collect(qq);
@@ -5200,11 +5199,22 @@ quark_queue_get_event(struct quark_queue *qq)
 		link_kube_data(qq,
 		    (struct quark_process *)qev->process);
 
-	/* Run ruleset, if it's a drop, nulify qev */
-	if (qq->ruleset != NULL) {
+	return (qev);
+}
+
+const struct quark_event *
+quark_queue_get_event(struct quark_queue *qq)
+{
+	struct quark_event	*qev;
+	struct quark_rule	*rule;
+
+next:
+	qev = quark_queue_get_event1(qq);
+	/* Run ruleset, if we drop, get the next event */
+	if (qev != NULL && qq->ruleset != NULL) {
 		rule = quark_ruleset_match(qq->ruleset, qev);
 		if (rule != NULL && rule->action == QUARK_RA_DROP)
-			qev = NULL;
+			goto next;
 	}
 
 	return (qev);
