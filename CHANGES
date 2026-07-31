@@ -97,3 +97,29 @@ Changes from 0.5 to 0.6
 Changes from 0.6 to 0.7
 ~~~~~~~~~~~~~~~~~~~~~~~
   o BPF_CC is gone, just use CLANG='zig cc' now.
+  o Building quark now requires clang 17 or newer, clang 16 produces
+    probes that fail to load on some kernels.
+  o The ebpf backend now stamps event times with CLOCK_BOOTTIME
+    instead of CLOCK_MONOTONIC, so event times no longer fall behind
+    the wallclock when the host suspends. The kprobe backend still
+    uses monotonic times and relays this via the new QQ_MONOTONIC
+    queue flag: informational only, set by the backend on the opened
+    queue, refused with EINVAL if given as configuration. See
+    quark_queue_open(3).
+  o Container metadata is no longer limited to kubernetes pods,
+    containers outside of kube (LXC and friends) are now also
+    identified by id.
+  o cgroup v1 and hybrid setups are now supported.
+  o quark_module_load{} got a taints member, quark_event_dump() and
+    quark-mon(8) print the decoded taint letters.
+  o quark_file{} got a change_mask member (QUARK_FILE_CH_*) relaying
+    the reasons a file changed.
+  o The rule DSL learned the file.exec_change predicate, matching
+    files that gain an execute bit on create or permission change.
+    Not supported on the nova backend, where it fails with ENOTSUP.
+  o Nightly prebuilt binaries are now published as a GitHub
+    pre-release, as quark-bin.tar.gz and the more portable
+    quark-bin-glibc2.17.tar.gz which should run on any glibc >= 2.17
+    system.
+  o The quark utilities now display their manpage when invoked with
+    "help", "-help" or "--help".
