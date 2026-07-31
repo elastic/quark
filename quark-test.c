@@ -1498,6 +1498,8 @@ t_process_vm_access(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "write");
 	if (waitpid(child, NULL, 0) == -1)
 		err(1, "waitpid");
+	close(to_child[1]);
+	close(to_parent[0]);
 
 	quark_queue_close(&qq);
 
