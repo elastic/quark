@@ -450,6 +450,129 @@ int BPF_KPROBE(kprobe__arch_ptrace,
     return r;
 }
 
+// process_vm_readv(2) / process_vm_writev(2) share the same tracepoint arg
+// layout: pid_t pid, const struct iovec *lvec, unsigned long liovcnt,
+// const struct iovec *rvec, unsigned long riovcnt, unsigned long flags.
+// Only the first remote iovec is captured: every write primitive in the
+// reference process-injection PoCs uses riovcnt == 1, and iterating a
+// user-controlled iovcnt in the probe would require an unbounded loop.
+struct process_vm_access_args {
+    short common_type;
+    char common_flags;
+    char common_preempt_count;
+    int common_pid;
+    int __syscall_nr;
+    long pid;
+    const struct iovec *lvec;
+    unsigned long liovcnt;
+    const struct iovec *rvec;
+    unsigned long riovcnt;
+    unsigned long flags;
+};
+
+static int process_vm_access_enter(struct syscall_trace_enter *ctx,
+                                    enum ebpf_process_vm_access_operation operation)
+{
+    preempt_disable();
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+
+    struct process_vm_access_args *ex_args = (struct process_vm_access_args *)ctx;
+    const struct task_struct *task         = (struct task_struct *)bpf_get_current_task();
+
+    if (is_kernel_thread(task))
+        goto out;
+
+    pid_t curr_tgid   = BPF_CORE_READ(task, tgid);
+    pid_t target_tgid = (pid_t)ex_args->pid;
+
+    // Collection only when source and target refer to different processes.
+    if (target_tgid == curr_tgid)
+        goto out;
+
+    struct iovec remote_iov = {};
+    bpf_probe_read_user(&remote_iov, sizeof(remote_iov), ex_args->rvec);
+
+    struct ebpf_events_state state          = {};
+    state.process_vm_access.target_pid       = target_tgid;
+    state.process_vm_access.operation        = operation;
+    state.process_vm_access.local_iovcnt     = ex_args->liovcnt;
+    state.process_vm_access.remote_iovcnt    = ex_args->riovcnt;
+    state.process_vm_access.remote_addr      = (u64)remote_iov.iov_base;
+    state.process_vm_access.bytes_requested  = (u64)remote_iov.iov_len;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_PROCESS_VM_ACCESS, &state);
+
+out:
+    preempt_enable();
+    return 0;
+}
+
+static int process_vm_access_exit(struct syscall_trace_exit *args)
+{
+    preempt_disable();
+
+    struct ebpf_events_state *state =
+        ebpf_events_state__get(EBPF_EVENTS_STATE_PROCESS_VM_ACCESS);
+    if (!state)
+        goto out;
+
+    struct ebpf_events_process_vm_access_state saved = state->process_vm_access;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_PROCESS_VM_ACCESS);
+
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+
+    const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (is_kernel_thread(task))
+        goto out;
+
+    struct ebpf_process_vm_access_event *event =
+        bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+    if (!event)
+        goto out;
+
+    event->hdr.type = EBPF_EVENT_PROCESS_VM_ACCESS;
+    event->hdr.ts    = bpf_ktime_get_boot_ns();
+    ebpf_pid_info__fill(&event->pids, task);
+
+    event->target_pid       = saved.target_pid;
+    event->operation        = saved.operation;
+    event->local_iovcnt     = saved.local_iovcnt;
+    event->remote_iovcnt    = saved.remote_iovcnt;
+    event->remote_addr      = saved.remote_addr;
+    event->bytes_requested  = saved.bytes_requested;
+    event->ret              = BPF_CORE_READ(args, ret);
+
+    bpf_ringbuf_submit(event, 0);
+out:
+    preempt_enable();
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_process_vm_readv")
+int tracepoint_syscalls_sys_enter_process_vm_readv(struct syscall_trace_enter *ctx)
+{
+    return process_vm_access_enter(ctx, EBPF_PROCESS_VM_ACCESS_READ);
+}
+
+SEC("tracepoint/syscalls/sys_exit_process_vm_readv")
+int tracepoint_syscalls_sys_exit_process_vm_readv(struct syscall_trace_exit *args)
+{
+    return process_vm_access_exit(args);
+}
+
+SEC("tracepoint/syscalls/sys_enter_process_vm_writev")
+int tracepoint_syscalls_sys_enter_process_vm_writev(struct syscall_trace_enter *ctx)
+{
+    return process_vm_access_enter(ctx, EBPF_PROCESS_VM_ACCESS_WRITE);
+}
+
+SEC("tracepoint/syscalls/sys_exit_process_vm_writev")
+int tracepoint_syscalls_sys_exit_process_vm_writev(struct syscall_trace_exit *args)
+{
+    return process_vm_access_exit(args);
+}
+
 SEC("tracepoint/syscalls/sys_enter_shmget")
 int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
 {

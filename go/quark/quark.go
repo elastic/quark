@@ -146,6 +146,16 @@ type Ptrace struct {
 	Data     uint64
 }
 
+type ProcessVmAccess struct {
+	TargetPid      uint32
+	Operation      uint32
+	LocalIovcnt    uint64
+	RemoteIovcnt   uint64
+	RemoteAddr     uint64
+	BytesRequested uint64
+	Ret            int64
+}
+
 type ModuleLoad struct {
 	Name       string
 	Version    string
@@ -184,15 +194,16 @@ type Tty struct {
 // Events is a bitmask of QUARK_EV_* and expresses what triggered this
 // event, Process is the context of the Event.
 type Event struct {
-	Events     uint64
-	Process    Process
-	Socket     *Socket
-	Packet     *Packet
-	File       *File
-	Ptrace     *Ptrace
-	ModuleLoad *ModuleLoad
-	Shm        *any // ShmGet, MemFd or ShmOpen
-	Tty        *Tty
+	Events          uint64
+	Process         Process
+	Socket          *Socket
+	Packet          *Packet
+	File            *File
+	Ptrace          *Ptrace
+	ModuleLoad      *ModuleLoad
+	Shm             *any // ShmGet, MemFd or ShmOpen
+	Tty             *Tty
+	ProcessVmAccess *ProcessVmAccess
 }
 
 // Queue holds the state of a quark instance.
@@ -216,6 +227,7 @@ const (
 	QQ_TTY           = int(C.QQ_TTY)
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
+	QQ_PROCESS_VM_ACCESS = int(C.QQ_PROCESS_VM_ACCESS)
 
 	// Event.events
 	QUARK_EV_FORK             = uint64(C.QUARK_EV_FORK)
@@ -230,6 +242,7 @@ const (
 	QUARK_EV_MODULE_LOAD      = uint64(C.QUARK_EV_MODULE_LOAD)
 	QUARK_EV_SHM              = uint64(C.QUARK_EV_SHM)
 	QUARK_EV_TTY              = uint64(C.QUARK_EV_TTY)
+	QUARK_EV_PROCESS_VM_ACCESS = uint64(C.QUARK_EV_PROCESS_VM_ACCESS)
 
 	// EntryLeaderType
 	QUARK_ELT_UNKNOWN   = int(C.QUARK_ELT_UNKNOWN)
@@ -366,6 +379,10 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	if event.Events&QUARK_EV_PTRACE != 0 {
 		ptrace := ptraceFromC(&cev.ptrace)
 		event.Ptrace = &ptrace
+	}
+	if event.Events&QUARK_EV_PROCESS_VM_ACCESS != 0 {
+		processVmAccess := processVmAccessFromC(&cev.process_vm_access)
+		event.ProcessVmAccess = &processVmAccess
 	}
 	if cev.module_load != nil {
 		ml := moduleLoadFromC(cev.module_load)
@@ -599,6 +616,20 @@ func ptraceFromC(cPtrace *C.struct_quark_ptrace) Ptrace {
 	ptrace.Data = uint64(cPtrace.data)
 
 	return ptrace
+}
+
+func processVmAccessFromC(cProcessVmAccess *C.struct_quark_process_vm_access) ProcessVmAccess {
+	var processVmAccess ProcessVmAccess
+
+	processVmAccess.TargetPid = uint32(cProcessVmAccess.target_pid)
+	processVmAccess.Operation = uint32(cProcessVmAccess.operation)
+	processVmAccess.LocalIovcnt = uint64(cProcessVmAccess.local_iovcnt)
+	processVmAccess.RemoteIovcnt = uint64(cProcessVmAccess.remote_iovcnt)
+	processVmAccess.RemoteAddr = uint64(cProcessVmAccess.remote_addr)
+	processVmAccess.BytesRequested = uint64(cProcessVmAccess.bytes_requested)
+	processVmAccess.Ret = int64(cProcessVmAccess.ret)
+
+	return processVmAccess
 }
 
 func moduleLoadFromC(cM *C.struct_quark_module_load) ModuleLoad {

@@ -31,6 +31,9 @@ runs until a SIGINT is received.
 .Pp
 The options are as follows:
 .Bl -tag -width Dtb
+.It Fl A
+Enable process_vm_readv(2) / process_vm_writev(2) cross-process memory access
+event tracing.
 .It Fl B
 Test bypass mode, where EBPF events are passed up directly without any
 processing.
