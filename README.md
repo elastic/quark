@@ -332,6 +332,18 @@ block for an unspecified amount of time.
 
 basic queue statistics.
 
+[quark\_time\_to\_wallclock(3)](https://elastic.github.io/quark/quark_time_to_wallclock.3.html)
+
+translate a time since boot to wallclock.
+
+[quark\_update\_boottime(3)](https://elastic.github.io/quark/quark_update_boottime.3.html)
+
+refetch the boottime epoch after a system clock change.
+
+[quark\_get\_boottime(3)](https://elastic.github.io/quark/quark_get_boottime.3.html)
+
+get the boottime epoch.
+
 [quark\_queue\_close(3)](https://elastic.github.io/quark/quark_queue_close.3.html)
 
 close a queue.
@@ -346,7 +358,7 @@ close a queue.
 
 # [SEE ALSO](#SEE_ALSO)
 
-[quark\_event\_dump(3)](https://elastic.github.io/quark/quark_event_dump.3.html), [quark\_process\_iter(3)](https://elastic.github.io/quark/quark_process_iter.3.html), [quark\_process\_lookup(3)](https://elastic.github.io/quark/quark_process_lookup.3.html), [quark\_queue\_block(3)](https://elastic.github.io/quark/quark_queue_block.3.html), [quark\_queue\_close(3)](https://elastic.github.io/quark/quark_queue_close.3.html), [quark\_queue\_get\_epollfd(3)](https://elastic.github.io/quark/quark_queue_get_epollfd.3.html), [quark\_queue\_get\_event(3)](https://elastic.github.io/quark/quark_queue_get_event.3.html), [quark\_queue\_get\_stats(3)](https://elastic.github.io/quark/quark_queue_get_stats.3.html), [quark\_queue\_open(3)](https://elastic.github.io/quark/quark_queue_open.3.html), [quark-btf(8)](https://elastic.github.io/quark/quark-btf.8.html), [quark-mon(8)](https://elastic.github.io/quark/quark-mon.8.html), [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html)
+[quark\_event\_dump(3)](https://elastic.github.io/quark/quark_event_dump.3.html), [quark\_get\_boottime(3)](https://elastic.github.io/quark/quark_get_boottime.3.html), [quark\_process\_iter(3)](https://elastic.github.io/quark/quark_process_iter.3.html), [quark\_process\_lookup(3)](https://elastic.github.io/quark/quark_process_lookup.3.html), [quark\_queue\_block(3)](https://elastic.github.io/quark/quark_queue_block.3.html), [quark\_queue\_close(3)](https://elastic.github.io/quark/quark_queue_close.3.html), [quark\_queue\_get\_epollfd(3)](https://elastic.github.io/quark/quark_queue_get_epollfd.3.html), [quark\_queue\_get\_event(3)](https://elastic.github.io/quark/quark_queue_get_event.3.html), [quark\_queue\_get\_stats(3)](https://elastic.github.io/quark/quark_queue_get_stats.3.html), [quark\_queue\_open(3)](https://elastic.github.io/quark/quark_queue_open.3.html), [quark\_time\_to\_wallclock(3)](https://elastic.github.io/quark/quark_time_to_wallclock.3.html), [quark\_update\_boottime(3)](https://elastic.github.io/quark/quark_update_boottime.3.html), [quark-btf(8)](https://elastic.github.io/quark/quark-btf.8.html), [quark-mon(8)](https://elastic.github.io/quark/quark-mon.8.html), [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html)
 
 # [LICENSE](#LICENSE)
 

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="mandoc.css" type="text/css" media="all"/>
+  <title>QUARK_UPDATE_BOOTTIME(3)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">QUARK_UPDATE_BOOTTIME(3)</td>
+    <td class="head-vol">Library Functions Manual</td>
+    <td class="head-rtitle">QUARK_UPDATE_BOOTTIME(3)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">quark_update_boottime</code> &#x2014;
+    <span class="Nd">refetch the boottime epoch used for wallclock
+    translation</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<p class="Pp"><code class="In">#include
+  &lt;<a class="In">quark.h</a>&gt;</code></p>
+<p class="Pp"><var class="Ft">int</var>
+  <br/>
+  <code class="Fn">quark_update_boottime</code>(<var class="Fa" style="white-space: nowrap;">void</var>);</p>
+</section>
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+All times handed out by quark are expressed in nanoseconds since boot:
+  <a class="permalink" href="#time"><i class="Em" id="time">time</i></a> of
+  <var class="Vt">quark_event</var>,
+  <a class="permalink" href="#proc_time_boot"><i class="Em" id="proc_time_boot">proc_time_boot</i></a>
+  and
+  <a class="permalink" href="#exit_time_event"><i class="Em" id="exit_time_event">exit_time_event</i></a>
+  of <var class="Vt">quark_process</var>, as well as
+  <a class="permalink" href="#established_time"><i class="Em" id="established_time">established_time</i></a>
+  and
+  <a class="permalink" href="#close_time"><i class="Em" id="close_time">close_time</i></a>
+  of <var class="Vt">quark_socket</var>. Translation to wallclock is done at the
+  last moment via
+  <a class="Xr" href="quark_time_to_wallclock.3.html">quark_time_to_wallclock(3)</a>,
+  which adds an internal boottime epoch: the wallclock time of boot, fetched
+  from the btime field of <span class="Pa">/proc/stat</span> when the first
+  queue is opened.
+<p class="Pp">btime is derived from the current system clock, so it moves if the
+    clock is stepped, as when NTP corrects a clock that was wrong at boot. Since
+    quark has no event loop, it can not detect a step on its own: the user
+    should call <code class="Nm">quark_update_boottime</code>, which refetches
+    btime, whenever the clock might have changed. As quark never bakes the epoch
+    into the times it stores or hands out, an update also corrects the
+    translation of times acquired before the step.</p>
+<p class="Pp">Two common ways of detecting a step:</p>
+<ul class="Bl-bullet">
+  <li>Poll the delta of <code class="Dv">CLOCK_REALTIME</code> minus
+      <code class="Dv">CLOCK_BOOTTIME</code>: slewing adjusts both clocks at the
+      same rate, so the delta only moves when the clock is stepped.</li>
+  <li>Wait on a <a class="Xr" href="timerfd_create.2.html">timerfd_create(2)</a>
+      descriptor of <code class="Dv">CLOCK_REALTIME</code> armed with
+      <code class="Dv">TFD_TIMER_CANCEL_ON_SET</code>, which becomes readable
+      when the clock is stepped.</li>
+</ul>
+<section class="Sh">
+<h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
+  VALUES</a></h1>
+<p class="Pp">Returns 0 on success, -1 if btime could not be refetched, in which
+    case the previous epoch is retained and <var class="Va">errno</var> is
+  set.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>,
+    <a class="Xr" href="quark_get_boottime.3.html">quark_get_boottime(3)</a>,
+    <a class="Xr" href="quark_process_iter.3.html">quark_process_iter(3)</a>,
+    <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>,
+    <a class="Xr" href="quark_queue_block.3.html">quark_queue_block(3)</a>,
+    <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
+    <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>,
+    <a class="Xr" href="quark_queue_get_epollfd.3.html">quark_queue_get_epollfd(3)</a>,
+    <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
+    <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
+    <a class="Xr" href="quark_time_to_wallclock.3.html">quark_time_to_wallclock(3)</a>,
+    <a class="Xr" href="quark.7.html">quark(7)</a>,
+    <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>,
+    <a class="Xr" href="quark-test.8.html">quark-test(8)</a></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="HISTORY"><a class="permalink" href="#HISTORY">HISTORY</a></h1>
+<p class="Pp"><code class="Nm">quark_update_boottime</code> appeared in quark
+    0.8, when all times handed out by quark switched from nanoseconds since the
+    Unix epoch to nanoseconds since boot.</p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">August 5, 2026</td>
+    <td class="foot-os">Linux</td>
+  </tr>
+</table>
+</body>
+</html>

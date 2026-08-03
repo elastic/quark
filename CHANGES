@@ -127,7 +127,8 @@ Changes from 0.6 to 0.7
 Changes from 0.7 to 0.8
 ~~~~~~~~~~~~~~~~~~~~~~~
   o BREAKING, SILENTLY: quark_process.proc_time_boot,
-    quark_process.exit_time_event and quark_event.time are now
+    quark_process.exit_time_event, quark_event.time,
+    quark_socket.established_time and quark_socket.close_time are now
     expressed in nanoseconds since boot instead of nanoseconds since
     the epoch. Existing code compiles unchanged but any user treating
     these fields as wallclock will emit timestamps that are off by
@@ -143,3 +144,5 @@ Changes from 0.7 to 0.8
     another backend themselves. QQ_ALL_BACKENDS was removed and
     breaks at compile time. quark_queue_default_attr() now selects
     only QQ_EBPF.
+  o The Go bindings (go/quark) learned UpdateBoottime(), Boottime()
+    and TimeToWallclock(), mirroring the C calls.

@@ -1,0 +1,48 @@
+.Dd $Mdocdate$
+.Dt QUARK_GET_BOOTTIME 3
+.Os
+.Sh NAME
+.Nm quark_get_boottime
+.Nd get the boottime epoch used for wallclock translation
+.Sh SYNOPSIS
+.In quark.h
+.Ft u64
+.Fn quark_get_boottime "void"
+.Sh DESCRIPTION
+.Nm
+returns the internal boottime epoch: the wallclock time of boot in
+nanoseconds since the Unix epoch, as fetched from the btime field of
+.Pa /proc/stat .
+btime has a resolution of one second.
+.Pp
+The epoch is fetched when the first queue is opened and refetched only
+by
+.Xr quark_update_boottime 3 .
+It is what
+.Xr quark_time_to_wallclock 3
+adds to a time since boot, exposed for users that prefer to do the
+translation themselves.
+.Sh RETURN VALUES
+The boottime epoch in nanoseconds since the Unix epoch, zero if a
+queue was never opened.
+.Sh SEE ALSO
+.Xr quark_event_dump 3 ,
+.Xr quark_process_iter 3 ,
+.Xr quark_process_lookup 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_default_attr 3 ,
+.Xr quark_queue_get_epollfd 3 ,
+.Xr quark_queue_get_event 3 ,
+.Xr quark_queue_get_stats 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark_time_to_wallclock 3 ,
+.Xr quark_update_boottime 3 ,
+.Xr quark 7 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8 ,
+.Xr quark-test 8
+.Sh HISTORY
+.Nm
+appeared in quark 0.8, when all times handed out by quark switched
+from nanoseconds since the Unix epoch to nanoseconds since boot.

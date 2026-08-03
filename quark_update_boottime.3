@@ -1,0 +1,87 @@
+.Dd $Mdocdate$
+.Dt QUARK_UPDATE_BOOTTIME 3
+.Os
+.Sh NAME
+.Nm quark_update_boottime
+.Nd refetch the boottime epoch used for wallclock translation
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_update_boottime "void"
+.Sh DESCRIPTION
+All times handed out by quark are expressed in nanoseconds since boot:
+.Em time
+of
+.Vt quark_event ,
+.Em proc_time_boot
+and
+.Em exit_time_event
+of
+.Vt quark_process ,
+as well as
+.Em established_time
+and
+.Em close_time
+of
+.Vt quark_socket .
+Translation to wallclock is done at the last moment via
+.Xr quark_time_to_wallclock 3 ,
+which adds an internal boottime epoch: the wallclock time of boot,
+fetched from the btime field of
+.Pa /proc/stat
+when the first queue is opened.
+.Pp
+btime is derived from the current system clock, so it moves if the
+clock is stepped, as when NTP corrects a clock that was wrong at boot.
+Since quark has no event loop, it can not detect a step on its own:
+the user should call
+.Nm ,
+which refetches btime, whenever the clock might have changed.
+As quark never bakes the epoch into the times it stores or hands out,
+an update also corrects the translation of times acquired before the
+step.
+.Pp
+Two common ways of detecting a step:
+.Bl -bullet
+.It
+Poll the delta of
+.Dv CLOCK_REALTIME
+minus
+.Dv CLOCK_BOOTTIME :
+slewing adjusts both clocks at the same rate, so the delta only moves
+when the clock is stepped.
+.It
+Wait on a
+.Xr timerfd_create 2
+descriptor of
+.Dv CLOCK_REALTIME
+armed with
+.Dv TFD_TIMER_CANCEL_ON_SET ,
+which becomes readable when the clock is stepped.
+.El
+.Sh RETURN VALUES
+Returns 0 on success, -1 if btime could not be refetched, in which
+case the previous epoch is retained and
+.Va errno
+is set.
+.Sh SEE ALSO
+.Xr quark_event_dump 3 ,
+.Xr quark_get_boottime 3 ,
+.Xr quark_process_iter 3 ,
+.Xr quark_process_lookup 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_default_attr 3 ,
+.Xr quark_queue_get_epollfd 3 ,
+.Xr quark_queue_get_event 3 ,
+.Xr quark_queue_get_stats 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark_time_to_wallclock 3 ,
+.Xr quark 7 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8 ,
+.Xr quark-test 8
+.Sh HISTORY
+.Nm
+appeared in quark 0.8, when all times handed out by quark switched
+from nanoseconds since the Unix epoch to nanoseconds since boot.
