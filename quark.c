@@ -4563,12 +4563,6 @@ quark_queue_pop_raw(struct quark_queue *qq)
 	struct raw_event	*min;
 	u64			 now;
 
-	/*
-	 * We populate before draining so we can have a fuller tree for
-	 * aggregation.
-	 */
-	(void)quark_queue_populate(qq);
-
 	now = now64(qq);
 	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
 	if (min == NULL || !raw_event_expired(qq, min, now)) {
@@ -5133,17 +5127,6 @@ quark_queue_get_event1(struct quark_queue *qq)
 	struct raw_event	*raw;
 	struct quark_event	*qev;
 
-	/* GC all processes and sockets that exited after some grace time */
-	gc_collect(qq);
-
-	/* Read from the kube pipe */
-	if (qq->qkube != NULL)
-		kube_read_events(qq);
-
-	/* Bypass skips everything */
-	if (qq->flags & QQ_BYPASS)
-		return (get_bypass_event(qq));
-
 	qev = NULL;
 	event_storage_clear(qq);
 
@@ -5207,6 +5190,23 @@ quark_queue_get_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
 	struct quark_rule	*rule;
+
+	/* GC all processes and sockets that exited after some grace time */
+	gc_collect(qq);
+
+	/* Read from the kube pipe */
+	if (qq->qkube != NULL)
+		kube_read_events(qq);
+
+	/* Bypass skips everything */
+	if (qq->flags & QQ_BYPASS)
+		return (get_bypass_event(qq));
+
+	/*
+	 * Populate once before draining so we can have a fuller tree for
+	 * aggregation without chasing a continuously replenished stream.
+	 */
+	(void)quark_queue_populate(qq);
 
 next:
 	qev = quark_queue_get_event1(qq);
