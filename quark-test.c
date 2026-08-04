@@ -6,6 +6,7 @@
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/select.h>
 #include <sys/shm.h>
 #include <sys/socket.h>
@@ -2202,6 +2203,155 @@ t_rule_path2(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * quark_queue_get_event() must not return NULL when a ruleset drops an
+ * event but an acceptable event is still buffered in the same batch.
+ */
+static int
+t_rule_drop_batch(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*pass_rule, *drop_rule;
+	uid_t				 uid;
+	char				*text_ruleset;
+
+	/*
+	 * Pass events from uid 66666, drop everything else. We fork one
+	 * child as uid 0, then one as uid 66666, and wait until both events
+	 * expired, so the first quark_queue_get_event() sees both in the
+	 * same batch: it must skip over the dropped uid 0 event and return
+	 * the uid 66666 event instead of NULL.
+	 */
+	uid = 66666;
+	if (asprintf(&text_ruleset,
+	    "pass on process.uid %d\n"
+	    "drop on any",
+	    uid) == -1)
+		err(1, "asprintf");
+	ruleset_from_string(&ruleset, text_ruleset);
+	free(text_ruleset);
+
+	assert(ruleset.n_rules == 2);
+	pass_rule = &ruleset.rules[0];
+	assert(pass_rule->action == QUARK_RA_PASS);
+	drop_rule = &ruleset.rules[1];
+	assert(drop_rule->action == QUARK_RA_DROP);
+
+	qa->ruleset = &ruleset;
+	qa->hold_time = 10;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Fork the uid 0 child first, so its event precedes uid 66666's */
+	fork_exec_nop();
+	(void)fork_exec_nop1(0, uid);
+
+	/* Wait until both events expired */
+	msleep(qa->hold_time * 10);
+
+	/* First call must be the uid 66666 event, NULL is a bug */
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->process != NULL);
+	assert(qev->process->flags & QUARK_F_PROC);
+	assert(qev->process->proc_euid == uid);
+	assert(pass_rule->hits == 1);
+	/* At least the uid 0 child's event was dropped to get here */
+	assert(drop_rule->hits >= 1);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/*
+ * When a ruleset drops all buffered events, quark_queue_get_event() must
+ * filter through the whole batch in one call and then return NULL, instead
+ * of chasing events that keep arriving mid-call.
+ */
+static int
+t_rule_drop_all(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*rule;
+	pid_t				 child;
+	int				 i, status;
+
+	ruleset_from_string(&ruleset, "drop on any");
+	assert(ruleset.n_rules == 1);
+	rule = &ruleset.rules[0];
+	assert(rule->action == QUARK_RA_DROP);
+
+	qa->ruleset = &ruleset;
+	qa->hold_time = 10;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Generate three process events, all of which will be dropped */
+	for (i = 0; i < 3; i++)
+		fork_exec_nop();
+
+	/*
+	 * Fork a child that keeps generating events, so the stream is
+	 * continuously replenished while we filter.
+	 */
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	else if (child == 0) {
+		/*
+		 * Die with our parent, otherwise we linger holding the test
+		 * harness' stderr pipe if an assert trips in the parent.
+		 */
+		if (prctl(PR_SET_PDEATHSIG, SIGKILL) == -1)
+			_exit(1);
+		if (getppid() == 1)
+			_exit(1);
+		for (;;) {
+			pid_t	spam;
+
+			if ((spam = fork()) == -1)
+				_exit(1);
+			else if (spam == 0)
+				_exit(0);
+			if (waitpid(spam, NULL, 0) == -1)
+				_exit(1);
+		}
+	}
+
+	/* Wait until our three events expired */
+	msleep(qa->hold_time * 10);
+
+	assert(rule->hits == 0);
+	/*
+	 * One call must drop the whole expired batch and return NULL, bounded
+	 * by a single populate, it may not chase the child's event stream.
+	 * The alarm catches a runaway loop.
+	 */
+	alarm(10);
+	qev = quark_queue_get_event(&qq);
+	alarm(0);
+	assert(qev == NULL);
+	/* All three of our events were dropped within a single call */
+	assert(rule->hits >= 3);
+
+	if (kill(child, SIGKILL) == -1)
+		err(1, "kill");
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
 static int
 t_rule_poison(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -2546,6 +2696,8 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_path),
 	T_EBPF(t_rule_exec_change),
 	T_EBPF(t_rule_path2),
+	T_EBPF(t_rule_drop_batch),
+	T_EBPF(t_rule_drop_all),
 	T_EBPF(t_rule_poison),
 	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),
