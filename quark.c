@@ -479,6 +479,7 @@ process_free(struct quark_process *qp)
 	free(qp->cwd);
 	free(qp->cmdline);
 	free(qp->cgroup);
+	free(qp->container_id);
 	free(qp->env);
 	free(qp);
 }
@@ -539,6 +540,10 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 			memcpy(qp->cmdline, parent->cmdline, parent->cmdline_len);
 			qp->cmdline_len = parent->cmdline_len;
 		}
+	}
+	if (parent->container_id != NULL) {
+		free(qp->container_id);
+		qp->container_id = strdup(parent->container_id);
 	}
 }
 
@@ -1613,20 +1618,32 @@ parse_container_cgroup(const char *cgroup, char *container_id, size_t container_
 }
 
 static void
+process_container_id(struct quark_process *qp)
+{
+	char	 cid[NAME_MAX];
+	char	*container_id;
+
+	container_id = NULL;
+	if (qp->cgroup != NULL &&
+	    parse_container_cgroup(qp->cgroup, cid, sizeof(cid)) == 0)
+		container_id = strdup(cid);
+
+	free(qp->container_id);
+	qp->container_id = container_id;
+}
+
+static void
 link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 {
 	struct quark_container	*container;
-	char			 cid[NAME_MAX];
 
 	if (qp == NULL)
 		return;
 	if (qp->container != NULL)
 		return;
-	if (qp->cgroup == NULL)
+	if (qp->container_id == NULL)
 		return;
-	if (parse_container_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
-		return;
-	if ((container = container_lookup(qq, cid)) == NULL)
+	if ((container = container_lookup(qq, qp->container_id)) == NULL)
 		return;
 
 	qp->container = container;
@@ -2469,7 +2486,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 			free(qp->cgroup);
 			qp->cgroup = raw_task->cgroup;
 			raw_task->cgroup = NULL;
-
+			process_container_id(qp);
 		}
 		if (raw_task->env != NULL) {
 			free(qp->env);
@@ -2997,7 +3014,8 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 	if (qreadlinkat(dfd, "cwd", path, sizeof(path)) > 0)
 		qp->cwd = strdup(path);
 	/* cgroup */
-	sproc_cgroup(qp, dfd);
+	if (sproc_cgroup(qp, dfd) == 0)
+		process_container_id(qp);
 	/* env */
 	sproc_env(qq, qp, dfd);
 	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */

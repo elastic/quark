@@ -96,14 +96,15 @@ type Exit struct {
 
 // Process represents a single process.
 type Process struct {
-	Pid     uint32 // Always present
-	Proc    Proc   // Only meaningful if Proc.Valid (QUARK_F_PROC)
-	Exit    Exit   // Only meaningful if Exit.Valid (QUARK_F_EXIT)
-	Comm    string
-	Exe     string
-	Cmdline []string
-	Cwd     string
-	Cgroup  string
+	Pid         uint32 // Always present
+	Proc        Proc   // Only meaningful if Proc.Valid (QUARK_F_PROC)
+	Exit        Exit   // Only meaningful if Exit.Valid (QUARK_F_EXIT)
+	Comm        string
+	Exe         string
+	Cmdline     []string
+	Cwd         string
+	Cgroup      string
+	ContainerID string // Container runtime and ID, for example "docker://<id>"
 }
 
 // Socket represents a connection between two endpoints
@@ -522,6 +523,9 @@ func processFromC(cProcess *C.struct_quark_process) Process {
 	}
 	if cProcess.cgroup != nil {
 		process.Cgroup = C.GoString(cProcess.cgroup)
+	}
+	if cProcess.container_id != nil {
+		process.ContainerID = C.GoString(cProcess.container_id)
 	}
 
 	return process
