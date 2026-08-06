@@ -114,8 +114,27 @@ for repo in "${REPOS[@]}"; do
 			tbl && $NF==pk {print $1;exit}' "$TMPDIR/Release") || true
 	fi
 
-	curl "${CURL_OPTS[@]}" "$BASE_URL/$PKG_PATH" -o "$TMPDIR/Packages.gz" ||
-		{ log "No Packages.gz for $repo (arch not built?)"; continue; }
+	# Prefer the content-addressed by-hash path: the archive is a
+	# pool of mirrors and dists/ files change several times a day,
+	# so fetching Packages.gz by name can return a file that does
+	# not match the Release we just read (the two requests may hit
+	# different backends). The by-hash object for our Release is
+	# immutable and retained across a few generations, so it can't
+	# tear. Fall back to the named path if by-hash is unavailable.
+	PKG_FETCHED=0
+	if [[ -n $EXPECTED_HASH ]] &&
+	    grep -q '^Acquire-By-Hash: yes' "$TMPDIR/Release"; then
+		BYHASH_URL="$BASE_URL/dists/$repo/main/binary-$ARCH/by-hash/SHA256/$EXPECTED_HASH"
+		log "Fetching Packages.gz by hash"
+		curl "${CURL_OPTS[@]}" "$BYHASH_URL" -o "$TMPDIR/Packages.gz" &&
+			PKG_FETCHED=1 ||
+			log "by-hash fetch failed; falling back to named path"
+	fi
+
+	if [[ $PKG_FETCHED -eq 0 ]]; then
+		curl "${CURL_OPTS[@]}" "$BASE_URL/$PKG_PATH" -o "$TMPDIR/Packages.gz" ||
+			{ log "No Packages.gz for $repo (arch not built?)"; continue; }
+	fi
 
 	if [[ -n $EXPECTED_HASH ]]; then
 		[[ $(sha256sum "$TMPDIR/Packages.gz" | awk '{print $1}') == "$EXPECTED_HASH" ]] ||
