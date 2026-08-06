@@ -25,7 +25,7 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-mon</code></td>
-    <td>[<code class="Fl">-BbDEeFGgHhkMNSsTtv</code>]
+    <td>[<code class="Fl">-BbDEeFGgHhkMNnSsTtv</code>]
       [<code class="Fl">-C</code> <var class="Ar">filename</var>]
       [<code class="Fl">-K</code> <var class="Ar">kubeconfig</var>]
       [<code class="Fl">-l</code> <var class="Ar">maxlength</var>]
@@ -132,6 +132,8 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
   <dd>Run in a simple benchmark form that only counts and display stats.</dd>
   <dt id="N"><a class="permalink" href="#N"><code class="Fl">-N</code></a></dt>
   <dd>Enable DNS events (experimental).</dd>
+  <dt id="n"><a class="permalink" href="#n"><code class="Fl">-n</code></a></dt>
+  <dd>Attempt NOVA as the backend.</dd>
   <dt id="P"><a class="permalink" href="#P"><code class="Fl">-P</code></a>
     <var class="Ar">ppid</var></dt>
   <dd>Display only events where parent pid is <var class="Ar">ppid</var>.</dd>
@@ -158,10 +160,10 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
 <h1 class="Sh" id="BACKEND_SELECTION"><a class="permalink" href="#BACKEND_SELECTION">BACKEND
   SELECTION</a></h1>
 <p class="Pp">If no backend option is specified,
-    <code class="Nm">quark-mon</code> will attempt EBPF, and then kprobe if EBPF
-    failed. If only one of <code class="Fl">-b</code> or
-    <code class="Fl">-k</code> is passed, then <code class="Nm">quark-mon</code>
-    will be restricted to that option only.</p>
+    <code class="Nm">quark-mon</code> uses EBPF. Exactly one of
+    <code class="Fl">-b</code>, <code class="Fl">-k</code> or
+    <code class="Fl">-n</code> may be passed, there is no fallback between
+    backends.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="EXIT_STATUS"><a class="permalink" href="#EXIT_STATUS">EXIT
@@ -220,7 +222,7 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">January 21, 2026</td>
+    <td class="foot-date">August 6, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

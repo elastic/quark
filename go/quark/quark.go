@@ -216,7 +216,6 @@ const (
 	QQ_TTY           = int(C.QQ_TTY)
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
-	QQ_ALL_BACKENDS  = int(C.QQ_ALL_BACKENDS)
 
 	// Event.events
 	QUARK_EV_FORK             = uint64(C.QUARK_EV_FORK)

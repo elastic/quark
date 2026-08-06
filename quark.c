@@ -4109,7 +4109,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 {
 	bzero(qa, sizeof(*qa));
 
-	qa->flags = QQ_ALL_BACKENDS;
+	qa->flags = QQ_EBPF;
 	qa->max_length = 10000;
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
@@ -4124,6 +4124,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	struct quark_queue_attr	 qa_default;
 	struct timespec		 unused;
 	char			*ver;
+	int			 backends;
 
 	if ((ver = getenv("QUARK_VERBOSE")) != NULL) {
 		const char *errstr;
@@ -4169,9 +4170,14 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (qa->flags & QQ_MONOTONIC)
 		return (errno = EINVAL, -1);
 
-	/* XXX hardcode QQ_NOVA for now XXX */
-	if ((qa->flags & (QQ_ALL_BACKENDS | QQ_NOVA)) == 0 ||
-	    qa->max_length <= 0 ||
+	/* Exactly one backend must be selected */
+	backends = qa->flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA);
+	if (backends != QQ_EBPF &&
+	    backends != QQ_KPROBE &&
+	    backends != QQ_NOVA)
+		return (errno = EINVAL, -1);
+
+	if (qa->max_length <= 0 ||
 	    qa->cache_grace_time < 0 ||
 	    qa->hold_time < 10)
 		return (errno = EINVAL, -1);
@@ -4278,13 +4284,24 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	}
 
 	/*
-	 * Open the rings
+	 * Open the ring of the selected backend, there is no fallback:
+	 * users that want one must retry with another backend themselves.
 	 */
-	if (nova_queue_open(qq) != 0 &&
-	    bpf_queue_open(qq) != 0 &&
-	    kprobe_queue_open(qq) != 0) {
-		qwarnx("all backends failed");
-		goto fail;
+	if (backends == QQ_EBPF) {
+		if (bpf_queue_open(qq) != 0) {
+			qwarnx("can't open the ebpf backend");
+			goto fail;
+		}
+	} else if (backends == QQ_KPROBE) {
+		if (kprobe_queue_open(qq) != 0) {
+			qwarnx("can't open the kprobe backend");
+			goto fail;
+		}
+	} else if (backends == QQ_NOVA) {
+		if (nova_queue_open(qq) != 0) {
+			qwarnx("can't open the nova backend");
+			goto fail;
+		}
 	}
 
 	if ((qq->flags & QQ_BYPASS) == 0) {
