@@ -30,9 +30,14 @@ The
 function does the following:
 .Bl -bullet
 .It
-Attempts to use the best backend available unless otherwise especified.
+Attempts to use the selected backend.
 This includes loading the EBPF programs for EBPF or the probes for KPROBES.
-Only one backend is used and it defaults to EBPF and falls back to KPROBE.
+Exactly one backend must be selected, anything else fails with
+.Er EINVAL .
+There is no fallback: users that want one must retry with another
+backend themselves if
+.Nm
+fails.
 .It
 On its first call it will also initialize global host state, like BTF offsets
 and HZ.
@@ -83,12 +88,10 @@ struct quark_queue_attr {
 Bitmask of:
 .Bl -tag -width QQ_THREAD_EVENTS
 .It Dv QQ_EBPF
-Enable the EBPF backend.
-EBPF is attempted first and falls back to KPROBE if both were specified.
+Use the EBPF backend, this is the default of
+.Xr quark_queue_default_attr 3 .
 .It Dv QQ_KPROBE
-Enable the KPROBE backend, see above.
-.It Dv QQ_ALL_BACKENDS
-Shorthand for (QQ_EBPF | QQ_KPROBE).
+Use the KPROBE backend.
 .It Dv QQ_MONOTONIC
 Informational, not configuration: specifying it fails with
 .Er EINVAL .

@@ -898,7 +898,6 @@ struct quark_queue_attr {
  * CLOCK_MONOTONIC, else CLOCK_BOOTTIME.
  */
 #define QQ_MONOTONIC		(1 << 15)
-#define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)	/* QQ_NOVA excluded for now */
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */

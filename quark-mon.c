@@ -168,7 +168,7 @@ main(int argc, char *argv[])
 	void 				(*print_event)(struct quark_queue *, const struct quark_event *);
 
 	quark_queue_default_attr(&qa);
-	qa.flags &= ~QQ_ALL_BACKENDS;
+	qa.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	maxnodes = -1;
 	do_priv_drop = 0;
 	filter_ppid = 0;
@@ -341,8 +341,8 @@ main(int argc, char *argv[])
 		qa.flags |= QQ_EBPF;
 	}
 
-	if ((qa.flags & QQ_ALL_BACKENDS) == 0)
-		qa.flags |= QQ_ALL_BACKENDS;
+	if ((qa.flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA)) == 0)
+		qa.flags |= QQ_EBPF;
 
 	bzero(&sigact, sizeof(sigact));
 	sigact.sa_flags = SA_RESTART | SA_RESETHAND;

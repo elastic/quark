@@ -138,7 +138,7 @@ backend_of_attr(struct quark_queue_attr *qa)
 
 	if (qa == NULL)
 		return (-1);
-	else if (((qa->flags & QQ_ALL_BACKENDS) == QQ_ALL_BACKENDS))
+	else if (((qa->flags & (QQ_EBPF | QQ_KPROBE)) == (QQ_EBPF | QQ_KPROBE)))
 		errx(1, "backend must be explicit");
 	else if (qa->flags & QQ_EBPF)
 		be = QQ_EBPF;
@@ -1874,6 +1874,39 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * quark_queue_open() must refuse anything but exactly one backend
+ * with EINVAL, and the default attr must select only EBPF.
+ */
+static int
+t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
+{
+	struct quark_queue	 qq;
+	struct quark_queue_attr	 attr;
+	size_t			 i;
+	int			 bad_backends[] = {
+		0,
+		QQ_EBPF | QQ_KPROBE,
+		QQ_EBPF | QQ_NOVA,
+		QQ_KPROBE | QQ_NOVA,
+		QQ_EBPF | QQ_KPROBE | QQ_NOVA,
+	};
+
+	quark_queue_default_attr(&attr);
+	assert((attr.flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA)) == QQ_EBPF);
+
+	for (i = 0; i < nitems(bad_backends); i++) {
+		quark_queue_default_attr(&attr);
+		attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
+		attr.flags |= bad_backends[i];
+		errno = 0;
+		assert(quark_queue_open(&qq, &attr) == -1);
+		assert(errno == EINVAL);
+	}
+
+	return (0);
+}
+
 static int
 t_hanson(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -2690,6 +2723,7 @@ struct test all_tests[] = {
 	T_EBPF(t_set_agg_matrix),
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
+	T(t_backend_flags),
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),
@@ -3000,19 +3034,19 @@ run_tests(int argc, char *argv[])
 	struct progress		 progress;
 
 	quark_queue_default_attr(&bpf_attr);
-	bpf_attr.flags &= ~QQ_ALL_BACKENDS;
+	bpf_attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	bpf_attr.flags |= QQ_EBPF | QQ_ENTRY_LEADER;
 	bpf_attr.hold_time = 100;
 	bpf_attr.max_env = 32768;
 
 	quark_queue_default_attr(&kprobe_attr);
-	kprobe_attr.flags &= ~QQ_ALL_BACKENDS;
+	kprobe_attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	kprobe_attr.flags |= QQ_KPROBE | QQ_ENTRY_LEADER;
 	kprobe_attr.hold_time = 100;
 	kprobe_attr.max_env = 32768;
 
 	quark_queue_default_attr(&nova_attr);
-	nova_attr.flags &= ~QQ_ALL_BACKENDS;
+	nova_attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	nova_attr.flags |= QQ_NOVA | QQ_ENTRY_LEADER;
 	nova_attr.hold_time = 100;
 	nova_attr.max_env = 32768;

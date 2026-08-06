@@ -138,14 +138,13 @@ Print version and exit.
 .Sh BACKEND SELECTION
 If no backend option is specified,
 .Nm
-will attempt EBPF, and then kprobe if EBPF failed.
-If only one of
-.Fl b
-or
+uses EBPF.
+Exactly one of
+.Fl b ,
 .Fl k
-is passed, then
-.Nm
-will be restricted to that option only.
+or
+.Fl n
+may be passed, there is no fallback between backends.
 .Sh EXIT STATUS
 .Nm
 exits with 0 in if a SIGINT was sent, or 1 in case of error.

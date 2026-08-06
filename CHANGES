@@ -136,3 +136,10 @@ Changes from 0.7 to 0.8
     quark_update_boottime() were also added, the latter refetches
     boottime in case the host clock changed. The JSON ECS output is
     unaffected and still emits wallclock dates.
+  o BREAKING: quark_queue_open() now requires exactly one backend
+    flag (QQ_EBPF, QQ_KPROBE or QQ_NOVA) and fails with EINVAL
+    otherwise. The fallback that tried ebpf and fell back to kprobe
+    is gone: users that want a fallback must reopen the queue with
+    another backend themselves. QQ_ALL_BACKENDS was removed and
+    breaks at compile time. quark_queue_default_attr() now selects
+    only QQ_EBPF.
