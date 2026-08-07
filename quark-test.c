@@ -1386,7 +1386,9 @@ t_process_vm_access(const struct test *t, struct quark_queue_attr *qa)
 	int					 to_child[2], to_parent[2];
 	pid_t					 child;
 	u64					 remote_addr;
-	char					 wbuf[8] = "quarktst";
+	char					 wbuf[8] = {
+		'q', 'u', 'a', 'r', 'k', 't', 's', 't'
+	};
 	char					 rbuf[8];
 	struct iovec				 local, remote;
 	ssize_t					 n;
