@@ -886,8 +886,9 @@ cgroup2_umount_tmp(char **path)
 static int
 cgroup2_open_fd(char **umount_path)
 {
-	char	*save_line, *file_buf;
-	char	*line, *path, path_buf[MAXPATHLEN], fs[256];
+	char	*save_line, *save_field, *file_buf;
+	char	*line, *path, *mount_path, *fs;
+	char	 template[] = "/tmp/quark_cgroup2_mount.XXXXXX";
 	int	 fd, did_mount, did_mkdir;
 
 	if (umount_path == NULL) {
@@ -911,14 +912,21 @@ cgroup2_open_fd(char **umount_path)
 	for (line = strtok_r(file_buf, "\n", &save_line);
 	     line != NULL;
 	     line = strtok_r(NULL, "\n", &save_line)) {
-		if (sscanf(line, "%*s %s %s", path_buf, fs) != 2)
+		/*
+		 * Fields are device, mount point, filesystem type; parse them
+		 * in place instead of copying into fixed-size stack buffers.
+		 */
+		if (strtok_r(line, " \t", &save_field) == NULL)
+			continue;
+		if ((mount_path = strtok_r(NULL, " \t", &save_field)) == NULL)
+			continue;
+		if ((fs = strtok_r(NULL, " \t", &save_field)) == NULL)
 			continue;
 		if (strcmp(fs, "cgroup2"))
 			continue;
-		path = path_buf;
+		path = mount_path;
 		break;
 	}
-	free(file_buf);
 
 	/*
 	 * No cgroup2 mount found, try to mount it ourselves at
@@ -927,8 +935,6 @@ cgroup2_open_fd(char **umount_path)
 	 * it can umount after the probes are loaded.
 	 */
 	if (path == NULL) {
-		char template[] = "/tmp/quark_cgroup2_mount.XXXXXX";
-
 		if ((path = mkdtemp(template)) == NULL) {
 			qwarn("mkdtemp %s", template);
 			goto fail;
@@ -958,6 +964,8 @@ cgroup2_open_fd(char **umount_path)
 		goto fail;
 	}
 
+	free(file_buf);
+
 	return (fd);
 
 fail:
@@ -974,6 +982,8 @@ fail:
 	if (did_mkdir && rmdir(path) == -1)
 		qwarn("can't unlink temporary cgroup2 at %s, "
 		    "directory will dangle!", path);
+	/* path may point into file_buf, only free after path is done */
+	free(file_buf);
 
 	return (-1);
 }
