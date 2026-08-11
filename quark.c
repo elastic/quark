@@ -4501,7 +4501,16 @@ quark_can_aggregate_file(struct quark_queue *qq,
 	if (pf->inode != cf->inode)
 		return (0);
 	/*
-	 * Maybe we should escape uid/gid/mode, makes it possible to hide stuff
+	 * raw_event_file() keeps the mode from the last aggregated event.  Keep
+	 * executable state transitions separate so file.exec_change cannot miss
+	 * a transient executable mode.
+	 */
+	if (!!(pf->mode & (S_IXUSR | S_IXGRP | S_IXOTH)) !=
+	    !!(cf->mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
+		return (0);
+	/*
+	 * Maybe we should escape uid/gid and other mode changes, which can still
+	 * make it possible to hide stuff.
 	 */
 	if (pf->op_mask & (QUARK_FILE_OP_REMOVE|QUARK_FILE_OP_MOVE))
 		return (0);

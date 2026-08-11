@@ -2069,12 +2069,15 @@ t_rule_exec_change(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_ruleset		 ruleset;
 	struct quark_rule		*pass_rule, *drop_rule;
 	char				 execpath[] = "/tmp/quark-test-exec.XXXXXX";
+	char				 transientpath[] = "/tmp/quark-test-exectransient.XXXXXX";
 	char				 modpath[] = "/tmp/quark-test-execmod.XXXXXX";
 	char				 plainpath[] = "/tmp/quark-test-plain.XXXXXX";
-	int				 execfd, modfd, plainfd;
+	int				 execfd, transientfd, modfd, plainfd;
 	char				*text_ruleset;
 
 	if ((execfd = mkstemp(execpath)) == -1)
+		err(1, "mkstemp");
+	if ((transientfd = mkstemp(transientpath)) == -1)
 		err(1, "mkstemp");
 	if ((modfd = mkstemp(modpath)) == -1)
 		err(1, "mkstemp");
@@ -2128,6 +2131,15 @@ t_rule_exec_change(const struct test *t, struct quark_queue_attr *qa)
 	close(execfd);
 	if (unlink(execpath) == -1)
 		err(1, "unlink");
+	/* A transient executable mode must also pass after chmod removes it */
+	assert(write(transientfd, "1", 1) == 1);
+	if (chmod(transientpath, 0755) == -1)
+		err(1, "chmod");
+	if (chmod(transientpath, 0644) == -1)
+		err(1, "chmod");
+	close(transientfd);
+	if (unlink(transientpath) == -1)
+		err(1, "unlink");
 
 	qev = drain_for_pid(&qq, getpid());
 	assert(qev->events & QUARK_EV_FILE);
@@ -2136,6 +2148,15 @@ t_rule_exec_change(const struct test *t, struct quark_queue_attr *qa)
 	assert(qev->file->mode & (S_IXUSR | S_IXGRP | S_IXOTH));
 	/* Make sure it hits the rule once */
 	assert(pass_rule->hits == 1);
+
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_FILE);
+	assert(!strcmp(qev->file->path, transientpath));
+	assert(qev->file->op_mask & QUARK_FILE_OP_MODIFY);
+	assert(qev->file->change_mask & QUARK_FILE_CH_PERMS);
+	assert(qev->file->mode & (S_IXUSR | S_IXGRP | S_IXOTH));
+	/* The transient executable change must hit the rule too */
+	assert(pass_rule->hits == 2);
 	/* evals must be bigger than hits, since it must have dropped others */
 	assert(pass_rule->evals > pass_rule->hits);
 
