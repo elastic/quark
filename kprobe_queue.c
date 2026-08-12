@@ -11,8 +11,8 @@
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
 
+#include <assert.h>
 #include <ctype.h>
-#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -27,6 +27,13 @@
 #include "quark.h"
 
 #define PERF_MMAP_PAGES		16		/* Must be power of 2 */
+/*
+ * A perf record caps at UINT16_MAX (perf_event_header.size). The ring must be
+ * able to hold at least one such record, or perf_mmap_read() could chase a
+ * corrupt data_head past the end of the ring. getpagesize() is at least 4096.
+ */
+static_assert(PERF_MMAP_PAGES * 4096 >= UINT16_MAX + 1,
+    "perf ring can't hold the largest possible perf record");
 
 struct perf_sample_id {
 	u32	pid;
@@ -111,7 +118,6 @@ struct perf_mmap {
 	size_t				 data_mask;
 	u8				*data_start;
 	u64				 data_tmp_tail;
-	u8				 wrapped_event_buf[4096] __aligned(8);
 };
 
 struct perf_group_leader {
@@ -275,6 +281,8 @@ struct kprobe_queue {
 	int				 qid;
 	/* matches each sample event to a kind like EXEC_SAMPLE, FOO_SAMPLE */
 	struct sample_attr		 id_to_sample_attr[MAX_SAMPLE_ATTR];
+	/* linearizes wrapped perf records, see kprobe_queue_open() */
+	u8				*wrapped_event_buf;
 };
 
 static int	kprobe_queue_populate(struct quark_queue *);
@@ -651,11 +659,12 @@ perf_mmap_update_tail(struct perf_event_mmap_page *metadata, uint64_t tail)
 }
 
 static struct perf_event *
-perf_mmap_read(struct perf_mmap *mm)
+perf_mmap_read(struct perf_mmap *mm, u8 *wrapped_event_buf)
 {
 	struct perf_event_header	*evh;
 	uint64_t			 data_head;
 	int				 diff;
+	u16				 evsize;
 	ssize_t				 leftcont;	/* contiguous size left */
 
 	data_head = perf_mmap_load_head(mm->metadata);
@@ -663,30 +672,42 @@ perf_mmap_read(struct perf_mmap *mm)
 	evh = (struct perf_event_header *)
 	    (mm->data_start + (mm->data_tmp_tail & mm->data_mask));
 
-	/* Do we have at least one complete event */
-	if (diff < (int)sizeof(*evh) || diff < evh->size)
+	/* Do we have at least one complete header */
+	if (diff < (int)sizeof(*evh))
 		return (NULL);
-	/* Guard that we will always be able to fit a wrapped event */
-	if (unlikely(evh->size > sizeof(mm->wrapped_event_buf)))
-		errx(1, "getting an event larger than wrapped buf");
+	/*
+	 * Snapshot the size, the ring is a shared mapping and the checks below
+	 * are useless against a value that changes under our feet.
+	 */
+	evsize = evh->size;
+	/*
+	 * A record smaller than its header is corruption, consuming it would
+	 * spin on the same offset forever, treat the ring as empty and let it
+	 * stall instead. Nothing here can overflow the copies below: evsize
+	 * caps at UINT16_MAX, wrapped_event_buf holds UINT16_MAX + 1 (see
+	 * kprobe_queue_open()) and the ring is at least as big (see the static
+	 * assert at PERF_MMAP_PAGES), even against a corrupt data_head.
+	 */
+	if (evsize < sizeof(*evh) || diff < evsize)
+		return (NULL);
 	/* How much contiguous space there is left */
 	leftcont = mm->data_size - (mm->data_tmp_tail & mm->data_mask);
 	/* Everything fits without wrapping */
-	if (likely(evh->size <= leftcont)) {
-		mm->data_tmp_tail += evh->size;
+	if (likely(evsize <= leftcont)) {
+		mm->data_tmp_tail += evsize;
 		return ((struct perf_event *)evh);
 	}
 	/*
 	 * Slow path, we have to copy the event out in a linear buffer. Start
 	 * from the remaining end
 	 */
-	memcpy(mm->wrapped_event_buf, evh, leftcont);
+	memcpy(wrapped_event_buf, evh, leftcont);
 	/* Copy the wrapped portion from the beginning */
-	memcpy(mm->wrapped_event_buf + leftcont, mm->data_start, evh->size - leftcont);
+	memcpy(wrapped_event_buf + leftcont, mm->data_start, evsize - leftcont);
 	/* Record where our future tail will be on consume */
-	mm->data_tmp_tail += evh->size;
+	mm->data_tmp_tail += evsize;
 
-	return ((struct perf_event *)mm->wrapped_event_buf);
+	return ((struct perf_event *)wrapped_event_buf);
 }
 
 static inline void
@@ -1384,6 +1405,18 @@ kprobe_queue_open(struct quark_queue *qq)
 	kqq->qid = qid;
 	qq->queue_be = kqq;
 
+	/*
+	 * Scratch space for perf_mmap_read() to linearize a record that wraps
+	 * the ring, shared by all rings since records are consumed one at a
+	 * time. A record caps at UINT16_MAX (perf_event_header.size is u16),
+	 * so any record fits.
+	 */
+	kqq->wrapped_event_buf = malloc(UINT16_MAX + 1);
+	if (kqq->wrapped_event_buf == NULL) {
+		qwarn("malloc");
+		goto fail;
+	}
+
 	for (i = 0; i < get_nprocs_conf(); i++) {
 		errno = 0;
 		pgl = perf_open_group_leader(kqq, i);
@@ -1468,7 +1501,8 @@ kprobe_queue_populate(struct quark_queue *qq)
 	while (qq->length < qq->max_length) {
 		empty_rings = 0;
 		TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry) {
-			ev = perf_mmap_read(&pgl->mmap);
+			ev = perf_mmap_read(&pgl->mmap,
+			    kqq->wrapped_event_buf);
 			if (ev == NULL) {
 				empty_rings++;
 				continue;
@@ -1539,6 +1573,7 @@ kprobe_queue_close(struct quark_queue *qq)
 	}
 
 	kprobe_uninstall_all(kqq->qid);
+	free(kqq->wrapped_event_buf);
 	free(kqq);
 	kqq = NULL;
 	qq->queue_be = NULL;
