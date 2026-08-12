@@ -1053,54 +1053,45 @@ t_fork_exec_exit_rel(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
- * Exec through a path just short of PATH_MAX. On the kprobe backend the
- * sched_process_exec tracepoint records the full path, making the perf record
- * larger than 4096 bytes: such records used to hit a fatal errx() in
- * perf_mmap_read() (the old wrapped_event_buf[4096] guard). Checking exe below
- * also proves a record that wraps the ring is linearized intact.
+ * Build a directory chain under base and place a copy of true at the leaf,
+ * such that strlen of the full path is exactly target. Path components are
+ * NAME_MAX 'q's, the leaf consumes whatever is left.
  */
-static int
-t_exec_long_path(const struct test *t, struct quark_queue_attr *qa)
+static void
+build_long_exec_path(char *path, size_t pathsz, const char *base, size_t target)
 {
-	struct quark_queue		 qq;
-	const struct quark_event	*qev;
-	const struct quark_process	*qp;
-	pid_t				 child;
-	int				 fd, status;
-	size_t				 left, size;
-	ssize_t				 n;
-	void				*bin;
-	char				 path[PATH_MAX];
-	char				 comp[NAME_MAX + 1];
+	size_t	 left, size;
+	ssize_t	 n;
+	int	 fd;
+	void	*bin;
+	char	 comp[NAME_MAX + 1];
 
-	if (quark_queue_open(&qq, qa) != 0)
-		err(1, "quark_queue_open");
-
+	assert(target < pathsz);
 	if (mkdir("/tmp", 0755) == -1 && errno != EEXIST)
 		err(1, "mkdir /tmp");
-	strlcpy(path, "/tmp/quark-test-long-path", sizeof(path));
+	strlcpy(path, base, pathsz);
 	if (mkdir(path, 0755) == -1 && errno != EEXIST)
 		err(1, "mkdir");
 	/*
 	 * Intermediate directories of NAME_MAX 'q's until only the last
 	 * component is missing
 	 */
-	while (PATH_MAX - 1 - strlen(path) > 1 + NAME_MAX) {
+	while (target - strlen(path) > 1 + NAME_MAX) {
 		memset(comp, 'q', NAME_MAX);
 		comp[NAME_MAX] = 0;
-		strlcat(path, "/", sizeof(path));
-		strlcat(path, comp, sizeof(path));
+		strlcat(path, "/", pathsz);
+		strlcat(path, comp, pathsz);
 		if (mkdir(path, 0755) == -1 && errno != EEXIST)
 			err(1, "mkdir");
 	}
 	/* Last component is the binary itself, consume what's left */
-	left = PATH_MAX - 1 - strlen(path);
+	left = target - strlen(path);
 	assert(left >= 2 && left <= 1 + NAME_MAX);
 	memset(comp, 'q', left - 1);
 	comp[left - 1] = 0;
-	strlcat(path, "/", sizeof(path));
-	strlcat(path, comp, sizeof(path));
-	assert(strlen(path) == PATH_MAX - 1);
+	strlcat(path, "/", pathsz);
+	strlcat(path, comp, pathsz);
+	assert(strlen(path) == target);
 
 	bin = load_file_path_nostat("/usr/bin/true", &size);
 	if (bin == NULL)
@@ -1113,6 +1104,13 @@ t_exec_long_path(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "qwrite");
 	close(fd);
 	free(bin);
+}
+
+static pid_t
+fork_exec_path(const char *path)
+{
+	pid_t	child;
+	int	status;
 
 	if ((child = fork()) == -1)
 		err(1, "fork");
@@ -1127,6 +1125,37 @@ t_exec_long_path(const struct test *t, struct quark_queue_attr *qa)
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		errx(1, "child didn't exit cleanly");
 
+	return (child);
+}
+
+/*
+ * Exec through long paths on the kprobe backend, where the
+ * sched_process_exec tracepoint records the full path. A path just short of
+ * PATH_MAX makes the perf record larger than 4096 bytes: such records used to
+ * hit a fatal errx() in perf_mmap_read() (the old wrapped_event_buf[4096]
+ * guard). Checking exe also proves a record that wraps the ring is linearized
+ * intact. Kernels older than 5.16 cap a tracepoint record at
+ * PERF_MAX_TRACE_SIZE(2048) and drop anything bigger, so the oversized
+ * record can't be delivered (nor could it trigger the old errx); a mid-sized
+ * path below the cap is still checked strictly everywhere.
+ */
+#define LONG_PATH_BASE	"/tmp/quark-test-long-path"
+
+static int
+t_exec_long_path(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+	char				 path[PATH_MAX];
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Fits PERF_MAX_TRACE_SIZE(2048), must work on every kernel */
+	build_long_exec_path(path, sizeof(path), LONG_PATH_BASE "-mid", 1500);
+	child = fork_exec_path(path);
 	qev = drain_for_pid(&qq, child);
 	assert(qev->events & QUARK_EV_FORK);
 	assert(qev->events & QUARK_EV_EXEC);
@@ -1135,6 +1164,30 @@ t_exec_long_path(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp != NULL);
 	assert(qp->exe != NULL);
 	assert(!strcmp(qp->exe, path));
+
+	/* Record larger than the old 4096 linearization buffer */
+	build_long_exec_path(path, sizeof(path), LONG_PATH_BASE "-big",
+	    PATH_MAX - 1);
+	child = fork_exec_path(path);
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_FORK);
+	assert(qev->events & QUARK_EV_EXIT);
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->exe != NULL);
+	if (strcmp(qp->exe, path)) {
+		/*
+		 * The kernel never delivered the exec record, exe was
+		 * inherited on fork and must be untouched: a partial copy of
+		 * our path would mean we corrupted the record instead.
+		 */
+		assert(strncmp(qp->exe, LONG_PATH_BASE,
+		    strlen(LONG_PATH_BASE)));
+		quark_queue_close(&qq);
+		warnx("kernel dropped the oversized exec record "
+		    "(PERF_MAX_TRACE_SIZE), skipping");
+		return (0);
+	}
 
 	quark_queue_close(&qq);
 
