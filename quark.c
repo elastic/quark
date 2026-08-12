@@ -3141,9 +3141,16 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 
 		col = RB_INSERT(sproc_socket_by_inode, by_inode, ss);
 		if (col != NULL) {
+			/*
+			 * The kernel can list the same socket twice in a
+			 * single dump of /proc/net/tcp: it's read in
+			 * chunks and a connection opening in between
+			 * shifts the ones we already read further down.
+			 * Normal, not corruption, keep the first copy.
+			 */
 			free(ss);
-			qwarnx("socket collision");
-			return (errno = EEXIST, -1);
+			qdebugx("duplicate socket inode %lu, skipping", inode);
+			return (0);
 		}
 	}
 
