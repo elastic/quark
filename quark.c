@@ -491,6 +491,9 @@ gc_collect(struct quark_queue *qq)
 		case GC_POD:
 			pod_delete(qq, (struct quark_pod *)gc);
 			break;
+		case GC_CONTAINER:
+			container_delete(qq, (struct quark_container *)gc);
+			break;
 		default:
 			qwarnx("invalid gc_type %d, will leak", gc->gc_type);
 			gc_unlink(qq, gc);
@@ -799,6 +802,7 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 		pod_containers_RB_REMOVE(&pod->containers, container);
 		container->linked_by_pod = 0;
 	}
+	gc_unlink(qq, &container->gc);
 	while ((qp = TAILQ_FIRST(&container->processes)) != NULL) {
 		TAILQ_REMOVE(&container->processes, qp, entry_container);
 		qp->container = NULL;
@@ -2468,6 +2472,18 @@ fail:
 		free(container);
 	}
 	return (NULL);
+}
+
+void
+quark_pod_remove(struct quark_queue *qq, struct quark_pod *pod)
+{
+	gc_mark(qq, &pod->gc, GC_POD);
+}
+
+void
+quark_container_remove(struct quark_queue *qq, struct quark_container *container)
+{
+	gc_mark(qq, &container->gc, GC_CONTAINER);
 }
 
 void

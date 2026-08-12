@@ -95,6 +95,10 @@ struct quark_pod	*quark_pod_create(struct quark_queue *, const char *,
 struct quark_container	*quark_container_create(struct quark_queue *,
 			     const char *, const char *, const char *,
 			     const char *);
+void			 quark_pod_remove(struct quark_queue *,
+			     struct quark_pod *);
+void			 quark_container_remove(struct quark_queue *,
+			     struct quark_container *);
 void			 quark_ruleset_init(struct quark_ruleset *);
 void			 quark_ruleset_clear(struct quark_ruleset *);
 int			 quark_ruleset_parse(struct quark_ruleset *, FILE *,
@@ -578,6 +582,7 @@ enum gc_type {
 	GC_PROCESS,
 	GC_SOCKET,
 	GC_POD,
+	GC_CONTAINER,
 };
 
 struct gc_link {
@@ -698,6 +703,7 @@ RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
  * A container's lifecycle is tied to its parent quark_pod.
  */
 struct quark_container {
+	struct gc_link			 gc;		/* must be first */
 	RB_ENTRY(quark_container)	 entry_qkube;	/* our ""global"" linkage */
 	RB_ENTRY(quark_container)	 entry_pod;	/* our linkage inside a quark_pod */
 	TAILQ_HEAD(, quark_process)	 processes;	/* processes in this container */
