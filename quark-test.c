@@ -6,6 +6,7 @@
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/select.h>
 #include <sys/shm.h>
 #include <sys/socket.h>
@@ -83,7 +84,6 @@ static int	bflag;		/* run bpf tests */
 static int	kflag;		/* run kprobe tests */
 static int	nflag;		/* run nova tests */
 static int	tflag;		/* listen to the tracepipe */
-static u64	boottime;
 static int	fancy_tty;
 static int	in_valgrind;
 
@@ -138,7 +138,7 @@ backend_of_attr(struct quark_queue_attr *qa)
 
 	if (qa == NULL)
 		return (-1);
-	else if (((qa->flags & QQ_ALL_BACKENDS) == QQ_ALL_BACKENDS))
+	else if (((qa->flags & (QQ_EBPF | QQ_KPROBE)) == (QQ_EBPF | QQ_KPROBE)))
 		errx(1, "backend must be explicit");
 	else if (qa->flags & QQ_EBPF)
 		be = QQ_EBPF;
@@ -269,7 +269,7 @@ show_cursor(void)
 }
 
 static u64
-ns_since_epoch(const struct quark_queue *qq)
+ns_clock(const struct quark_queue *qq)
 {
 	struct timespec ts;
 	clockid_t	clk;
@@ -278,7 +278,7 @@ ns_since_epoch(const struct quark_queue *qq)
 	if (clock_gettime(clk, &ts) == -1)
 		err(1, "clock_gettime");
 
-	return boottime + ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
+	return ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
 }
 
 static u32
@@ -910,10 +910,10 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	before = ns_since_epoch(&qq);
+	before = ns_clock(&qq);
 	child = fork_exec_nop1(relative, 0);
 	qev = drain_for_pid(&qq, child);
-	after = ns_since_epoch(&qq);
+	after = ns_clock(&qq);
 
 	/* check qev.events */
 	assert(qev->events & QUARK_EV_FORK);
@@ -1137,10 +1137,10 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	before = ns_since_epoch(&qq);
+	before = ns_clock(&qq);
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
-	after = ns_since_epoch(&qq);
+	after = ns_clock(&qq);
 	assert(write(fd, "1", 1) == 1);
 	assert(write(fd, "2", 1) == 1);
 	assert(write(fd, "3", 1) == 1);
@@ -1874,6 +1874,39 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * quark_queue_open() must refuse anything but exactly one backend
+ * with EINVAL, and the default attr must select only EBPF.
+ */
+static int
+t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
+{
+	struct quark_queue	 qq;
+	struct quark_queue_attr	 attr;
+	size_t			 i;
+	int			 bad_backends[] = {
+		0,
+		QQ_EBPF | QQ_KPROBE,
+		QQ_EBPF | QQ_NOVA,
+		QQ_KPROBE | QQ_NOVA,
+		QQ_EBPF | QQ_KPROBE | QQ_NOVA,
+	};
+
+	quark_queue_default_attr(&attr);
+	assert((attr.flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA)) == QQ_EBPF);
+
+	for (i = 0; i < nitems(bad_backends); i++) {
+		quark_queue_default_attr(&attr);
+		attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
+		attr.flags |= bad_backends[i];
+		errno = 0;
+		assert(quark_queue_open(&qq, &attr) == -1);
+		assert(errno == EINVAL);
+	}
+
+	return (0);
+}
+
 static int
 t_hanson(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -2195,6 +2228,155 @@ t_rule_path2(const struct test *t, struct quark_queue_attr *qa)
 	assert(drop_rule->hits == 1);
 	/* evals must be bigger than hits, since it must have dropped other */
 	assert(suff_rule->evals > 1);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/*
+ * quark_queue_get_event() must not return NULL when a ruleset drops an
+ * event but an acceptable event is still buffered in the same batch.
+ */
+static int
+t_rule_drop_batch(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*pass_rule, *drop_rule;
+	uid_t				 uid;
+	char				*text_ruleset;
+
+	/*
+	 * Pass events from uid 66666, drop everything else. We fork one
+	 * child as uid 0, then one as uid 66666, and wait until both events
+	 * expired, so the first quark_queue_get_event() sees both in the
+	 * same batch: it must skip over the dropped uid 0 event and return
+	 * the uid 66666 event instead of NULL.
+	 */
+	uid = 66666;
+	if (asprintf(&text_ruleset,
+	    "pass on process.uid %d\n"
+	    "drop on any",
+	    uid) == -1)
+		err(1, "asprintf");
+	ruleset_from_string(&ruleset, text_ruleset);
+	free(text_ruleset);
+
+	assert(ruleset.n_rules == 2);
+	pass_rule = &ruleset.rules[0];
+	assert(pass_rule->action == QUARK_RA_PASS);
+	drop_rule = &ruleset.rules[1];
+	assert(drop_rule->action == QUARK_RA_DROP);
+
+	qa->ruleset = &ruleset;
+	qa->hold_time = 10;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Fork the uid 0 child first, so its event precedes uid 66666's */
+	fork_exec_nop();
+	(void)fork_exec_nop1(0, uid);
+
+	/* Wait until both events expired */
+	msleep(qa->hold_time * 10);
+
+	/* First call must be the uid 66666 event, NULL is a bug */
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->process != NULL);
+	assert(qev->process->flags & QUARK_F_PROC);
+	assert(qev->process->proc_euid == uid);
+	assert(pass_rule->hits == 1);
+	/* At least the uid 0 child's event was dropped to get here */
+	assert(drop_rule->hits >= 1);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/*
+ * When a ruleset drops all buffered events, quark_queue_get_event() must
+ * filter through the whole batch in one call and then return NULL, instead
+ * of chasing events that keep arriving mid-call.
+ */
+static int
+t_rule_drop_all(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_ruleset		 ruleset;
+	struct quark_rule		*rule;
+	pid_t				 child;
+	int				 i, status;
+
+	ruleset_from_string(&ruleset, "drop on any");
+	assert(ruleset.n_rules == 1);
+	rule = &ruleset.rules[0];
+	assert(rule->action == QUARK_RA_DROP);
+
+	qa->ruleset = &ruleset;
+	qa->hold_time = 10;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Generate three process events, all of which will be dropped */
+	for (i = 0; i < 3; i++)
+		fork_exec_nop();
+
+	/*
+	 * Fork a child that keeps generating events, so the stream is
+	 * continuously replenished while we filter.
+	 */
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	else if (child == 0) {
+		/*
+		 * Die with our parent, otherwise we linger holding the test
+		 * harness' stderr pipe if an assert trips in the parent.
+		 */
+		if (prctl(PR_SET_PDEATHSIG, SIGKILL) == -1)
+			_exit(1);
+		if (getppid() == 1)
+			_exit(1);
+		for (;;) {
+			pid_t	spam;
+
+			if ((spam = fork()) == -1)
+				_exit(1);
+			else if (spam == 0)
+				_exit(0);
+			if (waitpid(spam, NULL, 0) == -1)
+				_exit(1);
+		}
+	}
+
+	/* Wait until our three events expired */
+	msleep(qa->hold_time * 10);
+
+	assert(rule->hits == 0);
+	/*
+	 * One call must drop the whole expired batch and return NULL, bounded
+	 * by a single populate, it may not chase the child's event stream.
+	 * The alarm catches a runaway loop.
+	 */
+	alarm(10);
+	qev = quark_queue_get_event(&qq);
+	alarm(0);
+	assert(qev == NULL);
+	/* All three of our events were dropped within a single call */
+	assert(rule->hits >= 3);
+
+	if (kill(child, SIGKILL) == -1)
+		err(1, "kill");
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
 
 	quark_queue_close(&qq);
 	quark_ruleset_clear(&ruleset);
@@ -2541,11 +2723,14 @@ struct test all_tests[] = {
 	T_EBPF(t_set_agg_matrix),
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
+	T(t_backend_flags),
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),
 	T_EBPF(t_rule_exec_change),
 	T_EBPF(t_rule_path2),
+	T_EBPF(t_rule_drop_batch),
+	T_EBPF(t_rule_drop_all),
 	T_EBPF(t_rule_poison),
 	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),
@@ -2849,19 +3034,19 @@ run_tests(int argc, char *argv[])
 	struct progress		 progress;
 
 	quark_queue_default_attr(&bpf_attr);
-	bpf_attr.flags &= ~QQ_ALL_BACKENDS;
+	bpf_attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	bpf_attr.flags |= QQ_EBPF | QQ_ENTRY_LEADER;
 	bpf_attr.hold_time = 100;
 	bpf_attr.max_env = 32768;
 
 	quark_queue_default_attr(&kprobe_attr);
-	kprobe_attr.flags &= ~QQ_ALL_BACKENDS;
+	kprobe_attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	kprobe_attr.flags |= QQ_KPROBE | QQ_ENTRY_LEADER;
 	kprobe_attr.hold_time = 100;
 	kprobe_attr.max_env = 32768;
 
 	quark_queue_default_attr(&nova_attr);
-	nova_attr.flags &= ~QQ_ALL_BACKENDS;
+	nova_attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	nova_attr.flags |= QQ_NOVA | QQ_ENTRY_LEADER;
 	nova_attr.hold_time = 100;
 	nova_attr.max_env = 32768;
@@ -2985,8 +3170,6 @@ main(int argc, char *argv[])
 
 	if (tflag && noforkflag)
 		usage();
-
-	boottime = fetch_boottime();
 
 	/*
 	 * Run bpf and kprobe by default, don't run nova

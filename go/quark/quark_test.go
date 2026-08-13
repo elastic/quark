@@ -54,6 +54,7 @@ func TestQuark(t *testing.T) {
 		attr := DefaultQueueAttr()
 		attr.HoldTime = 100
 
+		attr.Flags &= ^(QQ_EBPF | QQ_KPROBE)
 		attr.Flags |= QQ_EBPF
 		testStats(t, attr)
 	})
@@ -62,6 +63,7 @@ func TestQuark(t *testing.T) {
 		attr := DefaultQueueAttr()
 		attr.HoldTime = 100
 
+		attr.Flags &= ^(QQ_EBPF | QQ_KPROBE)
 		attr.Flags |= QQ_KPROBE
 		testStats(t, attr)
 	})

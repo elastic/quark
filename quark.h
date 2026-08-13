@@ -62,6 +62,9 @@ int			 quark_queue_get_epollfd(struct quark_queue *);
 void			 quark_queue_get_stats(struct quark_queue *,
 			     struct quark_queue_stats *);
 int			 quark_start_kube_talker(const char *, pid_t *);
+int			 quark_update_boottime(void);
+u64			 quark_get_boottime(void);
+u64			 quark_time_to_wallclock(u64);
 int			 quark_dump_process_cache_graph(struct quark_queue *,
 			     FILE *);
 int			 quark_dump_raw_event_graph(struct quark_queue *,
@@ -896,7 +899,6 @@ struct quark_queue_attr {
  * CLOCK_MONOTONIC, else CLOCK_BOOTTIME.
  */
 #define QQ_MONOTONIC		(1 << 15)
-#define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)	/* QQ_NOVA excluded for now */
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */

@@ -626,7 +626,8 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 		hanson_add_key_value(h, "entity_id", qp->proc_entity_id,
 		    first);
 
-		ecs_date(qp->proc_time_boot, start_time, sizeof(start_time));
+		ecs_date(quark_time_to_wallclock(qp->proc_time_boot),
+		    start_time, sizeof(start_time));
 		hanson_add_key_value(h, "start", start_time, first);
 		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
 		    first);
@@ -686,7 +687,8 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 	if (qp->flags & QUARK_F_EXIT) {
 		char	end_time[32];
 
-		ecs_date(qp->exit_time_event, end_time, sizeof(end_time));
+		ecs_date(quark_time_to_wallclock(qp->exit_time_event),
+		    end_time, sizeof(end_time));
 		hanson_add_key_value(h, "end", end_time, first);
 
 		hanson_add_key_value_int(h, "exit_code", qp->exit_code, first);

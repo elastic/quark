@@ -41,10 +41,11 @@
 <p class="Pp">The <code class="Nm">quark_queue_open</code> function does the
     following:</p>
 <ul class="Bl-bullet">
-  <li>Attempts to use the best backend available unless otherwise especified.
-      This includes loading the EBPF programs for EBPF or the probes for
-      KPROBES. Only one backend is used and it defaults to EBPF and falls back
-      to KPROBE.</li>
+  <li>Attempts to use the selected backend. This includes loading the EBPF
+      programs for EBPF or the probes for KPROBES. Exactly one backend must be
+      selected, anything else fails with <code class="Er">EINVAL</code>. There
+      is no fallback: users that want one must retry with another backend
+      themselves if <code class="Nm">quark_queue_open</code> fails.</li>
   <li>On its first call it will also initialize global host state, like BTF
       offsets and HZ.</li>
   <li>Initializes the various lists and internal buffers of
@@ -83,12 +84,10 @@
   <dd>Bitmask of:
     <dl class="Bl-tag">
       <dt id="QQ_EBPF"><a class="permalink" href="#QQ_EBPF"><code class="Dv">QQ_EBPF</code></a></dt>
-      <dd>Enable the EBPF backend. EBPF is attempted first and falls back to
-          KPROBE if both were specified.</dd>
+      <dd>Use the EBPF backend, this is the default of
+          <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>.</dd>
       <dt id="QQ_KPROBE"><a class="permalink" href="#QQ_KPROBE"><code class="Dv">QQ_KPROBE</code></a></dt>
-      <dd>Enable the KPROBE backend, see above.</dd>
-      <dt id="QQ_ALL_BACKENDS"><a class="permalink" href="#QQ_ALL_BACKENDS"><code class="Dv">QQ_ALL_BACKENDS</code></a></dt>
-      <dd>Shorthand for (QQ_EBPF | QQ_KPROBE).</dd>
+      <dd>Use the KPROBE backend.</dd>
       <dt id="QQ_MONOTONIC"><a class="permalink" href="#QQ_MONOTONIC"><code class="Dv">QQ_MONOTONIC</code></a></dt>
       <dd>Informational, not configuration: specifying it fails with
           <code class="Er">EINVAL</code>. The backend that opens sets it on the
@@ -171,7 +170,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">July 17, 2026</td>
+    <td class="foot-date">August 6, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

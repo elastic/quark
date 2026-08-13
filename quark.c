@@ -106,6 +106,37 @@ struct quark {
 	u64		boottime;
 } quark;
 
+int
+quark_update_boottime(void)
+{
+	u64	boottime;
+
+	if ((boottime = fetch_boottime()) == 0) {
+		qwarn("can't refetch btime");
+		return (-1);
+	}
+	if (boottime != quark.boottime) {
+		qwarnx("boottime updated %llu -> %llu",
+		    (unsigned long long)quark.boottime,
+		    (unsigned long long)boottime);
+		quark.boottime = boottime;
+	}
+
+	return (0);
+}
+
+u64
+quark_get_boottime(void)
+{
+	return (quark.boottime);
+}
+
+u64
+quark_time_to_wallclock(u64 time_since_boot)
+{
+	return (quark.boottime + time_since_boot);
+}
+
 struct raw_event *
 raw_event_alloc(int type)
 {
@@ -2421,7 +2452,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		qp->flags |= QUARK_F_EXIT;
 		qp->exit_code = raw_task->exit_code;
 		if (src->task.exit_time_event)
-			qp->exit_time_event = quark.boottime + raw_task->exit_time_event;
+			qp->exit_time_event = raw_task->exit_time_event;
 		break;
 	case RAW_COMM:
 		dst->events |= QUARK_EV_SETPROCTITLE;
@@ -2464,8 +2495,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		 * precision one.
 		 */
 		if (qp->proc_time_boot == 0)
-			qp->proc_time_boot = quark.boottime +
-			    raw_task->start_boottime;
+			qp->proc_time_boot = raw_task->start_boottime;
 		qp->proc_ppid = raw_task->ppid;
 		qp->proc_uid = raw_task->uid;
 		qp->proc_gid = raw_task->gid;
@@ -2700,7 +2730,6 @@ sproc_stat(struct quark_process *qp, int dfd)
 		qp->proc_tty_major = (tty >> 8) & 0xff;
 		qp->proc_tty_minor = ((tty >> 12) & 0xfff00) | (tty & 0xff);
 		qp->proc_time_boot =
-		    quark.boottime +
 		    ((starttime / (u64)quark.hz) * NS_PER_S) +
 		    (((starttime % (u64)quark.hz) * NS_PER_S) / (u64)quark.hz);
 
@@ -3130,9 +3159,16 @@ sproc_net_tcp_line(struct quark_queue *qq, const char *line, int af,
 
 		col = RB_INSERT(sproc_socket_by_inode, by_inode, ss);
 		if (col != NULL) {
+			/*
+			 * The kernel can list the same socket twice in a
+			 * single dump of /proc/net/tcp: it's read in
+			 * chunks and a connection opening in between
+			 * shifts the ones we already read further down.
+			 * Normal, not corruption, keep the first copy.
+			 */
 			free(ss);
-			qwarnx("socket collision");
-			return (errno = EEXIST, -1);
+			qdebugx("duplicate socket inode %lu, skipping", inode);
+			return (0);
 		}
 	}
 
@@ -4098,7 +4134,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 {
 	bzero(qa, sizeof(*qa));
 
-	qa->flags = QQ_ALL_BACKENDS;
+	qa->flags = QQ_EBPF;
 	qa->max_length = 10000;
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
@@ -4113,6 +4149,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	struct quark_queue_attr	 qa_default;
 	struct timespec		 unused;
 	char			*ver;
+	int			 backends;
 
 	if ((ver = getenv("QUARK_VERBOSE")) != NULL) {
 		const char *errstr;
@@ -4158,9 +4195,14 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (qa->flags & QQ_MONOTONIC)
 		return (errno = EINVAL, -1);
 
-	/* XXX hardcode QQ_NOVA for now XXX */
-	if ((qa->flags & (QQ_ALL_BACKENDS | QQ_NOVA)) == 0 ||
-	    qa->max_length <= 0 ||
+	/* Exactly one backend must be selected */
+	backends = qa->flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA);
+	if (backends != QQ_EBPF &&
+	    backends != QQ_KPROBE &&
+	    backends != QQ_NOVA)
+		return (errno = EINVAL, -1);
+
+	if (qa->max_length <= 0 ||
 	    qa->cache_grace_time < 0 ||
 	    qa->hold_time < 10)
 		return (errno = EINVAL, -1);
@@ -4267,13 +4309,24 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	}
 
 	/*
-	 * Open the rings
+	 * Open the ring of the selected backend, there is no fallback:
+	 * users that want one must retry with another backend themselves.
 	 */
-	if (nova_queue_open(qq) != 0 &&
-	    bpf_queue_open(qq) != 0 &&
-	    kprobe_queue_open(qq) != 0) {
-		qwarnx("all backends failed");
-		goto fail;
+	if (backends == QQ_EBPF) {
+		if (bpf_queue_open(qq) != 0) {
+			qwarnx("can't open the ebpf backend");
+			goto fail;
+		}
+	} else if (backends == QQ_KPROBE) {
+		if (kprobe_queue_open(qq) != 0) {
+			qwarnx("can't open the kprobe backend");
+			goto fail;
+		}
+	} else if (backends == QQ_NOVA) {
+		if (nova_queue_open(qq) != 0) {
+			qwarnx("can't open the nova backend");
+			goto fail;
+		}
 	}
 
 	if ((qq->flags & QQ_BYPASS) == 0) {
@@ -4580,12 +4633,6 @@ quark_queue_pop_raw(struct quark_queue *qq)
 {
 	struct raw_event	*min;
 	u64			 now;
-
-	/*
-	 * We populate before draining so we can have a fuller tree for
-	 * aggregation.
-	 */
-	(void)quark_queue_populate(qq);
 
 	now = now64(qq);
 	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
@@ -5125,7 +5172,7 @@ bad:
 	return (-1);
 }
 
-static const struct quark_event *
+static struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
@@ -5145,23 +5192,11 @@ get_bypass_event(struct quark_queue *qq)
 	return (qev);
 }
 
-const struct quark_event *
-quark_queue_get_event(struct quark_queue *qq)
+static struct quark_event *
+quark_queue_get_event1(struct quark_queue *qq)
 {
 	struct raw_event	*raw;
 	struct quark_event	*qev;
-	struct quark_rule	*rule;
-
-	/* GC all processes and sockets that exited after some grace time */
-	gc_collect(qq);
-
-	/* Read from the kube pipe */
-	if (qq->qkube != NULL)
-		kube_read_events(qq);
-
-	/* Bypass skips everything */
-	if (qq->flags & QQ_BYPASS)
-		return (get_bypass_event(qq));
 
 	qev = NULL;
 	event_storage_clear(qq);
@@ -5205,7 +5240,7 @@ quark_queue_get_event(struct quark_queue *qq)
 		}
 
 		if (qev != NULL)
-			qev->time = quark.boottime + raw->time;
+			qev->time = raw->time;
 		raw_event_free(raw);
 	}
 
@@ -5218,11 +5253,39 @@ quark_queue_get_event(struct quark_queue *qq)
 		link_kube_data(qq,
 		    (struct quark_process *)qev->process);
 
-	/* Run ruleset, if it's a drop, nulify qev */
-	if (qq->ruleset != NULL) {
+	return (qev);
+}
+
+const struct quark_event *
+quark_queue_get_event(struct quark_queue *qq)
+{
+	struct quark_event	*qev;
+	struct quark_rule	*rule;
+
+	/* GC all processes and sockets that exited after some grace time */
+	gc_collect(qq);
+
+	/* Read from the kube pipe */
+	if (qq->qkube != NULL)
+		kube_read_events(qq);
+
+	/* Bypass skips everything */
+	if (qq->flags & QQ_BYPASS)
+		return (get_bypass_event(qq));
+
+	/*
+	 * Populate once before draining so we can have a fuller tree for
+	 * aggregation without chasing a continuously replenished stream.
+	 */
+	(void)quark_queue_populate(qq);
+
+next:
+	qev = quark_queue_get_event1(qq);
+	/* Run ruleset, if we drop, get the next event */
+	if (qev != NULL && qq->ruleset != NULL) {
 		rule = quark_ruleset_match(qq->ruleset, qev);
 		if (rule != NULL && rule->action == QUARK_RA_DROP)
-			qev = NULL;
+			goto next;
 	}
 
 	return (qev);
