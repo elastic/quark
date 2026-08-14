@@ -63,6 +63,13 @@ All times handed out by quark are expressed in nanoseconds since boot:
       <code class="Dv">TFD_TIMER_CANCEL_ON_SET</code>, which becomes readable
       when the clock is stepped.</li>
 </ul>
+<p class="Pp">The boottime epoch is shared by every queue in the process.
+    <code class="Nm">quark_update_boottime</code>,
+    <a class="Xr" href="quark_get_boottime.3.html">quark_get_boottime(3)</a> and
+    <a class="Xr" href="quark_time_to_wallclock.3.html">quark_time_to_wallclock(3)</a>
+    may be called from any thread without synchronization: the epoch is updated
+    atomically and a concurrent reader observes either the previous or the new
+    value.</p>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
   VALUES</a></h1>
@@ -99,7 +106,7 @@ All times handed out by quark are expressed in nanoseconds since boot:
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">August 5, 2026</td>
+    <td class="foot-date">August 14, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

@@ -250,7 +250,7 @@ These scripts require KVM access and therefore must be executed on a host kernel
 - Library calls fail with -1 unless otherwise stated, and `errno` is set.
 - Quark returns pointers to internal state, which must not be modified and/or stored. In the case of multithreading, these pointers should not be accessed if another thread is driving quark through [quark\_queue\_get\_event(3)](https://elastic.github.io/quark/quark_queue_get_event.3.html).
 - No threads are created, the library is driven solely through [quark\_queue\_get\_event(3)](https://elastic.github.io/quark/quark_queue_get_event.3.html).
-- Access to a `quark_queue` must be synchronized by the user in the case of multithreading.
+- Access to a `quark_queue` must be synchronized by the user in the case of multithreading. The boottime epoch is the exception: [quark\_update\_boottime(3)](https://elastic.github.io/quark/quark_update_boottime.3.html), [quark\_get\_boottime(3)](https://elastic.github.io/quark/quark_get_boottime.3.html) and [quark\_time\_to\_wallclock(3)](https://elastic.github.io/quark/quark_time_to_wallclock.3.html) may be called from any thread without synchronization.
 
 # [BASIC USAGE](#BASIC_USAGE)
 

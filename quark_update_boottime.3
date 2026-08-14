@@ -59,6 +59,15 @@ armed with
 .Dv TFD_TIMER_CANCEL_ON_SET ,
 which becomes readable when the clock is stepped.
 .El
+.Pp
+The boottime epoch is shared by every queue in the process.
+.Nm ,
+.Xr quark_get_boottime 3
+and
+.Xr quark_time_to_wallclock 3
+may be called from any thread without synchronization:
+the epoch is updated atomically and a concurrent reader observes
+either the previous or the new value.
 .Sh RETURN VALUES
 Returns 0 on success, -1 if btime could not be refetched, in which
 case the previous epoch is retained and
