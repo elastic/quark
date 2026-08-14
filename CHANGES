@@ -144,3 +144,5 @@ Changes from 0.7 to 0.8
     another backend themselves. QQ_ALL_BACKENDS was removed and
     breaks at compile time. quark_queue_default_attr() now selects
     only QQ_EBPF.
+  o The Go bindings (go/quark) learned UpdateBoottime(), Boottime()
+    and TimeToWallclock(), mirroring the C calls.
