@@ -454,6 +454,12 @@ get a descriptor suitable for blocking.
 block for an unspecified amount of time.
 .It Xr quark_queue_get_stats 3
 basic queue statistics.
+.It Xr quark_time_to_wallclock 3
+translate a time since boot to wallclock.
+.It Xr quark_update_boottime 3
+refetch the boottime epoch after a system clock change.
+.It Xr quark_get_boottime 3
+get the boottime epoch.
 .It Xr quark_queue_close 3
 close a queue.
 .El
@@ -469,6 +475,7 @@ is the easiest way to get started with
 describes initialization options that can be useful.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
+.Xr quark_get_boottime 3 ,
 .Xr quark_process_iter 3 ,
 .Xr quark_process_lookup 3 ,
 .Xr quark_queue_block 3 ,
@@ -477,6 +484,8 @@ describes initialization options that can be useful.
 .Xr quark_queue_get_event 3 ,
 .Xr quark_queue_get_stats 3 ,
 .Xr quark_queue_open 3 ,
+.Xr quark_time_to_wallclock 3 ,
+.Xr quark_update_boottime 3 ,
 .Xr quark-btf 8 ,
 .Xr quark-mon 8 ,
 .Xr quark-test 8
