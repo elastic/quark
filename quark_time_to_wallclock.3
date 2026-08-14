@@ -1,0 +1,67 @@
+.Dd $Mdocdate$
+.Dt QUARK_TIME_TO_WALLCLOCK 3
+.Os
+.Sh NAME
+.Nm quark_time_to_wallclock
+.Nd translate a time since boot to wallclock
+.Sh SYNOPSIS
+.In quark.h
+.Ft u64
+.Fn quark_time_to_wallclock "u64 time_since_boot"
+.Sh DESCRIPTION
+.Nm
+translates
+.Fa time_since_boot
+from nanoseconds since boot to nanoseconds since the Unix epoch by
+adding the internal boottime epoch, see
+.Xr quark_get_boottime 3 .
+.Pp
+All times handed out by quark are suitable inputs:
+.Em time
+of
+.Vt quark_event ,
+.Em proc_time_boot
+and
+.Em exit_time_event
+of
+.Vt quark_process ,
+as well as
+.Em established_time
+and
+.Em close_time
+of
+.Vt quark_socket .
+These fields are expressed as nanoseconds since boot since quark 0.8,
+in earlier versions they were nanoseconds since the Unix epoch and
+needed no translation.
+.Pp
+Times since boot are immune to system clock changes, wallclock times
+are not.
+Translate at the last moment, when a time leaves the system for
+display or storage, and keep the epoch fresh with
+.Xr quark_update_boottime 3
+if the clock may be stepped while running.
+.Sh RETURN VALUES
+.Fa time_since_boot
+expressed in nanoseconds since the Unix epoch.
+.Sh SEE ALSO
+.Xr quark_event_dump 3 ,
+.Xr quark_get_boottime 3 ,
+.Xr quark_process_iter 3 ,
+.Xr quark_process_lookup 3 ,
+.Xr quark_queue_block 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_default_attr 3 ,
+.Xr quark_queue_get_epollfd 3 ,
+.Xr quark_queue_get_event 3 ,
+.Xr quark_queue_get_stats 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark_update_boottime 3 ,
+.Xr quark 7 ,
+.Xr quark-btf 8 ,
+.Xr quark-mon 8 ,
+.Xr quark-test 8
+.Sh HISTORY
+.Nm
+appeared in quark 0.8, when all times handed out by quark switched
+from nanoseconds since the Unix epoch to nanoseconds since boot.
