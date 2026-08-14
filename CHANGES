@@ -146,3 +146,5 @@ Changes from 0.7 to 0.8
     only QQ_EBPF.
   o The Go bindings (go/quark) learned UpdateBoottime(), Boottime()
     and TimeToWallclock(), mirroring the C calls.
+  o The Go bindings (go/quark) learned the
+    QUARK_EV_SOCK_CONN_ESTABLISHED constant.
