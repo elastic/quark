@@ -148,3 +148,6 @@ Changes from 0.7 to 0.8
     and TimeToWallclock(), mirroring the C calls.
   o The Go bindings (go/quark) learned the
     QUARK_EV_SOCK_CONN_ESTABLISHED constant.
+  o The Go bindings (go/quark) learned QueueAttr.RuleText for
+    installing a ruleset on the queue. Processes matched by poison
+    rules carry the tag in Process.PoisonTag.
