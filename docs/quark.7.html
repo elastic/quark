@@ -335,7 +335,12 @@ These scripts require KVM access and therefore must be executed on a host kernel
   <li>No threads are created, the library is driven solely through
       <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>.</li>
   <li>Access to a <var class="Vt">quark_queue</var> must be synchronized by the
-      user in the case of multithreading.</li>
+      user in the case of multithreading. The boottime epoch is the exception:
+      <a class="Xr" href="quark_update_boottime.3.html">quark_update_boottime(3)</a>,
+      <a class="Xr" href="quark_get_boottime.3.html">quark_get_boottime(3)</a>
+      and
+      <a class="Xr" href="quark_time_to_wallclock.3.html">quark_time_to_wallclock(3)</a>
+      may be called from any thread without synchronization.</li>
 </ul>
 </section>
 <section class="Sh">
@@ -463,7 +468,7 @@ main(void)
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">August 3, 2026</td>
+    <td class="foot-date">August 14, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
