@@ -101,6 +101,9 @@ when its event times are CLOCK_MONOTONIC instead of CLOCK_BOOTTIME, which
 only the KPROBE backend does.
 Monotonic times undercount by the total suspended time, users that care
 about suspend must compensate.
+See
+.Xr quark_time_to_wallclock 3
+for the effect on wallclock translation.
 .It Dv QQ_THREAD_EVENTS
 Include per-thread events, instead of per-process events.
 This option will be removed in the future, but it may be useful for debugging.
