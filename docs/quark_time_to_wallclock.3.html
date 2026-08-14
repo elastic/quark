@@ -51,7 +51,9 @@
     times are not. Translate at the last moment, when a time leaves the system
     for display or storage, and keep the epoch fresh with
     <a class="Xr" href="quark_update_boottime.3.html">quark_update_boottime(3)</a>
-    if the clock may be stepped while running.</p>
+    if the clock may be stepped while running. Gradual corrections (slewing)
+    adjust the wallclock and the boot clock at the same rate, leaving the epoch
+    untouched, only a step moves it.</p>
 <p class="Pp" id="flags">The KPROBE backend stamps times with a monotonic clock
     that does not advance during suspend, relayed as
     <code class="Dv">QQ_MONOTONIC</code> on the opened queue's
