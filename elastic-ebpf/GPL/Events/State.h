@@ -23,6 +23,7 @@ enum ebpf_events_state_op {
     EBPF_EVENTS_STATE_CHOWN          = 9,
     EBPF_EVENTS_STATE_FS_CREATE      = 10,
     EBPF_EVENTS_STATE_MEMFD_CREATE   = 11,
+    EBPF_EVENTS_STATE_PROCESS_VM_ACCESS = 12,
 };
 
 struct ebpf_events_key {
@@ -86,6 +87,15 @@ struct ebpf_events_memfd_create_state {
     unsigned int flags;
 };
 
+struct ebpf_events_process_vm_access_state {
+    u32 target_pid;
+    u32 operation;
+    u64 local_iovcnt;
+    u64 remote_iovcnt;
+    u64 remote_addr;
+    u64 bytes_requested;
+};
+
 struct ebpf_events_state {
     union {
         struct ebpf_events_unlink_state unlink;
@@ -98,6 +108,7 @@ struct ebpf_events_state {
         struct ebpf_events_writev_state writev;
         struct ebpf_events_chown_state chown;
         struct ebpf_events_memfd_create_state memfd;
+        struct ebpf_events_process_vm_access_state process_vm_access;
         /* struct ebpf_events_fs_create fs_create; nada */
     };
 };

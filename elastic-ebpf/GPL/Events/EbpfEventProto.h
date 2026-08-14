@@ -46,6 +46,7 @@ enum ebpf_event_type {
     EBPF_EVENT_PROCESS_LOAD_MODULE          = (1 << 19),
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
     EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
+    EBPF_EVENT_PROCESS_VM_ACCESS            = (1 << 22),
 };
 
 struct ebpf_event_header {
@@ -370,6 +371,23 @@ struct ebpf_process_ptrace_event {
     int64_t request;
     uint64_t addr;
     uint64_t data;
+} __attribute__((packed));
+
+enum ebpf_process_vm_access_operation {
+    EBPF_PROCESS_VM_ACCESS_READ  = 1,
+    EBPF_PROCESS_VM_ACCESS_WRITE = 2,
+};
+
+struct ebpf_process_vm_access_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    uint32_t target_pid;
+    uint32_t operation; // enum ebpf_process_vm_access_operation
+    uint64_t local_iovcnt;
+    uint64_t remote_iovcnt;
+    uint64_t remote_addr;      // iov_base of the first remote iovec
+    uint64_t bytes_requested;  // iov_len of the first remote iovec
+    int64_t ret;                // raw syscall return value; negative on error
 } __attribute__((packed));
 
 struct ebpf_process_load_module_event {

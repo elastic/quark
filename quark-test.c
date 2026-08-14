@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 
 #include <netinet/in.h>
@@ -1377,6 +1378,137 @@ t_shmget(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_process_vm_access(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue			 qq;
+	const struct quark_event		*qev;
+	const struct quark_process_vm_access	*qpva;
+	int					 to_child[2], to_parent[2];
+	pid_t					 child;
+	u64					 remote_addr;
+	char					 wbuf[8] = {
+		'q', 'u', 'a', 'r', 'k', 't', 's', 't'
+	};
+	char					 rbuf[8];
+	struct iovec				 local, remote;
+	ssize_t					 n;
+	int					 seen_write, seen_read;
+
+	qa->flags |= QQ_PROCESS_VM_ACCESS;
+
+	if (pipe(to_child) == -1 || pipe(to_parent) == -1)
+		err(1, "pipe");
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+
+	if (child == 0) {
+		void	*page;
+		char	 c;
+
+		close(to_child[1]);
+		close(to_parent[0]);
+
+		page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (page == MAP_FAILED)
+			err(1, "mmap");
+		bzero(page, 4096);
+
+		if (write(to_parent[1], &page, sizeof(page)) != sizeof(page))
+			err(1, "write");
+		/* Block until the parent is done poking our memory */
+		if (read(to_child[0], &c, 1) != 1)
+			err(1, "read");
+
+		_exit(0);
+	}
+
+	close(to_child[0]);
+	close(to_parent[1]);
+
+	if (read(to_parent[0], &remote_addr, sizeof(remote_addr)) !=
+	    sizeof(remote_addr))
+		err(1, "read");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * Same-process calls are suppressed at the probe; issue them before
+	 * the real cross-process calls so a leak surfaces below as an
+	 * unexpected event instead of silently passing.
+	 */
+	local.iov_base = wbuf;
+	local.iov_len = sizeof(wbuf);
+	remote.iov_base = wbuf;
+	remote.iov_len = sizeof(wbuf);
+	(void)process_vm_writev(getpid(), &local, 1, &remote, 1, 0);
+	(void)process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+
+	/* Successful write into the child's memory */
+	local.iov_base = wbuf;
+	local.iov_len = sizeof(wbuf);
+	remote.iov_base = (void *)(uintptr_t)remote_addr;
+	remote.iov_len = sizeof(wbuf);
+	n = process_vm_writev(child, &local, 1, &remote, 1, 0);
+	if (n != (ssize_t)sizeof(wbuf))
+		err(1, "process_vm_writev");
+
+	/* Successful read back from the child's memory */
+	local.iov_base = rbuf;
+	local.iov_len = sizeof(rbuf);
+	n = process_vm_readv(child, &local, 1, &remote, 1, 0);
+	if (n != (ssize_t)sizeof(rbuf))
+		err(1, "process_vm_readv");
+	assert(!memcmp(wbuf, rbuf, sizeof(wbuf)));
+
+	seen_write = seen_read = 0;
+	while (!seen_write || !seen_read) {
+		qev = drain_for_pid(&qq, getpid());
+		if (!(qev->events & QUARK_EV_PROCESS_VM_ACCESS))
+			continue;
+		qpva = &qev->process_vm_access;
+		if (qpva->target_pid != (u32)child) {
+			errx(1, "unexpected process_vm_access target_pid %u",
+			    qpva->target_pid);
+		}
+		switch (qpva->operation) {
+		case QUARK_PROCESS_VM_ACCESS_WRITE:
+			assert(!seen_write);
+			assert(qpva->remote_iovcnt == 1);
+			assert(qpva->remote_addr == remote_addr);
+			assert(qpva->bytes_requested == sizeof(wbuf));
+			assert(qpva->ret == (s64)sizeof(wbuf));
+			seen_write = 1;
+			break;
+		case QUARK_PROCESS_VM_ACCESS_READ:
+			assert(!seen_read);
+			assert(qpva->remote_iovcnt == 1);
+			assert(qpva->remote_addr == remote_addr);
+			assert(qpva->bytes_requested == sizeof(rbuf));
+			assert(qpva->ret == (s64)sizeof(rbuf));
+			seen_read = 1;
+			break;
+		default:
+			errx(1, "unexpected process_vm_access operation %u",
+			    qpva->operation);
+		}
+	}
+
+	if (write(to_child[1], "x", 1) != 1)
+		err(1, "write");
+	if (waitpid(child, NULL, 0) == -1)
+		err(1, "waitpid");
+	close(to_child[1]);
+	close(to_parent[0]);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
 t_shm_open(const struct test *t, struct quark_queue_attr *qa)
 {
 #ifdef NO_SHM_OPEN
@@ -2729,6 +2861,7 @@ struct test all_tests[] = {
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_shmget),
+	T_EBPF(t_process_vm_access),
 	T_EBPF(t_shm_open),
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),

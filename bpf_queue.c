@@ -609,6 +609,28 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_PROCESS_VM_ACCESS: {
+		struct ebpf_process_vm_access_event *pva;
+		struct quark_process_vm_access *qpva;
+
+		pva = (struct ebpf_process_vm_access_event *)ev;
+		if ((raw = raw_event_alloc(RAW_PROCESS_VM_ACCESS)) == NULL)
+			goto bad;
+
+		raw->pid = pva->pids.tgid;
+		raw->time = ev->ts;
+
+		qpva = &raw->process_vm_access.quark_process_vm_access;
+		qpva->target_pid = pva->target_pid;
+		qpva->operation = pva->operation;
+		qpva->local_iovcnt = pva->local_iovcnt;
+		qpva->remote_iovcnt = pva->remote_iovcnt;
+		qpva->remote_addr = pva->remote_addr;
+		qpva->bytes_requested = pva->bytes_requested;
+		qpva->ret = pva->ret;
+
+		break;
+	}
 	case EBPF_EVENT_PROCESS_LOAD_MODULE: {
 		struct ebpf_process_load_module_event *module;
 		struct quark_module_load	*qml;
@@ -1278,6 +1300,17 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_PTRACE) {
 		bpf_program__set_autoload(p->progs.kprobe__arch_ptrace, 1);
 		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
+	}
+
+	if (qq->flags & QQ_PROCESS_VM_ACCESS) {
+		bpf_program__set_autoload(
+		    p->progs.tracepoint_syscalls_sys_enter_process_vm_readv, 1);
+		bpf_program__set_autoload(
+		    p->progs.tracepoint_syscalls_sys_exit_process_vm_readv, 1);
+		bpf_program__set_autoload(
+		    p->progs.tracepoint_syscalls_sys_enter_process_vm_writev, 1);
+		bpf_program__set_autoload(
+		    p->progs.tracepoint_syscalls_sys_exit_process_vm_writev, 1);
 	}
 
 	if (qq->flags & QQ_MODULE_LOAD)
