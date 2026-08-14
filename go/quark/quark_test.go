@@ -4,6 +4,7 @@
 package quark
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"testing"
@@ -67,6 +68,59 @@ func TestQuark(t *testing.T) {
 		attr.Flags |= QQ_KPROBE
 		testStats(t, attr)
 	})
+
+	t.Run("RulePoison", func(t *testing.T) {
+		const poisonTag = 1805
+
+		// Poison our children, pass only poisoned events, drop the
+		// rest, as in t_rule_poison of quark-test.
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+		attr.RuleText = fmt.Sprintf(
+			"poison %d on process.ppid %d\n"+
+				"pass on poison %d\n"+
+				"drop on any",
+			poisonTag, os.Getpid(), poisonTag)
+
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		// XXX assumes /bin/true exists
+		cmd := exec.Command("/bin/true")
+		err = cmd.Run()
+		require.NoError(t, err)
+
+		qevs, err := drainFor(queue, 200*time.Millisecond)
+		require.NoError(t, err)
+		require.NotEmpty(t, qevs)
+
+		// Everything that survived the ruleset must carry the tag,
+		// and our child must be in there.
+		foundChild := false
+		for _, qev := range qevs {
+			require.Equal(t, uint64(poisonTag), qev.Process.PoisonTag)
+			if qev.Process.Pid == uint32(cmd.Process.Pid) {
+				foundChild = true
+			}
+		}
+		require.True(t, foundChild)
+	})
+}
+
+// TestRuleText tests ruleset parsing, which happens before any
+// privileged operation, so it doesn't require root.
+func TestRuleText(t *testing.T) {
+	ruleset, err := rulesetFromText("drop on any")
+	require.NoError(t, err)
+	require.NotNil(t, ruleset)
+	freeRuleset(ruleset)
+
+	attr := DefaultQueueAttr()
+	attr.RuleText = "this is not a valid rule"
+	_, err = OpenQueue(attr)
+	require.ErrorContains(t, err, "can't parse ruleset")
 }
 
 func testStats(t *testing.T, attr QueueAttr) {
