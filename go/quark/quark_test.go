@@ -116,3 +116,11 @@ func drainFor(qq *Queue, d time.Duration) ([]Event, error) {
 
 	return allQevs, nil
 }
+
+func TestBoottime(t *testing.T) {
+	require.NoError(t, UpdateBoottime())
+
+	boottime := Boottime()
+	require.NotZero(t, boottime)
+	require.Equal(t, boottime+12345, TimeToWallclock(12345))
+}
