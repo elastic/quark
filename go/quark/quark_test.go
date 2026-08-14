@@ -107,6 +107,29 @@ func TestQuark(t *testing.T) {
 		}
 		require.True(t, foundChild)
 	})
+
+	t.Run("PasswdGroupLookup", func(t *testing.T) {
+		queue, err := OpenQueue(DefaultQueueAttr())
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		passwd, ok := queue.PasswdLookup(0)
+		require.True(t, ok)
+		require.Equal(t, "root", passwd.Name)
+		require.Zero(t, passwd.Uid)
+		require.Zero(t, passwd.Gid)
+
+		group, ok := queue.GroupLookup(0)
+		require.True(t, ok)
+		require.Equal(t, "root", group.Name)
+		require.Zero(t, group.Gid)
+
+		_, ok = queue.PasswdLookup(4294967290)
+		require.False(t, ok)
+		_, ok = queue.GroupLookup(4294967290)
+		require.False(t, ok)
+	})
 }
 
 // TestRuleText tests ruleset parsing, which happens before any
