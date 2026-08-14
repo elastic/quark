@@ -94,16 +94,38 @@ type Exit struct {
 	Valid           bool
 }
 
+// PodInfo holds the fields of a Kubernetes pod.
+type PodInfo struct {
+	UID   string
+	Name  string
+	NS    string
+	Phase string
+}
+
+// ContainerInfo holds the fields of a container, with an optional link to its
+// parent pod.
+type ContainerInfo struct {
+	ContainerID string
+	Name        string
+	Image       string
+	ImageID     string
+	ImageName   string
+	ImageTag    string
+	ImageHash   string
+	Pod         *PodInfo // nil if the container has no pod link
+}
+
 // Process represents a single process.
 type Process struct {
-	Pid     uint32 // Always present
-	Proc    Proc   // Only meaningful if Proc.Valid (QUARK_F_PROC)
-	Exit    Exit   // Only meaningful if Exit.Valid (QUARK_F_EXIT)
-	Comm    string
-	Exe     string
-	Cmdline []string
-	Cwd     string
-	Cgroup  string
+	Pid       uint32 // Always present
+	Proc      Proc   // Only meaningful if Proc.Valid (QUARK_F_PROC)
+	Exit      Exit   // Only meaningful if Exit.Valid (QUARK_F_EXIT)
+	Comm      string
+	Exe       string
+	Cmdline   []string
+	Cwd       string
+	Cgroup    string
+	Container *ContainerInfo // nil if the process is not in a container
 }
 
 // Socket represents a connection between two endpoints
@@ -462,6 +484,49 @@ func SetVerbose(level int) {
 	C.quark_verbose = C.int(level)
 }
 
+func goStringMaybe(s *C.char) string {
+	if s == nil {
+		return ""
+	}
+	return C.GoString(s)
+}
+
+func podInfoFromC(cp *C.struct_quark_pod) PodInfo {
+	return PodInfo{
+		UID:   goStringMaybe(cp.uid),
+		Name:  goStringMaybe(cp.name),
+		NS:    goStringMaybe(cp.ns),
+		Phase: goStringMaybe(cp.phase),
+	}
+}
+
+// Info returns the pod's fields as a value type.
+func (p *Pod) Info() PodInfo {
+	return podInfoFromC(p.pod)
+}
+
+func containerInfoFromC(cc *C.struct_quark_container) ContainerInfo {
+	ci := ContainerInfo{
+		ContainerID: goStringMaybe(cc.container_id),
+		Name:        goStringMaybe(cc.name),
+		Image:       goStringMaybe(cc.image),
+		ImageID:     goStringMaybe(cc.image_id),
+		ImageName:   goStringMaybe(cc.image_name),
+		ImageTag:    goStringMaybe(cc.image_tag),
+		ImageHash:   goStringMaybe(cc.image_hash),
+	}
+	if cc.pod != nil {
+		pi := podInfoFromC(cc.pod)
+		ci.Pod = &pi
+	}
+	return ci
+}
+
+// Info returns the container's fields as a value type.
+func (c *Container) Info() ContainerInfo {
+	return containerInfoFromC(c.container)
+}
+
 // processFromC converts the C process structure to a go process.
 func processFromC(cProcess *C.struct_quark_process) Process {
 	var process Process
@@ -521,6 +586,10 @@ func processFromC(cProcess *C.struct_quark_process) Process {
 	}
 	if cProcess.cgroup != nil {
 		process.Cgroup = C.GoString(cProcess.cgroup)
+	}
+	if cProcess.container != nil {
+		ci := containerInfoFromC(cProcess.container)
+		process.Container = &ci
 	}
 
 	return process
@@ -640,6 +709,115 @@ func shmFromC(cShm *C.struct_quark_shm) (any, error) {
 	}
 
 	return nil, fmt.Errorf("invalid shm kind")
+}
+
+// Pod is an opaque handle to a C quark_pod. Do not copy.
+type Pod struct {
+	pod *C.struct_quark_pod
+}
+
+// Container is an opaque handle to a C quark_container. Do not copy.
+type Container struct {
+	container *C.struct_quark_container
+}
+
+// optCString returns a C string allocated with C.CString, or nil when s is
+// empty. Caller must C.free the returned pointer if non-nil.
+func optCString(s string) *C.char {
+	if s == "" {
+		return nil
+	}
+	return C.CString(s)
+}
+
+// CreatePod inserts a new pod into the queue's pod tree. Returns syscall.EEXIST
+// if a pod with the same uid is already present.
+func (queue *Queue) CreatePod(uid, name, ns, phase string) (*Pod, error) {
+	cUID := C.CString(uid)
+	defer C.free(unsafe.Pointer(cUID))
+	cName := optCString(name)
+	if cName != nil {
+		defer C.free(unsafe.Pointer(cName))
+	}
+	cNS := optCString(ns)
+	if cNS != nil {
+		defer C.free(unsafe.Pointer(cNS))
+	}
+	cPhase := optCString(phase)
+	if cPhase != nil {
+		defer C.free(unsafe.Pointer(cPhase))
+	}
+
+	pod, err := C.quark_pod_create(queue.quarkQueue, cUID, cName, cNS, cPhase)
+	if pod == nil {
+		return nil, wrapErrno(err)
+	}
+	return &Pod{pod: pod}, nil
+}
+
+// LookupPod returns the pod with the given uid, or nil if not found.
+func (queue *Queue) LookupPod(uid string) *Pod {
+	cUID := C.CString(uid)
+	defer C.free(unsafe.Pointer(cUID))
+
+	pod := C.quark_pod_lookup(queue.quarkQueue, cUID)
+	if pod == nil {
+		return nil
+	}
+	return &Pod{pod: (*C.struct_quark_pod)(unsafe.Pointer(pod))}
+}
+
+// CreateContainer inserts a new container into the queue's container tree. If
+// podUID is non-empty the container is linked to that pod, which must already
+// exist. Returns syscall.EEXIST if a container with the same containerID is
+// already present.
+func (queue *Queue) CreateContainer(containerID, podUID, name, image string) (*Container, error) {
+	cContainerID := C.CString(containerID)
+	defer C.free(unsafe.Pointer(cContainerID))
+	cPodUID := optCString(podUID)
+	if cPodUID != nil {
+		defer C.free(unsafe.Pointer(cPodUID))
+	}
+	cName := optCString(name)
+	if cName != nil {
+		defer C.free(unsafe.Pointer(cName))
+	}
+	cImage := optCString(image)
+	if cImage != nil {
+		defer C.free(unsafe.Pointer(cImage))
+	}
+
+	container, err := C.quark_container_create(queue.quarkQueue, cContainerID, cPodUID, cName, cImage)
+	if container == nil {
+		return nil, wrapErrno(err)
+	}
+	return &Container{container: container}, nil
+}
+
+// RemovePod schedules pod for removal after the queue's cache grace time. The
+// call is idempotent. All child containers are removed when the pod is
+// collected.
+func (queue *Queue) RemovePod(pod *Pod) {
+	C.quark_pod_remove(queue.quarkQueue, pod.pod)
+}
+
+// RemoveContainer schedules container for removal after the queue's cache grace
+// time. The call is idempotent.
+func (queue *Queue) RemoveContainer(container *Container) {
+	C.quark_container_remove(queue.quarkQueue, container.container)
+}
+
+// LookupContainer returns the container with the given containerID, or nil if
+// not found.
+func (queue *Queue) LookupContainer(containerID string) *Container {
+	cContainerID := C.CString(containerID)
+	defer C.free(unsafe.Pointer(cContainerID))
+
+	container := C.quark_container_lookup(queue.quarkQueue, cContainerID)
+	if container == nil {
+		return nil
+	}
+	return &Container{container: (*C.struct_quark_container)(unsafe.Pointer(container))}
 }
 
 func ttyFromC(cTty *C.struct_quark_tty) Tty {
