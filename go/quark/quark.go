@@ -136,7 +136,8 @@ type File struct {
 	Mode      uint32
 	Uid       uint32
 	Gid       uint32
-	OpMask    uint32
+	OpMask     uint32
+	ChangeMask uint32
 }
 
 type Ptrace struct {
@@ -247,6 +248,12 @@ const (
 	QUARK_FILE_OP_MODIFY = uint32(C.QUARK_FILE_OP_MODIFY)
 	QUARK_FILE_OP_REMOVE = uint32(C.QUARK_FILE_OP_REMOVE)
 	QUARK_FILE_OP_MOVE   = uint32(C.QUARK_FILE_OP_MOVE)
+
+	// File.ChangeMask
+	QUARK_FILE_CH_CONTENT = uint32(C.QUARK_FILE_CH_CONTENT)
+	QUARK_FILE_CH_PERMS   = uint32(C.QUARK_FILE_CH_PERMS)
+	QUARK_FILE_CH_OWNER   = uint32(C.QUARK_FILE_CH_OWNER)
+	QUARK_FILE_CH_XATTRS  = uint32(C.QUARK_FILE_CH_XATTRS)
 
 	// MemFd.Kind
 	QUARK_SHM_MEMFD_CREATE = int(C.QUARK_SHM_MEMFD_CREATE)
@@ -615,6 +622,7 @@ func fileFromC(cFile *C.struct_quark_file) File {
 	file.Uid = uint32(cFile.uid)
 	file.Gid = uint32(cFile.gid)
 	file.OpMask = uint32(cFile.op_mask)
+	file.ChangeMask = uint32(cFile.change_mask)
 
 	return file
 }
