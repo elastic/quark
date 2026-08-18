@@ -101,25 +101,55 @@ RB_GENERATE(passwd_by_uid, quark_passwd, entry, quark_passwd_cmp);
 RB_PROTOTYPE(group_by_gid, quark_group, entry, quark_group_cmp);
 RB_GENERATE(group_by_gid, quark_group, entry, quark_group_cmp);
 
+/*
+ * hz and boottime are shared by every queue in the process and may be
+ * updated by quark_update_boottime() while another thread reads them,
+ * access only through the helpers below.
+ */
 struct quark {
 	unsigned int	hz;
 	u64		boottime;
 } quark;
 
+static inline unsigned int
+quark_hz(void)
+{
+	return (__atomic_load_n(&quark.hz, __ATOMIC_RELAXED));
+}
+
+static inline void
+quark_hz_set(unsigned int hz)
+{
+	__atomic_store_n(&quark.hz, hz, __ATOMIC_RELAXED);
+}
+
+static inline u64
+quark_boottime(void)
+{
+	return (__atomic_load_n(&quark.boottime, __ATOMIC_RELAXED));
+}
+
+static inline void
+quark_boottime_set(u64 boottime)
+{
+	__atomic_store_n(&quark.boottime, boottime, __ATOMIC_RELAXED);
+}
+
 int
 quark_update_boottime(void)
 {
-	u64	boottime;
+	u64	boottime, old;
 
 	if ((boottime = fetch_boottime()) == 0) {
 		qwarn("can't refetch btime");
 		return (-1);
 	}
-	if (boottime != quark.boottime) {
+	old = quark_boottime();
+	if (boottime != old) {
 		qwarnx("boottime updated %llu -> %llu",
-		    (unsigned long long)quark.boottime,
+		    (unsigned long long)old,
 		    (unsigned long long)boottime);
-		quark.boottime = boottime;
+		quark_boottime_set(boottime);
 	}
 
 	return (0);
@@ -128,13 +158,13 @@ quark_update_boottime(void)
 u64
 quark_get_boottime(void)
 {
-	return (quark.boottime);
+	return (quark_boottime());
 }
 
 u64
 quark_time_to_wallclock(u64 time_since_boot)
 {
-	return (quark.boottime + time_since_boot);
+	return (quark_boottime() + time_since_boot);
 }
 
 struct raw_event *
@@ -2655,6 +2685,7 @@ sproc_stat(struct quark_process *qp, int dfd)
 	int			 fd, r, ret;
 	char			*buf, *p;
 	u32			 pgid, sid, tty;
+	u64			 hz;
 	unsigned long long	 starttime;
 
 	buf = NULL;
@@ -2712,9 +2743,10 @@ sproc_stat(struct quark_process *qp, int dfd)
 		/* See proc(5) */
 		qp->proc_tty_major = (tty >> 8) & 0xff;
 		qp->proc_tty_minor = ((tty >> 12) & 0xfff00) | (tty & 0xff);
+		hz = quark_hz();
 		qp->proc_time_boot =
-		    ((starttime / (u64)quark.hz) * NS_PER_S) +
-		    (((starttime % (u64)quark.hz) * NS_PER_S) / (u64)quark.hz);
+		    ((starttime / hz) * NS_PER_S) +
+		    (((starttime % hz) * NS_PER_S) / hz);
 
 		ret = 0;
 	}
@@ -3814,7 +3846,7 @@ quark_init(void)
 	unsigned int	hz;
 	u64		boottime;
 
-	if (quark.hz && quark.boottime)
+	if (quark_hz() && quark_boottime())
 		return (0);
 
 	if ((hz = sysconf(_SC_CLK_TCK)) == (unsigned int)-1) {
@@ -3825,8 +3857,8 @@ quark_init(void)
 		qwarn("can't fetch btime");
 		return (-1);
 	}
-	quark.hz = hz;
-	quark.boottime = boottime;
+	quark_hz_set(hz);
+	quark_boottime_set(boottime);
 
 	return (0);
 }
