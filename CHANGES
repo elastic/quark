@@ -126,6 +126,8 @@ Changes from 0.6 to 0.7
 
 Changes from 0.7 to 0.8
 ~~~~~~~~~~~~~~~~~~~~~~~
+  o quark_queue_attr{} got a kube_mode member. It selects the kube talker,
+    the asynchronous pod and container API, or no container metadata.
   o BREAKING, SILENTLY: quark_process.proc_time_boot,
     quark_process.exit_time_event and quark_event.time are now
     expressed in nanoseconds since boot instead of nanoseconds since

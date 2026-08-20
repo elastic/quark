@@ -239,6 +239,11 @@ const (
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
 
+	// QueueAttr.KubeMode
+	QUARK_KUBE_MODE_NONE   = int(C.QUARK_KUBE_MODE_NONE)
+	QUARK_KUBE_MODE_TALKER = int(C.QUARK_KUBE_MODE_TALKER)
+	QUARK_KUBE_MODE_ASYNC  = int(C.QUARK_KUBE_MODE_ASYNC)
+
 	// Event.events
 	QUARK_EV_FORK             = uint64(C.QUARK_EV_FORK)
 	QUARK_EV_EXEC             = uint64(C.QUARK_EV_EXEC)
@@ -289,6 +294,8 @@ type QueueAttr struct {
 	MaxLength      int
 	CacheGraceTime int
 	HoldTime       int
+	KubeMode       int
+	KubeFD         int
 }
 
 // Documented in https://elastic.github.io/quark/quark_queue_get_stats.3.html.
@@ -329,6 +336,8 @@ func DefaultQueueAttr() QueueAttr {
 		MaxLength:      int(attr.max_length),
 		CacheGraceTime: int(attr.cache_grace_time),
 		HoldTime:       int(attr.hold_time),
+		KubeMode:       int(attr.kube_mode),
+		KubeFD:         int(attr.kubefd),
 	}
 }
 
@@ -349,6 +358,8 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	cattr.max_length = C.int(attr.MaxLength)
 	cattr.cache_grace_time = C.int(attr.CacheGraceTime)
 	cattr.hold_time = C.int(attr.HoldTime)
+	cattr.kube_mode = C.enum_quark_kube_mode(attr.KubeMode)
+	cattr.kubefd = C.int(attr.KubeFD)
 	ok, err := C.quark_queue_open(queue.quarkQueue, &cattr)
 	if ok == -1 {
 		C.free(unsafe.Pointer(queue.quarkQueue))
@@ -730,8 +741,9 @@ func optCString(s string) *C.char {
 	return C.CString(s)
 }
 
-// CreatePod inserts a new pod into the queue's pod tree. Returns syscall.EEXIST
-// if a pod with the same uid is already present.
+// CreatePod inserts a new pod into the queue's pod tree. Use this function with
+// QUARK_KUBE_MODE_ASYNC. Returns syscall.EEXIST if a pod with the same uid is already
+// present.
 func (queue *Queue) CreatePod(uid, name, ns, phase string) (*Pod, error) {
 	cUID := C.CString(uid)
 	defer C.free(unsafe.Pointer(cUID))
@@ -767,10 +779,10 @@ func (queue *Queue) LookupPod(uid string) *Pod {
 	return &Pod{pod: (*C.struct_quark_pod)(unsafe.Pointer(pod))}
 }
 
-// CreateContainer inserts a new container into the queue's container tree. If
-// podUID is non-empty the container is linked to that pod, which must already
-// exist. Returns syscall.EEXIST if a container with the same containerID is
-// already present.
+// CreateContainer inserts a new container into the queue's container tree.
+// Use this function with QUARK_KUBE_MODE_ASYNC. If podUID is non-empty the container
+// is linked to that pod, which must already exist. Returns syscall.EEXIST if a
+// container with the same containerID is already present.
 func (queue *Queue) CreateContainer(containerID, podUID, name, image string) (*Container, error) {
 	cContainerID := C.CString(containerID)
 	defer C.free(unsafe.Pointer(cContainerID))

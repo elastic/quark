@@ -80,6 +80,7 @@ struct quark_queue_attr {
 	int	 max_length;
 	int	 cache_grace_time;	/* in milliseconds */
 	int	 hold_time;		/* in milliseconds */
+	enum quark_kube_mode kube_mode;
 	...
 };
 .Ed
@@ -128,6 +129,19 @@ Quark buffers each event for a computed interval in order to sort and aggregate
 multiple events into one.
 The closer the queue is to being full, the smaller the interval: until quark
 decides to not buffer events at all.
+.It Em kube_mode
+Select the source of Kubernetes and container metadata.
+.Dv QUARK_KUBE_MODE_NONE
+disables all pod and container metadata work.
+It is the default.
+The pod and container creation functions fail with
+.Er ENOTSUP
+in this mode.
+.Dv QUARK_KUBE_MODE_ASYNC
+accepts metadata through the pod and container API.
+.Dv QUARK_KUBE_MODE_TALKER
+reads metadata from the file descriptor in
+.Em kubefd .
 .It Em cache_grace_time
 The grace period for removing an event from the cache.
 .Pp

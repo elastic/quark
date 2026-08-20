@@ -6,11 +6,19 @@ package quark
 import (
 	"os"
 	"os/exec"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestDefaultQueueAttr(t *testing.T) {
+	attr := DefaultQueueAttr()
+
+	require.Equal(t, QUARK_KUBE_MODE_NONE, attr.KubeMode)
+	require.Equal(t, -1, attr.KubeFD)
+}
 
 func TestQuark(t *testing.T) {
 	if os.Geteuid() != 0 {
@@ -48,6 +56,17 @@ func TestQuark(t *testing.T) {
 		defer queue.Close()
 
 		_, _ = queue.GetEvent()
+	})
+
+	t.Run("KubeNone", func(t *testing.T) {
+		attr := DefaultQueueAttr()
+		attr.KubeMode = QUARK_KUBE_MODE_NONE
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+		defer queue.Close()
+
+		_, err = queue.CreatePod("pod", "", "", "")
+		require.ErrorIs(t, err, syscall.ENOTSUP)
 	})
 
 	t.Run("StatsEbpf", func(t *testing.T) {

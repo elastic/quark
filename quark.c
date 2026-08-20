@@ -1587,6 +1587,8 @@ link_container_data(struct quark_queue *qq, struct quark_process *qp)
 	struct quark_container	*container;
 	char			 cid[NAME_MAX];
 
+	if (qq->kube_mode == QUARK_KUBE_MODE_NONE)
+		return;
 	if (qp == NULL)
 		return;
 	if (qp->container != NULL)
@@ -1600,6 +1602,15 @@ link_container_data(struct quark_queue *qq, struct quark_process *qp)
 
 	qp->container = container;
 	TAILQ_INSERT_TAIL(&container->processes, qp, entry_container);
+}
+
+static void
+link_container_processes(struct quark_queue *qq)
+{
+	struct quark_process	*qp;
+
+	RB_FOREACH(qp, process_by_pid, &qq->process_by_pid)
+		link_container_data(qq, qp);
 }
 
 /*
@@ -2292,6 +2303,9 @@ quark_pod_get(struct quark_queue *qq, const char *uid)
 {
 	struct quark_pod	*pod;
 
+	if (qq->kube_mode == QUARK_KUBE_MODE_NONE)
+		return (errno = ENOTSUP, NULL);
+
 	pod = pod_lookup_by_uid(qq, (char *)uid);
 	if (pod != NULL)
 		return (pod);
@@ -2334,6 +2348,9 @@ quark_container_get(struct quark_queue *qq, const char *container_id,
 	struct quark_container	*container, *col;
 	struct quark_pod	*pod = NULL;
 
+	if (qq->kube_mode == QUARK_KUBE_MODE_NONE)
+		return (errno = ENOTSUP, NULL);
+
 	if (pod_uid != NULL) {
 		pod = pod_lookup_by_uid(qq, (char *)pod_uid);
 		if (pod == NULL)
@@ -2370,6 +2387,7 @@ quark_container_get(struct quark_queue *qq, const char *container_id,
 		}
 		container->linked_by_pod = 1;
 	}
+	link_container_processes(qq);
 
 	return (container);
 }
@@ -2385,6 +2403,9 @@ quark_pod_create(struct quark_queue *qq, const char *uid,
     const char *name, const char *ns, const char *phase)
 {
 	struct quark_pod	*pod;
+
+	if (qq->kube_mode == QUARK_KUBE_MODE_NONE)
+		return (errno = ENOTSUP, NULL);
 
 	if (pod_lookup_by_uid(qq, (char *)uid) != NULL)
 		return (errno = EEXIST, NULL);
@@ -2423,6 +2444,9 @@ quark_container_create(struct quark_queue *qq, const char *container_id,
 	struct quark_container	*container, *col;
 	struct quark_pod	*pod = NULL;
 
+	if (qq->kube_mode == QUARK_KUBE_MODE_NONE)
+		return (errno = ENOTSUP, NULL);
+
 	if (pod_uid != NULL) {
 		pod = pod_lookup_by_uid(qq, (char *)pod_uid);
 		if (pod == NULL)
@@ -2460,6 +2484,7 @@ quark_container_create(struct quark_queue *qq, const char *container_id,
 		}
 		container->linked_by_pod = 1;
 	}
+	link_container_processes(qq);
 
 	return (container);
 fail:
@@ -4257,6 +4282,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->hold_time = 1000;		/* one second */
 	qa->max_env = 4096;		/* one page per process */
 	qa->kubefd = -1;		/* disabled */
+	qa->kube_mode = QUARK_KUBE_MODE_NONE;
 	qa->ruleset = NULL;		/* no rules */
 }
 
@@ -4264,7 +4290,6 @@ int
 quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 {
 	struct quark_queue_attr	 qa_default;
-	struct quark_process	*qp;
 	struct timespec		 unused;
 	char			*ver;
 	int			 backends;
@@ -4290,6 +4315,11 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		quark_queue_default_attr(&qa_default);
 		qa = &qa_default;
 	}
+	if (qa->kube_mode < QUARK_KUBE_MODE_NONE ||
+	    qa->kube_mode > QUARK_KUBE_MODE_ASYNC)
+		return (errno = EINVAL, -1);
+	if ((qa->kube_mode == QUARK_KUBE_MODE_TALKER) != (qa->kubefd != -1))
+		return (errno = EINVAL, -1);
 
 	/*
 	 * QQ_BYPASS is EBPF only
@@ -4299,7 +4329,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		    (QQ_KPROBE|QQ_NOVA|QQ_ENTRY_LEADER|
 		    QQ_MIN_AGG|QQ_THREAD_EVENTS)) ||
 		    !(qa->flags & QQ_EBPF) ||
-		    qa->kubefd != -1)
+		    qa->kubefd != -1 || qa->kube_mode != QUARK_KUBE_MODE_NONE)
 			return (errno = EINVAL, -1);
 
 		/*
@@ -4344,6 +4374,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
 	qq->hold_time = qa->hold_time;
 	qq->max_env = qa->max_env;
+	qq->kube_mode = qa->kube_mode;
 	qq->ruleset = qa->ruleset;
 	qq->length = 0;
 	qq->epollfd = -1;
@@ -4366,7 +4397,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	 * If we have kubernetes, initilize its state, then block for some
 	 * seconds to prime all pods and containers
 	 */
-	if (qa->kubefd != -1) {
+	if (qa->kube_mode == QUARK_KUBE_MODE_TALKER) {
 		int			 fl;
 		struct quark_kube	*qkube;
 		struct epoll_event	 ev;
@@ -4470,9 +4501,8 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	 * At this point, existing processes and container metadata have been
 	 * loaded. Now it is time to correlate them.
 	 */
-	RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
-		link_container_data(qq, qp);
-	}
+	if (qq->kube_mode == QUARK_KUBE_MODE_TALKER)
+		link_container_processes(qq);
 
 	/*
 	 * Build username database, really only used for ECS and event dumping.

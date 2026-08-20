@@ -1874,6 +1874,33 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_kube_async(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_container	*container;
+	struct quark_process	*qp;
+	struct quark_queue	 qq;
+
+	qa->kube_mode = QUARK_KUBE_MODE_ASYNC;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	qp = (struct quark_process *)quark_process_lookup(&qq, getpid());
+	assert(qp != NULL);
+	free(qp->cgroup);
+	qp->cgroup = strdup("/foo/docker-abc123.scope");
+	assert(qp->cgroup != NULL);
+
+	container = quark_container_create(&qq, "docker://abc123", NULL,
+	    NULL, NULL);
+	assert(container != NULL);
+	assert(qp->container == container);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /*
  * quark_queue_open() must refuse anything but exactly one backend
  * with EINVAL, and the default attr must select only EBPF.
@@ -1894,6 +1921,7 @@ t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
 
 	quark_queue_default_attr(&attr);
 	assert((attr.flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA)) == QQ_EBPF);
+	assert(attr.kube_mode == QUARK_KUBE_MODE_NONE);
 
 	for (i = 0; i < nitems(bad_backends); i++) {
 		quark_queue_default_attr(&attr);
@@ -1903,6 +1931,45 @@ t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
 		assert(quark_queue_open(&qq, &attr) == -1);
 		assert(errno == EINVAL);
 	}
+
+	quark_queue_default_attr(&attr);
+	attr.kube_mode = (enum quark_kube_mode)-1;
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EINVAL);
+	attr.kube_mode = (enum quark_kube_mode)(QUARK_KUBE_MODE_ASYNC + 1);
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EINVAL);
+
+	quark_queue_default_attr(&attr);
+	attr.kube_mode = QUARK_KUBE_MODE_TALKER;
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EINVAL);
+
+	quark_queue_default_attr(&attr);
+	attr.kube_mode = QUARK_KUBE_MODE_NONE;
+	attr.kubefd = STDIN_FILENO;
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EINVAL);
+
+	bzero(&qq, sizeof(qq));
+	qq.kube_mode = QUARK_KUBE_MODE_NONE;
+	errno = 0;
+	assert(quark_pod_get(&qq, "pod") == NULL);
+	assert(errno == ENOTSUP);
+	errno = 0;
+	assert(quark_pod_create(&qq, "pod", NULL, NULL, NULL) == NULL);
+	assert(errno == ENOTSUP);
+	errno = 0;
+	assert(quark_container_get(&qq, "docker://id", NULL) == NULL);
+	assert(errno == ENOTSUP);
+	errno = 0;
+	assert(quark_container_create(&qq, "docker://id", NULL,
+	    NULL, NULL) == NULL);
+	assert(errno == ENOTSUP);
 
 	return (0);
 }
@@ -2714,6 +2781,7 @@ struct test all_tests[] = {
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
 	T_EBPF(t_cgroup_parse),
+	T_EBPF(t_kube_async),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),
 	T_EBPF(t_cache_grace),
@@ -3034,18 +3102,21 @@ run_tests(int argc, char *argv[])
 	struct progress		 progress;
 
 	quark_queue_default_attr(&bpf_attr);
+	bpf_attr.kube_mode = QUARK_KUBE_MODE_NONE;
 	bpf_attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	bpf_attr.flags |= QQ_EBPF | QQ_ENTRY_LEADER;
 	bpf_attr.hold_time = 100;
 	bpf_attr.max_env = 32768;
 
 	quark_queue_default_attr(&kprobe_attr);
+	kprobe_attr.kube_mode = QUARK_KUBE_MODE_NONE;
 	kprobe_attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	kprobe_attr.flags |= QQ_KPROBE | QQ_ENTRY_LEADER;
 	kprobe_attr.hold_time = 100;
 	kprobe_attr.max_env = 32768;
 
 	quark_queue_default_attr(&nova_attr);
+	nova_attr.kube_mode = QUARK_KUBE_MODE_NONE;
 	nova_attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	nova_attr.flags |= QQ_NOVA | QQ_ENTRY_LEADER;
 	nova_attr.hold_time = 100;

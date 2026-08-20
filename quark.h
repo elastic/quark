@@ -893,6 +893,12 @@ struct quark_queue_ops {
 	void	(*close)(struct quark_queue *);
 };
 
+enum quark_kube_mode {
+	QUARK_KUBE_MODE_NONE,
+	QUARK_KUBE_MODE_TALKER,
+	QUARK_KUBE_MODE_ASYNC,
+};
+
 struct quark_queue_attr {
 #define QQ_THREAD_EVENTS	(1 << 0)
 #define QQ_KPROBE		(1 << 1)
@@ -920,6 +926,7 @@ struct quark_queue_attr {
 	int			 hold_time;		/* in ms */
 	size_t			 max_env;		/* max process environment in bytes */
 	int			 kubefd;		/* quark-kube-talker pipe, -1 disables */
+	enum quark_kube_mode	 kube_mode;		/* QUARK_KUBE_* */
 	struct quark_ruleset	*ruleset;		/* active ruleset */
 };
 
@@ -948,6 +955,7 @@ struct quark_queue {
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
 	size_t				 max_env;		/* max process environment in bytes */
+	enum quark_kube_mode		 kube_mode;		/* QUARK_KUBE_* */
 	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
 	/* Backend related state */

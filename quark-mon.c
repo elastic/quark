@@ -168,6 +168,7 @@ main(int argc, char *argv[])
 	void 				(*print_event)(struct quark_queue *, const struct quark_event *);
 
 	quark_queue_default_attr(&qa);
+	qa.kube_mode = QUARK_KUBE_MODE_NONE;
 	qa.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	maxnodes = -1;
 	do_priv_drop = 0;
@@ -351,6 +352,7 @@ main(int argc, char *argv[])
 		err(1, "sigaction");
 
 	if (kube_config != NULL) {
+		qa.kube_mode = QUARK_KUBE_MODE_TALKER;
 		qa.kubefd = quark_start_kube_talker(kube_config,
 		    &kube_talker_pid);
 		if (qa.kubefd == -1)
