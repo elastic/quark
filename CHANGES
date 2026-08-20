@@ -126,6 +126,9 @@ Changes from 0.6 to 0.7
 
 Changes from 0.7 to 0.8
 ~~~~~~~~~~~~~~~~~~~~~~~
+  o The rule DSL learned the event.scope field. Its values are container
+    and host. The field is not supported by the nova backend, where it
+    fails with ENOTSUP.
   o BREAKING, SILENTLY: quark_process.proc_time_boot,
     quark_process.exit_time_event and quark_event.time are now
     expressed in nanoseconds since boot instead of nanoseconds since

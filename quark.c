@@ -5126,6 +5126,18 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 			    (qev->file->change_mask & QUARK_FILE_CH_PERMS)) &&
 			    (qev->file->mode & (S_IXUSR | S_IXGRP | S_IXOTH)));
 		break;
+	case QUARK_RF_EVENT_SCOPE:
+		if (qp == NULL)
+			break;
+		if (field->id == QUARK_RULE_SCOPE_CONTAINER)
+			return (qp->container != NULL &&
+			    qp->container->container_id != NULL &&
+			    qp->container->container_id[0] != 0);
+		if (field->id == QUARK_RULE_SCOPE_HOST)
+			return (qp->container == NULL ||
+			    qp->container->container_id == NULL ||
+			    qp->container->container_id[0] == 0);
+		break;
 	case QUARK_RF_POISON:
 		if (qp != NULL)
 			return (qp->poison_tag == field->poison_tag);
@@ -5261,6 +5273,11 @@ quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
 			rf.wild.post_len++; /* Include NUL in the comparison */
 		break;
 	case QUARK_RF_FILE_EXEC_CHANGE:
+		break;
+	case QUARK_RF_EVENT_SCOPE:
+		if (rf.id != QUARK_RULE_SCOPE_CONTAINER &&
+		    rf.id != QUARK_RULE_SCOPE_HOST)
+			goto inval;
 		break;
 	case QUARK_RF_POISON:
 		if (rf.poison_tag == 0)
