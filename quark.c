@@ -1582,7 +1582,7 @@ parse_container_cgroup(const char *cgroup, char *container_id, size_t container_
 }
 
 static void
-link_kube_data(struct quark_queue *qq, struct quark_process *qp)
+link_container_data(struct quark_queue *qq, struct quark_process *qp)
 {
 	struct quark_container	*container;
 	char			 cid[NAME_MAX];
@@ -4264,6 +4264,7 @@ int
 quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 {
 	struct quark_queue_attr	 qa_default;
+	struct quark_process	*qp;
 	struct timespec		 unused;
 	char			*ver;
 	int			 backends;
@@ -4466,15 +4467,11 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	}
 
 	/*
-	 * At this point, existing processes have been loaded and kubernetes
-	 * metada has been primed. Now it's the time to correlate both.
+	 * At this point, existing processes and container metadata have been
+	 * loaded. Now it is time to correlate them.
 	 */
-	if (qq->qkube != NULL) {
-		struct quark_process	*qp;
-
-		RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
-			link_kube_data(qq, qp);
-		}
+	RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
+		link_container_data(qq, qp);
 	}
 
 	/*
@@ -5369,10 +5366,8 @@ quark_queue_get_event1(struct quark_queue *qq)
 	if (qev == NULL)
 		return (NULL);
 
-	/* Try to correlate kubernetes metadata */
-	if (qq->qkube != NULL)
-		link_kube_data(qq,
-		    (struct quark_process *)qev->process);
+	/* Try to correlate container metadata. */
+	link_container_data(qq, (struct quark_process *)qev->process);
 
 	return (qev);
 }
