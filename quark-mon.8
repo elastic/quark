@@ -125,6 +125,14 @@ Read rules from
 use
 .Em -
 for stdin.
+The
+.Dq event.scope container
+field matches events from a process with a container ID.
+The
+.Dq event.scope host
+field matches events from a process without a container ID.
+An event without a process matches neither scope.
+This field is not supported by the NOVA backend.
 .It Fl T
 Enable ptrace event tracing.
 .It Fl t
