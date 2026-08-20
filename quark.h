@@ -700,7 +700,7 @@ RB_HEAD(label_tree, label_node);
 RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
 
 /*
- * A container's lifecycle is tied to its parent quark_pod.
+ * A container can exist without a pod while it is a cgroup placeholder.
  */
 struct quark_container {
 	struct gc_link			 gc;		/* must be first */
@@ -709,6 +709,7 @@ struct quark_container {
 	TAILQ_HEAD(, quark_process)	 processes;	/* processes in this container */
 	int				 linked_by_id;	/* linked in container_id tree */
 	int				 linked_by_pod;	/* linked in pod tree */
+	int				 metadata_ready;	/* Kubernetes metadata is set */
 	char				*container_id;	/* unique id */
 	struct quark_pod		*pod;		/* backpointer to owner */
 	char				*name;

@@ -56,6 +56,8 @@ static void	process_cache_delete(struct quark_queue *, struct quark_process *);
 static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
 static void	pod_delete(struct quark_queue *, struct quark_pod *);
 static void	container_delete(struct quark_queue *, struct quark_container *);
+static void	container_remove_metadata(struct quark_queue *,
+		    struct quark_container *);
 
 /* For debugging */
 int	quark_verbose;
@@ -492,7 +494,8 @@ gc_collect(struct quark_queue *qq)
 			pod_delete(qq, (struct quark_pod *)gc);
 			break;
 		case GC_CONTAINER:
-			container_delete(qq, (struct quark_container *)gc);
+			container_remove_metadata(qq,
+			    (struct quark_container *)gc);
 			break;
 		default:
 			qwarnx("invalid gc_type %d, will leak", gc->gc_type);
@@ -579,13 +582,18 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 static void
 process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 {
-	struct gc_link	*gc;
+	struct quark_container	*container;
+	struct gc_link		*gc;
 
 	gc = &qp->gc;
 	RB_REMOVE(process_by_pid, &qq->process_by_pid, qp);
 	if (qp->container) {
-		TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
+		container = qp->container;
+		TAILQ_REMOVE(&container->processes, qp, entry_container);
 		qp->container = NULL;
+		if (!container->metadata_ready &&
+		    TAILQ_EMPTY(&container->processes))
+			container_delete(qq, container);
 	}
 	gc_unlink(qq, gc);
 	process_free(qp);
@@ -818,6 +826,40 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 	free(container);
 }
 
+/*
+ * Remove metadata, but keep a cgroup placeholder while processes use it.
+ */
+static void
+container_remove_metadata(struct quark_queue *qq,
+    struct quark_container *container)
+{
+	struct quark_pod *pod = container->pod;
+
+	if (container->linked_by_pod) {
+		pod_containers_RB_REMOVE(&pod->containers, container);
+		container->linked_by_pod = 0;
+	}
+	container->pod = NULL;
+	gc_unlink(qq, &container->gc);
+
+	free(container->name);
+	container->name = NULL;
+	free(container->image);
+	container->image = NULL;
+	free(container->image_id);
+	container->image_id = NULL;
+	free(container->image_name);
+	container->image_name = NULL;
+	free(container->image_tag);
+	container->image_tag = NULL;
+	free(container->image_hash);
+	container->image_hash = NULL;
+	container->metadata_ready = 0;
+
+	if (TAILQ_EMPTY(&container->processes))
+		container_delete(qq, container);
+}
+
 static struct quark_container *
 container_lookup(struct quark_queue *qq, char *container_id)
 {
@@ -894,7 +936,7 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 			qwarnx("BUG: corrupted pod<>container, leaking data");
 			return;
 		}
-		container_delete(qq, container);
+		container_remove_metadata(qq, container);
 	}
 
 	free(pod->name);
@@ -1017,11 +1059,11 @@ kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *cont
 			return (-1);
 		container->image_id = strdup(imageID->valuestring);
 		if (container->image_id == NULL) {
-			container_delete(qq, container);
+			container_remove_metadata(qq, container);
 			return (-1);
 		}
 		if (demux_image(container) == -1) {
-			container_delete(qq, container);
+			container_remove_metadata(qq, container);
 			return (-1);
 		}
 	}
@@ -1584,33 +1626,36 @@ parse_container_cgroup(const char *cgroup, char *container_id, size_t container_
 static void
 link_container_data(struct quark_queue *qq, struct quark_process *qp)
 {
-	struct quark_container	*container;
+	struct quark_container	*container, *old;
 	char			 cid[NAME_MAX];
+	int			 has_container_id;
 
 	if (qq->kube_mode == QUARK_KUBE_MODE_NONE)
 		return;
 	if (qp == NULL)
 		return;
-	if (qp->container != NULL)
-		return;
-	if (qp->cgroup == NULL)
-		return;
-	if (parse_container_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
-		return;
-	if ((container = container_lookup(qq, cid)) == NULL)
+
+	has_container_id = qp->cgroup != NULL &&
+	    parse_container_cgroup(qp->cgroup, cid, sizeof(cid)) == 0;
+	if (has_container_id && qp->container != NULL &&
+	    strcmp(qp->container->container_id, cid) == 0)
 		return;
 
+	old = qp->container;
+	if (old != NULL) {
+		TAILQ_REMOVE(&old->processes, qp, entry_container);
+		qp->container = NULL;
+		if (!old->metadata_ready && TAILQ_EMPTY(&old->processes))
+			container_delete(qq, old);
+	}
+	if (!has_container_id)
+		return;
+
+	container = quark_container_get(qq, cid, NULL);
+	if (container == NULL)
+		return;
 	qp->container = container;
 	TAILQ_INSERT_TAIL(&container->processes, qp, entry_container);
-}
-
-static void
-link_container_processes(struct quark_queue *qq)
-{
-	struct quark_process	*qp;
-
-	RB_FOREACH(qp, process_by_pid, &qq->process_by_pid)
-		link_container_data(qq, qp);
 }
 
 /*
@@ -2336,10 +2381,8 @@ quark_pod_lookup(struct quark_queue *qq, const char *uid)
 }
 
 /*
- * Get or create a container by container_id. If pod_uid is non-NULL the
- * container is linked to that pod (which must already exist). Returns the
- * existing container if already present, otherwise allocates and inserts one.
- * Caller fills in remaining fields (name, image, etc.).
+ * Get or create a container placeholder by container_id. If pod_uid is
+ * non-NULL, link the placeholder to that pod (which must already exist).
  */
 struct quark_container *
 quark_container_get(struct quark_queue *qq, const char *container_id,
@@ -2358,8 +2401,18 @@ quark_container_get(struct quark_queue *qq, const char *container_id,
 	}
 
 	container = container_lookup(qq, (char *)container_id);
-	if (container != NULL)
+	if (container != NULL) {
+		if (pod == NULL || container->pod == pod)
+			return (container);
+		if (container->pod != NULL)
+			return (errno = EEXIST, NULL);
+		col = pod_containers_RB_INSERT(&pod->containers, container);
+		if (unlikely(col != NULL))
+			return (errno = EEXIST, NULL);
+		container->pod = pod;
+		container->linked_by_pod = 1;
 		return (container);
+	}
 
 	container = calloc(1, sizeof(*container));
 	if (container == NULL)
@@ -2387,8 +2440,6 @@ quark_container_get(struct quark_queue *qq, const char *container_id,
 		}
 		container->linked_by_pod = 1;
 	}
-	link_container_processes(qq);
-
 	return (container);
 }
 
@@ -2443,6 +2494,7 @@ quark_container_create(struct quark_queue *qq, const char *container_id,
 {
 	struct quark_container	*container, *col;
 	struct quark_pod	*pod = NULL;
+	char			*name_copy = NULL, *image_copy = NULL;
 
 	if (qq->kube_mode == QUARK_KUBE_MODE_NONE)
 		return (errno = ENOTSUP, NULL);
@@ -2453,20 +2505,52 @@ quark_container_create(struct quark_queue *qq, const char *container_id,
 			return (NULL);
 	}
 
-	if (container_lookup(qq, (char *)container_id) != NULL)
+	container = container_lookup(qq, (char *)container_id);
+	if (container != NULL && container->metadata_ready)
+		return (errno = EEXIST, NULL);
+	if (container != NULL && pod != NULL && container->pod != NULL &&
+	    container->pod != pod)
 		return (errno = EEXIST, NULL);
 
-	container = calloc(1, sizeof(*container));
-	if (container == NULL)
+	if (name != NULL && (name_copy = strdup(name)) == NULL)
 		return (NULL);
+	if (image != NULL && (image_copy = strdup(image)) == NULL) {
+		free(name_copy);
+		return (NULL);
+	}
+
+	if (container != NULL) {
+		if (pod != NULL && !container->linked_by_pod) {
+			col = pod_containers_RB_INSERT(&pod->containers, container);
+			if (unlikely(col != NULL)) {
+				free(name_copy);
+				free(image_copy);
+				return (errno = EEXIST, NULL);
+			}
+			container->pod = pod;
+			container->linked_by_pod = 1;
+		}
+		container->name = name_copy;
+		container->image = image_copy;
+		container->metadata_ready = 1;
+		gc_unlink(qq, &container->gc);
+		return (container);
+	}
+
+	container = calloc(1, sizeof(*container));
+	if (container == NULL) {
+		free(name_copy);
+		free(image_copy);
+		return (NULL);
+	}
 	TAILQ_INIT(&container->processes);
 	container->container_id = strdup(container_id);
 	if (container->container_id == NULL)
 		goto fail;
-	if (name != NULL && (container->name = strdup(name)) == NULL)
-		goto fail;
-	if (image != NULL && (container->image = strdup(image)) == NULL)
-		goto fail;
+	container->name = name_copy;
+	name_copy = NULL;
+	container->image = image_copy;
+	image_copy = NULL;
 
 	col = container_by_id_RB_INSERT(&qq->container_by_id, container);
 	if (unlikely(col != NULL)) {
@@ -2484,10 +2568,12 @@ quark_container_create(struct quark_queue *qq, const char *container_id,
 		}
 		container->linked_by_pod = 1;
 	}
-	link_container_processes(qq);
+	container->metadata_ready = 1;
 
 	return (container);
 fail:
+	free(name_copy);
+	free(image_copy);
 	if (container->linked_by_id)
 		container_delete(qq, container);
 	else {
@@ -3194,6 +3280,7 @@ sproc_pid(struct quark_queue *qq, struct sproc_socket_by_inode *by_inode,
 		qp->cwd = strdup(path);
 	/* cgroup */
 	sproc_cgroup(qp, dfd);
+	link_container_data(qq, qp);
 	/* env */
 	sproc_env(qq, qp, dfd);
 	/* if by_inode != NULL we are doing network, QQ_SOCK_CONN is set */
@@ -4496,13 +4583,6 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 			goto fail;
 		}
 	}
-
-	/*
-	 * At this point, existing processes and container metadata have been
-	 * loaded. Now it is time to correlate them.
-	 */
-	if (qq->kube_mode == QUARK_KUBE_MODE_TALKER)
-		link_container_processes(qq);
 
 	/*
 	 * Build username database, really only used for ECS and event dumping.

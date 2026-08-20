@@ -781,8 +781,9 @@ func (queue *Queue) LookupPod(uid string) *Pod {
 
 // CreateContainer inserts a new container into the queue's container tree.
 // Use this function with QUARK_KUBE_MODE_ASYNC. If podUID is non-empty the container
-// is linked to that pod, which must already exist. Returns syscall.EEXIST if a
-// container with the same containerID is already present.
+// is linked to that pod, which must already exist. If a cgroup placeholder
+// exists, this function adds metadata to it. It returns syscall.EEXIST if the
+// container already has metadata.
 func (queue *Queue) CreateContainer(containerID, podUID, name, image string) (*Container, error) {
 	cContainerID := C.CString(containerID)
 	defer C.free(unsafe.Pointer(cContainerID))
@@ -807,14 +808,15 @@ func (queue *Queue) CreateContainer(containerID, podUID, name, image string) (*C
 }
 
 // RemovePod schedules pod for removal after the queue's cache grace time. The
-// call is idempotent. All child containers are removed when the pod is
-// collected.
+// call is idempotent. Active child containers remain as cgroup placeholders
+// when the pod is collected.
 func (queue *Queue) RemovePod(pod *Pod) {
 	C.quark_pod_remove(queue.quarkQueue, pod.pod)
 }
 
-// RemoveContainer schedules container for removal after the queue's cache grace
-// time. The call is idempotent.
+// RemoveContainer schedules container metadata for removal after the queue's
+// cache grace time. An active container remains as a cgroup placeholder. The
+// call is idempotent.
 func (queue *Queue) RemoveContainer(container *Container) {
 	C.quark_container_remove(queue.quarkQueue, container.container)
 }

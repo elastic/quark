@@ -1875,26 +1875,149 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
-t_kube_async(const struct test *t, struct quark_queue_attr *qa)
+test_queue_populate(struct quark_queue *qq)
 {
-	struct quark_container	*container;
-	struct quark_process	*qp;
+	return (0);
+}
+
+static void
+test_queue_close(struct quark_queue *qq)
+{
+}
+
+static struct quark_queue_ops test_queue_ops = {
+	.populate = test_queue_populate,
+	.close = test_queue_close,
+};
+
+static const struct quark_event *
+test_cgroup_event(struct quark_queue *qq, u32 pid, const char *cgroup)
+{
+	struct raw_event *raw;
+
+	raw = raw_event_alloc(RAW_GETPID);
+	assert(raw != NULL);
+	raw->pid = pid;
+	raw->task.cgroup = strdup(cgroup);
+	assert(raw->task.cgroup != NULL);
+	assert(raw_event_insert(qq, raw) == 0);
+
+	return (quark_queue_get_event(qq));
+}
+
+static int
+t_container_placeholder(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct quark_event *qev;
+	struct quark_container	*container, *placeholder;
+	struct quark_process	*event_process, *second_process, qp1, qp2;
+	struct quark_pod	*pod;
 	struct quark_queue	 qq;
 
-	qa->kube_mode = QUARK_KUBE_MODE_ASYNC;
-	if (quark_queue_open(&qq, qa) != 0)
-		err(1, "quark_queue_open");
+	bzero(&qq, sizeof(qq));
+	RB_INIT(&qq.raw_event_by_time);
+	RB_INIT(&qq.raw_event_by_pidtime);
+	RB_INIT(&qq.process_by_pid);
+	RB_INIT(&qq.container_by_id);
+	RB_INIT(&qq.pod_by_uid);
+	TAILQ_INIT(&qq.event_gc);
+	qq.epollfd = -1;
+	qq.max_length = 1;
+	qq.kube_mode = QUARK_KUBE_MODE_ASYNC;
+	qq.queue_ops = &test_queue_ops;
 
-	qp = (struct quark_process *)quark_process_lookup(&qq, getpid());
-	assert(qp != NULL);
-	free(qp->cgroup);
-	qp->cgroup = strdup("/foo/docker-abc123.scope");
-	assert(qp->cgroup != NULL);
-
-	container = quark_container_create(&qq, "docker://abc123", NULL,
-	    NULL, NULL);
+	qev = test_cgroup_event(&qq, 4242,
+	    "/foo/docker-event-a.scope");
+	assert(qev != NULL);
+	event_process = (struct quark_process *)qev->process;
+	assert(event_process != NULL);
+	container = event_process->container;
 	assert(container != NULL);
-	assert(qp->container == container);
+	assert(!strcmp(container->container_id, "docker://event-a"));
+	assert(!container->metadata_ready);
+
+	qev = test_cgroup_event(&qq, 4242,
+	    "/foo/docker-event-a.scope");
+	assert(qev->process->container == container);
+
+	qev = test_cgroup_event(&qq, 4343,
+	    "/foo/docker-event-a.scope");
+	second_process = (struct quark_process *)qev->process;
+	assert(second_process->container == container);
+
+	qev = test_cgroup_event(&qq, 4242,
+	    "/foo/cri-containerd-event-b.scope");
+	assert(quark_container_lookup(&qq, "docker://event-a") == container);
+	assert(!strcmp(qev->process->container->container_id,
+	    "containerd://event-b"));
+
+	event_process = (struct quark_process *)qev->process;
+	qev = test_cgroup_event(&qq, 4343, "/host/user.slice");
+	assert(qev->process == second_process);
+	assert(qev->process->container == NULL);
+	assert(quark_container_lookup(&qq, "docker://event-a") == NULL);
+
+	qev = test_cgroup_event(&qq, 4242, "/host/user.slice");
+	assert(qev->process == event_process);
+	assert(qev->process->container == NULL);
+	assert(quark_container_lookup(&qq, "containerd://event-b") == NULL);
+
+	qq.kube_mode = QUARK_KUBE_MODE_NONE;
+	qev = test_cgroup_event(&qq, 4444,
+	    "/foo/docker-disabled.scope");
+	assert(qev->process->container == NULL);
+	assert(quark_container_lookup(&qq, "docker://disabled") == NULL);
+	qq.kube_mode = QUARK_KUBE_MODE_ASYNC;
+
+	placeholder = quark_container_get(&qq, "docker://abc123", NULL);
+	assert(placeholder != NULL);
+	assert(!placeholder->metadata_ready);
+	assert(TAILQ_EMPTY(&placeholder->processes));
+
+	bzero(&qp1, sizeof(qp1));
+	bzero(&qp2, sizeof(qp2));
+	qp1.container = placeholder;
+	qp2.container = placeholder;
+	TAILQ_INSERT_TAIL(&placeholder->processes, &qp1, entry_container);
+	TAILQ_INSERT_TAIL(&placeholder->processes, &qp2, entry_container);
+
+	pod = quark_pod_create(&qq, "pod-uid", "pod-name", "default",
+	    "Running");
+	assert(pod != NULL);
+	container = quark_container_create(&qq, "docker://abc123", "pod-uid",
+	    "container-name", "example/image:latest");
+	assert(container != NULL);
+	assert(container == placeholder);
+	assert(container->metadata_ready);
+	assert(container->pod == pod);
+	assert(!strcmp(container->name, "container-name"));
+	assert(!strcmp(container->image, "example/image:latest"));
+	assert(qp1.container == container);
+	assert(qp2.container == container);
+
+	errno = 0;
+	assert(quark_container_create(&qq, "docker://abc123", "pod-uid",
+	    NULL, NULL) == NULL);
+	assert(errno == EEXIST);
+
+	quark_container_remove(&qq, container);
+	(void)quark_queue_get_event(&qq);
+	assert(quark_container_lookup(&qq, "docker://abc123") == container);
+	assert(!container->metadata_ready);
+	assert(container->pod == NULL);
+	assert(container->name == NULL);
+	assert(container->image == NULL);
+	assert(qp1.container == container);
+	assert(qp2.container == container);
+
+	TAILQ_REMOVE(&container->processes, &qp1, entry_container);
+	qp1.container = NULL;
+	TAILQ_REMOVE(&container->processes, &qp2, entry_container);
+	qp2.container = NULL;
+	quark_container_remove(&qq, container);
+	(void)quark_queue_get_event(&qq);
+	assert(quark_container_lookup(&qq, "docker://abc123") == NULL);
+	assert(errno == ESRCH);
 
 	quark_queue_close(&qq);
 
@@ -2781,7 +2904,7 @@ struct test all_tests[] = {
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
 	T_EBPF(t_cgroup_parse),
-	T_EBPF(t_kube_async),
+	T(t_container_placeholder),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),
 	T_EBPF(t_cache_grace),
