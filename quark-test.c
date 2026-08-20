@@ -2558,6 +2558,8 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on file.path /foo/bar\n",
 		"pass on file.path foo-bar\n",
 		"pass on file.path /foo/* file.exec_change\n",
+		"pass on event.scope container\n",
+		"drop on event.scope host\n",
 		"drop on process.exe /foo/bar\n",
 		"drop on process.exe /foo/*\n",
 		"drop on process.exe */bar\n",
@@ -2588,6 +2590,8 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on foobar\n",
 		"drop on process.exe",
 		"drop on file.name \"foo\n",
+		"drop on event.scope\n",
+		"drop on event.scope guest\n",
 		NULL
 	};
 
@@ -2606,6 +2610,66 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 			errx(1, "rule %d should have failed: %s", i, *s);
 		quark_ruleset_clear(&ruleset);
 	}
+
+	return (0);
+}
+
+static int
+t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_container	 container;
+	struct quark_event	 qev;
+	struct quark_process	 qp;
+	struct quark_rule	*rule;
+	struct quark_rule_field	 rf;
+	struct quark_ruleset	 ruleset;
+
+	bzero(&container, sizeof(container));
+	bzero(&qev, sizeof(qev));
+	bzero(&qp, sizeof(qp));
+
+	ruleset_from_string(&ruleset,
+	    "pass on event.scope container\n"
+	    "drop on event.scope host\n");
+
+	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(rule->action == QUARK_RA_DROP);
+
+	container.container_id = "docker://abc123";
+	qp.container = &container;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 0);
+	assert(rule->action == QUARK_RA_PASS);
+
+	qev.process = NULL;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	container.container_id = NULL;
+	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	container.container_id = "";
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+
+	quark_ruleset_clear(&ruleset);
+
+	quark_ruleset_init(&ruleset);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
+	assert(rule != NULL);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_EVENT_SCOPE;
+	rf.id = 42;
+	errno = 0;
+	assert(quark_rule_match_field(rule, rf) == -1);
+	assert(errno == EINVAL);
+	quark_ruleset_clear(&ruleset);
 
 	return (0);
 }
@@ -2735,6 +2799,7 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
+	T(t_rule_scope),
 	T_EBPF(t_trusted_pid),
 	T_NOVA(t_nova),		/* XXX temporary XXX */
 	{ NULL,	NULL, 0, 0 }
