@@ -651,6 +651,8 @@ struct quark_process {
 	char	*cmdline;
 	char	*cwd;
 	char	*cgroup;
+	char	*container_id;
+	int	 container_id_parsed;
 	struct quark_container *container;
 	char	*env;
 	size_t	 env_len;
