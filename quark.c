@@ -1582,11 +1582,68 @@ parse_container_cgroup(const char *cgroup, char *container_id, size_t container_
 	return (0);
 }
 
-static void
+/*
+ * Return the cached container ID. Parse the cgroup if necessary.
+ * A NULL result with container_id_parsed set means that the cgroup
+ * is not a container cgroup.
+ */
+const char *
+process_container_id(struct quark_process *qp)
+{
+	char	cid[NAME_MAX];
+
+	if (qp->container_id_parsed)
+		return (qp->container_id);
+	if (qp->cgroup == NULL)
+		return (NULL);
+
+	if (parse_container_cgroup(qp->cgroup, cid, sizeof(cid)) == -1) {
+		qp->container_id_parsed = 1;
+		return (NULL);
+	}
+
+	qp->container_id = strdup(cid);
+	if (qp->container_id == NULL)
+		return (NULL);
+
+	qp->container_id_parsed = 1;
+	return (qp->container_id);
+}
+
+/*
+ * Take ownership of *cgroup. Keep the cached data if the value did
+ * not change.
+ */
+void
+process_set_cgroup(struct quark_process *qp, char **cgroup)
+{
+	if (*cgroup == NULL)
+		return;
+
+	if (qp->cgroup != NULL && !strcmp(qp->cgroup, *cgroup)) {
+		free(*cgroup);
+		*cgroup = NULL;
+		return;
+	}
+
+	if (qp->container != NULL) {
+		TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
+		qp->container = NULL;
+	}
+
+	free(qp->cgroup);
+	free(qp->container_id);
+	qp->cgroup = *cgroup;
+	qp->container_id = NULL;
+	qp->container_id_parsed = 0;
+	*cgroup = NULL;
+}
+
+void
 link_container_data(struct quark_queue *qq, struct quark_process *qp)
 {
 	struct quark_container	*container;
-	char			 cid[NAME_MAX];
+	const char		*container_id;
 
 	if (qp == NULL)
 		return;
@@ -1595,25 +1652,11 @@ link_container_data(struct quark_queue *qq, struct quark_process *qp)
 	/* Do not parse the cgroup if no container metadata exists. */
 	if (RB_EMPTY(&qq->container_by_id))
 		return;
-	if (qp->cgroup == NULL)
+
+	container_id = process_container_id(qp);
+	if (container_id == NULL)
 		return;
-
-	if (!qp->container_id_parsed) {
-		if (parse_container_cgroup(qp->cgroup, cid, sizeof(cid)) == -1) {
-			qp->container_id_parsed = 1;
-			return;
-		}
-
-		qp->container_id = strdup(cid);
-		if (qp->container_id == NULL)
-			return;
-
-		qp->container_id_parsed = 1;
-	}
-
-	if (qp->container_id == NULL)
-		return;
-	if ((container = container_lookup(qq, qp->container_id)) == NULL)
+	if ((container = container_lookup(qq, (char *)container_id)) == NULL)
 		return;
 
 	qp->container = container;
@@ -2655,28 +2698,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		qp->proc_mnt_inonum = raw_task->mnt_inonum;
 		qp->proc_net_inonum = raw_task->net_inonum;
 
-		if (raw_task->cgroup != NULL) {
-			if (qp->cgroup == NULL ||
-			    strcmp(qp->cgroup, raw_task->cgroup) != 0) {
-				/*
-				 * Remove the old container link because the
-				 * process now has a different cgroup.
-				 */
-				if (qp->container != NULL) {
-					TAILQ_REMOVE(&qp->container->processes, qp,
-					    entry_container);
-					qp->container = NULL;
-				}
-
-				free(qp->cgroup);
-				free(qp->container_id);
-				qp->cgroup = raw_task->cgroup;
-				qp->container_id = NULL;
-				qp->container_id_parsed = 0;
-			} else
-				free(raw_task->cgroup);
-			raw_task->cgroup = NULL;
-		}
+		process_set_cgroup(qp, &raw_task->cgroup);
 		if (raw_task->env != NULL) {
 			free(qp->env);
 			qp->env = raw_task->env;
