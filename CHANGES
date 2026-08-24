@@ -151,3 +151,6 @@ Changes from 0.7 to 0.8
   o The Go bindings (go/quark) learned QueueAttr.RuleText for
     installing a ruleset on the queue. Processes matched by poison
     rules carry the tag in Process.PoisonTag.
+  o The Go bindings (go/quark) learned PasswdLookup() and
+    GroupLookup(), mirroring quark_passwd_lookup(3) and
+    quark_group_lookup(3).

@@ -129,6 +129,19 @@ type Process struct {
 	PoisonTag uint64 // Set by matching poison rules, zero if none matched
 }
 
+// Passwd is a cached passwd(5) entry, see PasswdLookup.
+type Passwd struct {
+	Name string
+	Uid  uint32
+	Gid  uint32
+}
+
+// Group is a cached group(5) entry, see GroupLookup.
+type Group struct {
+	Name string
+	Gid  uint32
+}
+
 // Socket represents a connection between two endpoints
 type Socket struct {
 	Local           netip.AddrPort
@@ -500,6 +513,37 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 	}
 
 	return processFromC(process), true
+}
+
+// PasswdLookup looks up uid in quark's passwd(5) cache, mirroring
+// quark_passwd_lookup(3). The boolean is false if uid is unknown.
+func (queue *Queue) PasswdLookup(uid uint32) (Passwd, bool) {
+	passwd, _ := C.quark_passwd_lookup(queue.quarkQueue, C.uid_t(uid))
+
+	if passwd == nil {
+		return Passwd{}, false
+	}
+
+	return Passwd{
+		Name: C.GoString(passwd.name),
+		Uid:  uint32(passwd.uid),
+		Gid:  uint32(passwd.gid),
+	}, true
+}
+
+// GroupLookup looks up gid in quark's group(5) cache, mirroring
+// quark_group_lookup(3). The boolean is false if gid is unknown.
+func (queue *Queue) GroupLookup(gid uint32) (Group, bool) {
+	group, _ := C.quark_group_lookup(queue.quarkQueue, C.gid_t(gid))
+
+	if group == nil {
+		return Group{}, false
+	}
+
+	return Group{
+		Name: C.GoString(group.name),
+		Gid:  uint32(group.gid),
+	}, true
 }
 
 // Block blocks until there are events or an undefined timeout
