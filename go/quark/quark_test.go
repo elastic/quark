@@ -69,6 +69,44 @@ func TestQuark(t *testing.T) {
 		testStats(t, attr)
 	})
 
+	t.Run("DisableAggregation", func(t *testing.T) {
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+		defer queue.Close()
+
+		require.NoError(t, queue.DisableAggregation())
+
+		// XXX assumes /bin/true exists
+		cmd := exec.Command("/bin/true")
+		err = cmd.Run()
+		require.NoError(t, err)
+
+		qevs, err := drainFor(queue, 200*time.Millisecond)
+		require.NoError(t, err)
+
+		var childEvents []uint64
+		for _, qev := range qevs {
+			if qev.Process.Pid == uint32(cmd.Process.Pid) {
+				childEvents = append(childEvents, qev.Events)
+			}
+		}
+
+		require.Len(t, childEvents, 3)
+		processEvents := QUARK_EV_FORK | QUARK_EV_EXEC | QUARK_EV_EXIT
+		require.Equal(t, []uint64{
+			QUARK_EV_FORK,
+			QUARK_EV_EXEC,
+			QUARK_EV_EXIT,
+		}, []uint64{
+			childEvents[0] & processEvents,
+			childEvents[1] & processEvents,
+			childEvents[2] & processEvents,
+		})
+	})
+
 	t.Run("RulePoison", func(t *testing.T) {
 		const poisonTag = 1805
 

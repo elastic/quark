@@ -161,17 +161,17 @@ type Packet struct {
 }
 
 type File struct {
-	Path      string
-	OldPath   string
-	SymTarget string
-	Inode     uint64
-	Atime     uint64
-	Mtime     uint64
-	Ctime     uint64
-	Size      uint64
-	Mode      uint32
-	Uid       uint32
-	Gid       uint32
+	Path       string
+	OldPath    string
+	SymTarget  string
+	Inode      uint64
+	Atime      uint64
+	Mtime      uint64
+	Ctime      uint64
+	Size       uint64
+	Mode       uint32
+	Uid        uint32
+	Gid        uint32
 	OpMask     uint32
 	ChangeMask uint32
 }
@@ -619,6 +619,20 @@ func Boottime() uint64 {
 // and keep the epoch fresh with UpdateBoottime.
 func TimeToWallclock(timeSinceBoot uint64) uint64 {
 	return uint64(C.quark_time_to_wallclock(C.u64(timeSinceBoot)))
+}
+
+// DisableAggregation clears every entry in Quark's aggregation matrix.
+// It must be called after OpenQueue and before the queue is consumed.
+func (queue *Queue) DisableAggregation() error {
+	for parent := 0; parent < int(C.RAW_NUM_TYPES); parent++ {
+		for child := 0; child < int(C.RAW_NUM_TYPES); child++ {
+			ret, err := C.quark_queue_set_agg_matrix(queue.quarkQueue, C.int(parent), C.int(child), nil)
+			if ret != 0 {
+				return wrapErrno(err)
+			}
+		}
+	}
+	return nil
 }
 
 // processFromC converts the C process structure to a go process.
