@@ -1874,6 +1874,153 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static void
+test_queue_init(struct quark_queue *qq)
+{
+	bzero(qq, sizeof(*qq));
+
+	RB_INIT(&qq->raw_event_by_time);
+	RB_INIT(&qq->raw_event_by_pidtime);
+	RB_INIT(&qq->process_by_pid);
+	RB_INIT(&qq->socket_by_src_dst);
+	RB_INIT(&qq->passwd_by_uid);
+	RB_INIT(&qq->group_by_gid);
+	RB_INIT(&qq->container_by_id);
+	RB_INIT(&qq->pod_by_uid);
+	TAILQ_INIT(&qq->event_gc);
+	qq->epollfd = -1;
+}
+
+/*
+ * Test the parsed container ID cache and cgroup replacement.
+ */
+static int
+t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_process	 qp;
+	struct quark_container	 container;
+	const char		*cached;
+	char			*cgroup;
+
+	bzero(&qp, sizeof(qp));
+	bzero(&container, sizeof(container));
+	TAILQ_INIT(&container.processes);
+
+	/* Parse and cache the first container ID. */
+	cgroup = strdup("/system.slice/docker-old.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(!strcmp(process_container_id(&qp), "docker://old"));
+	assert(qp.container_id_parsed);
+	assert(qp.container_id != NULL);
+	cached = qp.container_id;
+
+	/*
+	 * The same cgroup must preserve the cached ID and the container
+	 * link.
+	 */
+	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
+	qp.container = &container;
+
+	cgroup = strdup("/system.slice/docker-old.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container == &container);
+	assert(qp.container_id == cached);
+	assert(TAILQ_FIRST(&container.processes) == &qp);
+
+	/*
+	 * A different cgroup must remove the old link and clear the
+	 * cached ID.
+	 */
+	cgroup = strdup("/system.slice/containerd-new.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container == NULL);
+	assert(TAILQ_EMPTY(&container.processes));
+	assert(qp.container_id == NULL);
+	assert(!qp.container_id_parsed);
+
+	assert(!strcmp(process_container_id(&qp), "containerd://new"));
+	assert(qp.container_id_parsed);
+
+	/* Cache a negative parse result. */
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(process_container_id(&qp) == NULL);
+	assert(qp.container_id_parsed);
+
+	/* The second call uses the cached negative result. */
+	assert(process_container_id(&qp) == NULL);
+	assert(qp.container_id_parsed);
+
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	return (0);
+}
+
+/*
+ * Test container linking when metadata arrives before or after the
+ * process.
+ */
+static int
+t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_process	 qp;
+	struct quark_container	*container;
+	const char		*cached;
+
+	test_queue_init(&qq);
+	bzero(&qp, sizeof(qp));
+
+	qp.cgroup = strdup("/system.slice/docker-target.scope");
+	assert(qp.cgroup != NULL);
+
+	/* No metadata exists. RB_EMPTY must stop the parse. */
+	link_container_data(&qq, &qp);
+	assert(qp.container == NULL);
+	assert(qp.container_id == NULL);
+	assert(!qp.container_id_parsed);
+
+	/*
+	 * Unrelated metadata now exists. The lookup fails, but the parsed
+	 * ID stays in the process cache.
+	 */
+	assert(quark_container_get(&qq, "docker://other", NULL) != NULL);
+	link_container_data(&qq, &qp);
+	assert(qp.container == NULL);
+	assert(qp.container_id_parsed);
+	assert(!strcmp(qp.container_id, "docker://target"));
+	cached = qp.container_id;
+
+	/* A second failed lookup must use the same cached string. */
+	link_container_data(&qq, &qp);
+	assert(qp.container == NULL);
+	assert(qp.container_id == cached);
+
+	/* Matching metadata arrives after the process. */
+	container = quark_container_get(&qq, "docker://target", NULL);
+	assert(container != NULL);
+	link_container_data(&qq, &qp);
+	assert(qp.container == container);
+	assert(TAILQ_FIRST(&container->processes) == &qp);
+
+	quark_queue_close(&qq);
+	assert(qp.container == NULL);
+
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	return (0);
+}
+
 /*
  * quark_queue_open() must refuse anything but exactly one backend
  * with EINVAL, and the default attr must select only EBPF.
@@ -2778,6 +2925,8 @@ struct test all_tests[] = {
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
 	T_EBPF(t_cgroup_parse),
+	T(t_process_container_cache),
+	T(t_link_container_data),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),
 	T_EBPF(t_cache_grace),
