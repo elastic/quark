@@ -582,8 +582,9 @@ func TimeToWallclock(timeSinceBoot uint64) uint64 {
 func (queue *Queue) DisableAggregation() error {
 	for parent := 0; parent < int(C.RAW_NUM_TYPES); parent++ {
 		for child := 0; child < int(C.RAW_NUM_TYPES); child++ {
-			if C.quark_queue_set_agg_matrix(queue.quarkQueue, C.int(parent), C.int(child), nil) != 0 {
-				return wrapErrno(errors.New("clear aggregation matrix"))
+			ret, err := C.quark_queue_set_agg_matrix(queue.quarkQueue, C.int(parent), C.int(child), nil)
+			if ret != 0 {
+				return wrapErrno(err)
 			}
 		}
 	}
