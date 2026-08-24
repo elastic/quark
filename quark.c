@@ -5144,6 +5144,7 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
     struct quark_event *qev)
 {
 	const struct quark_process	*qp;
+	const char			*container_id;
 
 	qp = qev->process;
 
@@ -5185,14 +5186,11 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 	case QUARK_RF_EVENT_SCOPE:
 		if (qp == NULL)
 			break;
+		container_id = process_container_id((struct quark_process *)qp);
 		if (field->id == QUARK_RULE_SCOPE_CONTAINER)
-			return (qp->container != NULL &&
-			    qp->container->container_id != NULL &&
-			    qp->container->container_id[0] != 0);
+			return (container_id != NULL && container_id[0] != 0);
 		if (field->id == QUARK_RULE_SCOPE_HOST)
-			return (qp->container == NULL ||
-			    qp->container->container_id == NULL ||
-			    qp->container->container_id[0] == 0);
+			return (container_id == NULL || container_id[0] == 0);
 		break;
 	case QUARK_RF_POISON:
 		if (qp != NULL)

@@ -2764,14 +2764,14 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_container	 container;
 	struct quark_event	 qev;
 	struct quark_process	 qp;
 	struct quark_rule	*rule;
 	struct quark_rule_field	 rf;
 	struct quark_ruleset	 ruleset;
+	const char		*cached;
+	char			*cgroup;
 
-	bzero(&container, sizeof(container));
 	bzero(&qev, sizeof(qev));
 	bzero(&qp, sizeof(qp));
 
@@ -2785,25 +2785,39 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	assert(rule->number == 1);
 	assert(rule->action == QUARK_RA_DROP);
 
-	container.container_id = "docker://abc123";
-	qp.container = &container;
+	/* Scope must use the process cgroup without container metadata. */
+	cgroup = strdup("/system.slice/docker-abc123.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container == NULL);
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL);
 	assert(rule->number == 0);
 	assert(rule->action == QUARK_RA_PASS);
+	assert(qp.container_id_parsed);
+	assert(!strcmp(qp.container_id, "docker://abc123"));
+	cached = qp.container_id;
+
+	/* A second match must use the cached container ID. */
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 0);
+	assert(qp.container_id == cached);
 
 	qev.process = NULL;
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 
-	container.container_id = NULL;
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
 	qev.process = &qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL);
 	assert(rule->number == 1);
-	container.container_id = "";
-	rule = quark_ruleset_match(&ruleset, &qev);
-	assert(rule != NULL);
-	assert(rule->number == 1);
+	assert(qp.container_id_parsed);
+	assert(qp.container_id == NULL);
 
 	quark_ruleset_clear(&ruleset);
 
@@ -2817,6 +2831,8 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_rule_match_field(rule, rf) == -1);
 	assert(errno == EINVAL);
 	quark_ruleset_clear(&ruleset);
+	free(qp.cgroup);
+	free(qp.container_id);
 
 	return (0);
 }
