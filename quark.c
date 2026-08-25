@@ -2449,7 +2449,13 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 const struct quark_process *
 quark_process_lookup(struct quark_queue *qq, int pid)
 {
-	return (process_cache_get(qq, pid, 0));
+	struct quark_process *qp;
+
+	qp = process_cache_get(qq, pid, 0);
+	if (qp != NULL)
+		link_container_data(qq, qp);
+
+	return (qp);
 }
 
 /*
@@ -2723,11 +2729,14 @@ quark_process_iter_init(struct quark_process_iter *qi, struct quark_queue *qq)
 const struct quark_process *
 quark_process_iter_next(struct quark_process_iter *qi)
 {
-	const struct quark_process	*qp;
+	struct quark_process *qp;
 
 	qp = qi->qp;
 	if (qi->qp != NULL)
-		qi->qp = RB_NEXT(process_by_pid, &qq->process_by_pid, qi->qp);
+		qi->qp = RB_NEXT(process_by_pid, &qi->qq->process_by_pid,
+		    qi->qp);
+	if (qp != NULL)
+		link_container_data(qi->qq, qp);
 
 	return (qp);
 }
@@ -3169,7 +3178,7 @@ sproc_cgroup(struct quark_process *qp, int dfd)
 {
 	int	 fd;
 	size_t	 len;
-	char	*cgroup, *tail, *p;
+	char	*cgroup, *new_cgroup, *tail, *p;
 
 	cgroup = NULL;
 	if ((fd = openat(dfd, "cgroup", O_RDONLY)) == -1) {
@@ -3195,7 +3204,10 @@ sproc_cgroup(struct quark_process *qp, int dfd)
 		goto bad;
 	*tail = 0;
 
-	qp->cgroup = strdup(p);
+	new_cgroup = strdup(p);
+	if (new_cgroup == NULL)
+		goto bad;
+	process_set_cgroup(qp, &new_cgroup);
 	free(cgroup);
 
 	return (0);
@@ -4493,6 +4505,20 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->ruleset = NULL;		/* no rules */
 }
 
+void
+quark_queue_init_trees(struct quark_queue *qq)
+{
+	RB_INIT(&qq->raw_event_by_time);
+	RB_INIT(&qq->raw_event_by_pidtime);
+	RB_INIT(&qq->process_by_pid);
+	RB_INIT(&qq->socket_by_src_dst);
+	RB_INIT(&qq->passwd_by_uid);
+	RB_INIT(&qq->group_by_gid);
+	RB_INIT(&qq->container_by_id);
+	RB_INIT(&qq->pod_by_uid);
+	TAILQ_INIT(&qq->event_gc);
+}
+
 int
 quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 {
@@ -4558,16 +4584,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		return (-1);
 
 	bzero(qq, sizeof(*qq));
-
-	RB_INIT(&qq->raw_event_by_time);
-	RB_INIT(&qq->raw_event_by_pidtime);
-	RB_INIT(&qq->process_by_pid);
-	RB_INIT(&qq->socket_by_src_dst);
-	RB_INIT(&qq->passwd_by_uid);
-	RB_INIT(&qq->group_by_gid);
-	RB_INIT(&qq->container_by_id);
-	RB_INIT(&qq->pod_by_uid);
-	TAILQ_INIT(&qq->event_gc);
+	quark_queue_init_trees(qq);
 	qq->flags = qa->flags;
 	qq->max_length = qa->max_length;
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
