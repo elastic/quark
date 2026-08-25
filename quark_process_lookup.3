@@ -15,6 +15,13 @@ in quark's cache
 looks for the cached process referenced by
 .Fa pid .
 .Pp
+Before it returns a process,
+.Nm
+tries to link the process to matching container metadata in the queue.
+This includes container metadata that was added after
+.Xr quark_queue_open 3
+returned.
+.Pp
 Quark's internal cache keeps processes that exited for a grace time, meaning
 you can still lookup them for a little while before they're garbage
 collected.
