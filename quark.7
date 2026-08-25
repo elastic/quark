@@ -117,6 +117,8 @@ This cache keeps soon-to-be-purged elements for a little while so that you can
 still lookup a process that just exited.
 The table is initialized by scraping
 .Pa /proc .
+Process lookup and iteration try to link each returned process to matching
+container metadata that is currently in the queue.
 .It Em TRANSPARENCY
 .Nm
 tries to be as transparent as possible about what it knows, there are counters

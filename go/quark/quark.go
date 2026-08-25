@@ -426,7 +426,8 @@ func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
 	return b, true, nil
 }
 
-// Lookup looks up for the Process associated with PID in quark's internal cache.
+// Lookup returns the Process associated with PID in quark's internal cache. It
+// refreshes the process link to container metadata before it returns.
 func (queue *Queue) Lookup(pid int) (Process, bool) {
 	process, _ := C.quark_process_lookup(queue.quarkQueue, C.int(pid))
 
@@ -448,7 +449,8 @@ func (queue *Queue) Block() error {
 	return err
 }
 
-// Snapshot returns a snapshot of all processes in the cache.
+// Snapshot returns all processes in the cache. It refreshes each process link
+// to container metadata before it copies the process into the snapshot.
 func (queue *Queue) Snapshot() []Process {
 	var processes []Process
 	var iter C.struct_quark_process_iter
