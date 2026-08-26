@@ -1542,7 +1542,7 @@ kprobe_queue_update_stats(struct quark_queue *qq)
 {
 	struct kprobe_queue 		*kqq = qq->queue_be;
 	struct perf_group_leader	*pgl;
-	u64				stalls = 0;
+	u64				 stalls = 0;
 
 	TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry)
 		stalls += pgl->mmap.stalled;
