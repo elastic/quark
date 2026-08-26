@@ -4919,7 +4919,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 	qsk->pid_last_use = raw->pid;
 
 	qev->socket = qsk;
-	qev->process = quark_process_lookup(qq, qsk->pid_origin);
+	qev->process = process_cache_get(qq, qsk->pid_origin, 0);
 
 	return (qev);
 }
@@ -4938,7 +4938,7 @@ raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_PACKET;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 
 	/* Steal the packet */
 	qev->packet = raw->packet.quark_packet;
@@ -4963,7 +4963,7 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_FILE;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 
 	/*
 	 * File aggregation is basically joining op_mask and then using the last
@@ -4994,7 +4994,7 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_PTRACE;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 	qev->ptrace = raw->ptrace.quark_ptrace;
 
 	return (qev);
@@ -5008,7 +5008,7 @@ raw_event_module_load(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_MODULE_LOAD;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 	/* Steal it */
 	qev->module_load = raw->module_load.quark_module_load;
 	raw->module_load.quark_module_load = NULL;
@@ -5024,7 +5024,7 @@ raw_event_shm(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_SHM;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 	/* Steal it */
 	qev->shm = raw->shm.quark_shm;
 	raw->shm.quark_shm = NULL;
@@ -5047,7 +5047,7 @@ raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_TTY;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 
 	/* Link raw (our head) to the first chunk in tha agg queue */
 	next = TAILQ_FIRST(&raw->agg_queue);
