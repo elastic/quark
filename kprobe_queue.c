@@ -27,12 +27,13 @@
 #include "quark.h"
 
 #define PERF_MMAP_PAGES		16		/* Must be power of 2 */
+#define PERF_RECORD_MAX_SIZE	(UINT16_MAX + 1)	/* header.size is u16 */
 /*
  * A perf record caps at UINT16_MAX (perf_event_header.size). The ring must be
  * able to hold at least one such record, or perf_mmap_read() could chase a
  * corrupt data_head past the end of the ring. getpagesize() is at least 4096.
  */
-static_assert(PERF_MMAP_PAGES * 4096 >= UINT16_MAX + 1,
+static_assert(PERF_MMAP_PAGES * 4096 >= PERF_RECORD_MAX_SIZE,
     "perf ring can't hold the largest possible perf record");
 
 struct perf_sample_id {
@@ -118,6 +119,7 @@ struct perf_mmap {
 	size_t				 data_mask;
 	u8				*data_start;
 	u64				 data_tmp_tail;
+	int				 stalled;
 };
 
 struct perf_group_leader {
@@ -642,6 +644,7 @@ perf_mmap_init(struct perf_mmap *mm, int fd)
 	mm->data_mask = mm->data_size - 1;
 	mm->data_start = (uint8_t *)mm->metadata + getpagesize();
 	mm->data_tmp_tail = mm->metadata->data_tail;
+	mm->stalled = 0;
 
 	return (0);
 }
@@ -667,6 +670,9 @@ perf_mmap_read(struct perf_mmap *mm, u8 *wrapped_event_buf)
 	u16				 evsize;
 	ssize_t				 leftcont;	/* contiguous size left */
 
+	if (unlikely(mm->stalled))
+		return (NULL);
+
 	data_head = perf_mmap_load_head(mm->metadata);
 	diff = data_head - mm->data_tmp_tail;
 	evh = (struct perf_event_header *)
@@ -679,16 +685,22 @@ perf_mmap_read(struct perf_mmap *mm, u8 *wrapped_event_buf)
 	 * Snapshot the size, the ring is a shared mapping and the checks below
 	 * are useless against a value that changes under our feet.
 	 */
-	evsize = evh->size;
+	evsize = __atomic_load_n(&evh->size, __ATOMIC_RELAXED);
 	/*
 	 * A record smaller than its header is corruption, consuming it would
-	 * spin on the same offset forever, treat the ring as empty and let it
-	 * stall instead. Nothing here can overflow the copies below: evsize
-	 * caps at UINT16_MAX, wrapped_event_buf holds UINT16_MAX + 1 (see
+	 * spin on the same offset forever, warn once and stall the ring
+	 * instead. Nothing here can overflow the copies below: evsize caps at
+	 * UINT16_MAX, wrapped_event_buf holds PERF_RECORD_MAX_SIZE (see
 	 * kprobe_queue_open()) and the ring is at least as big (see the static
 	 * assert at PERF_MMAP_PAGES), even against a corrupt data_head.
 	 */
-	if (evsize < sizeof(*evh) || diff < evsize)
+	if (unlikely(evsize < sizeof(*evh))) {
+		mm->stalled = 1;
+		qwarnx("perf record is corrupt: %d bytes", evsize);
+		return (NULL);
+	}
+	/* Do we have the full record */
+	if (diff < evsize)
 		return (NULL);
 	/* How much contiguous space there is left */
 	leftcont = mm->data_size - (mm->data_tmp_tail & mm->data_mask);
@@ -1411,7 +1423,7 @@ kprobe_queue_open(struct quark_queue *qq)
 	 * time. A record caps at UINT16_MAX (perf_event_header.size is u16),
 	 * so any record fits.
 	 */
-	kqq->wrapped_event_buf = malloc(UINT16_MAX + 1);
+	kqq->wrapped_event_buf = malloc(PERF_RECORD_MAX_SIZE);
 	if (kqq->wrapped_event_buf == NULL) {
 		qwarn("malloc");
 		goto fail;
