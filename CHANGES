@@ -159,3 +159,7 @@ Changes from 0.7 to 0.8
   o The Go bindings (go/quark) learned Queue.DisableAggregation(),
     which clears every entry in the aggregation matrix. Call it after
     OpenQueue() and before the queue is consumed.
+
+Changes from 0.8 to 0.9
+~~~~~~~~~~~~~~~~~~~~~~~
+  o quark_queue_stats{} got a "stalls" member.
