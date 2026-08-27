@@ -1540,7 +1540,17 @@ kprobe_queue_populate(struct quark_queue *qq)
 static int
 kprobe_queue_update_stats(struct quark_queue *qq)
 {
-	/* NADA */
+	struct kprobe_queue 		*kqq = qq->queue_be;
+	struct perf_group_leader	*pgl;
+	u64				 stalls = 0;
+
+	TAILQ_FOREACH(pgl, &kqq->perf_group_leaders, entry)
+		stalls += pgl->mmap.stalled;
+
+	// A stalled ring remains stalled so we shouldn't be aggregating
+	// stalls across kprobe_queue_update_stats calls.
+	qq->stats.stalls = stalls;
+
 	return (0);
 }
 
