@@ -24,7 +24,17 @@ DECL_FIELD_OFFSET(iov_iter, __iov);
 
 #define S_ISUID 0004000
 #define S_ISGID 0002000
-#define PROT_EXEC 0x4
+
+#define MPROTECT_PROT_READ  0x1
+#define MPROTECT_PROT_WRITE 0x2
+#define MPROTECT_PROT_EXEC  0x4
+
+#define MPROTECT_VM_READ  (1UL << 0)
+#define MPROTECT_VM_WRITE (1UL << 1)
+#define MPROTECT_VM_EXEC  (1UL << 2)
+
+#define MPROTECT_MINORBITS 20
+#define MPROTECT_MINORMASK ((1U << MPROTECT_MINORBITS) - 1)
 
 SEC("tp_btf/sched_process_fork")
 int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct task_struct *child)
@@ -451,68 +461,44 @@ int BPF_KPROBE(kprobe__arch_ptrace,
     return r;
 }
 
-SEC("tracepoint/syscalls/sys_enter_mprotect")
-int tracepoint_syscalls_sys_enter_mprotect(struct syscall_trace_enter *ctx)
+static u64 mprotect_vm_flags_to_prot(unsigned long vm_flags)
 {
-    preempt_disable();
-    if (ebpf_events_is_trusted_pid())
-        goto out;
+    u64 prot = 0;
 
-    struct mprotect_args {
-        short common_type;
-        char common_flags;
-        char common_preempt_count;
-        int common_pid;
-        int __syscall_nr;
-        unsigned long start;
-        size_t len;
-        unsigned long prot;
-    };
-    struct mprotect_args *ex_args    = (struct mprotect_args *)ctx;
-    const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (vm_flags & MPROTECT_VM_READ)
+        prot |= MPROTECT_PROT_READ;
+    if (vm_flags & MPROTECT_VM_WRITE)
+        prot |= MPROTECT_PROT_WRITE;
+    if (vm_flags & MPROTECT_VM_EXEC)
+        prot |= MPROTECT_PROT_EXEC;
 
-    if (is_kernel_thread(task))
-        goto out;
-
-    if (!(ex_args->prot & PROT_EXEC))
-        goto out;
-
-    struct ebpf_events_state state = {};
-    state.mprotect.addr = ex_args->start;
-    state.mprotect.len  = ex_args->len;
-    state.mprotect.prot = ex_args->prot;
-    ebpf_events_state__set(EBPF_EVENTS_STATE_MPROTECT, &state);
-
-out:
-    preempt_enable();
-    return 0;
+    return prot;
 }
 
-SEC("tracepoint/syscalls/sys_exit_mprotect")
-int tracepoint_syscalls_sys_exit_mprotect(struct syscall_trace_exit *args)
+/*
+ * security_file_mprotect() is called once for every VMA considered by
+ * mprotect(2) and pkey_mprotect(2), after personality handling has produced
+ * the effective protection and before the protection change is committed.
+ * Consequently this event describes an executable-memory attempt, not a
+ * successful syscall or an exact modified subrange.
+ */
+static int security_file_mprotect__enter(struct vm_area_struct *vma,
+                                         unsigned long req_prot,
+                                         unsigned long effective_prot)
 {
-    preempt_disable();
-
-    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_MPROTECT);
-    if (!state)
-        goto out;
-
-    u64 addr = state->mprotect.addr;
-    u64 len  = state->mprotect.len;
-    u64 prot = state->mprotect.prot;
-    ebpf_events_state__del(EBPF_EVENTS_STATE_MPROTECT);
-
-    if (BPF_CORE_READ(args, ret) != 0)
-        goto out;
-
-    if (ebpf_events_is_trusted_pid())
+    if (ebpf_events_is_trusted_pid() || !vma)
         goto out;
 
     const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     if (is_kernel_thread(task))
         goto out;
 
-    struct ebpf_process_mprotect_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+    // Filter on the kernel-adjusted protection so READ_IMPLIES_EXEC is seen.
+    if (!(effective_prot & MPROTECT_PROT_EXEC))
+        goto out;
+
+    struct ebpf_process_mprotect_event *event =
+        bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
     if (!event)
         goto out;
 
@@ -520,14 +506,68 @@ int tracepoint_syscalls_sys_exit_mprotect(struct syscall_trace_exit *args)
     event->hdr.ts   = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->pids, task);
 
-    event->addr = addr;
-    event->len  = len;
-    event->prot = prot;
+    unsigned long vm_flags = BPF_CORE_READ(vma, vm_flags);
+    event->vma_start       = BPF_CORE_READ(vma, vm_start);
+    event->vma_end         = BPF_CORE_READ(vma, vm_end);
+    event->prev_prot       = mprotect_vm_flags_to_prot(vm_flags);
+    event->req_prot        = req_prot;
+    event->effective_prot  = effective_prot;
+    event->file_backed     = 0;
+    event->inode           = 0;
+    event->dev_major       = 0;
+    event->dev_minor       = 0;
+
+    struct file *file = BPF_CORE_READ(vma, vm_file);
+    if (file) {
+        event->file_backed = 1;
+
+        struct inode *inode = BPF_CORE_READ(file, f_inode);
+        if (inode) {
+            event->inode = BPF_CORE_READ(inode, i_ino);
+
+            struct super_block *sb = BPF_CORE_READ(inode, i_sb);
+            if (sb) {
+                dev_t dev       = BPF_CORE_READ(sb, s_dev);
+                event->dev_major = (u32)dev >> MPROTECT_MINORBITS;
+                event->dev_minor = (u32)dev & MPROTECT_MINORMASK;
+            }
+        }
+    }
 
     bpf_ringbuf_submit(event, 0);
+
 out:
-    preempt_enable();
     return 0;
+}
+
+SEC("fentry/security_file_mprotect")
+int BPF_PROG(fentry__security_file_mprotect,
+             struct vm_area_struct *vma,
+             unsigned long req_prot,
+             unsigned long effective_prot)
+{
+    int r;
+
+    preempt_disable();
+    r = security_file_mprotect__enter(vma, req_prot, effective_prot);
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kprobe/security_file_mprotect")
+int BPF_KPROBE(kprobe__security_file_mprotect,
+               struct vm_area_struct *vma,
+               unsigned long req_prot,
+               unsigned long effective_prot)
+{
+    int r;
+
+    preempt_disable();
+    r = security_file_mprotect__enter(vma, req_prot, effective_prot);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("tracepoint/syscalls/sys_enter_shmget")

@@ -97,6 +97,9 @@ Changes from 0.5 to 0.6
 Changes from 0.6 to 0.7
 ~~~~~~~~~~~~~~~~~~~~~~~
   o BPF_CC is gone, just use CLANG='zig cc' now.
-  o Added mprotect() syscall events (QUARK_EV_MPROTECT, -u on quark-mon).
-    The eBPF probe emits successful calls requesting execute permission
-    (X, RX, WX, or RWX); non-executable masks and failed calls are suppressed.
+  o Added executable mprotect() attempt events (QUARK_EV_MPROTECT, -u on
+    quark-mon). The eBPF probe reports each VMA that reaches the
+    security_file_mprotect() check with effective execute permission, including
+    previous/requested/effective protection and backing-file identity. These
+    events cover mprotect(), pkey_mprotect(), and compat callers, but do not
+    assert that the protection change ultimately succeeded.

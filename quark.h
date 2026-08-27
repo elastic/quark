@@ -400,10 +400,20 @@ struct quark_ptrace {
 	u64	data;
 };
 
+/*
+ * One executable attempt observed at security_file_mprotect(). The hook runs
+ * before the kernel commits the protection change and can fire once per VMA.
+ */
 struct quark_mprotect {
-	u64	addr;
-	u64	len;
-	u64	prot;
+	u64	vma_start;	/* VMA containing the attempted change */
+	u64	vma_end;
+	u64	prev_prot;	/* normalized PROT_READ/WRITE/EXEC bits */
+	u64	req_prot;	/* protection requested by userspace */
+	u64	effective_prot;	/* kernel-adjusted protection */
+	u64	inode;		/* zero for anonymous mappings */
+	u32	dev_major;	/* zero for anonymous mappings */
+	u32	dev_minor;	/* zero for anonymous mappings */
+	u32	file_backed;
 };
 
 struct raw_ptrace {

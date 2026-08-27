@@ -131,7 +131,11 @@ Enable ptrace event tracing.
 Don't supress thread events, this is only useful for debugging and will likely
 be zapped in the future.
 .It Fl u
-Enable mprotect events.
+Enable executable mprotect attempt events (EBPF only).
+One event is emitted for every VMA that reaches the
+.Fn security_file_mprotect
+check with effective execute permission.
+The event does not assert that the protection change ultimately succeeded.
 .It Fl v
 Increase verbosity, can be specified multiple times for more verbosity.
 .It Fl V

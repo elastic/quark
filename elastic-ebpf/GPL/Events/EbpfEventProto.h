@@ -384,9 +384,15 @@ struct ebpf_process_load_module_event {
 struct ebpf_process_mprotect_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
-    uint64_t addr;
-    uint64_t len;
-    uint64_t prot;
+    uint64_t vma_start;
+    uint64_t vma_end;
+    uint64_t prev_prot;
+    uint64_t req_prot;
+    uint64_t effective_prot;
+    uint64_t inode;
+    uint32_t dev_major;
+    uint32_t dev_minor;
+    uint32_t file_backed;
 } __attribute__((packed));
 
 enum ebpf_net_info_transport {

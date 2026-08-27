@@ -2,6 +2,7 @@
 /* Copyright (c) 2024-2026 Elastic NV */
 
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -2080,15 +2081,15 @@ mprotect_prot_str(u64 prot, char *buf, size_t len)
 
 	*buf = 0;
 	n = 0;
-	if (prot & 0x1) {
+	if (prot & PROT_READ) {
 		if (n + 1 < len)
 			buf[n++] = 'R';
 	}
-	if (prot & 0x2) {
+	if (prot & PROT_WRITE) {
 		if (n + 1 < len)
 			buf[n++] = 'W';
 	}
-	if (prot & 0x4) {
+	if (prot & PROT_EXEC) {
 		if (n + 1 < len)
 			buf[n++] = 'X';
 	}
@@ -2122,6 +2123,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_ptrace	*ptrace;
 	const struct quark_module_load	*qml;
 	const struct quark_mprotect	*mprotect;
+	char				 prev_prot[4], req_prot[4];
+	char				 effective_prot[4];
 	int				 pid;
 
 	if (qev->events == QUARK_EV_BYPASS) {
@@ -2224,9 +2227,21 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		fl = "MPRO";
 
 		mprotect = &qev->mprotect;
-		mprotect_prot_str(mprotect->prot, buf, sizeof(buf));
-		PF(fl, "addr=0x%llx len=%llu prot=0x%llx (%s)\n",
-		    mprotect->addr, mprotect->len, mprotect->prot, buf);
+		mprotect_prot_str(mprotect->prev_prot, prev_prot,
+		    sizeof(prev_prot));
+		mprotect_prot_str(mprotect->req_prot, req_prot,
+		    sizeof(req_prot));
+		mprotect_prot_str(mprotect->effective_prot, effective_prot,
+		    sizeof(effective_prot));
+		PF(fl, "attempt vma=[0x%llx,0x%llx) "
+		    "prev=0x%llx (%s) req=0x%llx (%s) effective=0x%llx (%s) "
+		    "file_backed=%u inode=%llu dev=%u:%u\n",
+		    mprotect->vma_start, mprotect->vma_end,
+		    mprotect->prev_prot, prev_prot,
+		    mprotect->req_prot, req_prot,
+		    mprotect->effective_prot, effective_prot,
+		    mprotect->file_backed, mprotect->inode,
+		    mprotect->dev_major, mprotect->dev_minor);
 	}
 
 	if (qp == NULL)
