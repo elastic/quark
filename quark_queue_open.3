@@ -97,8 +97,11 @@ Informational, not configuration: specifying it fails with
 .Er EINVAL .
 The backend that opens sets it on the opened queue's
 .Em flags
-when its event times are CLOCK_MONOTONIC instead of CLOCK_BOOTTIME, which
-only the KPROBE backend does.
+when its event times are monotonic instead of CLOCK_BOOTTIME, which
+only the KPROBE backend does, and only on kernels older than 4.1,
+where a perf clock can not be selected.
+On newer kernels the KPROBE backend translates its CLOCK_MONOTONIC
+samples to CLOCK_BOOTTIME as they are read and the flag is not set.
 Monotonic times undercount by the total suspended time, users that care
 about suspend must compensate.
 See

@@ -311,7 +311,7 @@ now64(const struct quark_queue *qq)
 	if (clock_gettime(clk, &ts) == -1)
 		return (0);
 
-	return ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
+	return (TS_TO_NS(ts));
 }
 
 static inline u64

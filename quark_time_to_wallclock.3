@@ -44,7 +44,8 @@ if the clock may be stepped while running.
 Gradual corrections (slewing) adjust the wallclock and the boot clock
 at the same rate, leaving the epoch untouched, only a step moves it.
 .Pp
-The KPROBE backend stamps times with a monotonic clock that does not
+On kernels older than 4.1, where a perf clock can not be selected,
+the KPROBE backend stamps times with a monotonic clock that does not
 advance during suspend, relayed as
 .Dv QQ_MONOTONIC
 on the opened queue's

@@ -2,6 +2,7 @@
 /* Copyright (c) 2024-2026 Elastic NV */
 
 #include <asm/termbits.h>
+#include <linux/perf_event.h>
 
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
@@ -11,6 +12,7 @@
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -70,7 +72,6 @@ struct test {
 };
 
 #define msleep(_x)	usleep((uint64_t)_x * 1000ULL)
-#define TS_TO_NS(_ts)	(((_ts)->tv_sec * NS_PER_S) + (_ts)->tv_nsec)
 
 enum {
 	SANE,
@@ -278,7 +279,7 @@ ns_clock(const struct quark_queue *qq)
 	if (clock_gettime(clk, &ts) == -1)
 		err(1, "clock_gettime");
 
-	return ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
+	return (TS_TO_NS(ts));
 }
 
 static u32
@@ -841,6 +842,33 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Return 1 if perf can stamp samples with a selectable clock, in which case
+ * the KPROBE backend translates times to CLOCK_BOOTTIME and does not relay
+ * QQ_MONOTONIC. For kernels >= 4.1.
+ */
+static int
+perf_supports_clockid(void)
+{
+	struct perf_event_attr	attr;
+	int			fd;
+
+	bzero(&attr, sizeof(attr));
+	attr.type = PERF_TYPE_SOFTWARE;
+	attr.size = sizeof(attr);
+	/* Not SW_DUMMY as it postdates centos7's kernel headers */
+	attr.config = PERF_COUNT_SW_CPU_CLOCK;
+	attr.disabled = 1;
+	attr.use_clockid = 1;
+	attr.clockid = CLOCK_MONOTONIC;
+	fd = syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0);
+	if (fd == -1)
+		return (0);
+	close(fd);
+
+	return (1);
+}
+
 static int
 t_monotonic(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -856,7 +884,7 @@ t_monotonic(const struct test *t, struct quark_queue_attr *qa)
 	attr = *qa;
 	if (quark_queue_open(&qq, &attr) != 0)
 		err(1, "%s: quark_queue_open", t->name);
-	if (qq.stats.backend == QQ_KPROBE)
+	if (qq.stats.backend == QQ_KPROBE && !perf_supports_clockid())
 		assert(qq.flags & QQ_MONOTONIC);
 	else
 		assert((qq.flags & QQ_MONOTONIC) == 0);
@@ -1310,15 +1338,15 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	assert(qf->op_mask & QUARK_FILE_OP_MODIFY);
 	assert(qf->op_mask & QUARK_FILE_OP_REMOVE);
 	assert(qf->inode == st.st_ino);
-	assert(qf->atime == TS_TO_NS(&st.st_atim));
+	assert(qf->atime == TS_TO_NS(st.st_atim));
 	/*
 	 * ctime is normalized, see
 	 * inode_set_ctime_to_ts()->set_normalized_timespec64()
 	 * TODO: Figure out how to make it match at some point.
 	 */
-	/* assert(qf->ctime == TS_TO_NS(&st.st_ctim)); */
+	/* assert(qf->ctime == TS_TO_NS(st.st_ctim)); */
 	assert(qf->ctime > 0);
-	assert(qf->mtime == TS_TO_NS(&st.st_mtim));
+	assert(qf->mtime == TS_TO_NS(st.st_mtim));
 	assert(qf->mode == st.st_mode);
 	assert(qf->uid == getuid());
 	assert(qf->gid == getgid());
