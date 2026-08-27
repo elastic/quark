@@ -17,13 +17,27 @@ into
 .Vt quark_queue_stats
 is defined as:
 .Bd -literal -offset indent
+struct quark_mprotect_stats {
+	u64	hook_calls;
+	u64	effective_exec;
+	u64	new_exec;
+	u64	already_exec;
+	u64	writable_exec;
+	u64	anonymous;
+	u64	file_backed;
+	u64	submitted;
+	u64	reserve_failed;
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
 	u64	aggregations;
 	u64	non_aggregations;
 	u64	lost;
+	u64	garbage_collections;
 	int	backend;
+	struct quark_mprotect_stats mprotect;
 };
 .Ed
 .Bl -tag -width "non_aggregations"
@@ -56,6 +70,12 @@ Active queue backend, either
 .Dv QQ_EBPF
 or
 .Dv QQ_KPROBE .
+.It Em mprotect
+Cumulative, per-CPU measurements collected when
+.Dv QQ_MPROTECT
+is enabled: hook calls, effective executable attempts, new and already
+executable mappings, writable-executable mappings, anonymous and file-backed
+mappings, submitted records, and failed ring-buffer reservations.
 .El
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,

@@ -108,6 +108,10 @@ has been reached.
 This is used purely for internal debugging.
 .It Fl M
 Run in a simple benchmark form that only counts and display stats.
+When executable mprotect events are enabled with
+.Fl u ,
+also display cumulative hook, protection-category, submission, and ring-buffer
+reservation-failure counters.
 .It Fl N
 Enable DNS events (experimental).
 .It Fl n

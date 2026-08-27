@@ -462,4 +462,17 @@ struct ebpf_event_stats {
     uint64_t dns_zero_body; // indicates that the dns body of a sk_buff was unavailable
 } __attribute__((aligned(8)));
 
+// Temporary executable mprotect volume measurements.
+struct ebpf_mprotect_stats {
+    uint64_t hook_calls;
+    uint64_t effective_exec;
+    uint64_t new_exec;
+    uint64_t already_exec;
+    uint64_t writable_exec;
+    uint64_t anonymous;
+    uint64_t file_backed;
+    uint64_t submitted;
+    uint64_t reserve_failed;
+} __attribute__((aligned(8)));
+
 #endif // EBPF_EVENTPROBE_EBPFEVENTPROTO_H

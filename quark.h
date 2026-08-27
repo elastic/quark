@@ -880,6 +880,18 @@ struct quark_sysinfo {
 	char	 *os_pretty_name;
 };
 
+struct quark_mprotect_stats {
+	u64	hook_calls;
+	u64	effective_exec;
+	u64	new_exec;
+	u64	already_exec;
+	u64	writable_exec;
+	u64	anonymous;
+	u64	file_backed;
+	u64	submitted;
+	u64	reserve_failed;
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
@@ -888,6 +900,7 @@ struct quark_queue_stats {
 	u64	lost;
 	u64	garbage_collections;
 	int	backend;	/* active backend, QQ_EBPF or QQ_KPROBE */
+	struct quark_mprotect_stats mprotect;
 	/* TODO u64	peak_nodes; */
 };
 

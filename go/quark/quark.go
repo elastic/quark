@@ -296,6 +296,20 @@ type Stats struct {
 	Lost               uint64
 	GarbageCollections uint64
 	Backend            int
+	Mprotect           MprotectStats
+}
+
+// MprotectStats contains cumulative executable mprotect volume measurements.
+type MprotectStats struct {
+	HookCalls     uint64
+	EffectiveExec uint64
+	NewExec       uint64
+	AlreadyExec   uint64
+	WritableExec  uint64
+	Anonymous     uint64
+	FileBacked    uint64
+	Submitted     uint64
+	ReserveFailed uint64
 }
 
 const (
@@ -475,6 +489,15 @@ func (queue *Queue) Stats() Stats {
 	stats.Lost = uint64(cStats.lost)
 	stats.GarbageCollections = uint64(cStats.garbage_collections)
 	stats.Backend = int(cStats.backend)
+	stats.Mprotect.HookCalls = uint64(cStats.mprotect.hook_calls)
+	stats.Mprotect.EffectiveExec = uint64(cStats.mprotect.effective_exec)
+	stats.Mprotect.NewExec = uint64(cStats.mprotect.new_exec)
+	stats.Mprotect.AlreadyExec = uint64(cStats.mprotect.already_exec)
+	stats.Mprotect.WritableExec = uint64(cStats.mprotect.writable_exec)
+	stats.Mprotect.Anonymous = uint64(cStats.mprotect.anonymous)
+	stats.Mprotect.FileBacked = uint64(cStats.mprotect.file_backed)
+	stats.Mprotect.Submitted = uint64(cStats.mprotect.submitted)
+	stats.Mprotect.ReserveFailed = uint64(cStats.mprotect.reserve_failed)
 
 	return stats
 }

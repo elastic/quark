@@ -36,6 +36,13 @@ DECL_FIELD_OFFSET(iov_iter, __iov);
 #define MPROTECT_MINORBITS 20
 #define MPROTECT_MINORMASK ((1U << MPROTECT_MINORBITS) - 1)
 
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, u32);
+    __type(value, struct ebpf_mprotect_stats);
+    __uint(max_entries, 1);
+} mprotect_stats SEC(".maps");
+
 SEC("tp_btf/sched_process_fork")
 int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct task_struct *child)
 {
@@ -486,6 +493,11 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
                                          unsigned long req_prot,
                                          unsigned long effective_prot)
 {
+    u32 zero = 0;
+    struct ebpf_mprotect_stats *stats = bpf_map_lookup_elem(&mprotect_stats, &zero);
+    if (stats)
+        stats->hook_calls++;
+
     if (ebpf_events_is_trusted_pid() || !vma)
         goto out;
 
@@ -497,19 +509,39 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     if (!(effective_prot & MPROTECT_PROT_EXEC))
         goto out;
 
+    unsigned long vm_flags = BPF_CORE_READ(vma, vm_flags);
+    u64 prev_prot          = mprotect_vm_flags_to_prot(vm_flags);
+    struct file *file      = BPF_CORE_READ(vma, vm_file);
+
+    if (stats) {
+        stats->effective_exec++;
+        if (prev_prot & MPROTECT_PROT_EXEC)
+            stats->already_exec++;
+        else
+            stats->new_exec++;
+        if (effective_prot & MPROTECT_PROT_WRITE)
+            stats->writable_exec++;
+        if (file)
+            stats->file_backed++;
+        else
+            stats->anonymous++;
+    }
+
     struct ebpf_process_mprotect_event *event =
         bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
-    if (!event)
+    if (!event) {
+        if (stats)
+            stats->reserve_failed++;
         goto out;
+    }
 
     event->hdr.type = EBPF_EVENT_PROCESS_MPROTECT;
     event->hdr.ts   = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->pids, task);
 
-    unsigned long vm_flags = BPF_CORE_READ(vma, vm_flags);
     event->vma_start       = BPF_CORE_READ(vma, vm_start);
     event->vma_end         = BPF_CORE_READ(vma, vm_end);
-    event->prev_prot       = mprotect_vm_flags_to_prot(vm_flags);
+    event->prev_prot       = prev_prot;
     event->req_prot        = req_prot;
     event->effective_prot  = effective_prot;
     event->file_backed     = 0;
@@ -517,7 +549,6 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     event->dev_major       = 0;
     event->dev_minor       = 0;
 
-    struct file *file = BPF_CORE_READ(vma, vm_file);
     if (file) {
         event->file_backed = 1;
 
@@ -535,6 +566,8 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     }
 
     bpf_ringbuf_submit(event, 0);
+    if (stats)
+        stats->submitted++;
 
 out:
     return 0;

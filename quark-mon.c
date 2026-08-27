@@ -54,6 +54,50 @@ dump_stats(struct quark_queue *qq)
 	    s.insertions, s.removals, s.aggregations,
 	    s.non_aggregations, s.lost, s.garbage_collections);
 	fputc('\n', stderr);
+
+	if (!(qq->flags & QQ_MPROTECT))
+		return;
+
+	fprintf(stderr,
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s"
+	    "%14s",
+	    "mpro-hooks",
+	    "mpro-exec",
+	    "mpro-new-x",
+	    "mpro-old-x",
+	    "mpro-wx",
+	    "mpro-anon",
+	    "mpro-file",
+	    "mpro-sent",
+	    "mpro-rsvfail");
+	fputc('\n', stderr);
+	fprintf(stderr,
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu"
+	    "%14llu",
+	    s.mprotect.hook_calls,
+	    s.mprotect.effective_exec,
+	    s.mprotect.new_exec,
+	    s.mprotect.already_exec,
+	    s.mprotect.writable_exec,
+	    s.mprotect.anonymous,
+	    s.mprotect.file_backed,
+	    s.mprotect.submitted,
+	    s.mprotect.reserve_failed);
+	fputc('\n', stderr);
 }
 
 static const char *
