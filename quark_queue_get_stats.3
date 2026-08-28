@@ -23,6 +23,8 @@ struct quark_queue_stats {
 	u64	aggregations;
 	u64	non_aggregations;
 	u64	lost;
+	u64	garbage_collections;
+	u64	stalls;
 	int	backend;
 };
 .Ed
@@ -43,7 +45,7 @@ The opposite of
 .Em aggregations .
 It is increased by one when we didn't aggregate.
 .It Em lost
-A a counter of missed backend events.
+A counter of missed backend events.
 This can happen if the user didn't call
 .Xr quark_queue_get_event 3
 fast enough or if
@@ -51,6 +53,16 @@ fast enough or if
 simply can't handle the load, the former is way more likely.
 It is a state counter representing total loss, the user should compare to an old
 reading to know if it increased.
+.It Em garbage_collections
+A counter of cached objects (processes, sockets and pods) that were
+deleted after expiring their grace time.
+.It Em stalls
+A counter of perf rings that are stalled due to corrupt records.
+A stalled ring is abandoned and no further events are read from it.
+Only meaningful on the
+.Dv QQ_KPROBE
+backend, zero on
+.Dv QQ_EBPF .
 .It Em backend
 Active queue backend, either
 .Dv QQ_EBPF

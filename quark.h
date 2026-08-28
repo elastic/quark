@@ -870,8 +870,9 @@ struct quark_queue_stats {
 	u64	non_aggregations;
 	u64	lost;
 	u64	garbage_collections;
-	int	backend;	/* active backend, QQ_EBPF or QQ_KPROBE */
-	/* TODO u64	peak_nodes; */
+	u64	stalls;     /* stalled perf rings due to corruption, only for QQ_KPROBE */
+	int	backend;    /* active backend, QQ_EBPF or QQ_KPROBE */
+	/* TODO u64    peak_nodes; */
 };
 
 struct quark_queue_ops {
