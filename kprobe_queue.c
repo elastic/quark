@@ -23,10 +23,11 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdint.h>
 
 #include "quark.h"
 
-#define PERF_MMAP_PAGES		16		/* Must be power of 2 */
+#define PERF_MMAP_PAGES		16			/* Must be power of 2 */
 #define PERF_RECORD_MAX_SIZE	(UINT16_MAX + 1)	/* header.size is u16 */
 /*
  * A perf record caps at UINT16_MAX (perf_event_header.size). The ring must be
@@ -578,18 +579,22 @@ static u64
 boot_offset(void)
 {
 	struct timespec	bt, mt;
+	u64		best = UINT64_MAX;
+	for (int i = 0; i < 3; i++) {
+	       /*
+		* Read monotonic first, so a sample can not go negative on hosts
+		* that never suspended. Taking a few samples and keeping the smallest
+		* discards any sample inflated by a preemption between the two reads.
+		*/
+		if (clock_gettime(CLOCK_MONOTONIC, &mt) == -1 ||
+		    clock_gettime(CLOCK_BOOTTIME, &bt) == -1)
+			return (0);
+		u64 off = TS_TO_NS(bt) - TS_TO_NS(mt);
+		if (off < best)
+			best = off;
+	}
 
-	/* Read monotonic first so the difference can not go negative on
-	 * hosts that never suspended. */
-	if (clock_gettime(CLOCK_MONOTONIC, &mt) == -1 ||
-	    clock_gettime(CLOCK_BOOTTIME, &bt) == -1)
-		return (0);
-	/*
-	 * MAYBE TODO(ck): if the process gets preempted at exactly between the
-	 * two clock_gettime calls, the offset will include the preempted time.
-	 * The fix is to take a few (e.g. 3) samples here and keep the smallest.
-	 */
-	return (TS_TO_NS(bt) - TS_TO_NS(mt));
+	return (best);
 }
 
 static struct raw_event *

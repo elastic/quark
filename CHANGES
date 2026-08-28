@@ -162,8 +162,9 @@ Changes from 0.7 to 0.8
 
 Changes from 0.8 to 0.9
 ~~~~~~~~~~~~~~~~~~~~~~~
-  o The KPROBE backend now translates event times from CLOCK_MONOTONIC
-    to CLOCK_BOOTTIME, matching the other backends. This means that produced
-    timestamps now include the total suspended time, same as the other backends.
-    BREAKING: QQ_MONOTONIC was removed and event times are always
-    CLOCK_BOOTTIME now.
+  o The KPROBE backend now translates event times from CLOCK_MONOTONIC to
+    CLOCK_BOOTTIME, matching the other backends. This means that produced
+    timestamps now include the total suspended time, same as the other
+    backends.  BREAKING: QQ_MONOTONIC was removed and event times are always
+    CLOCK_BOOTTIME. This effectively drops support for kernels without perf
+    clockid support (< 4.1 or RHEL before 7.4).
