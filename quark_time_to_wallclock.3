@@ -43,6 +43,10 @@ display or storage, and keep the epoch fresh with
 if the clock may be stepped while running.
 Gradual corrections (slewing) adjust the wallclock and the boot clock
 at the same rate, leaving the epoch untouched, only a step moves it.
+.Pp
+On the KPROBE backend, events in flight across a suspend may carry a
+time shifted late by up to that suspend's duration, see
+.Xr quark_queue_open 3 .
 .Sh RETURN VALUES
 .Fa time_since_boot
 expressed in nanoseconds since the Unix epoch.

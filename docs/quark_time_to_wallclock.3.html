@@ -54,6 +54,9 @@
     if the clock may be stepped while running. Gradual corrections (slewing)
     adjust the wallclock and the boot clock at the same rate, leaving the epoch
     untouched, only a step moves it.</p>
+<p class="Pp">On the KPROBE backend, events in flight across a suspend may carry
+    a time shifted late by up to that suspend's duration, see
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</p>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
   VALUES</a></h1>
@@ -89,7 +92,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">August 27, 2026</td>
+    <td class="foot-date">August 28, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
