@@ -136,8 +136,9 @@ main(int argc, char *argv[])
 				errx(1, "couldn't mount tracefs or debugfs");
 			}
 		}
+		/* No cgroup2 on kernels older than 4.5 */
 		if (mount("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, NULL) == -1)
-			err(1, "mount /sys/fs/cgroup");
+			warn("mount /sys/fs/cgroup");
 
 		net_up();
 
