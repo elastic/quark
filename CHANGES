@@ -165,5 +165,5 @@ Changes from 0.8 to 0.9
   o The KPROBE backend now translates event times from CLOCK_MONOTONIC
     to CLOCK_BOOTTIME, matching the other backends. This means that produced
     timestamps now include the total suspended time, same as the other backends.
-    QQ_MONOTONIC is now only set on kernels older than 4.1, where a perf
-    clock can not be selected.
+    BREAKING: QQ_MONOTONIC was removed and event times are always
+    CLOCK_BOOTTIME now.

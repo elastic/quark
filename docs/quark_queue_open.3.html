@@ -88,15 +88,6 @@
           <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>.</dd>
       <dt id="QQ_KPROBE"><a class="permalink" href="#QQ_KPROBE"><code class="Dv">QQ_KPROBE</code></a></dt>
       <dd>Use the KPROBE backend.</dd>
-      <dt id="QQ_MONOTONIC"><a class="permalink" href="#QQ_MONOTONIC"><code class="Dv">QQ_MONOTONIC</code></a></dt>
-      <dd>Informational, not configuration: specifying it fails with
-          <code class="Er">EINVAL</code>. The backend that opens sets it on the
-          opened queue's <i class="Em">flags</i> when its event times are
-          CLOCK_MONOTONIC instead of CLOCK_BOOTTIME, which only the KPROBE
-          backend does. Monotonic times undercount by the total suspended time,
-          users that care about suspend must compensate. See
-          <a class="Xr" href="quark_time_to_wallclock.3.html">quark_time_to_wallclock(3)</a>
-          for the effect on wallclock translation.</dd>
       <dt id="QQ_THREAD_EVENTS"><a class="permalink" href="#QQ_THREAD_EVENTS"><code class="Dv">QQ_THREAD_EVENTS</code></a></dt>
       <dd>Include per-thread events, instead of per-process events. This option
           will be removed in the future, but it may be useful for
@@ -172,7 +163,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">August 14, 2026</td>
+    <td class="foot-date">August 27, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

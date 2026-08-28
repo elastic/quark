@@ -287,8 +287,7 @@ struct kprobe_queue {
 	u8				*wrapped_event_buf;
 	/*
 	 * Added to sample times to translate them from CLOCK_MONOTONIC
-	 * to CLOCK_BOOTTIME, zero if the kernel doesn't do use_clockid,
-	 * see kprobe_queue_open().
+	 * to CLOCK_BOOTTIME, see kprobe_queue_open().
 	 */
 	u64				 boot_offset;
 };
@@ -588,7 +587,7 @@ boot_offset(void)
 	/*
 	 * MAYBE TODO(ck): if the process gets preempted at exactly between the
 	 * two clock_gettime calls, the offset will include the preempted time.
-	 * The fix is to take a few (5-10) samples here and keep the smallest.
+	 * The fix is to take a few (e.g. 3) samples here and keep the smallest.
 	 */
 	return (TS_TO_NS(bt) - TS_TO_NS(mt));
 }
@@ -781,11 +780,6 @@ again:
 	/* start degrading until it works */
 	if (attr->comm_exec) {
 		attr->comm_exec = 0;
-		goto again;
-	}
-	if (attr->use_clockid) {
-		attr->use_clockid = 0;
-		attr->clockid = 0;
 		goto again;
 	}
 
@@ -1480,17 +1474,9 @@ kprobe_queue_open(struct quark_queue *qq)
 	/*
 	 * Samples are stamped with CLOCK_MONOTONIC and translated to
 	 * CLOCK_BOOTTIME in perf_event_to_raw() by adding boot_offset,
-	 * matching the other backends. On kernels without clockid
-	 * support (< 4.1), perf_event_open_degradable() drops use_clockid
-	 * and samples are stamped with the kernel's sched (roughly monotonic)
-	 * clock: no translation is possible, relay that as QQ_MONOTONIC
-	 * and keep boot_offset at zero.
+	 * matching the other backends.
 	 */
-	pgl = TAILQ_FIRST(&kqq->perf_group_leaders);
-	if (pgl == NULL || !pgl->attr.use_clockid)
-		qq->flags |= QQ_MONOTONIC;
-	else
-		kqq->boot_offset = boot_offset();
+	kqq->boot_offset = boot_offset();
 
 	i = 0;
 	while ((k = all_kprobes[i++]) != NULL) {
@@ -1545,6 +1531,7 @@ kprobe_queue_populate(struct quark_queue *qq)
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
+	u64				 off;
 
 	num_rings = kqq->num_perf_group_leaders;
 	npop = 0;
@@ -1558,15 +1545,9 @@ kprobe_queue_populate(struct quark_queue *qq)
 	 * clock reads in boot_offset() and adopting it would jitter the
 	 * translation from batch to batch.
 	 */
-	if ((qq->flags & QQ_MONOTONIC) == 0) {
-		u64	off;
-
-		off = boot_offset();
-		/* 10ms is enough to filter out vDSO call (and some scheduling)
-		 * jitter but catch system suspend drift. */
-		if (off > kqq->boot_offset + MS_TO_NS(10))
-			kqq->boot_offset = off;
-	}
+	off = boot_offset();
+	if (off > kqq->boot_offset + MS_TO_NS(10))
+		kqq->boot_offset = off;
 
 	/*
 	 * We stop if the queue is full, or if we see all perf ring buffers

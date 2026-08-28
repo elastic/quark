@@ -302,13 +302,11 @@ raw_event_by_pidtime_cmp(struct raw_event *a, struct raw_event *b)
 }
 
 static inline u64
-now64(const struct quark_queue *qq)
+now64(void)
 {
 	struct timespec ts;
-	clockid_t	clk;
 
-	clk = qq->flags & QQ_MONOTONIC ? CLOCK_MONOTONIC : CLOCK_BOOTTIME;
-	if (clock_gettime(clk, &ts) == -1)
+	if (clock_gettime(CLOCK_BOOTTIME, &ts) == -1)
 		return (0);
 
 	return (TS_TO_NS(ts));
@@ -485,7 +483,7 @@ gc_mark(struct quark_queue *qq, struct gc_link *gc, enum gc_type type)
 	if (gc->gc_time)
 		return;
 
-	gc->gc_time = now64(qq);
+	gc->gc_time = now64();
 	gc->gc_type = type;
 	TAILQ_INSERT_TAIL(&qq->event_gc, gc, gc_entry);
 }
@@ -506,7 +504,7 @@ gc_collect(struct quark_queue *qq)
 	u64		 now;
 	int		 n;
 
-	now = now64(qq);
+	now = now64();
 	n = 0;
 	while ((gc = TAILQ_FIRST(&qq->event_gc)) != NULL) {
 		if (AGE(gc->gc_time, now) < qq->cache_grace_time)
@@ -1575,7 +1573,7 @@ kube_read_events(struct quark_queue *qq)
 	 * hammering with one syscall per event.
 	 */
 	if (!qkube->try_read) {
-		if ((now64(qq) - qkube->last_read) >= (u64)MS_TO_NS(10))
+		if ((now64() - qkube->last_read) >= (u64)MS_TO_NS(10))
 			qkube->try_read = 1;
 		else
 			return;
@@ -1588,7 +1586,7 @@ kube_read_events(struct quark_queue *qq)
 		return;
 	}
 	n = qread(qkube->fd, qkube->buf + qkube->buf_w, left_towrite);
-	qkube->last_read = now64(qq);
+	qkube->last_read = now64();
 	qkube->try_read = 0;
 	if (n == -1) {
 		if (errno == EAGAIN)
@@ -1714,7 +1712,7 @@ kube_prime(struct quark_queue *qq)
 	pfd.events = POLLIN;
 
 	qwarnx("priming kube events...");
-	deadline = now64(qq) + (u64)MS_TO_NS(3000);
+	deadline = now64() + (u64)MS_TO_NS(3000);
 	do {
 		if ((r = poll(&pfd, 1, 25)) == -1) {
 			qwarn("poll");
@@ -1729,7 +1727,7 @@ kube_prime(struct quark_queue *qq)
 		 */
 		if (qkube->fd == -1)
 			break;
-	} while (now64(qq) < deadline);
+	} while (now64() < deadline);
 
 	/*
 	 * We must have received at least the node information.
@@ -3005,7 +3003,7 @@ sproc_pid_sockets(struct quark_queue *qq,
 			continue;
 
 		qsk = socket_alloc_and_insert(qq, &ss->socket.local,
-		    &ss->socket.remote, SOCK_CONN_SCRAPE, 0, 0, pid, now64(qq));
+		    &ss->socket.remote, SOCK_CONN_SCRAPE, 0, 0, pid, now64());
 		if (qsk == NULL) {
 			qwarn("socket_alloc");
 			continue;
@@ -4205,10 +4203,6 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		qa->max_length = 1;
 	}
 
-	/* QQ_MONOTONIC is informational, not configuration */
-	if (qa->flags & QQ_MONOTONIC)
-		return (errno = EINVAL, -1);
-
 	/* Exactly one backend must be selected */
 	backends = qa->flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	if (backends != QQ_EBPF &&
@@ -4657,7 +4651,7 @@ quark_queue_pop_raw(struct quark_queue *qq)
 	struct raw_event	*min;
 	u64			 now;
 
-	now = now64(qq);
+	now = now64();
 	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
 	if (min == NULL || !raw_event_expired(qq, min, now)) {
 		/* qq->idle++; */

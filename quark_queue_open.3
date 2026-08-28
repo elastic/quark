@@ -92,21 +92,6 @@ Use the EBPF backend, this is the default of
 .Xr quark_queue_default_attr 3 .
 .It Dv QQ_KPROBE
 Use the KPROBE backend.
-.It Dv QQ_MONOTONIC
-Informational, not configuration: specifying it fails with
-.Er EINVAL .
-The backend that opens sets it on the opened queue's
-.Em flags
-when its event times are monotonic instead of CLOCK_BOOTTIME, which
-only the KPROBE backend does, and only on kernels older than 4.1,
-where a perf clock can not be selected.
-On newer kernels the KPROBE backend translates its CLOCK_MONOTONIC
-samples to CLOCK_BOOTTIME as they are read and the flag is not set.
-Monotonic times undercount by the total suspended time, users that care
-about suspend must compensate.
-See
-.Xr quark_time_to_wallclock 3
-for the effect on wallclock translation.
 .It Dv QQ_THREAD_EVENTS
 Include per-thread events, instead of per-process events.
 This option will be removed in the future, but it may be useful for debugging.

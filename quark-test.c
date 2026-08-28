@@ -2,7 +2,6 @@
 /* Copyright (c) 2024-2026 Elastic NV */
 
 #include <asm/termbits.h>
-#include <linux/perf_event.h>
 
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
@@ -12,7 +11,6 @@
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -270,13 +268,11 @@ show_cursor(void)
 }
 
 static u64
-ns_clock(const struct quark_queue *qq)
+ns_clock(void)
 {
 	struct timespec ts;
-	clockid_t	clk;
 
-	clk = qq->flags & QQ_MONOTONIC ? CLOCK_MONOTONIC : CLOCK_BOOTTIME;
-	if (clock_gettime(clk, &ts) == -1)
+	if (clock_gettime(CLOCK_BOOTTIME, &ts) == -1)
 		err(1, "clock_gettime");
 
 	return (TS_TO_NS(ts));
@@ -842,57 +838,6 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
-/*
- * Return 1 if perf can stamp samples with a selectable clock, in which case
- * the KPROBE backend translates times to CLOCK_BOOTTIME and does not relay
- * QQ_MONOTONIC. For kernels >= 4.1.
- */
-static int
-perf_supports_clockid(void)
-{
-	struct perf_event_attr	attr;
-	int			fd;
-
-	bzero(&attr, sizeof(attr));
-	attr.type = PERF_TYPE_SOFTWARE;
-	attr.size = sizeof(attr);
-	/* Not SW_DUMMY as it postdates centos7's kernel headers */
-	attr.config = PERF_COUNT_SW_CPU_CLOCK;
-	attr.disabled = 1;
-	attr.use_clockid = 1;
-	attr.clockid = CLOCK_MONOTONIC;
-	fd = syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0);
-	if (fd == -1)
-		return (0);
-	close(fd);
-
-	return (1);
-}
-
-static int
-t_monotonic(const struct test *t, struct quark_queue_attr *qa)
-{
-	struct quark_queue	 qq;
-	struct quark_queue_attr	 attr;
-
-	/* Informational only, refused as configuration */
-	attr = *qa;
-	attr.flags |= QQ_MONOTONIC;
-	assert(quark_queue_open(&qq, &attr) == -1 && errno == EINVAL);
-
-	/* On an open queue it relays the backend's time domain */
-	attr = *qa;
-	if (quark_queue_open(&qq, &attr) != 0)
-		err(1, "%s: quark_queue_open", t->name);
-	if (qq.stats.backend == QQ_KPROBE && !perf_supports_clockid())
-		assert(qq.flags & QQ_MONOTONIC);
-	else
-		assert((qq.flags & QQ_MONOTONIC) == 0);
-	quark_queue_close(&qq);
-
-	return (0);
-}
-
 static int
 t_os_release(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -938,10 +883,10 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	before = ns_clock(&qq);
+	before = ns_clock();
 	child = fork_exec_nop1(relative, 0);
 	qev = drain_for_pid(&qq, child);
-	after = ns_clock(&qq);
+	after = ns_clock();
 
 	/* check qev.events */
 	assert(qev->events & QUARK_EV_FORK);
@@ -1307,10 +1252,10 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	before = ns_clock(&qq);
+	before = ns_clock();
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
-	after = ns_clock(&qq);
+	after = ns_clock();
 	assert(write(fd, "1", 1) == 1);
 	assert(write(fd, "2", 1) == 1);
 	assert(write(fd, "3", 1) == 1);
@@ -2882,9 +2827,6 @@ struct test all_tests[] = {
 	T_EBPF(t_probe),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
-	T_EBPF(t_monotonic),
-	T_KPROBE(t_monotonic),
-	T_NOVA(t_monotonic),
 	T_EBPF(t_os_release),
 	T_KPROBE(t_os_release),
 	T_EBPF(t_fork_exec_exit),
