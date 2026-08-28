@@ -54,17 +54,9 @@
     if the clock may be stepped while running. Gradual corrections (slewing)
     adjust the wallclock and the boot clock at the same rate, leaving the epoch
     untouched, only a step moves it.</p>
-<p class="Pp" id="flags">The KPROBE backend stamps times with a monotonic clock
-    that does not advance during suspend, relayed as
-    <code class="Dv">QQ_MONOTONIC</code> on the opened queue's
-    <a class="permalink" href="#flags"><i class="Em">flags</i></a>, see
-    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.
-    <code class="Nm">quark_time_to_wallclock</code> applies unchanged, but the
-    result lags the wallclock by the total suspended time, exactly as it did
-    before quark 0.8. Users that care about suspend can detect
-    <code class="Dv">QQ_MONOTONIC</code> and compensate with the difference
-    between <code class="Dv">CLOCK_BOOTTIME</code> and
-    <code class="Dv">CLOCK_MONOTONIC</code>.</p>
+<p class="Pp">On the KPROBE backend, events in flight across a suspend may carry
+    a time shifted late by up to that suspend's duration, see
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</p>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
   VALUES</a></h1>
@@ -100,7 +92,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">August 14, 2026</td>
+    <td class="foot-date">August 28, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

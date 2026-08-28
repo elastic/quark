@@ -92,18 +92,13 @@ Use the EBPF backend, this is the default of
 .Xr quark_queue_default_attr 3 .
 .It Dv QQ_KPROBE
 Use the KPROBE backend.
-.It Dv QQ_MONOTONIC
-Informational, not configuration: specifying it fails with
-.Er EINVAL .
-The backend that opens sets it on the opened queue's
-.Em flags
-when its event times are CLOCK_MONOTONIC instead of CLOCK_BOOTTIME, which
-only the KPROBE backend does.
-Monotonic times undercount by the total suspended time, users that care
-about suspend must compensate.
-See
-.Xr quark_time_to_wallclock 3
-for the effect on wallclock translation.
+Event times are CLOCK_MONOTONIC samples translated to CLOCK_BOOTTIME,
+since perf can not stamp them with CLOCK_BOOTTIME directly.
+The translation is exact, with one exception: events stamped before a
+suspend but still unread when the host resumes are translated based on
+resume time and shift late by up to that suspend's duration.
+Only events in flight across the suspend are affected, hosts that
+never suspend are always exact.
 .It Dv QQ_THREAD_EVENTS
 Include per-thread events, instead of per-process events.
 This option will be removed in the future, but it may be useful for debugging.

@@ -227,6 +227,10 @@ int	quark_event_to_ecs(struct quark_queue *qq,
 #define MS_TO_NS(_x)	((u64)(_x) * NS_PER_MS)
 #endif /* MS_TO_NS */
 
+#ifndef TS_TO_NS
+#define TS_TO_NS(_ts) ((u64)(_ts).tv_sec * NS_PER_S + (u64)(_ts).tv_nsec)
+#endif /* TS_TO_NS */
+
 #ifndef NS_TO_S
 #define NS_TO_S(_x)	((u64)(_x) / NS_PER_S)
 #endif /* NS_TO_S */
@@ -894,11 +898,6 @@ struct quark_queue_attr {
 #define QQ_MODULE_LOAD		(1 << 12)
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
-/*
- * Informational only, not configuration: if set, event times are
- * CLOCK_MONOTONIC, else CLOCK_BOOTTIME.
- */
-#define QQ_MONOTONIC		(1 << 15)
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */

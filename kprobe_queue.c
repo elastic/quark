@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +27,7 @@
 
 #include "quark.h"
 
-#define PERF_MMAP_PAGES		16		/* Must be power of 2 */
+#define PERF_MMAP_PAGES		16			/* Must be power of 2 */
 #define PERF_RECORD_MAX_SIZE	(UINT16_MAX + 1)	/* header.size is u16 */
 /*
  * A perf record caps at UINT16_MAX (perf_event_header.size). The ring must be
@@ -285,6 +286,11 @@ struct kprobe_queue {
 	struct sample_attr		 id_to_sample_attr[MAX_SAMPLE_ATTR];
 	/* linearizes wrapped perf records, see kprobe_queue_open() */
 	u8				*wrapped_event_buf;
+	/*
+	 * Added to sample times to translate them from CLOCK_MONOTONIC
+	 * to CLOCK_BOOTTIME, see kprobe_queue_open().
+	 */
+	u64				 boot_offset;
 };
 
 static int	kprobe_queue_populate(struct quark_queue *);
@@ -564,9 +570,38 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	return (raw);
 }
 
+/*
+ * The distance between CLOCK_BOOTTIME and CLOCK_MONOTONIC: total
+ * time spent suspended. The two clocks tick and slew at the same
+ * rate, so adding it to a monotonic time yields a boottime time.
+ */
+static u64
+boot_offset(void)
+{
+	struct timespec	bt, mt;
+	u64		best = UINT64_MAX;
+	for (int i = 0; i < 3; i++) {
+		/*
+		 * Read monotonic first, so a sample can not go negative on
+		 * hosts that never suspended. Taking a few samples and
+		 * keeping the smallest discards any sample inflated by a
+		 * preemption between the two reads.
+		 */
+		if (clock_gettime(CLOCK_MONOTONIC, &mt) == -1 ||
+		    clock_gettime(CLOCK_BOOTTIME, &bt) == -1)
+			return (0);
+		u64 off = TS_TO_NS(bt) - TS_TO_NS(mt);
+		if (off < best)
+			best = off;
+	}
+
+	return (best);
+}
+
 static struct raw_event *
 perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 {
+	struct kprobe_queue		*kqq = qq->queue_be;
 	struct raw_event		*raw = NULL;
 	struct perf_sample_id		*sid = NULL;
 	ssize_t				 n;
@@ -625,7 +660,7 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 			raw->tid = sid->tid;
 		raw->opid = sid->pid;
 		raw->tid = sid->tid;
-		raw->time = sid->time;
+		raw->time = sid->time + kqq->boot_offset;
 		raw->cpu = sid->cpu;
 	}
 
@@ -753,10 +788,25 @@ again:
 		attr->comm_exec = 0;
 		goto again;
 	}
+
+	/*
+	 * Test for missing perf clockid, which the KPROBE backend can't
+	 * work without: if the open succeeds without use_clockid,
+	 * the clock was the problem. Still fail with the original EINVAL
+	 * as we don't support any kernels without perf clockid.
+	 */
 	if (attr->use_clockid) {
 		attr->use_clockid = 0;
 		attr->clockid = 0;
-		goto again;
+		r = perf_event_open(attr, pid, cpu, group_fd, flags);
+		attr->use_clockid = 1;
+		attr->clockid = CLOCK_MONOTONIC;
+		if (r >= 0) {
+			close(r);
+			qwarnx("kernel is missing perf clockid, if you're on RHEL7 "
+			    "update to 7.4 or newer");
+		}
+		return (errno = EINVAL, -1);
 	}
 
 	return (r);
@@ -1403,8 +1453,6 @@ kprobe_queue_open(struct quark_queue *qq)
 
 	if ((qq->flags & QQ_KPROBE) == 0)
 		return (errno = ENOTSUP, -1);
-	/* Perf stamps samples with the monotonic-ish sched clock */
-	qq->flags |= QQ_MONOTONIC;
 	qid = __atomic_fetch_add(&qids, 1, __ATOMIC_RELAXED);
 	if (kprobe_install_all(qid) == -1)
 		goto fail;
@@ -1448,6 +1496,13 @@ kprobe_queue_open(struct quark_queue *qq)
 		TAILQ_INSERT_TAIL(&kqq->perf_group_leaders, pgl, entry);
 		kqq->num_perf_group_leaders++;
 	}
+
+	/*
+	 * Samples are stamped with CLOCK_MONOTONIC and translated to
+	 * CLOCK_BOOTTIME in perf_event_to_raw() by adding boot_offset,
+	 * matching the other backends.
+	 */
+	kqq->boot_offset = boot_offset();
 
 	i = 0;
 	while ((k = all_kprobes[i++]) != NULL) {
@@ -1502,9 +1557,23 @@ kprobe_queue_populate(struct quark_queue *qq)
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
+	u64				 off;
 
 	num_rings = kqq->num_perf_group_leaders;
 	npop = 0;
+
+	/*
+	 * Refresh the suspend time so records stamped after a resume
+	 * translate correctly. Records stamped before a suspend but read
+	 * after, are shifted late by that last suspend as we can't do better.
+	 * Only a suspend moves the offset and only forward as we ignore
+	 * anything below a 10ms threshold: it's call noise from the two
+	 * clock reads in boot_offset() and adopting it would jitter the
+	 * translation from batch to batch.
+	 */
+	off = boot_offset();
+	if (off > kqq->boot_offset + MS_TO_NS(10))
+		kqq->boot_offset = off;
 
 	/*
 	 * We stop if the queue is full, or if we see all perf ring buffers

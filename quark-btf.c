@@ -202,7 +202,7 @@ hub_lookup(int argc, char *argv[])
 
 	qbtf = quark_btf_open_hub(argv[0]);
 	if (qbtf == NULL)
-		errx(1, "can't match `%s` with any kernel in btfhub", optarg);
+		errx(1, "can't match `%s` with any kernel in btfhub", argv[0]);
 	printf("%s\n", qbtf->kname);
 	if (quark_verbose)
 		quark_btf_printit(qbtf, 0, NULL);

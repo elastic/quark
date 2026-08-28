@@ -260,6 +260,39 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
+  - label: "kprobe failing on rhel 7.0 (no perf clockid)"
+    key: test_rhel_7_0_negative
+    command: "./.buildkite/runtest_distro.sh rhel 7.0 -k t_kprobe_clockid"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 7.4 (no bpf, oldest kprobe)"
+    key: test_rhel_7_4
+    command: "./.buildkite/runtest_distro.sh rhel 7.4 -k"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 7.9 (no bpf, kprobe)"
+    key: test_rhel_7_9
+    command: "./.buildkite/runtest_distro.sh rhel 7.9 -k"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
   - label: "quark-test on rhel 8"
     key: test_rhel_8
     command: "./.buildkite/runtest_distro.sh rhel 8"

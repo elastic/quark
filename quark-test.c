@@ -2,6 +2,7 @@
 /* Copyright (c) 2024-2026 Elastic NV */
 
 #include <asm/termbits.h>
+#include <linux/perf_event.h>
 
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
@@ -11,6 +12,7 @@
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -70,7 +72,6 @@ struct test {
 };
 
 #define msleep(_x)	usleep((uint64_t)_x * 1000ULL)
-#define TS_TO_NS(_ts)	(((_ts)->tv_sec * NS_PER_S) + (_ts)->tv_nsec)
 
 enum {
 	SANE,
@@ -269,16 +270,14 @@ show_cursor(void)
 }
 
 static u64
-ns_clock(const struct quark_queue *qq)
+ns_clock(void)
 {
 	struct timespec ts;
-	clockid_t	clk;
 
-	clk = qq->flags & QQ_MONOTONIC ? CLOCK_MONOTONIC : CLOCK_BOOTTIME;
-	if (clock_gettime(clk, &ts) == -1)
+	if (clock_gettime(CLOCK_BOOTTIME, &ts) == -1)
 		err(1, "clock_gettime");
 
-	return ((u64)ts.tv_sec * (u64)NS_PER_S + (u64)ts.tv_nsec);
+	return (TS_TO_NS(ts));
 }
 
 static u32
@@ -841,26 +840,52 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Return 1 if perf can stamp samples with a selectable clock,
+ * kernels >= 4.1 and RHEL >= 7.4.
+ */
 static int
-t_monotonic(const struct test *t, struct quark_queue_attr *qa)
+perf_supports_clockid(void)
+{
+	struct perf_event_attr	attr;
+	int			fd;
+
+	bzero(&attr, sizeof(attr));
+	attr.type = PERF_TYPE_SOFTWARE;
+	attr.size = sizeof(attr);
+	/* Not SW_DUMMY as it postdates centos7's kernel headers */
+	attr.config = PERF_COUNT_SW_CPU_CLOCK;
+	attr.disabled = 1;
+	attr.use_clockid = 1;
+	attr.clockid = CLOCK_MONOTONIC;
+	fd = syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0);
+	if (fd == -1)
+		return (0);
+	close(fd);
+
+	return (1);
+}
+
+/*
+ * The KPROBE backend needs a perf clock to stamp samples with
+ * CLOCK_MONOTONIC: test that open succeeds on kernels that have
+ * it, and fails on kernels without it with EINVAL.
+ * This is the only kprobe test expected to pass on RHEL < 7.4.
+ */
+static int
+t_kprobe_clockid(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue	 qq;
-	struct quark_queue_attr	 attr;
+	int			 r, saved_errno;
 
-	/* Informational only, refused as configuration */
-	attr = *qa;
-	attr.flags |= QQ_MONOTONIC;
-	assert(quark_queue_open(&qq, &attr) == -1 && errno == EINVAL);
-
-	/* On an open queue it relays the backend's time domain */
-	attr = *qa;
-	if (quark_queue_open(&qq, &attr) != 0)
-		err(1, "%s: quark_queue_open", t->name);
-	if (qq.stats.backend == QQ_KPROBE)
-		assert(qq.flags & QQ_MONOTONIC);
-	else
-		assert((qq.flags & QQ_MONOTONIC) == 0);
-	quark_queue_close(&qq);
+	r = quark_queue_open(&qq, qa);
+	/* Save it as perf_supports_clockid() clobbers errno */
+	saved_errno = errno;
+	if (perf_supports_clockid()) {
+		assert(r == 0);
+		quark_queue_close(&qq);
+	} else
+		assert(r == -1 && saved_errno == EINVAL);
 
 	return (0);
 }
@@ -910,10 +935,10 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	before = ns_clock(&qq);
+	before = ns_clock();
 	child = fork_exec_nop1(relative, 0);
 	qev = drain_for_pid(&qq, child);
-	after = ns_clock(&qq);
+	after = ns_clock();
 
 	/* check qev.events */
 	assert(qev->events & QUARK_EV_FORK);
@@ -1279,10 +1304,10 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	before = ns_clock(&qq);
+	before = ns_clock();
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
-	after = ns_clock(&qq);
+	after = ns_clock();
 	assert(write(fd, "1", 1) == 1);
 	assert(write(fd, "2", 1) == 1);
 	assert(write(fd, "3", 1) == 1);
@@ -1310,15 +1335,15 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	assert(qf->op_mask & QUARK_FILE_OP_MODIFY);
 	assert(qf->op_mask & QUARK_FILE_OP_REMOVE);
 	assert(qf->inode == st.st_ino);
-	assert(qf->atime == TS_TO_NS(&st.st_atim));
+	assert(qf->atime == TS_TO_NS(st.st_atim));
 	/*
 	 * ctime is normalized, see
 	 * inode_set_ctime_to_ts()->set_normalized_timespec64()
 	 * TODO: Figure out how to make it match at some point.
 	 */
-	/* assert(qf->ctime == TS_TO_NS(&st.st_ctim)); */
+	/* assert(qf->ctime == TS_TO_NS(st.st_ctim)); */
 	assert(qf->ctime > 0);
-	assert(qf->mtime == TS_TO_NS(&st.st_mtim));
+	assert(qf->mtime == TS_TO_NS(st.st_mtim));
 	assert(qf->mode == st.st_mode);
 	assert(qf->uid == getuid());
 	assert(qf->gid == getgid());
@@ -2854,9 +2879,7 @@ struct test all_tests[] = {
 	T_EBPF(t_probe),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
-	T_EBPF(t_monotonic),
-	T_KPROBE(t_monotonic),
-	T_NOVA(t_monotonic),
+	T_KPROBE(t_kprobe_clockid),
 	T_EBPF(t_os_release),
 	T_KPROBE(t_os_release),
 	T_EBPF(t_fork_exec_exit),
