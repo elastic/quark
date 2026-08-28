@@ -16,6 +16,7 @@ clockid_negative=(linux-3.10.0-123.el7.x86_64)
 result=""
 error_run=""
 declare -i failures=0
+mkdir -p kernel-images/{amd64,arm64}
 all_kernels="$(find kernel-images/{amd64,arm64} -type f)"
 
 function member

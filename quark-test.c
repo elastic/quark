@@ -876,14 +876,16 @@ static int
 t_kprobe_clockid(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue	 qq;
-	int			 r;
+	int			 r, saved_errno;
 
 	r = quark_queue_open(&qq, qa);
+	/* Save it as perf_supports_clockid() clobbers errno */
+	saved_errno = errno;
 	if (perf_supports_clockid()) {
 		assert(r == 0);
 		quark_queue_close(&qq);
 	} else
-		assert(r == -1 && errno == EINVAL);
+		assert(r == -1 && saved_errno == EINVAL);
 
 	return (0);
 }

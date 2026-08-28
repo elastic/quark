@@ -17,13 +17,13 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
-#include <stdint.h>
 
 #include "quark.h"
 
@@ -581,11 +581,12 @@ boot_offset(void)
 	struct timespec	bt, mt;
 	u64		best = UINT64_MAX;
 	for (int i = 0; i < 3; i++) {
-	       /*
-		* Read monotonic first, so a sample can not go negative on hosts
-		* that never suspended. Taking a few samples and keeping the smallest
-		* discards any sample inflated by a preemption between the two reads.
-		*/
+		/*
+		 * Read monotonic first, so a sample can not go negative on
+		 * hosts that never suspended. Taking a few samples and
+		 * keeping the smallest discards any sample inflated by a
+		 * preemption between the two reads.
+		 */
 		if (clock_gettime(CLOCK_MONOTONIC, &mt) == -1 ||
 		    clock_gettime(CLOCK_BOOTTIME, &bt) == -1)
 			return (0);
