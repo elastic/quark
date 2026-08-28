@@ -169,3 +169,4 @@ Changes from 0.8 to 0.9
   o BREAKING: QQ_MONOTONIC was removed and event times are always
     CLOCK_BOOTTIME. This effectively drops support for kernels without perf
     clockid support (< 4.1 or RHEL before 7.4).
+  o quark_queue_stats{} got a "stalls" member.
