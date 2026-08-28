@@ -2,16 +2,29 @@
 
 set -euo pipefail
 
-kprobe_only=(linux-3.10.0-123.el7.x86_64)
+# RHEL 7.4 (3.10.0-693) is the oldest supported kprobe kernel: it
+# backported perf clockid, which the KPROBE backend requires.
+# For KPROBE backend, test the floor (693) and the last el7 kernel (1160).
+# There's no BTF on el7, build initramfs.gz with WITH_BTFHUB=y.
+kprobe_only=(linux-3.10.0-693.el7.x86_64 linux-3.10.0-1160.el7.x86_64)
+
+# Kernels without perf clockid (< 4.1, RHEL < 7.4), where the only
+# test expected to pass is t_kprobe_clockid: it checks that the KPROBE
+# backend refuses to open and fails with EINVAL.
+clockid_negative=(linux-3.10.0-123.el7.x86_64)
+
 result=""
 error_run=""
 declare -i failures=0
 all_kernels="$(find kernel-images/{amd64,arm64} -type f)"
 
-function maybe_kflag
+function member
 {
-	for k in "${kprobe_only[@]}"; do
-		if [ "$1" = "$k" ]; then
+	local elt=$1
+	shift
+
+	for k in "$@"; do
+		if [ "$elt" = "$k" ]; then
 			return 0
 		fi
 	done
@@ -23,7 +36,9 @@ for k in $all_kernels
 do
 	kname="$(basename "$k")"
 	cmdline="./krun.sh initramfs.gz $k quark-test"
-	if maybe_kflag "$kname"; then
+	if member "$kname" "${clockid_negative[@]}"; then
+		cmdline+=" -k t_kprobe_clockid"
+	elif member "$kname" "${kprobe_only[@]}"; then
 		cmdline+=" -k"
 	fi
 	if eval "$cmdline"; then

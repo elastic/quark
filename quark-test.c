@@ -2,6 +2,7 @@
 /* Copyright (c) 2024-2026 Elastic NV */
 
 #include <asm/termbits.h>
+#include <linux/perf_event.h>
 
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
@@ -11,6 +12,7 @@
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -834,6 +836,54 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "%s: quark_queue_open", t->name);
 	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Return 1 if perf can stamp samples with a selectable clock,
+ * kernels >= 4.1 and RHEL >= 7.4.
+ */
+static int
+perf_supports_clockid(void)
+{
+	struct perf_event_attr	attr;
+	int			fd;
+
+	bzero(&attr, sizeof(attr));
+	attr.type = PERF_TYPE_SOFTWARE;
+	attr.size = sizeof(attr);
+	/* Not SW_DUMMY as it postdates centos7's kernel headers */
+	attr.config = PERF_COUNT_SW_CPU_CLOCK;
+	attr.disabled = 1;
+	attr.use_clockid = 1;
+	attr.clockid = CLOCK_MONOTONIC;
+	fd = syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0);
+	if (fd == -1)
+		return (0);
+	close(fd);
+
+	return (1);
+}
+
+/*
+ * The KPROBE backend needs a perf clock to stamp samples with
+ * CLOCK_MONOTONIC: test that open succeeds on kernels that have
+ * it, and fails on kernels without it with EINVAL.
+ * This is the only kprobe test expected to pass on RHEL < 7.4.
+ */
+static int
+t_kprobe_clockid(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	int			 r;
+
+	r = quark_queue_open(&qq, qa);
+	if (perf_supports_clockid()) {
+		assert(r == 0);
+		quark_queue_close(&qq);
+	} else
+		assert(r == -1 && errno == EINVAL);
 
 	return (0);
 }
@@ -2827,6 +2877,7 @@ struct test all_tests[] = {
 	T_EBPF(t_probe),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
+	T_KPROBE(t_kprobe_clockid),
 	T_EBPF(t_os_release),
 	T_KPROBE(t_os_release),
 	T_EBPF(t_fork_exec_exit),
