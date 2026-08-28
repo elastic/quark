@@ -789,6 +789,26 @@ again:
 		goto again;
 	}
 
+	/*
+	 * Test for missing perf clockid, which the KPROBE backend can't
+	 * work without: if the open succeeds without use_clockid,
+	 * the clock was the problem. Still fail with the original EINVAL
+	 * as we don't support any kernels without perf clockid.
+	 */
+	if (attr->use_clockid) {
+		attr->use_clockid = 0;
+		attr->clockid = 0;
+		r = perf_event_open(attr, pid, cpu, group_fd, flags);
+		attr->use_clockid = 1;
+		attr->clockid = CLOCK_MONOTONIC;
+		if (r >= 0) {
+			close(r);
+			qwarnx("kernel is missing perf clockid, if you're on RHEL7 "
+			    "update to 7.4 or newer");
+		}
+		return (errno = EINVAL, -1);
+	}
+
 	return (r);
 }
 
