@@ -18,6 +18,7 @@
 #include <netinet/ip.h>
 
 #include <err.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -136,9 +137,13 @@ main(int argc, char *argv[])
 				errx(1, "couldn't mount tracefs or debugfs");
 			}
 		}
-		/* No cgroup2 on kernels older than 4.5 */
-		if (mount("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, NULL) == -1)
-			warn("mount /sys/fs/cgroup");
+		/* ENODEV: no cgroup2 on kernels < 4.5, continue for RHEL7 tests */
+		if (mount("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, NULL) == -1) {
+			if (errno == ENODEV)
+				warn("mount /sys/fs/cgroup");
+			else
+				err(1, "mount /sys/fs/cgroup");
+		}
 
 		net_up();
 
