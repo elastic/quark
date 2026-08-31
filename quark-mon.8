@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDEeFGgHhkMNnSsTtv
+.Op Fl BbDEeFGgHhkMNnSsTtuv
 .Op Fl C Ar filename
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
@@ -130,6 +130,12 @@ Enable ptrace event tracing.
 .It Fl t
 Don't supress thread events, this is only useful for debugging and will likely
 be zapped in the future.
+.It Fl u
+Enable executable mprotect attempt events (EBPF only).
+One event is emitted for every VMA that reaches the
+.Fn security_file_mprotect
+check with effective execute permission.
+The event does not assert that the protection change ultimately succeeded.
 .It Fl v
 Increase verbosity, can be specified multiple times for more verbosity.
 .It Fl V

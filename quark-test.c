@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -1544,6 +1545,162 @@ t_shmget(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_mprotect(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_mprotect	*qmprotect;
+	void				*addr[4];
+	void				*file_addr;
+	void				*suppressed_addr;
+	const size_t			 len = 4096;
+	struct stat			 st;
+	const int			 expected[] = {
+		PROT_EXEC,
+		PROT_READ | PROT_EXEC,
+		PROT_WRITE | PROT_EXEC,
+		PROT_READ | PROT_WRITE | PROT_EXEC,
+	};
+	const int			 suppressed[] = {
+		PROT_NONE,
+		PROT_READ,
+		PROT_WRITE,
+		PROT_READ | PROT_WRITE,
+	};
+	int				 fd;
+	int				 saw[nitems(expected)] = { 0 };
+	size_t				 i, j;
+	int				 seen = 0;
+
+	qa->flags |= QQ_MPROTECT;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	suppressed_addr = mmap(NULL, len, PROT_READ | PROT_WRITE,
+	    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (suppressed_addr == MAP_FAILED)
+		err(1, "mmap");
+
+	/* Non-executable effective protections must not enter the ring buffer. */
+	for (i = 0; i < nitems(suppressed); i++) {
+		if (mprotect(suppressed_addr, len, suppressed[i]) == -1)
+			err(1, "mprotect");
+	}
+
+	/* Requests rejected before the LSM hook must not enter the ring buffer. */
+	if (mprotect((void *)(uintptr_t)1, len, PROT_EXEC) != -1)
+		errx(1, "unaligned mprotect unexpectedly succeeded");
+
+	for (i = 0; i < nitems(expected); i++) {
+		addr[i] = mmap(NULL, len, PROT_READ | PROT_WRITE,
+		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (addr[i] == MAP_FAILED)
+			err(1, "mmap");
+		if (mprotect(addr[i], len, expected[i]) == -1)
+			err(1, "mprotect");
+	}
+
+	while (seen < (int)nitems(expected)) {
+		qev = drain_for_pid(&qq, getpid());
+		if (!(qev->events & QUARK_EV_MPROTECT))
+			continue;
+		qmprotect = &qev->mprotect;
+		for (i = 0; i < nitems(expected); i++) {
+			if (qmprotect->req_prot == (u64)expected[i] &&
+			    qmprotect->vma_start <= (u64)(uintptr_t)addr[i] &&
+			    qmprotect->vma_end >=
+			    (u64)(uintptr_t)addr[i] + len)
+				break;
+		}
+		if (i == nitems(expected)) {
+			errx(1, "unexpected mprotect attempt req_prot 0x%llx",
+			    (unsigned long long)qmprotect->req_prot);
+		}
+		assert(qmprotect->prev_prot == (PROT_READ | PROT_WRITE));
+		assert(qmprotect->effective_prot == (u64)expected[i]);
+		assert(!qmprotect->file_backed);
+		assert(qmprotect->inode == 0);
+		assert(!saw[i]);
+		saw[i] = 1;
+		seen++;
+	}
+
+	for (i = 0; i < nitems(saw); i++)
+		assert(saw[i]);
+
+	/* File-backed identity is carried without resolving a pathname in BPF. */
+	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
+		err(1, "open");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	file_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+	if (file_addr == MAP_FAILED)
+		err(1, "mmap");
+	if (mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	do {
+		qev = drain_for_pid(&qq, getpid());
+	} while (!(qev->events & QUARK_EV_MPROTECT));
+	qmprotect = &qev->mprotect;
+	assert(qmprotect->vma_start <= (u64)(uintptr_t)file_addr);
+	assert(qmprotect->vma_end >= (u64)(uintptr_t)file_addr + len);
+	assert(qmprotect->prev_prot == PROT_READ);
+	assert(qmprotect->req_prot == (PROT_READ | PROT_EXEC));
+	assert(qmprotect->effective_prot == (PROT_READ | PROT_EXEC));
+	assert(qmprotect->file_backed);
+	assert(qmprotect->inode == (u64)st.st_ino);
+	assert(qmprotect->dev_major == (u32)major(st.st_dev));
+	assert(qmprotect->dev_minor == (u32)minor(st.st_dev));
+
+#ifdef SYS_pkey_mprotect
+	/* The common LSM hook also observes pkey_mprotect without another probe. */
+	{
+		void *pkey_addr;
+
+		pkey_addr = mmap(NULL, len, PROT_READ | PROT_WRITE,
+		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (pkey_addr == MAP_FAILED)
+			err(1, "mmap");
+		if (syscall(SYS_pkey_mprotect, pkey_addr, len, PROT_EXEC, -1) == -1) {
+			if (errno != ENOSYS && errno != EINVAL)
+				err(1, "pkey_mprotect");
+		} else {
+			do {
+				qev = drain_for_pid(&qq, getpid());
+			} while (!(qev->events & QUARK_EV_MPROTECT));
+			qmprotect = &qev->mprotect;
+			assert(qmprotect->vma_start <= (u64)(uintptr_t)pkey_addr);
+			assert(qmprotect->vma_end >=
+			    (u64)(uintptr_t)pkey_addr + len);
+			assert(qmprotect->prev_prot ==
+			    (PROT_READ | PROT_WRITE));
+			assert(qmprotect->req_prot == PROT_EXEC);
+			assert(qmprotect->effective_prot == PROT_EXEC);
+			assert(!qmprotect->file_backed);
+		}
+		if (munmap(pkey_addr, len) == -1)
+			err(1, "munmap");
+	}
+#endif
+
+	if (munmap(suppressed_addr, len) == -1)
+		err(1, "munmap");
+	for (j = 0; j < nitems(addr); j++) {
+		if (munmap(addr[j], len) == -1)
+			err(1, "munmap");
+	}
+	if (munmap(file_addr, len) == -1)
+		err(1, "munmap");
+	if (close(fd) == -1)
+		err(1, "close");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
 t_shm_open(const struct test *t, struct quark_queue_attr *qa)
 {
 #ifdef NO_SHM_OPEN
@@ -2895,6 +3052,7 @@ struct test all_tests[] = {
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_shmget),
+	T_EBPF(t_mprotect),
 	T_EBPF(t_shm_open),
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),

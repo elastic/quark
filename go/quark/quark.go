@@ -183,6 +183,20 @@ type Ptrace struct {
 	Data     uint64
 }
 
+// Mprotect describes an executable protection attempt observed for one VMA.
+// The LSM check happens before the kernel commits the protection change.
+type Mprotect struct {
+	VmaStart      uint64
+	VmaEnd        uint64
+	PrevProt      uint64
+	ReqProt       uint64
+	EffectiveProt uint64
+	Inode         uint64
+	DevMajor      uint32
+	DevMinor      uint32
+	FileBacked    bool
+}
+
 type ModuleLoad struct {
 	Name       string
 	Version    string
@@ -227,6 +241,7 @@ type Event struct {
 	Packet     *Packet
 	File       *File
 	Ptrace     *Ptrace
+	Mprotect   *Mprotect
 	ModuleLoad *ModuleLoad
 	Shm        *any // ShmGet, MemFd or ShmOpen
 	Tty        *Tty
@@ -254,6 +269,7 @@ const (
 	QQ_TTY           = int(C.QQ_TTY)
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
+	QQ_MPROTECT      = int(C.QQ_MPROTECT)
 
 	// Event.events
 	QUARK_EV_FORK                  = uint64(C.QUARK_EV_FORK)
@@ -269,6 +285,7 @@ const (
 	QUARK_EV_MODULE_LOAD           = uint64(C.QUARK_EV_MODULE_LOAD)
 	QUARK_EV_SHM                   = uint64(C.QUARK_EV_SHM)
 	QUARK_EV_TTY                   = uint64(C.QUARK_EV_TTY)
+	QUARK_EV_MPROTECT              = uint64(C.QUARK_EV_MPROTECT)
 
 	// EntryLeaderType
 	QUARK_ELT_UNKNOWN   = int(C.QUARK_ELT_UNKNOWN)
@@ -467,6 +484,10 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	if event.Events&QUARK_EV_PTRACE != 0 {
 		ptrace := ptraceFromC(&cev.ptrace)
 		event.Ptrace = &ptrace
+	}
+	if event.Events&QUARK_EV_MPROTECT != 0 {
+		mprotect := mprotectFromC(&cev.mprotect)
+		event.Mprotect = &mprotect
 	}
 	if cev.module_load != nil {
 		ml := moduleLoadFromC(cev.module_load)
@@ -776,6 +797,22 @@ func ptraceFromC(cPtrace *C.struct_quark_ptrace) Ptrace {
 	ptrace.Data = uint64(cPtrace.data)
 
 	return ptrace
+}
+
+func mprotectFromC(cMprotect *C.struct_quark_mprotect) Mprotect {
+	var mprotect Mprotect
+
+	mprotect.VmaStart = uint64(cMprotect.vma_start)
+	mprotect.VmaEnd = uint64(cMprotect.vma_end)
+	mprotect.PrevProt = uint64(cMprotect.prev_prot)
+	mprotect.ReqProt = uint64(cMprotect.req_prot)
+	mprotect.EffectiveProt = uint64(cMprotect.effective_prot)
+	mprotect.Inode = uint64(cMprotect.inode)
+	mprotect.DevMajor = uint32(cMprotect.dev_major)
+	mprotect.DevMinor = uint32(cMprotect.dev_minor)
+	mprotect.FileBacked = cMprotect.file_backed != 0
+
+	return mprotect
 }
 
 func moduleLoadFromC(cM *C.struct_quark_module_load) ModuleLoad {
