@@ -66,6 +66,14 @@ static void *get_event_buffer()
     return bpf_map_lookup_elem(&event_buffer_map, &key);
 }
 
+static __always_inline void *get_zeroed_event_buffer(size_t size)
+{
+    void *buf = get_event_buffer();
+    if (buf)
+        __builtin_memset(buf, 0, size);
+    return buf;
+}
+
 struct ebpf_varlen_field *ebpf_vl_field__add(struct ebpf_varlen_fields_start *fields,
                                              enum ebpf_varlen_field_type type)
 {
