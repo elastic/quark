@@ -195,6 +195,7 @@ type Mprotect struct {
 	DevMajor      uint32
 	DevMinor      uint32
 	FileBacked    bool
+	Path          string // mount-ns relative; empty for anonymous mappings
 }
 
 type ModuleLoad struct {
@@ -345,6 +346,14 @@ type Stats struct {
 	GarbageCollections uint64
 	Stalls             uint64
 	Backend            int
+	Mprotect           MprotectStats
+}
+
+// MprotectStats contains cumulative executable mprotect attempt accounting.
+type MprotectStats struct {
+	Submitted     uint64 // events written to the ring buffer
+	Suppressed    uint64 // deduplicated: transition already reported for that process life
+	ReserveFailed uint64 // event buffer/ring buffer write failures
 }
 
 const (
@@ -607,6 +616,9 @@ func (queue *Queue) Stats() Stats {
 	stats.GarbageCollections = uint64(cStats.garbage_collections)
 	stats.Stalls = uint64(cStats.stalls)
 	stats.Backend = int(cStats.backend)
+	stats.Mprotect.Submitted = uint64(cStats.mprotect.submitted)
+	stats.Mprotect.Suppressed = uint64(cStats.mprotect.suppressed)
+	stats.Mprotect.ReserveFailed = uint64(cStats.mprotect.reserve_failed)
 
 	return stats
 }
@@ -811,6 +823,7 @@ func mprotectFromC(cMprotect *C.struct_quark_mprotect) Mprotect {
 	mprotect.DevMajor = uint32(cMprotect.dev_major)
 	mprotect.DevMinor = uint32(cMprotect.dev_minor)
 	mprotect.FileBacked = cMprotect.file_backed != 0
+	mprotect.Path = C.GoString(cMprotect.path)
 
 	return mprotect
 }

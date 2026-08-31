@@ -17,6 +17,12 @@ into
 .Vt quark_queue_stats
 is defined as:
 .Bd -literal -offset indent
+struct quark_mprotect_stats {
+	u64	submitted;
+	u64	suppressed;
+	u64	reserve_failed;
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
@@ -26,6 +32,7 @@ struct quark_queue_stats {
 	u64	garbage_collections;
 	u64	stalls;
 	int	backend;
+	struct quark_mprotect_stats mprotect;
 };
 .Ed
 .Bl -tag -width "non_aggregations"
@@ -68,6 +75,20 @@ Active queue backend, either
 .Dv QQ_EBPF
 or
 .Dv QQ_KPROBE .
+.It Em mprotect
+Cumulative counters collected when
+.Dv QQ_MPROTECT
+is enabled:
+.Em submitted
+counts events written to the ring buffer,
+.Em suppressed
+counts attempts that were not emitted because the same protection transition
+(previous protection, effective protection, file-backedness) was already
+reported for that process life (the per-process state is dropped on
+.Xr execve 2
+and process exit), and
+.Em reserve_failed
+counts event buffer or ring buffer write failures.
 .El
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,

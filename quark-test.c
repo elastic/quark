@@ -1629,7 +1629,19 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	for (i = 0; i < nitems(saw); i++)
 		assert(saw[i]);
 
-	/* File-backed identity is carried without resolving a pathname in BPF. */
+	/*
+	 * A repeated transition must not produce a second event for the same
+	 * process life: flip addr[0] back and redo the identical RW->X change.
+	 * The file-backed event drained below doubles as the sentinel; if the
+	 * duplicate were wrongly emitted it would be drained first and the
+	 * file_backed asserts would trip.
+	 */
+	if (mprotect(addr[0], len, PROT_READ | PROT_WRITE) == -1)
+		err(1, "mprotect");
+	if (mprotect(addr[0], len, expected[0]) == -1)
+		err(1, "mprotect");
+
+	/* File-backed attempts carry identity and a mount-ns relative path. */
 	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
 		err(1, "open");
 	if (fstat(fd, &st) == -1)
@@ -1652,13 +1664,28 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	assert(qmprotect->inode == (u64)st.st_ino);
 	assert(qmprotect->dev_major == (u32)major(st.st_dev));
 	assert(qmprotect->dev_minor == (u32)minor(st.st_dev));
+	{
+		char	self[PATH_MAX];
+		ssize_t	n;
+
+		n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+		if (n == -1)
+			err(1, "readlink");
+		self[n] = '\0';
+		assert(qmprotect->path != NULL);
+		assert(strcmp(qmprotect->path, self) == 0);
+	}
 
 #ifdef SYS_pkey_mprotect
 	/* The common LSM hook also observes pkey_mprotect without another probe. */
 	{
 		void *pkey_addr;
 
-		pkey_addr = mmap(NULL, len, PROT_READ | PROT_WRITE,
+		/*
+		 * Map read-only so this is an R->X transition: the RW->X id
+		 * was consumed by expected[0] above and would be deduplicated.
+		 */
+		pkey_addr = mmap(NULL, len, PROT_READ,
 		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 		if (pkey_addr == MAP_FAILED)
 			err(1, "mmap");
@@ -1673,8 +1700,7 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 			assert(qmprotect->vma_start <= (u64)(uintptr_t)pkey_addr);
 			assert(qmprotect->vma_end >=
 			    (u64)(uintptr_t)pkey_addr + len);
-			assert(qmprotect->prev_prot ==
-			    (PROT_READ | PROT_WRITE));
+			assert(qmprotect->prev_prot == PROT_READ);
 			assert(qmprotect->req_prot == PROT_EXEC);
 			assert(qmprotect->effective_prot == PROT_EXEC);
 			assert(!qmprotect->file_backed);

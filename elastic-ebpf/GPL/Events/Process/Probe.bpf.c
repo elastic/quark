@@ -36,6 +36,51 @@ DECL_FIELD_OFFSET(iov_iter, __iov);
 #define MPROTECT_MINORBITS 20
 #define MPROTECT_MINORMASK ((1U << MPROTECT_MINORBITS) - 1)
 
+#ifndef EEXIST
+#define EEXIST 17 /* uapi asm-generic/errno-base.h; not carried by vmlinux.h */
+#endif
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, u32);
+    __type(value, struct ebpf_mprotect_stats);
+    __uint(max_entries, 1);
+} mprotect_stats SEC(".maps");
+
+/*
+ * One mprotect event per (transition, file-backedness) per process life.
+ * Key is tgid << 8 | transition id; the transition id packs the previous
+ * protection (3 bits), the effective new protection (3 bits) and whether the
+ * mapping is file backed (1 bit), so at most 128 entries per process. Entries
+ * are cleared when the process execs or dies (each program image starts
+ * fresh); LRU eviction is a safe backstop since an evicted entry only causes
+ * a duplicate event, never a lost one.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, u64);
+    __type(value, u8);
+    __uint(max_entries, 65536);
+} mprotect_seen SEC(".maps");
+
+#define MPROTECT_TRANSITION_MAX 128
+
+static u64 mprotect_seen__key(u32 tgid, u64 prev_prot, u64 effective_prot, u64 file_backed)
+{
+    u64 id = ((prev_prot & 0x7) << 4) | ((effective_prot & 0x7) << 1) | (file_backed & 0x1);
+    return ((u64)tgid << 8) | id;
+}
+
+static void mprotect_seen__clear(u32 tgid)
+{
+    u64 base = (u64)tgid << 8;
+
+    for (u32 i = 0; i < MPROTECT_TRANSITION_MAX; i++) {
+        u64 key = base | i;
+        bpf_map_delete_elem(&mprotect_seen, &key);
+    }
+}
+
 SEC("tp_btf/sched_process_fork")
 int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct task_struct *child)
 {
@@ -103,6 +148,10 @@ int BPF_PROG(sched_process_exec,
     // exec is valid and something we want to capture
     if (is_kernel_thread(task))
         goto out;
+
+    // The address space is replaced on exec; reported mprotect transitions
+    // belong to the previous program image, so start fresh.
+    mprotect_seen__clear(BPF_CORE_READ(task, tgid));
 
     struct ebpf_process_exec_event *event = get_event_buffer();
     if (!event)
@@ -214,6 +263,11 @@ static int disassociate_ctty__enter(int on_exit)
 
     if (!on_exit || is_kernel_thread(task))
         return 0;
+
+    // do_exit calls disassociate_ctty(1) only when the whole thread group is
+    // dead, so this runs exactly once per process; drop its dedup state so a
+    // recycled tgid does not inherit (and suppress) old transitions.
+    mprotect_seen__clear(BPF_CORE_READ(task, tgid));
 
     event = get_event_buffer();
     if (event == NULL)
@@ -486,6 +540,9 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
                                          unsigned long req_prot,
                                          unsigned long effective_prot)
 {
+    u32 zero = 0;
+    struct ebpf_mprotect_stats *stats = bpf_map_lookup_elem(&mprotect_stats, &zero);
+
     if (ebpf_events_is_trusted_pid() || !vma)
         goto out;
 
@@ -497,19 +554,44 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     if (!(effective_prot & MPROTECT_PROT_EXEC))
         goto out;
 
-    struct ebpf_process_mprotect_event *event =
-        bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
-    if (!event)
+    unsigned long vm_flags = BPF_CORE_READ(vma, vm_flags);
+    u64 prev_prot          = mprotect_vm_flags_to_prot(vm_flags);
+    struct file *file      = BPF_CORE_READ(vma, vm_file);
+
+    // One event per (transition, file-backedness) per process life: claim the
+    // dedup slot first. BPF_NOEXIST resolves races between threads of the
+    // same process doing the same transition; exactly one claim wins. Only a
+    // confirmed "already reported" suppresses -- any other failure emits, so
+    // the failure mode is a duplicate event, never a lost one.
+    u64  tgid        = bpf_get_current_pid_tgid() >> 32;
+    u64  file_backed = file != NULL;
+    u64  dedup_key   = mprotect_seen__key(tgid, prev_prot,
+                                          effective_prot, file_backed);
+    u8   dedup_val   = 1;
+    // Compare in 32 bits: before Linux 5.9 (bdb7b79b4ce8) map helpers were
+    // declared to return int, and the JIT zero-extends the 32-bit result, so
+    // a 64-bit compare against -EEXIST never matches on older kernels.
+    if ((int)bpf_map_update_elem(&mprotect_seen, &dedup_key, &dedup_val,
+                                 BPF_NOEXIST) == -EEXIST) {
+        if (stats)
+            stats->suppressed++;
         goto out;
+    }
+
+    struct ebpf_process_mprotect_event *event = get_event_buffer();
+    if (!event) {
+        if (stats)
+            stats->reserve_failed++;
+        goto out;
+    }
 
     event->hdr.type = EBPF_EVENT_PROCESS_MPROTECT;
     event->hdr.ts   = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->pids, task);
 
-    unsigned long vm_flags = BPF_CORE_READ(vma, vm_flags);
     event->vma_start       = BPF_CORE_READ(vma, vm_start);
     event->vma_end         = BPF_CORE_READ(vma, vm_end);
-    event->prev_prot       = mprotect_vm_flags_to_prot(vm_flags);
+    event->prev_prot       = prev_prot;
     event->req_prot        = req_prot;
     event->effective_prot  = effective_prot;
     event->file_backed     = 0;
@@ -517,7 +599,8 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     event->dev_major       = 0;
     event->dev_minor       = 0;
 
-    struct file *file = BPF_CORE_READ(vma, vm_file);
+    ebpf_vl_fields__init(&event->vl_fields);
+
     if (file) {
         event->file_backed = 1;
 
@@ -532,9 +615,22 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
                 event->dev_minor = (u32)dev & MPROTECT_MINORMASK;
             }
         }
+
+        // File-backed executable transitions are rare and high signal
+        // (library tampering, packers, memfd JITs); annotate them with the
+        // mount-namespace-relative path. Anonymous memory has no path.
+        struct ebpf_varlen_field *field =
+            ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
+        struct path p = BPF_CORE_READ(file, f_path);
+        long size     = ebpf_resolve_path_to_string(field->data, &p, task);
+        ebpf_vl_field__set_size(&event->vl_fields, field, size);
     }
 
-    bpf_ringbuf_submit(event, 0);
+    if (ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0) == 0) {
+        if (stats)
+            stats->submitted++;
+    } else if (stats)
+        stats->reserve_failed++;
 
 out:
     return 0;

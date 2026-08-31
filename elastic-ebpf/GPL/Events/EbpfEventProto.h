@@ -393,6 +393,9 @@ struct ebpf_process_mprotect_event {
     uint32_t dev_major;
     uint32_t dev_minor;
     uint32_t file_backed;
+
+    // Variable length fields: path (only present when file_backed)
+    struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 
 enum ebpf_net_info_transport {
@@ -460,6 +463,14 @@ struct ebpf_event_stats {
     uint64_t lost;          // lost events due to a full ringbuffer
     uint64_t sent;          // events sent through the ringbuffer
     uint64_t dns_zero_body; // indicates that the dns body of a sk_buff was unavailable
+} __attribute__((aligned(8)));
+
+// Executable mprotect attempt accounting.
+struct ebpf_mprotect_stats {
+    uint64_t submitted;      // events written to the ring buffer
+    uint64_t suppressed;     // attempts deduplicated (transition already
+                             // reported for this process life)
+    uint64_t reserve_failed; // event buffer/ring buffer write failures
 } __attribute__((aligned(8)));
 
 #endif // EBPF_EVENTPROBE_EBPFEVENTPROTO_H
