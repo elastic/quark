@@ -541,7 +541,10 @@ static int emit_memfd_create_event(const char *name)
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);
     struct ebpf_varlen_field *field;
-    long size;
+    // Declared int, not long: before Linux 5.9 (bdb7b79b4ce8) helpers were
+    // declared to return int, and the JIT zero-extends the 32-bit result, so
+    // a 64-bit `size <= 0` check never catches failures on older kernels.
+    int size;
 
     // memfd filename
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_FILENAME);

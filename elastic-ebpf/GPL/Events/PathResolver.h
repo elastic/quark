@@ -272,7 +272,11 @@ static size_t ebpf_resolve_kernfs_node_to_string(char *buf, struct kernfs_node *
 
         buf[cur & PATH_MAX_INDEX_MASK] = '/';
         cur                            = (cur + 1) & PATH_MAX_INDEX_MASK;
-        if (bpf_probe_read_kernel_str(
+        // Compare in 32 bits ((int) cast): before Linux 5.9 (bdb7b79b4ce8)
+        // helpers were declared to return int, and the JIT zero-extends the
+        // 32-bit result, so a 64-bit `< 0` compare never matches on older
+        // kernels.
+        if ((int)bpf_probe_read_kernel_str(
                 buf + (cur & PATH_MAX_INDEX_MASK),
                 PATH_MAX - cur > KERNFS_NODE_COMPONENT_MAX_LEN ? KERNFS_NODE_COMPONENT_MAX_LEN : 0,
                 (void *)name) < 0)

@@ -146,7 +146,11 @@ static bool IS_ERR_OR_NULL(const void *ptr)
 // Wrapper around bpf_probe_read_kernel_str that reads an empty string upon a read failure
 static long read_kernel_str_or_empty_str(void *dst, int size, const void *unsafe_ptr)
 {
-    long ret = bpf_probe_read_kernel_str(dst, size, unsafe_ptr);
+    // Compare in 32 bits: before Linux 5.9 (bdb7b79b4ce8) helpers were
+    // declared to return int, and the JIT zero-extends the 32-bit result, so
+    // a 64-bit compare against a negative errno never matches on older
+    // kernels.
+    int ret = bpf_probe_read_kernel_str(dst, size, unsafe_ptr);
     if (ret < 0) {
         ((char *)dst)[0] = '\0';
         return 1;
