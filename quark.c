@@ -856,11 +856,11 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 }
 
 static struct quark_container *
-container_lookup(struct quark_queue *qq, char *container_id)
+container_lookup(struct quark_queue *qq, const char *container_id)
 {
 	struct quark_container	 key, *k;
 
-	key.container_id = container_id;
+	key.container_id = (char *)container_id;
 	k = RB_FIND(container_by_id, &qq->container_by_id, &key);
 	if (k == NULL)
 		errno = ESRCH;
@@ -1700,7 +1700,7 @@ link_container_data(struct quark_queue *qq, struct quark_process *qp)
 	container_id = process_container_id(qp);
 	if (container_id == NULL)
 		return;
-	if ((container = container_lookup(qq, (char *)container_id)) == NULL)
+	if ((container = container_lookup(qq, container_id)) == NULL)
 		return;
 
 	qp->container = container;
@@ -2506,7 +2506,7 @@ quark_container_get(struct quark_queue *qq, const char *container_id,
 			return (NULL);
 	}
 
-	container = container_lookup(qq, (char *)container_id);
+	container = container_lookup(qq, container_id);
 	if (container != NULL) {
 		if (pod != NULL && container->pod != pod) {
 			if (container->pod != NULL)
@@ -2553,7 +2553,7 @@ quark_container_get(struct quark_queue *qq, const char *container_id,
 const struct quark_container *
 quark_container_lookup(struct quark_queue *qq, const char *container_id)
 {
-	return (container_lookup(qq, (char *)container_id));
+	return (container_lookup(qq, container_id));
 }
 
 /*
@@ -2624,7 +2624,7 @@ quark_container_create(struct quark_queue *qq, const char *container_id,
 			return (NULL);
 	}
 
-	if (container_lookup(qq, (char *)container_id) != NULL)
+	if (container_lookup(qq, container_id) != NULL)
 		return (errno = EEXIST, NULL);
 
 	container = calloc(1, sizeof(*container));
