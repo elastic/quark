@@ -80,10 +80,9 @@ static int inet_csk_accept__exit(struct sock *sk)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    struct ebpf_net_event *event = get_event_buffer();
+    struct ebpf_net_event *event = get_zeroed_event_buffer(sizeof(*event));
     if (!event)
         goto out;
-    __builtin_memset(event, 0, sizeof(*event));
 
     if (ebpf_network_event__fill(event, sk))
         goto out;
@@ -131,10 +130,9 @@ static int tcp_connect(struct sock *sk, int ret)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    struct ebpf_net_event *event = get_event_buffer();
+    struct ebpf_net_event *event = get_zeroed_event_buffer(sizeof(*event));
     if (!event)
         goto out;
-    __builtin_memset(event, 0, sizeof(*event));
 
     if (ebpf_network_event__fill(event, sk))
         goto out;
@@ -259,10 +257,9 @@ static int tcp_close__enter(struct sock *sk)
     if (bpf_map_delete_elem(&sk_to_tgid, &sk) != 0 && bytes_sent == 0 && bytes_received == 0)
         goto out;
 
-    struct ebpf_net_event *event = get_event_buffer();
+    struct ebpf_net_event *event = get_zeroed_event_buffer(sizeof(*event));
     if (!event)
         goto out;
-    __builtin_memset(event, 0, sizeof(*event));
 
     if (ebpf_network_event__fill(event, sk))
         goto out;

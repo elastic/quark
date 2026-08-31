@@ -398,10 +398,9 @@ static int ptrace_event(struct task_struct *child,
     if (child_tgid == curr_tgid)
         goto out;
 
-    struct ebpf_process_ptrace_event *event = get_event_buffer();
+    struct ebpf_process_ptrace_event *event = get_zeroed_event_buffer(sizeof(*event));
     if (!event)
         goto out;
-    __builtin_memset(event, 0, sizeof(*event));
 
     event->hdr.type = EBPF_EVENT_PROCESS_PTRACE;
     event->hdr.ts   = bpf_ktime_get_boot_ns();
@@ -474,10 +473,9 @@ int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
     if (is_kernel_thread(task))
         goto out;
 
-    struct ebpf_process_shmget_event *event = get_event_buffer();
+    struct ebpf_process_shmget_event *event = get_zeroed_event_buffer(sizeof(*event));
     if (!event)
         goto out;
-    __builtin_memset(event, 0, sizeof(*event));
 
     event->hdr.type = EBPF_EVENT_PROCESS_SHMGET;
     event->hdr.ts   = bpf_ktime_get_boot_ns();
@@ -620,10 +618,9 @@ static int commit_creds__enter(struct cred *new)
         BPF_CORE_READ(new, suid.val) != BPF_CORE_READ(old, suid.val) ||
         BPF_CORE_READ(new, fsuid.val) != BPF_CORE_READ(old, fsuid.val)) {
 
-        struct ebpf_process_setuid_event *event = get_event_buffer();
+        struct ebpf_process_setuid_event *event = get_zeroed_event_buffer(sizeof(*event));
         if (!event)
             return 0;
-        __builtin_memset(event, 0, sizeof(*event));
 
         event->hdr.type = EBPF_EVENT_PROCESS_SETUID;
         event->hdr.ts   = bpf_ktime_get_boot_ns();
@@ -647,10 +644,9 @@ static int commit_creds__enter(struct cred *new)
         BPF_CORE_READ(new, sgid.val) != BPF_CORE_READ(old, sgid.val) ||
         BPF_CORE_READ(new, fsgid.val) != BPF_CORE_READ(old, fsgid.val)) {
 
-        struct ebpf_process_setgid_event *event = get_event_buffer();
+        struct ebpf_process_setgid_event *event = get_zeroed_event_buffer(sizeof(*event));
         if (!event)
             return 0;
-        __builtin_memset(event, 0, sizeof(*event));
 
         event->hdr.type = EBPF_EVENT_PROCESS_SETGID;
         event->hdr.ts   = bpf_ktime_get_boot_ns();
