@@ -5,6 +5,8 @@ package quark
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strconv"
@@ -174,6 +176,81 @@ func TestQuark(t *testing.T) {
 		require.True(t, foundChild)
 	})
 
+	t.Run("SocketLookup", func(t *testing.T) {
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+		attr.Flags |= QQ_SOCK_CONN
+
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		// Establish a TCP connection to ourselves so that both
+		// endpoints belong to this process.
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer listener.Close()
+
+		accepted := make(chan net.Conn, 1)
+		go func() {
+			conn, err := listener.Accept()
+			if err == nil {
+				accepted <- conn
+			}
+		}()
+
+		conn, err := net.Dial("tcp4", listener.Addr().String())
+		require.NoError(t, err)
+		defer conn.Close()
+		defer func() {
+			if conn := <-accepted; conn != nil {
+				conn.Close()
+			}
+		}()
+
+		local := conn.LocalAddr().(*net.TCPAddr).AddrPort()
+		remote := conn.RemoteAddr().(*net.TCPAddr).AddrPort()
+
+		// Drive the queue until the established socket shows up.
+		var socket Socket
+		found := drainUntil(queue, 5*time.Second, func() bool {
+			var ok bool
+			socket, ok = queue.SocketLookup(local, remote)
+			return ok
+		})
+		require.True(t, found)
+		require.Equal(t, uint32(os.Getpid()), socket.PidOrigin)
+		require.NotZero(t, socket.EstablishedTime)
+		require.Zero(t, socket.CloseTime)
+
+		// IPv4-mapped IPv6 form finds the same socket.
+		mappedLocal := netip.AddrPortFrom(
+			netip.AddrFrom16(local.Addr().As16()), local.Port())
+		_, ok := queue.SocketLookup(mappedLocal, remote)
+		require.True(t, ok)
+
+		// The snapshot contains it too.
+		foundInSnapshot := false
+		for _, s := range queue.SocketSnapshot() {
+			if s.Local == socket.Local && s.Remote == socket.Remote {
+				foundInSnapshot = true
+				break
+			}
+		}
+		require.True(t, foundInSnapshot)
+
+		// After close, the socket must remain visible with a
+		// non-zero CloseTime until CacheGraceTime expires.
+		conn.Close()
+		found = drainUntil(queue, 5*time.Second, func() bool {
+			socket, ok = queue.SocketLookup(local, remote)
+			return ok && socket.CloseTime != 0
+		})
+		require.True(t, found)
+		require.Equal(t, uint32(os.Getpid()), socket.PidOrigin)
+	})
+
 	t.Run("PasswdGroupLookup", func(t *testing.T) {
 		queue, err := OpenQueue(DefaultQueueAttr())
 		require.NoError(t, err)
@@ -235,6 +312,23 @@ func testStats(t *testing.T, attr QueueAttr) {
 	require.True(t, stats.Backend == QQ_EBPF || stats.Backend == QQ_KPROBE)
 
 	require.NotEmpty(t, qevs)
+}
+
+// drainUntil drives the queue until cond is satisfied or the timeout
+// expires, returning the final value of cond.
+func drainUntil(qq *Queue, d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
+
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		if _, ok := qq.GetEvent(); !ok {
+			qq.Block()
+		}
+	}
+
+	return cond()
 }
 
 func drainFor(qq *Queue, d time.Duration) ([]Event, error) {

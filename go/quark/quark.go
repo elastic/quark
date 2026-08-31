@@ -540,6 +540,49 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 	return processFromC(process), true
 }
 
+// SocketLookup looks up the socket identified by the local and remote
+// endpoints in quark's internal socket cache, mirroring
+// quark_socket_lookup(3). Sockets are only tracked when the queue was
+// opened with QQ_SOCK_CONN, which requires the EBPF backend. A closed
+// socket remains visible with a non-zero CloseTime until it ages out
+// after the queue's CacheGraceTime. IPv4-mapped IPv6 addresses are
+// unmapped, so both forms find the same socket. The boolean is false
+// if no such socket is known.
+func (queue *Queue) SocketLookup(local, remote netip.AddrPort) (Socket, bool) {
+	clocal, ok := sockaddrToC(local)
+	if !ok {
+		return Socket{}, false
+	}
+	cremote, ok := sockaddrToC(remote)
+	if !ok {
+		return Socket{}, false
+	}
+
+	socket, _ := C.quark_socket_lookup(queue.quarkQueue, &clocal, &cremote)
+	if socket == nil {
+		return Socket{}, false
+	}
+
+	return socketFromC(socket), true
+}
+
+// SocketSnapshot returns a snapshot of all sockets in the cache,
+// including recently closed sockets that still wait out the queue's
+// CacheGraceTime. Sockets are only tracked when the queue was opened
+// with QQ_SOCK_CONN.
+func (queue *Queue) SocketSnapshot() []Socket {
+	var sockets []Socket
+	var iter C.struct_quark_socket_iter
+	var qsk *C.struct_quark_socket
+
+	C.quark_socket_iter_init(&iter, queue.quarkQueue)
+	for qsk = C.quark_socket_iter_next(&iter); qsk != nil; qsk = C.quark_socket_iter_next(&iter) {
+		sockets = append(sockets, socketFromC(qsk))
+	}
+
+	return sockets
+}
+
 // PasswdLookup looks up uid in quark's passwd(5) cache, mirroring
 // quark_passwd_lookup(3). The boolean is false if uid is unknown.
 func (queue *Queue) PasswdLookup(uid uint32) (Passwd, bool) {
@@ -740,6 +783,34 @@ func addrPortFromQuarkSockaddr(csa *C.struct_quark_sockaddr) netip.AddrPort {
 	port := uint16(csa.port)>>8 | uint16(csa.port)<<8
 
 	return netip.AddrPortFrom(addr, port)
+}
+
+// sockaddrToC converts a netip.AddrPort to quark's sockaddr
+// representation, the inverse of addrPortFromQuarkSockaddr.
+// IPv4-mapped IPv6 addresses are unmapped so that callers can pass
+// either form. The boolean is false if the address is invalid.
+func sockaddrToC(ap netip.AddrPort) (C.struct_quark_sockaddr, bool) {
+	var csa C.struct_quark_sockaddr
+
+	addr := ap.Addr().Unmap()
+	switch {
+	case addr.Is4():
+		csa.af = C.AF_INET
+		addr4 := addr.As4()
+		copy(csa.u[:4], addr4[:])
+	case addr.Is6():
+		csa.af = C.AF_INET6
+		addr16 := addr.As16()
+		copy(csa.u[:], addr16[:])
+	default:
+		return csa, false
+	}
+
+	// quark stores ports in network byte order.
+	port := ap.Port()
+	csa.port = C.u16(port>>8 | port<<8)
+
+	return csa, true
 }
 
 func socketFromC(cSocket *C.struct_quark_socket) Socket {
