@@ -398,12 +398,13 @@ static int ptrace_event(struct task_struct *child,
     if (child_tgid == curr_tgid)
         goto out;
 
-    struct ebpf_process_ptrace_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+    struct ebpf_process_ptrace_event *event = get_event_buffer();
     if (!event)
         goto out;
+    __builtin_memset(event, 0, sizeof(*event));
 
-    event->hdr.type    = EBPF_EVENT_PROCESS_PTRACE;
-    event->hdr.ts      = bpf_ktime_get_boot_ns();
+    event->hdr.type = EBPF_EVENT_PROCESS_PTRACE;
+    event->hdr.ts   = bpf_ktime_get_boot_ns();
 
     ebpf_pid_info__fill(&event->pids, task);
 
@@ -412,7 +413,7 @@ static int ptrace_event(struct task_struct *child,
     event->addr      = addr;
     event->data      = data;
 
-    bpf_ringbuf_submit(event, 0);
+    ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
 
 out:
     return 0;
@@ -473,19 +474,20 @@ int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
     if (is_kernel_thread(task))
         goto out;
 
-    struct ebpf_process_shmget_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+    struct ebpf_process_shmget_event *event = get_event_buffer();
     if (!event)
         goto out;
+    __builtin_memset(event, 0, sizeof(*event));
 
-    event->hdr.type    = EBPF_EVENT_PROCESS_SHMGET;
-    event->hdr.ts      = bpf_ktime_get_boot_ns();
+    event->hdr.type = EBPF_EVENT_PROCESS_SHMGET;
+    event->hdr.ts   = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->pids, task);
 
     event->key    = ex_args->key;
     event->size   = ex_args->size;
     event->shmflg = ex_args->shmflg;
 
-    bpf_ringbuf_submit(event, 0);
+    ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
 out:
     preempt_enable();
     return 0;
@@ -618,12 +620,13 @@ static int commit_creds__enter(struct cred *new)
         BPF_CORE_READ(new, suid.val) != BPF_CORE_READ(old, suid.val) ||
         BPF_CORE_READ(new, fsuid.val) != BPF_CORE_READ(old, fsuid.val)) {
 
-        struct ebpf_process_setuid_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+        struct ebpf_process_setuid_event *event = get_event_buffer();
         if (!event)
-            goto out;
+            return 0;
+        __builtin_memset(event, 0, sizeof(*event));
 
-        event->hdr.type    = EBPF_EVENT_PROCESS_SETUID;
-        event->hdr.ts      = bpf_ktime_get_boot_ns();
+        event->hdr.type = EBPF_EVENT_PROCESS_SETUID;
+        event->hdr.ts   = bpf_ktime_get_boot_ns();
 
         ebpf_pid_info__fill(&event->pids, task);
         ebpf_cred_info__fill(&event->creds, task);
@@ -631,15 +634,12 @@ static int commit_creds__enter(struct cred *new)
         ebpf_comm__fill(event->comm, sizeof(event->comm), task);
         ebpf_ns__fill(&event->ns, task);
 
-        // The legacy kprobe/tracefs implementation reports the gid even if
-        // this is a UID change and vice-versa, so we have new_[r,e]gid fields
-        // in a uid change event and vice-versa
         event->new_ruid = BPF_CORE_READ(new, uid.val);
         event->new_euid = BPF_CORE_READ(new, euid.val);
         event->new_rgid = BPF_CORE_READ(new, gid.val);
         event->new_egid = BPF_CORE_READ(new, egid.val);
 
-        bpf_ringbuf_submit(event, 0);
+        ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
     }
 
     if (BPF_CORE_READ(new, gid.val) != BPF_CORE_READ(old, gid.val) ||
@@ -647,12 +647,13 @@ static int commit_creds__enter(struct cred *new)
         BPF_CORE_READ(new, sgid.val) != BPF_CORE_READ(old, sgid.val) ||
         BPF_CORE_READ(new, fsgid.val) != BPF_CORE_READ(old, fsgid.val)) {
 
-        struct ebpf_process_setgid_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+        struct ebpf_process_setgid_event *event = get_event_buffer();
         if (!event)
-            goto out;
+            return 0;
+        __builtin_memset(event, 0, sizeof(*event));
 
-        event->hdr.type    = EBPF_EVENT_PROCESS_SETGID;
-        event->hdr.ts      = bpf_ktime_get_boot_ns();
+        event->hdr.type = EBPF_EVENT_PROCESS_SETGID;
+        event->hdr.ts   = bpf_ktime_get_boot_ns();
 
         ebpf_pid_info__fill(&event->pids, task);
         ebpf_cred_info__fill(&event->creds, task);
@@ -665,10 +666,9 @@ static int commit_creds__enter(struct cred *new)
         event->new_ruid = BPF_CORE_READ(new, uid.val);
         event->new_euid = BPF_CORE_READ(new, euid.val);
 
-        bpf_ringbuf_submit(event, 0);
+        ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
     }
 
-out:
     return 0;
 }
 

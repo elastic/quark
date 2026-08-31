@@ -80,20 +80,20 @@ static int inet_csk_accept__exit(struct sock *sk)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    struct ebpf_net_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+    struct ebpf_net_event *event = get_event_buffer();
     if (!event)
         goto out;
+    __builtin_memset(event, 0, sizeof(*event));
 
-    if (ebpf_network_event__fill(event, sk)) {
-        bpf_ringbuf_discard(event, 0);
+    if (ebpf_network_event__fill(event, sk))
         goto out;
-    }
-    // Record this socket so we can emit a close
-    u32 tgid = event->pids.tgid;
-    (void)bpf_map_update_elem(&sk_to_tgid, &sk, &tgid, BPF_ANY);
 
     event->hdr.type = EBPF_EVENT_NETWORK_CONNECTION_ACCEPTED;
-    bpf_ringbuf_submit(event, 0);
+    if (ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0) == 0) {
+        // Record this socket so we can emit a close
+        u32 tgid = event->pids.tgid;
+        (void)bpf_map_update_elem(&sk_to_tgid, &sk, &tgid, BPF_ANY);
+    }
 
 out:
     return 0;
@@ -131,21 +131,20 @@ static int tcp_connect(struct sock *sk, int ret)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    struct ebpf_net_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+    struct ebpf_net_event *event = get_event_buffer();
     if (!event)
         goto out;
+    __builtin_memset(event, 0, sizeof(*event));
 
-    if (ebpf_network_event__fill(event, sk)) {
-        bpf_ringbuf_discard(event, 0);
+    if (ebpf_network_event__fill(event, sk))
         goto out;
-    }
-
-    // Record this socket so we can emit a close
-    u32 tgid = event->pids.tgid;
-    (void)bpf_map_update_elem(&sk_to_tgid, &sk, &tgid, BPF_ANY);
 
     event->hdr.type = EBPF_EVENT_NETWORK_CONNECTION_ATTEMPTED;
-    bpf_ringbuf_submit(event, 0);
+    if (ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0) == 0) {
+        // Record this socket so we can emit a close
+        u32 tgid = event->pids.tgid;
+        (void)bpf_map_update_elem(&sk_to_tgid, &sk, &tgid, BPF_ANY);
+    }
 
 out:
     return 0;
@@ -260,20 +259,19 @@ static int tcp_close__enter(struct sock *sk)
     if (bpf_map_delete_elem(&sk_to_tgid, &sk) != 0 && bytes_sent == 0 && bytes_received == 0)
         goto out;
 
-    struct ebpf_net_event *event = bpf_ringbuf_reserve(&ringbuf, sizeof(*event), 0);
+    struct ebpf_net_event *event = get_event_buffer();
     if (!event)
         goto out;
+    __builtin_memset(event, 0, sizeof(*event));
 
-    if (ebpf_network_event__fill(event, sk)) {
-        bpf_ringbuf_discard(event, 0);
+    if (ebpf_network_event__fill(event, sk))
         goto out;
-    }
 
     event->net.tcp.close.bytes_sent     = bytes_sent;
     event->net.tcp.close.bytes_received = bytes_received;
 
     event->hdr.type = EBPF_EVENT_NETWORK_CONNECTION_CLOSED;
-    bpf_ringbuf_submit(event, 0);
+    ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
 
 out:
     return 0;
