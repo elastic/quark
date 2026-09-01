@@ -69,6 +69,9 @@ fetch_backend(struct quark_queue *qq)
 	return (s.backend == QQ_EBPF ? "ebpf" :
 	    s.backend == QQ_KPROBE ? "kprobe" :
 	    s.backend == QQ_NOVA ? "nova" :
+#ifdef WITH_SYNTHETIC
+	    s.backend == QQ_SYNTHETIC ? "synthetic" :
+#endif
 	    "invalid");
 }
 

@@ -1,0 +1,99 @@
+.Dd $Mdocdate$
+.Dt QUARK_QUEUE_INJECT 3
+.Os
+.Sh NAME
+.Nm quark_queue_inject
+.Nd inject a decoded synthetic event
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_queue_inject "struct quark_queue *qq" "const struct quark_synthetic_event *event"
+.Sh DESCRIPTION
+.Nm
+copies and inserts the decoded synthetic event pointed to by
+.Fa event
+into the raw-event trees of
+.Fa qq .
+The queue must have been opened with the
+.Dv QQ_SYNTHETIC
+backend.
+.Pp
+The synthetic backend and this function are omitted from normal builds.
+Build with
+.Ev WITH_SYNTHETIC=1
+to enable them.
+.Pp
+This interface is benchmark and test support.
+It enters the production event path immediately before internal
+.Fn raw_event_insert
+and therefore exercises raw-event sorting and aggregation, process-cache
+updates and garbage collection, userspace rules, and
+.Vt quark_event
+construction.
+It does not execute probes, transport events through ring buffers, decode
+backend records, or evaluate BPF-side filters.
+.Pp
+Supported
+.Va event.kind
+values are:
+.Bl -tag -width QUARK_SYNTHETIC_FILE_MODIFY
+.It Dv QUARK_SYNTHETIC_FORK
+.It Dv QUARK_SYNTHETIC_EXEC
+.It Dv QUARK_SYNTHETIC_EXIT
+.It Dv QUARK_SYNTHETIC_SETSID
+.It Dv QUARK_SYNTHETIC_FILE_CREATE
+.It Dv QUARK_SYNTHETIC_FILE_MODIFY
+.It Dv QUARK_SYNTHETIC_FILE_DELETE
+.El
+.Pp
+.Va event.time
+is a required nonzero timestamp in nanoseconds since
+.Dv CLOCK_BOOTTIME .
+.Va event.process.pid
+is required for every event.
+An exec additionally requires a non-empty
+.Va event.process.executable ;
+a file event requires a non-empty
+.Va event.file.path .
+.Pp
+Process input includes credentials, capabilities, parent, process-group and
+session relationships, controlling TTY, namespaces, start and exit data,
+cwd, cgroup, argv, environment, comm, and executable.
+File input includes paths, inode, timestamps, size, mode, ownership and change
+mask.
+.Va argv
+and
+.Va env
+are NUL-delimited buffers whose final byte must be NUL.
+Environment input is limited by the queue's
+.Va max_env
+attribute in the same way as decoded backend input.
+.Pp
+All strings and buffers are copied before
+.Nm
+returns, so the caller retains ownership and may immediately reuse them.
+Injection is synchronous.
+Like the rest of a
+.Vt quark_queue ,
+it is not safe to call concurrently on the same queue.
+.Sh RETURN VALUES
+Zero on success, -1 otherwise and
+.Va errno
+is set.
+.Sh ERRORS
+.Bl -tag -width Er
+.It Bq Er EINVAL
+The queue is not synthetic, a pointer is NULL, the event kind is unsupported,
+or a required field or NUL-delimited buffer is malformed.
+.It Bq Er ENOMEM
+Memory for the copied event could not be allocated.
+.It Bq Er EOVERFLOW
+The combined file-path storage length overflowed.
+.El
+.Sh SEE ALSO
+.Xr quark_process_lookup 3 ,
+.Xr quark_queue_close 3 ,
+.Xr quark_queue_get_event 3 ,
+.Xr quark_queue_get_stats 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark 7

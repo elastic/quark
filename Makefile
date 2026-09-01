@@ -105,6 +105,13 @@ ifdef WITH_BTFHUB
 CPPFLAGS+= -DWITH_BTFHUB
 EXTRA_OPTIONS+= WITH_BTFHUB=$(WITH_BTFHUB)
 endif
+ifeq ($(WITH_SYNTHETIC),1)
+CPPFLAGS+= -DWITH_SYNTHETIC
+EXTRA_OPTIONS+= WITH_SYNTHETIC=1
+SYNTHETIC_CONFIG_STAMP=.with-synthetic
+else
+SYNTHETIC_CONFIG_STAMP=.without-synthetic
+endif
 ifdef SYSLIB
 CPPFLAGS+= -DSYSLIB
 EXTRA_OPTIONS+= SYSLIB=$(SYSLIB)
@@ -166,6 +173,9 @@ LIBQUARK_SRCS:=			\
 	qbtf.c			\
 	quark.c			\
 	qutil.c
+ifeq ($(WITH_SYNTHETIC),1)
+LIBQUARK_SRCS+= synthetic_queue.c
+endif
 # CJSON
 # We build the source directly as it's just one file
 ifndef SYSLIB
@@ -270,11 +280,13 @@ $(LIBBPF_STATIC): $(LIBBPF_DEPS)
 
 $(LIBQUARK_STATIC): $(LIBQUARK_OBJS)
 	$(call msg,AR,$@)
+	$(Q)rm -f libquark.a
 	$(Q)$(AR) rcs $@ $^
 
 $(LIBQUARK_STATIC_BIG): $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATIC) $(ZLIB_STATIC)
 	$(call msg,AR,$@)
 	$(call assert_no_syslib)
+	$(Q)rm -f libquark_big.a
 	$(Q)printf "\
 	create libquark_big.a\n\
 	addlib libquark.a\n\
@@ -284,7 +296,17 @@ $(LIBQUARK_STATIC_BIG): $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATI
 	save\n\
 	end\n" | ar -M
 
-$(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS)
+ifeq ($(WITH_SYNTHETIC),1)
+.with-synthetic:
+	$(Q)rm -f .without-synthetic
+	$(Q)touch .with-synthetic
+else
+.without-synthetic:
+	$(Q)rm -f .with-synthetic
+	$(Q)touch .without-synthetic
+endif
+
+$(LIBQUARK_OBJS): %.o: %.c $(LIBQUARK_DEPS) $(SYNTHETIC_CONFIG_STAMP)
 	$(call msg,CC,$@)
 	$(Q)$(CC) -c $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $<
 
@@ -448,6 +470,16 @@ scan:
 test: quark-test
 	$(SUDO) ./quark-test
 
+ifeq ($(WITH_SYNTHETIC),1)
+# Probe-free tests for the synthetic queue; safe to run without root.
+test-synthetic: quark-synthetic-test
+	./quark-synthetic-test
+else
+test-synthetic:
+	@echo "test-synthetic requires WITH_SYNTHETIC=1"
+	@exit 1
+endif
+
 test-go: quark-go-test
 	$(SUDO) ./quark-go-test -test.v
 
@@ -520,6 +552,13 @@ quark-test: quark-test.c manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
+
+ifeq ($(WITH_SYNTHETIC),1)
+quark-synthetic-test: quark-synthetic-test.c $(LIBQUARK_TARGET)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
+endif
 
 quark-mon-static: quark-mon.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
@@ -636,6 +675,8 @@ clean:
 	$(Q)rm -f			\
 		*.o			\
 		*.a			\
+		.with-synthetic		\
+		.without-synthetic	\
 		parse.tab.c		\
 		hanson-bench		\
 		man-embedder		\
@@ -646,6 +687,7 @@ clean:
 		quark-btf-static	\
 		quark-test		\
 		quark-test-static	\
+		quark-synthetic-test	\
 		quark-bin.tar.gz	\
 		quark-bin-glibc2.17.tar.gz \
 		quark-kube-talker	\

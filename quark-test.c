@@ -2051,20 +2051,34 @@ t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
 	struct quark_queue	 qq;
 	struct quark_queue_attr	 attr;
 	size_t			 i;
+	int			 backend_flags;
 	int			 bad_backends[] = {
 		0,
 		QQ_EBPF | QQ_KPROBE,
 		QQ_EBPF | QQ_NOVA,
+#ifdef WITH_SYNTHETIC
+		QQ_EBPF | QQ_SYNTHETIC,
+#endif
 		QQ_KPROBE | QQ_NOVA,
+#ifdef WITH_SYNTHETIC
+		QQ_KPROBE | QQ_SYNTHETIC,
+		QQ_NOVA | QQ_SYNTHETIC,
+		QQ_EBPF | QQ_KPROBE | QQ_NOVA | QQ_SYNTHETIC,
+#else
 		QQ_EBPF | QQ_KPROBE | QQ_NOVA,
+#endif
 	};
 
+	backend_flags = QQ_EBPF | QQ_KPROBE | QQ_NOVA;
+#ifdef WITH_SYNTHETIC
+	backend_flags |= QQ_SYNTHETIC;
+#endif
 	quark_queue_default_attr(&attr);
-	assert((attr.flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA)) == QQ_EBPF);
+	assert((attr.flags & backend_flags) == QQ_EBPF);
 
 	for (i = 0; i < nitems(bad_backends); i++) {
 		quark_queue_default_attr(&attr);
-		attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
+		attr.flags &= ~backend_flags;
 		attr.flags |= bad_backends[i];
 		errno = 0;
 		assert(quark_queue_open(&qq, &attr) == -1);

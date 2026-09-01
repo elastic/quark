@@ -42,6 +42,9 @@ struct quark_sockaddr;
 struct quark_queue;
 struct quark_queue_attr;
 struct quark_queue_stats;
+#ifdef WITH_SYNTHETIC
+struct quark_synthetic_event;
+#endif
 struct quark_ruleset;
 struct quark_rule;
 struct quark_rule_field;
@@ -61,6 +64,10 @@ const struct quark_event *quark_queue_get_event(struct quark_queue *);
 int			 quark_queue_get_epollfd(struct quark_queue *);
 void			 quark_queue_get_stats(struct quark_queue *,
 			     struct quark_queue_stats *);
+#ifdef WITH_SYNTHETIC
+int			 quark_queue_inject(struct quark_queue *,
+			     const struct quark_synthetic_event *);
+#endif
 int			 quark_start_kube_talker(const char *, pid_t *);
 int			 quark_update_boottime(void);
 u64			 quark_get_boottime(void);
@@ -150,6 +157,11 @@ int			 kprobe_queue_open(struct quark_queue *);
 
 /* nova_queue.c */
 int			 nova_queue_open(struct quark_queue *);
+
+/* synthetic_queue.c */
+#ifdef WITH_SYNTHETIC
+int			 synthetic_queue_open(struct quark_queue *);
+#endif
 
 ssize_t		 qread(int, void *, size_t);
 int		 qwrite(int, const void *, size_t);
@@ -871,7 +883,7 @@ struct quark_queue_stats {
 	u64	lost;
 	u64	garbage_collections;
 	u64	stalls;     /* stalled perf rings due to corruption, only for QQ_KPROBE */
-	int	backend;    /* active backend, QQ_EBPF or QQ_KPROBE */
+	int	backend;    /* active backend, one of QQ_{EBPF,KPROBE,NOVA,SYNTHETIC} */
 	/* TODO u64    peak_nodes; */
 };
 
@@ -898,6 +910,9 @@ struct quark_queue_attr {
 #define QQ_MODULE_LOAD		(1 << 12)
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
+#ifdef WITH_SYNTHETIC
+#define QQ_SYNTHETIC		(1 << 15)
+#endif
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */
@@ -906,6 +921,84 @@ struct quark_queue_attr {
 	int			 kubefd;		/* quark-kube-talker pipe, -1 disables */
 	struct quark_ruleset	*ruleset;		/* active ruleset */
 };
+
+#ifdef WITH_SYNTHETIC
+/*
+ * Synthetic input enters Quark immediately before raw_event_insert().  It is
+ * benchmark/test support: injection is synchronous and queues using it are
+ * not thread-safe.  It deliberately excludes probes, transport, decoding,
+ * and BPF-side filtering.  All pointed-to data is copied by
+ * quark_queue_inject().
+ */
+enum quark_synthetic_event_kind {
+	QUARK_SYNTHETIC_INVALID,
+	QUARK_SYNTHETIC_FORK,
+	QUARK_SYNTHETIC_EXEC,
+	QUARK_SYNTHETIC_EXIT,
+	QUARK_SYNTHETIC_SETSID,
+	QUARK_SYNTHETIC_FILE_CREATE,
+	QUARK_SYNTHETIC_FILE_MODIFY,
+	QUARK_SYNTHETIC_FILE_DELETE,
+};
+
+struct quark_synthetic_process {
+	u32		 pid;
+	u32		 tid;
+	u32		 ppid;
+	u32		 pgid;
+	u32		 sid;
+	u64		 start_boottime;
+	u32		 uid;
+	u32		 gid;
+	u32		 suid;
+	u32		 sgid;
+	u32		 euid;
+	u32		 egid;
+	u64		 cap_inheritable;
+	u64		 cap_permitted;
+	u64		 cap_effective;
+	u64		 cap_bset;
+	u64		 cap_ambient;
+	u32		 tty_major;
+	u32		 tty_minor;
+	u32		 uts_inonum;
+	u32		 ipc_inonum;
+	u32		 mnt_inonum;
+	u32		 net_inonum;
+	s32		 exit_code;
+	u64		 exit_time_event;
+	const char	*comm;
+	const char	*cwd;
+	const char	*cgroup;
+	const char	*argv;		/* NUL-delimited, final byte must be NUL */
+	size_t		 argv_len;
+	const char	*env;		/* NUL-delimited, final byte must be NUL */
+	size_t		 env_len;
+	const char	*executable;
+};
+
+struct quark_synthetic_file {
+	const char	*path;
+	const char	*old_path;
+	const char	*sym_target;
+	u64		 inode;
+	u64		 atime;
+	u64		 mtime;
+	u64		 ctime;
+	u64		 size;
+	u32		 mode;
+	u32		 uid;
+	u32		 gid;
+	u32		 change_mask;	/* mask of QUARK_FILE_CH_* */
+};
+
+struct quark_synthetic_event {
+	enum quark_synthetic_event_kind	 kind;
+	u64				 time;	/* CLOCK_BOOTTIME nanoseconds */
+	struct quark_synthetic_process	 process;
+	struct quark_synthetic_file	 file;
+};
+#endif
 
 /*
  * Quark Queue (qq) is the main structure the user interacts with, it acts as
