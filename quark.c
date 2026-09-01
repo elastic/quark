@@ -1604,6 +1604,7 @@ process_container_id(struct quark_process *qp)
 
 	qp->container_id = strdup(cid);
 	if (qp->container_id == NULL)
+		// If strdup returns NULL, don't set qp->container_id_parsed to enable retries
 		return (NULL);
 
 	qp->container_id_parsed = 1;
