@@ -33,11 +33,13 @@ static u32	bpf_ringbuf_size(int);
 
 /*
  * Shared eBPF ring buffer is sized from CPU count so large hosts can absorb
- * a burst of variable-length execs (argv+env). 256 KiB per CPU matches
- * EVENT_BUFFER_SIZE. Result is rounded up to a power of two (BPF ringbuf
- * requirement), never below the historical 4 MiB default, never above 64 MiB.
+ * a burst of variable-length execs (argv+env). 512 KiB per CPU is the
+ * per-CPU headroom of the historical 4 MiB default at 8 CPUs, the point
+ * at which bursty large execs did not drop. Result is rounded up to a
+ * power of two (BPF ringbuf requirement), never below 4 MiB, never above
+ * 64 MiB.
  */
-#define RINGBUF_BYTES_PER_CPU	(1U << 18)	/* 256 KiB */
+#define RINGBUF_BYTES_PER_CPU	(1U << 19)	/* 512 KiB */
 #define RINGBUF_MIN_SIZE	(1U << 22)	/* 4 MiB */
 #define RINGBUF_MAX_SIZE	(1U << 26)	/* 64 MiB */
 
