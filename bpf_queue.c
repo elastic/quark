@@ -30,6 +30,46 @@ static int	bpf_queue_populate(struct quark_queue *);
 static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
 
+/*
+ * Shared eBPF ring buffer is sized from CPU count so large hosts can absorb
+ * a burst of variable-length execs (argv+env). 256 KiB per CPU matches
+ * EVENT_BUFFER_SIZE. Result is rounded up to a power of two (BPF ringbuf
+ * requirement), never below the historical 4 MiB default, never above 64 MiB.
+ */
+#define RINGBUF_BYTES_PER_CPU	(1U << 18)	/* 256 KiB */
+#define RINGBUF_MIN_SIZE	(1U << 22)	/* 4 MiB */
+#define RINGBUF_MAX_SIZE	(1U << 26)	/* 64 MiB */
+
+u32
+quark_bpf_ringbuf_size(int ncpu)
+{
+	u64 bytes;
+
+	if (ncpu < 1)
+		ncpu = 1;
+
+	bytes = (u64)ncpu * RINGBUF_BYTES_PER_CPU;
+
+	/* round up to the next power of two */
+	if (bytes > 1) {
+		bytes--;
+		bytes |= bytes >> 1;
+		bytes |= bytes >> 2;
+		bytes |= bytes >> 4;
+		bytes |= bytes >> 8;
+		bytes |= bytes >> 16;
+		bytes |= bytes >> 32;
+		bytes++;
+	}
+
+	if (bytes < RINGBUF_MIN_SIZE)
+		bytes = RINGBUF_MIN_SIZE;
+	if (bytes > RINGBUF_MAX_SIZE)
+		bytes = RINGBUF_MAX_SIZE;
+
+	return ((u32)bytes);
+}
+
 struct quark_queue_ops queue_ops_bpf = {
 	.open	      = bpf_queue_open,
 	.populate     = bpf_queue_populate,
@@ -1051,7 +1091,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	struct bpf_queue		*bqq;
 	struct bpf_probes		*p;
 	struct bpf_program		*prog;
-	int				 cgroup_fd, i, off, ringbuf_fd;
+	int				 cgroup_fd, i, ncpu, off, ringbuf_fd;
+	u32				 ringbuf_size;
 	char				*cgroup_umount;
 	struct bpf_prog_skeleton	*ps;
 	struct btf			*btf;
@@ -1286,11 +1327,18 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_GETPID)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
 
-	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
-	    get_nprocs_conf()) != 0) {
+	ncpu = get_nprocs_conf();
+	if (bpf_map__set_max_entries(p->maps.event_buffer_map, ncpu) != 0) {
 		qwarn("bpf_map__set_max_entries event_buffer_map");
 		goto fail;
 	}
+
+	ringbuf_size = quark_bpf_ringbuf_size(ncpu);
+	if (bpf_map__set_max_entries(p->maps.ringbuf, ringbuf_size) != 0) {
+		qwarn("bpf_map__set_max_entries ringbuf");
+		goto fail;
+	}
+	qdebugx("eBPF ringbuf size %u bytes (%d cpus)", ringbuf_size, ncpu);
 
 	if (bpf_probes__load(p) != 0) {
 		qwarn("bpf_probes__load");

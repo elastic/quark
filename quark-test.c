@@ -2075,6 +2075,30 @@ t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
 }
 
 static int
+t_ringbuf_size(const struct test *t, struct quark_queue_attr *qa)
+{
+	u32 size;
+
+	assert(quark_bpf_ringbuf_size(0) == (1U << 22));	/* floor 4 MiB */
+	assert(quark_bpf_ringbuf_size(-1) == (1U << 22));
+	assert(quark_bpf_ringbuf_size(1) == (1U << 22));
+	assert(quark_bpf_ringbuf_size(16) == (1U << 22));	/* 16 * 256 KiB */
+	assert(quark_bpf_ringbuf_size(17) == (1U << 23));	/* round up 8 MiB */
+	assert(quark_bpf_ringbuf_size(32) == (1U << 23));
+	assert(quark_bpf_ringbuf_size(48) == (1U << 24));	/* 12 MiB -> 16 MiB */
+	assert(quark_bpf_ringbuf_size(64) == (1U << 24));
+	assert(quark_bpf_ringbuf_size(128) == (1U << 25));	/* 32 MiB */
+	assert(quark_bpf_ringbuf_size(256) == (1U << 26));	/* 64 MiB */
+	assert(quark_bpf_ringbuf_size(512) == (1U << 26));	/* cap */
+
+	size = quark_bpf_ringbuf_size(192);
+	assert(size == (1U << 26));				/* 48 MiB -> 64 MiB */
+	assert((size & (size - 1)) == 0);
+
+	return (0);
+}
+
+static int
 t_hanson(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct hanson	 h;
@@ -2911,6 +2935,7 @@ struct test all_tests[] = {
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
 	T(t_backend_flags),
+	T(t_ringbuf_size),
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),
