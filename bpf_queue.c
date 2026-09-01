@@ -29,6 +29,7 @@ struct bpf_queue {
 static int	bpf_queue_populate(struct quark_queue *);
 static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
+static u32	bpf_ringbuf_size(int);
 
 /*
  * Shared eBPF ring buffer is sized from CPU count so large hosts can absorb
@@ -40,8 +41,8 @@ static void	bpf_queue_close(struct quark_queue *);
 #define RINGBUF_MIN_SIZE	(1U << 22)	/* 4 MiB */
 #define RINGBUF_MAX_SIZE	(1U << 26)	/* 64 MiB */
 
-u32
-quark_bpf_ringbuf_size(int ncpu)
+static u32
+bpf_ringbuf_size(int ncpu)
 {
 	u64 bytes;
 
@@ -1333,7 +1334,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		goto fail;
 	}
 
-	ringbuf_size = quark_bpf_ringbuf_size(ncpu);
+	ringbuf_size = bpf_ringbuf_size(ncpu);
 	if (bpf_map__set_max_entries(p->maps.ringbuf, ringbuf_size) != 0) {
 		qwarn("bpf_map__set_max_entries ringbuf");
 		goto fail;

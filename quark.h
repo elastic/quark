@@ -141,7 +141,6 @@ int			btf_index_of_param(struct btf *, const char *,
 
 /* bpf_queue.c */
 int			 bpf_queue_open(struct quark_queue *);
-u32			 quark_bpf_ringbuf_size(int);
 struct bpf_probes	*quark_get_bpf_probes(struct quark_queue *);
 int			 quark_queue_trusted_pid_add(struct quark_queue *, u32);
 int			 quark_queue_trusted_pid_reset(struct quark_queue *);
