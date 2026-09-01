@@ -568,9 +568,12 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     u64  dedup_key   = mprotect_seen__key(tgid, prev_prot,
                                           effective_prot, file_backed);
     u8   dedup_val   = 1;
-    // Compare in 32 bits: before Linux 5.9 (bdb7b79b4ce8) map helpers were
-    // declared to return int, and the JIT zero-extends the 32-bit result, so
-    // a 64-bit compare against -EEXIST never matches on older kernels.
+    // Compare in 32 bits: with the JIT enabled, the verifier rewrites map
+    // helper calls into direct calls to the map ops (fixup_bpf_calls), and
+    // those returned int until Linux 6.4 (d7ba4cc900bf), leaving a
+    // zero-extended 32-bit value in r0 on older kernels. A 64-bit compare
+    // against -EEXIST never matches there. Ordinary helpers return through a
+    // u64 wrapper and are sign-extended correctly; only map helpers need this.
     if ((int)bpf_map_update_elem(&mprotect_seen, &dedup_key, &dedup_val,
                                  BPF_NOEXIST) == -EEXIST) {
         if (stats)
