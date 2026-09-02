@@ -108,6 +108,7 @@ endif
 ifeq ($(WITH_SYNTHETIC),1)
 CPPFLAGS+= -DWITH_SYNTHETIC
 EXTRA_OPTIONS+= WITH_SYNTHETIC=1
+QUARK_GO_TEST_FLAGS+= -tags=quark_synthetic
 SYNTHETIC_CONFIG_STAMP=.with-synthetic
 else
 SYNTHETIC_CONFIG_STAMP=.without-synthetic
@@ -605,7 +606,7 @@ quark-kube-talker: $(GO_FILES)
 
 quark-go-test: $(QUARK_GO_DEPS)
 	$(call msg,GO,$@)
-	$(Q)cd go/quark && go test -c -o ../../quark-go-test
+	$(Q)cd go/quark && go test $(QUARK_GO_TEST_FLAGS) -c -o ../../quark-go-test
 
 man-embedder: man-embedder.c
 	$(call msg,CC,$@)
