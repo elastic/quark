@@ -118,6 +118,11 @@ in
 .Em quark_events .
 Entry leader is how the process entered the system, it is disabled by default as
 it is Elastic/ECS specific.
+.It Dv QQ_MPROTECT
+Enable EBPF-only executable mprotect attempt events.
+Each event describes one VMA reaching the kernel's
+.Fn security_file_mprotect
+check and does not imply that the protection change was committed.
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.

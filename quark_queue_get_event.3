@@ -62,6 +62,16 @@ Process changed image, result of an exec.
 Process exited.
 .It Dv QUARK_EV_SETPROCTITLE
 Process changed its name (COMM).
+.It Dv QUARK_EV_MPROTECT
+An executable protection attempt reached the kernel's
+.Fn security_file_mprotect
+check.
+The
+.Em mprotect
+member contains the VMA bounds, normalized previous protection,
+userspace-requested and kernel-adjusted protection, and backing-file identity.
+It describes an attempt and does not assert that the protection change was
+committed.
 .El
 .Pp
 It's important to note that
