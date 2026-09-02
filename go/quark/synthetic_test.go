@@ -179,6 +179,48 @@ func TestSyntheticQueueInvalidInput(t *testing.T) {
 	require.ErrorIs(t, (*Queue)(nil).Inject(valid), syscall.EINVAL)
 }
 
+// TestSyntheticFileEventFreshPid verifies that a file injection for a pid that
+// has never been seen before yields a valid event with full process data.
+// Before the fix, RAW_FILE injections skipped synthetic_task_copy(), so the
+// process cache was never populated and GetEvent() dropped the event entirely.
+func TestSyntheticFileEventFreshPid(t *testing.T) {
+	queue, err := OpenSyntheticQueue(syntheticTestAttr())
+	require.NoError(t, err)
+	defer queue.Close()
+
+	const freshPid = 9999
+
+	process := syntheticTestProcess()
+	process.Pid = freshPid
+	process.Tid = freshPid
+
+	file := SyntheticFile{
+		Path:  "/tmp/canary",
+		Inode: 42,
+		Mode:  0100644,
+	}
+
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_FILE_CREATE,
+		Time:    5000,
+		Process: process,
+		File:    file,
+	}))
+
+	event, ok := queue.GetEvent()
+	require.True(t, ok, "GetEvent returned false — file event for a fresh pid was dropped")
+	require.Equal(t, uint64(QUARK_EV_FILE), event.Events)
+	require.NotNil(t, event.File)
+	require.Equal(t, file.Path, event.File.Path)
+
+	// Process data must be present (the whole point of the fix).
+	require.Equal(t, freshPid, int(event.Process.Pid))
+	require.Equal(t, process.Comm, event.Process.Comm)
+	require.Equal(t, process.Executable, event.Process.Exe)
+	require.Equal(t, process.Cwd, event.Process.Cwd)
+	require.Equal(t, process.CapEffective, event.Process.Proc.CapEffective)
+}
+
 // TestSyntheticAllocationsFree pins down the receiver of free(). Inject() sets
 // up `defer allocations.free()` before it allocates anything, so free() must
 // see the appends that happen afterwards. A value receiver would snapshot the

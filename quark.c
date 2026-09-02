@@ -57,6 +57,12 @@ static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
 static void	pod_delete(struct quark_queue *, struct quark_pod *);
 static void	container_delete(struct quark_queue *, struct quark_container *);
 
+static struct quark_process	*process_cache_get(struct quark_queue *, int, int);
+static void			 raw_event_process1(struct quark_queue *,
+				     struct raw_event *, struct quark_event *);
+int				 quark_process_cache_seed(struct quark_queue *,
+				     struct raw_event *);
+
 /* For debugging */
 int	quark_verbose;
 
@@ -2606,6 +2612,25 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 	}
 
 	return (dst);
+}
+
+/*
+ * Seed the process cache from a pre-built raw event without inserting the
+ * event into the tree. Used by synthetic_queue.c for RAW_FILE injections,
+ * where the raw_event union carries no raw_task and raw_event_process1()
+ * never runs via the normal path.
+ */
+int
+quark_process_cache_seed(struct quark_queue *qq, struct raw_event *src)
+{
+	struct quark_event	dst;
+
+	memset(&dst, 0, sizeof(dst));
+	if ((dst.process = process_cache_get(qq, (int)src->pid, 1)) == NULL)
+		return (-1);
+	raw_event_process1(qq, src, &dst);
+
+	return (0);
 }
 
 /*
