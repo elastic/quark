@@ -270,6 +270,72 @@ test_lifecycle_file_cache_and_stats(void)
 	quark_queue_close(&qq);
 }
 
+/*
+ * raw_event_insert() moves an event to the next free timestamp when the one
+ * it asks for is taken, so the time an event ends up with is only known after
+ * the insert. Check that an exit reports the same value in its event time and
+ * in exit_time_event even when it was moved. Also check that a run of taken
+ * timestamps long enough to exhaust the walk reports EEXIST.
+ */
+static void
+test_timestamp_collision(void)
+{
+	struct quark_queue qq;
+	struct quark_queue_attr attr;
+	struct quark_synthetic_event event;
+	const struct quark_event *qev;
+	u64 collide_at;
+	int i;
+
+	synthetic_attr(&attr);
+	assert(quark_queue_open(&qq, &attr) == 0);
+
+	collide_at = boottime_ns() - 100000;
+
+	/* Take the timestamp with an unrelated pid, so the exit has to move. */
+	event = synthetic_event(QUARK_SYNTHETIC_EXEC, 7001, 0, collide_at);
+	assert(quark_queue_inject(&qq, &event) == 0);
+
+	event = synthetic_event(QUARK_SYNTHETIC_EXIT, 7002, 0, collide_at);
+	event.process.exit_code = 23;
+	assert(quark_queue_inject(&qq, &event) == 0);
+
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL && qev->process->pid == 7001);
+	assert(qev->time == collide_at);
+
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL && qev->process->pid == 7002);
+	assert(qev->events == QUARK_EV_EXIT);
+	assert(qev->process->exit_code == 23);
+	/* Moved off the taken slot, and exit_time_event went with it. */
+	assert(qev->time == collide_at + 1);
+	assert(qev->process->exit_time_event == qev->time);
+
+	quark_queue_close(&qq);
+
+	/* A fully taken run of a thousand timestamps exhausts the walk. */
+	synthetic_attr(&attr);
+	assert(quark_queue_open(&qq, &attr) == 0);
+
+	collide_at = boottime_ns() - 100000;
+	for (i = 0; i < 1000; i++) {
+		event = synthetic_event(QUARK_SYNTHETIC_EXEC, 8000 + i, 0,
+		    collide_at + i);
+		assert(quark_queue_inject(&qq, &event) == 0);
+	}
+	event = synthetic_event(QUARK_SYNTHETIC_EXEC, 9999, 0, collide_at);
+	errno = 0;
+	assert(quark_queue_inject(&qq, &event) == -1 && errno == EEXIST);
+
+	/* One past the run is still free. */
+	event = synthetic_event(QUARK_SYNTHETIC_EXEC, 9999, 0,
+	    collide_at + 1000);
+	assert(quark_queue_inject(&qq, &event) == 0);
+
+	quark_queue_close(&qq);
+}
+
 static void
 ruleset_from_string(struct quark_ruleset *ruleset, const char *text)
 {
@@ -328,6 +394,7 @@ main(void)
 {
 	test_validation();
 	test_lifecycle_file_cache_and_stats();
+	test_timestamp_collision();
 	test_rules();
 	puts("synthetic queue tests passed");
 

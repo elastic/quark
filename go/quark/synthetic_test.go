@@ -323,6 +323,96 @@ func TestSyntheticArgvOnlyAppliesToExec(t *testing.T) {
 		"a fork's cmdline comes from the parent, not from its own argv")
 }
 
+// TestSyntheticExitTimeMatchesBumpedTime verifies that exit_time_event agrees
+// with the event's own time even when the injected timestamp was taken.
+//
+// raw_event_insert() bumps raw->time until it finds a free slot, and warns
+// that the time must not be copied before the event is in the tree. Reading
+// exit_time_event before the insert left it one tick behind.
+func TestSyntheticExitTimeMatchesBumpedTime(t *testing.T) {
+	queue, err := OpenSyntheticQueue(syntheticTestAttr())
+	require.NoError(t, err)
+	defer queue.Close()
+
+	const collideAt = 500000
+
+	// Take the timestamp with an unrelated pid, so the exit below has to be
+	// moved to collideAt+1. Distinct pids keep the two from aggregating.
+	blocker := syntheticTestProcess()
+	blocker.Pid, blocker.Tid = 7001, 7001
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_EXEC,
+		Time:    collideAt,
+		Process: blocker,
+	}))
+
+	dying := syntheticTestProcess()
+	dying.Pid, dying.Tid = 7002, 7002
+	dying.ExitCode = 23
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_EXIT,
+		Time:    collideAt,
+		Process: dying,
+	}))
+
+	var exit Exit
+	for {
+		event, ok := queue.GetEvent()
+		if !ok {
+			break
+		}
+		if event.Process.Exit.Valid {
+			exit = event.Process.Exit
+		}
+	}
+
+	require.True(t, exit.Valid, "no exit event was drained")
+	require.Equal(t, int32(23), exit.ExitCode)
+	require.EqualValues(t, collideAt+1, exit.ExitTimeProcess,
+		"exit_time_event kept the pre-collision timestamp")
+}
+
+// TestSyntheticQueueTimestampExhaustion pins the documented EEXIST. An event
+// landing on a taken timestamp moves to the next free one, but only for a
+// thousand attempts; a fully taken run that long fails the injection.
+func TestSyntheticQueueTimestampExhaustion(t *testing.T) {
+	queue, err := OpenSyntheticQueue(syntheticTestAttr())
+	require.NoError(t, err)
+	defer queue.Close()
+
+	const (
+		base     = 900000
+		runLen   = 1000
+		firstPid = 8000
+	)
+
+	process := syntheticTestProcess()
+	for i := 0; i < runLen; i++ {
+		process.Pid = uint32(firstPid + i)
+		process.Tid = process.Pid
+		require.NoError(t, queue.Inject(SyntheticEvent{
+			Kind:    QUARK_SYNTHETIC_EXEC,
+			Time:    base + uint64(i),
+			Process: process,
+		}), "filling timestamp %d", base+i)
+	}
+
+	// Every slot from base to base+999 is taken, so this exhausts the walk.
+	process.Pid, process.Tid = firstPid+runLen, firstPid+runLen
+	require.ErrorIs(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_EXEC,
+		Time:    base,
+		Process: process,
+	}), syscall.EEXIST)
+
+	// One past the run is still free, so this must succeed.
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_EXEC,
+		Time:    base + runLen,
+		Process: process,
+	}))
+}
+
 // TestSyntheticFileEventUncachedPid verifies that a file injection for a pid
 // that is not in the process cache still yields the event, with no process
 // data attached.

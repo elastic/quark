@@ -109,7 +109,23 @@ or a required field or NUL-delimited buffer is malformed.
 Memory for the copied event could not be allocated.
 .It Bq Er EOVERFLOW
 The combined file-path storage length overflowed.
+.It Bq Er EEXIST
+The event could not be placed in the queue.
+Two events may not hold the same timestamp, so an event that arrives on a
+taken timestamp moves to the next free one.
+This error means that a thousand consecutive timestamps from
+.Va event.time
+onwards were all taken.
+The event is dropped.
 .El
+.Pp
+Because a colliding event moves to the next free timestamp, the time an event
+reports is not always the
+.Va event.time
+it was given.
+An exit reports the same value in
+.Va exit_time_event
+and in its event time.
 .Sh SEE ALSO
 .Xr quark_process_lookup 3 ,
 .Xr quark_queue_close 3 ,

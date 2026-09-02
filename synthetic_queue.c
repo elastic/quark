@@ -295,13 +295,20 @@ quark_queue_inject(struct quark_queue *qq,
 
 	if (task != NULL && synthetic_task_copy(qq, task, proc) == -1)
 		goto fail;
-	if (raw_type == RAW_EXIT_THREAD && task->exit_time_event == 0)
-		task->exit_time_event = raw->time;
 
 	if (raw_event_insert(qq, raw) == -1) {
 		errno = EEXIST;
 		goto fail;
 	}
+	/*
+	 * Only now is raw->time final: raw_event_insert() bumps it on a
+	 * timestamp collision, which is why it warns against copying the time
+	 * before the event sits in the tree. Taking it earlier would report an
+	 * exit_time_event one tick behind the event's own time. Mutating the
+	 * task is still safe here, as exit_time_event is not a tree key.
+	 */
+	if (raw_type == RAW_EXIT_THREAD && task->exit_time_event == 0)
+		task->exit_time_event = raw->time;
 
 	return (0);
 
