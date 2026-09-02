@@ -102,13 +102,11 @@ RB_PROTOTYPE(group_by_gid, quark_group, entry, quark_group_cmp);
 RB_GENERATE(group_by_gid, quark_group, entry, quark_group_cmp);
 
 /*
- * hz and boottime are shared by every queue in the process and may be
- * updated by quark_update_boottime() while another thread reads them,
- * access only through the helpers below.
+ * hz is shared by every queue in the process, set once by quark_init().
+ * Access only through the atomic helpers below.
  */
 struct quark {
 	unsigned int	hz;
-	u64		boottime;
 } quark;
 
 static inline unsigned int
@@ -123,48 +121,61 @@ quark_hz_set(unsigned int hz)
 	__atomic_store_n(&quark.hz, hz, __ATOMIC_RELAXED);
 }
 
-static inline u64
-quark_boottime(void)
-{
-	return (__atomic_load_n(&quark.boottime, __ATOMIC_RELAXED));
-}
-
-static inline void
-quark_boottime_set(u64 boottime)
-{
-	__atomic_store_n(&quark.boottime, boottime, __ATOMIC_RELAXED);
-}
-
-int
-quark_update_boottime(void)
-{
-	u64	boottime, old;
-
-	if ((boottime = fetch_boottime()) == 0) {
-		qwarn("can't refetch btime");
-		return (-1);
-	}
-	old = quark_boottime();
-	if (boottime != old) {
-		qwarnx("boottime updated %llu -> %llu",
-		    (unsigned long long)old,
-		    (unsigned long long)boottime);
-		quark_boottime_set(boottime);
-	}
-
-	return (0);
-}
+/*
+ * The boottime epoch: the wallclock time of boot in nanoseconds since
+ * the Unix epoch. Adding it to a time-since-boot yields wallclock.
+ * It is the distance between CLOCK_REALTIME and CLOCK_BOOTTIME, the same
+ * value the kernel exports as btime in /proc/stat, in nanoseconds.
+ *
+ * Sampling costs a few clock reads, which execute in nanoseconds (VDSO).
+ * However, on kernels before 5.3 one of the clock reads (CLOCK_BOOTTIME)
+ * is a syscall, so it is throttled to once per BOOTTIME_RESAMPLE_NS:
+ * the common path is a CLOCK_MONOTONIC_COARSE read and an atomic load,
+ * both cheap enough to call per event as they resolve in nanoseconds.
+ *
+ * A sample is only adopted when it strays more than BOOTTIME_HYSTERESIS_NS
+ * from the previously adopted one: only an actual clock step moves the
+ * epoch that much and anything below is sampling noise that would jitter
+ * conversions from call to call. This gives callers a stable value they may
+ * cache while converting a batch of events. Can be called from any thread
+ * without synchronization.
+ */
+#define BOOTTIME_RESAMPLE_NS	MS_TO_NS(10)
+#define BOOTTIME_HYSTERESIS_NS	MS_TO_NS(10)
 
 u64
 quark_get_boottime(void)
 {
-	return (quark_boottime());
-}
+	static u64	adopted, sampled;
+	struct timespec	ts;
+	u64		old, new, now;
 
-u64
-quark_time_to_wallclock(u64 time_since_boot)
-{
-	return (quark_boottime() + time_since_boot);
+	old = __atomic_load_n(&adopted, __ATOMIC_RELAXED);
+	if (clock_gettime(CLOCK_MONOTONIC_COARSE, &ts) == -1)
+		/* Should never happen */
+		return (old);
+	now = TS_TO_NS(ts);
+	/* Check if enough time has passed from previous sampling */
+	if (now - __atomic_load_n(&sampled, __ATOMIC_RELAXED) <
+	    BOOTTIME_RESAMPLE_NS)
+		return (old);
+	__atomic_store_n(&sampled, now, __ATOMIC_RELAXED);
+
+	if ((new = clock_diff(CLOCK_REALTIME, CLOCK_BOOTTIME)) == 0)
+		/* Should never happen */
+		return (old);
+	/*
+	 * Concurrent callers converge on a single value: store only happens
+	 * if adopted still holds the snapshot this thread compared against (old).
+	 * If anyone else got there first, no store takes place and we return
+	 * the updated -by another thread- value (first concurrent writer wins).
+	 */
+	if (llabs((s64)(new - old)) > (s64)BOOTTIME_HYSTERESIS_NS &&
+	    __atomic_compare_exchange_n(&adopted, &old, new, 0,
+	    __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+		old = new;
+
+	return (old);
 }
 
 struct raw_event *
@@ -3842,21 +3853,23 @@ static int
 quark_init(void)
 {
 	unsigned int	hz;
-	u64		boottime;
 
-	if (quark_hz() && quark_boottime())
+	if (quark_hz())
 		return (0);
 
 	if ((hz = sysconf(_SC_CLK_TCK)) == (unsigned int)-1) {
 		qwarn("sysconf(_SC_CLK_TCK)");
 		return (-1);
 	}
-	if ((boottime = fetch_boottime()) == 0) {
-		qwarn("can't fetch btime");
-		return (-1);
+	/*
+	 * Prime the boottime epoch, a queue is useless without it.
+	 * This should never fail (e.g. wallclock predating boot).
+	 */
+	if (quark_get_boottime() == 0) {
+		qwarnx("can't sample the boottime epoch");
+		return (errno = ERANGE, -1);
 	}
 	quark_hz_set(hz);
-	quark_boottime_set(boottime);
 
 	return (0);
 }

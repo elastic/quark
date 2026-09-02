@@ -612,7 +612,7 @@ enum ecs_process_kind {
  */
 static int
 ecs_process(struct quark_queue *qq, struct hanson *h,
-    const struct quark_process *qp, int kind, int *first)
+    const struct quark_process *qp, int kind, u64 boottime, int *first)
 {
 	const struct quark_process	*group_leader;
 	const struct quark_process	*session_leader;
@@ -626,7 +626,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 		hanson_add_key_value(h, "entity_id", qp->proc_entity_id,
 		    first);
 
-		ecs_date(quark_time_to_wallclock(qp->proc_time_boot),
+		ecs_date(qp->proc_time_boot + boottime,
 		    start_time, sizeof(start_time));
 		hanson_add_key_value(h, "start", start_time, first);
 		hanson_add_key_value_bool(h, "interactive", is_interactive(qp),
@@ -687,7 +687,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 	if (qp->flags & QUARK_F_EXIT) {
 		char	end_time[32];
 
-		ecs_date(quark_time_to_wallclock(qp->exit_time_event),
+		ecs_date(qp->exit_time_event + boottime,
 		    end_time, sizeof(end_time));
 		hanson_add_key_value(h, "end", end_time, first);
 
@@ -710,7 +710,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 
 		if ((parent = quark_process_lookup(qq, qp->proc_ppid)) != NULL)
 			ecs_process(qq, h, parent,
-			    ECS_PROC_PARENT, &parent_first);
+			    ECS_PROC_PARENT, boottime, &parent_first);
 	}
 	hanson_close_object(h);
 
@@ -729,7 +729,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 			int	group_leader_first = 1;
 
 			ecs_process(qq, h, group_leader,
-			    ECS_PROC_LEADER, &group_leader_first);
+			    ECS_PROC_LEADER, boottime, &group_leader_first);
 			hanson_add_key_value_bool(h, "same_as_process",
 			    group_leader->pid == qp->pid, &group_leader_first);
 		}
@@ -742,7 +742,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 			int	session_leader_first = 1;
 
 			ecs_process(qq, h, session_leader,
-			    ECS_PROC_LEADER, &session_leader_first);
+			    ECS_PROC_LEADER, boottime, &session_leader_first);
 			hanson_add_key_value_bool(h, "same_as_process",
 			    session_leader->pid == qp->pid, &session_leader_first);
 		}
@@ -755,7 +755,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 			int	entry_leader_first = 1;
 
 			ecs_process(qq, h, entry_leader,
-			    ECS_PROC_LEADER, &entry_leader_first);
+			    ECS_PROC_LEADER, boottime, &entry_leader_first);
 			hanson_add_key_value_bool(h, "same_as_process",
 			    entry_leader->pid == qp->pid, &entry_leader_first);
 			/* process.entry_leader.entry_meta.* */
@@ -960,6 +960,7 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
     char **buf, size_t *buf_len)
 {
 	struct hanson	h;
+	u64		boottime;
 	int		top_first;
 
 	if (qev->events == QUARK_EV_BYPASS)
@@ -968,6 +969,8 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 	if (hanson_open(&h) == -1)
 		return (-1);
 
+	/* Fetched once per event, shared by every process it describes */
+	boottime = quark_get_boottime();
 	top_first = 1;
 	hanson_add_object(&h, "event", &top_first);
 	{
@@ -1018,7 +1021,7 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 			int	process_first = 1;
 
 			ecs_process(qq, &h, qev->process,
-			    ECS_PROC_TOP_LEVEL, &process_first);
+			    ECS_PROC_TOP_LEVEL, boottime, &process_first);
 		}
 		hanson_close_object(&h);
 	}
