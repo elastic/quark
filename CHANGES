@@ -172,3 +172,6 @@ Changes from 0.8 to 0.9
     CLOCK_BOOTTIME. This effectively drops support for kernels without perf
     clockid support (< 4.1 or RHEL before 7.4).
   o quark_queue_stats{} got a "stalls" member.
+  o The eBPF ring buffer is now sized at load from CPU count (512 KiB
+    per CPU, rounded up to a power of two, floored at 4 MiB and
+    capped at 64 MiB) instead of a fixed 4 MiB.
