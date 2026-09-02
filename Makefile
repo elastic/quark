@@ -105,9 +105,9 @@ ifdef WITH_BTFHUB
 CPPFLAGS+= -DWITH_BTFHUB
 EXTRA_OPTIONS+= WITH_BTFHUB=$(WITH_BTFHUB)
 endif
-ifeq ($(WITH_SYNTHETIC),1)
+ifdef WITH_SYNTHETIC
 CPPFLAGS+= -DWITH_SYNTHETIC
-EXTRA_OPTIONS+= WITH_SYNTHETIC=1
+EXTRA_OPTIONS+= WITH_SYNTHETIC=$(WITH_SYNTHETIC)
 QUARK_GO_TEST_FLAGS+= -tags=quark_synthetic
 SYNTHETIC_CONFIG_STAMP=.with-synthetic
 else
@@ -174,7 +174,7 @@ LIBQUARK_SRCS:=			\
 	qbtf.c			\
 	quark.c			\
 	qutil.c
-ifeq ($(WITH_SYNTHETIC),1)
+ifdef WITH_SYNTHETIC
 LIBQUARK_SRCS+= synthetic_queue.c
 endif
 # CJSON
@@ -297,7 +297,7 @@ $(LIBQUARK_STATIC_BIG): $(LIBQUARK_STATIC) $(LIBBPF_STATIC) $(ELFTOOLCHAIN_STATI
 	save\n\
 	end\n" | ar -M
 
-ifeq ($(WITH_SYNTHETIC),1)
+ifdef WITH_SYNTHETIC
 .with-synthetic:
 	$(Q)rm -f .without-synthetic
 	$(Q)touch .with-synthetic
@@ -471,13 +471,13 @@ scan:
 test: quark-test
 	$(SUDO) ./quark-test
 
-ifeq ($(WITH_SYNTHETIC),1)
+ifdef WITH_SYNTHETIC
 # Probe-free tests for the synthetic queue; safe to run without root.
 test-synthetic: quark-synthetic-test
 	./quark-synthetic-test
 else
 test-synthetic:
-	@echo "test-synthetic requires WITH_SYNTHETIC=1"
+	@echo "test-synthetic requires WITH_SYNTHETIC to be set"
 	@exit 1
 endif
 
@@ -554,7 +554,7 @@ quark-test: quark-test.c manpages.h $(LIBQUARK_TARGET)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
 
-ifeq ($(WITH_SYNTHETIC),1)
+ifdef WITH_SYNTHETIC
 quark-synthetic-test: quark-synthetic-test.c $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
@@ -732,6 +732,7 @@ clean-docs:
 	test			\
 	test-go			\
 	test-kernel		\
+	test-synthetic		\
 	test-valgrind
 
 .NOTPARALLEL:			\
@@ -749,6 +750,7 @@ clean-docs:
 	test			\
 	test-go			\
 	test-kernel		\
+	test-synthetic		\
 	test-valgrind
 
 .SUFFIXES:
