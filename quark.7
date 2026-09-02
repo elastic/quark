@@ -233,6 +233,10 @@ Interactive shell inside the Alpine builder image.
 .It Em test
 Builds and runs
 .Xr quark-test 8 .
+.It Em test-synthetic
+With
+.Ev WITH_SYNTHETIC=1 ,
+builds and runs the probe-free synthetic queue tests without root.
 .It Em test-valgrind
 Builds and runs
 .Xr quark-test 8
@@ -448,6 +452,8 @@ get default attributes of
 .Xr quark_queue_open 3 .
 .It Xr quark_queue_get_event 3
 get event, main library call.
+.It Xr quark_queue_inject 3
+inject a decoded event into a synthetic queue for benchmarks and tests.
 .It Xr quark_process_lookup 3
 lookup a process in quark's internal cache
 .It Xr quark_event_dump 3
@@ -489,6 +495,7 @@ describes initialization options that can be useful.
 .Xr quark_queue_get_epollfd 3 ,
 .Xr quark_queue_get_event 3 ,
 .Xr quark_queue_get_stats 3 ,
+.Xr quark_queue_inject 3 ,
 .Xr quark_queue_open 3 ,
 .Xr quark_time_to_wallclock 3 ,
 .Xr quark_update_boottime 3 ,

@@ -331,6 +331,9 @@ raw_event_target_age(struct quark_queue *qq)
 {
 	int	v;
 
+	if (qq->hold_time == 0)
+		return (0);
+
 	if (qq->length < (qq->max_length / 10))
 		v = qq->hold_time;
 	else if (qq->length < ((qq->max_length / 10) * 9)) {
@@ -4161,7 +4164,8 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	struct quark_queue_attr	 qa_default;
 	struct timespec		 unused;
 	char			*ver;
-	int			 backends;
+	int			 allow_zero_hold, backends, backend_flags;
+	int			 scrape_processes;
 
 	if ((ver = getenv("QUARK_VERBOSE")) != NULL) {
 		const char *errstr;
@@ -4204,15 +4208,27 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	}
 
 	/* Exactly one backend must be selected */
-	backends = qa->flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA);
+	backend_flags = QQ_EBPF | QQ_KPROBE | QQ_NOVA;
+#ifdef WITH_SYNTHETIC
+	backend_flags |= QQ_SYNTHETIC;
+#endif
+	backends = qa->flags & backend_flags;
 	if (backends != QQ_EBPF &&
 	    backends != QQ_KPROBE &&
-	    backends != QQ_NOVA)
+	    backends != QQ_NOVA
+#ifdef WITH_SYNTHETIC
+	    && backends != QQ_SYNTHETIC
+#endif
+	    )
 		return (errno = EINVAL, -1);
 
+	allow_zero_hold = 0;
+#ifdef WITH_SYNTHETIC
+	allow_zero_hold = backends == QQ_SYNTHETIC && qa->hold_time == 0;
+#endif
 	if (qa->max_length <= 0 ||
 	    qa->cache_grace_time < 0 ||
-	    qa->hold_time < 10)
+	    (qa->hold_time < 10 && !allow_zero_hold))
 		return (errno = EINVAL, -1);
 
 	if (quark_init() == -1)
@@ -4335,9 +4351,21 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 			qwarnx("can't open the nova backend");
 			goto fail;
 		}
+#ifdef WITH_SYNTHETIC
+	} else if (backends == QQ_SYNTHETIC) {
+		if (synthetic_queue_open(qq) != 0) {
+			qwarnx("can't open the synthetic backend");
+			goto fail;
+		}
+#endif
 	}
 
-	if ((qq->flags & QQ_BYPASS) == 0) {
+	scrape_processes = (qq->flags & QQ_BYPASS) == 0;
+#ifdef WITH_SYNTHETIC
+	if (qq->flags & QQ_SYNTHETIC)
+		scrape_processes = 0;
+#endif
+	if (scrape_processes) {
 		/*
 		 * Now that the rings are opened, we can scrape proc. If we would scrape
 		 * before opening them, there would be a small window where we could

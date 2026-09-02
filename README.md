@@ -149,6 +149,15 @@ Interactive shell inside the Alpine builder image.
 
 Builds and runs [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html).
 
+[*test-synthetic*](#test-synthetic)
+
+With `WITH_SYNTHETIC=1`, builds and runs the probe-free synthetic queue tests
+without root:
+
+```
+$ WITH_SYNTHETIC=1 make test-synthetic
+```
+
 [*test-valgrind*](#test-valgrind)
 
 Builds and runs [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html) under valgrind.
@@ -308,6 +317,10 @@ get default attributes of [quark\_queue\_open(3)](https://elastic.github.io/quar
 
 get event, main library call.
 
+[quark\_queue\_inject(3)](https://elastic.github.io/quark/quark_queue_inject.3.html)
+
+inject a decoded event into a synthetic queue for benchmarks and tests.
+
 [quark\_process\_lookup(3)](https://elastic.github.io/quark/quark_process_lookup.3.html)
 
 lookup a process in quark's internal cache
@@ -358,7 +371,7 @@ close a queue.
 
 # [SEE ALSO](#SEE_ALSO)
 
-[quark\_event\_dump(3)](https://elastic.github.io/quark/quark_event_dump.3.html), [quark\_get\_boottime(3)](https://elastic.github.io/quark/quark_get_boottime.3.html), [quark\_process\_iter(3)](https://elastic.github.io/quark/quark_process_iter.3.html), [quark\_process\_lookup(3)](https://elastic.github.io/quark/quark_process_lookup.3.html), [quark\_queue\_block(3)](https://elastic.github.io/quark/quark_queue_block.3.html), [quark\_queue\_close(3)](https://elastic.github.io/quark/quark_queue_close.3.html), [quark\_queue\_get\_epollfd(3)](https://elastic.github.io/quark/quark_queue_get_epollfd.3.html), [quark\_queue\_get\_event(3)](https://elastic.github.io/quark/quark_queue_get_event.3.html), [quark\_queue\_get\_stats(3)](https://elastic.github.io/quark/quark_queue_get_stats.3.html), [quark\_queue\_open(3)](https://elastic.github.io/quark/quark_queue_open.3.html), [quark\_time\_to\_wallclock(3)](https://elastic.github.io/quark/quark_time_to_wallclock.3.html), [quark\_update\_boottime(3)](https://elastic.github.io/quark/quark_update_boottime.3.html), [quark-btf(8)](https://elastic.github.io/quark/quark-btf.8.html), [quark-mon(8)](https://elastic.github.io/quark/quark-mon.8.html), [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html)
+[quark\_event\_dump(3)](https://elastic.github.io/quark/quark_event_dump.3.html), [quark\_get\_boottime(3)](https://elastic.github.io/quark/quark_get_boottime.3.html), [quark\_process\_iter(3)](https://elastic.github.io/quark/quark_process_iter.3.html), [quark\_process\_lookup(3)](https://elastic.github.io/quark/quark_process_lookup.3.html), [quark\_queue\_block(3)](https://elastic.github.io/quark/quark_queue_block.3.html), [quark\_queue\_close(3)](https://elastic.github.io/quark/quark_queue_close.3.html), [quark\_queue\_get\_epollfd(3)](https://elastic.github.io/quark/quark_queue_get_epollfd.3.html), [quark\_queue\_get\_event(3)](https://elastic.github.io/quark/quark_queue_get_event.3.html), [quark\_queue\_inject(3)](https://elastic.github.io/quark/quark_queue_inject.3.html), [quark\_queue\_get\_stats(3)](https://elastic.github.io/quark/quark_queue_get_stats.3.html), [quark\_queue\_open(3)](https://elastic.github.io/quark/quark_queue_open.3.html), [quark\_time\_to\_wallclock(3)](https://elastic.github.io/quark/quark_time_to_wallclock.3.html), [quark\_update\_boottime(3)](https://elastic.github.io/quark/quark_update_boottime.3.html), [quark-btf(8)](https://elastic.github.io/quark/quark-btf.8.html), [quark-mon(8)](https://elastic.github.io/quark/quark-mon.8.html), [quark-test(8)](https://elastic.github.io/quark/quark-test.8.html)
 
 # [LICENSE](#LICENSE)
 

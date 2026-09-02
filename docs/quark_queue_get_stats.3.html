@@ -76,11 +76,12 @@
   <dt id="stalls"><a class="permalink" href="#stalls"><i class="Em">stalls</i></a></dt>
   <dd>A counter of perf rings that are stalled due to corrupt records. A stalled
       ring is abandoned and no further events are read from it. Only meaningful
-      on the <code class="Dv">QQ_KPROBE</code> backend, zero on
-      <code class="Dv">QQ_EBPF</code>.</dd>
+      on the <code class="Dv">QQ_KPROBE</code> backend, zero on other
+    backends.</dd>
   <dt id="backend"><a class="permalink" href="#backend"><i class="Em">backend</i></a></dt>
-  <dd>Active queue backend, either <code class="Dv">QQ_EBPF</code> or
-      <code class="Dv">QQ_KPROBE</code>.</dd>
+  <dd>Active queue backend, either <code class="Dv">QQ_EBPF</code> ,
+      <code class="Dv">QQ_KPROBE</code> , <code class="Dv">QQ_NOVA</code> or
+      <code class="Dv">QQ_SYNTHETIC</code>.</dd>
 </dl>
 <section class="Sh">
 <h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
@@ -91,6 +92,7 @@
     <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>,
     <a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>,
     <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
+    <a class="Xr" href="quark_queue_inject.3.html">quark_queue_inject(3)</a>,
     <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
     <a class="Xr" href="quark.7.html">quark(7)</a>,
     <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
@@ -100,7 +102,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">August 26, 2026</td>
+    <td class="foot-date">September 2, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

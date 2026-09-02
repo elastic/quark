@@ -61,13 +61,16 @@ A counter of perf rings that are stalled due to corrupt records.
 A stalled ring is abandoned and no further events are read from it.
 Only meaningful on the
 .Dv QQ_KPROBE
-backend, zero on
-.Dv QQ_EBPF .
+backend, zero on other backends.
 .It Em backend
 Active queue backend, either
 .Dv QQ_EBPF
+,
+.Dv QQ_KPROBE
+,
+.Dv QQ_NOVA
 or
-.Dv QQ_KPROBE .
+.Dv QQ_SYNTHETIC .
 .El
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
@@ -76,6 +79,7 @@ or
 .Xr quark_queue_close 3 ,
 .Xr quark_queue_default_attr 3 ,
 .Xr quark_queue_get_event 3 ,
+.Xr quark_queue_inject 3 ,
 .Xr quark_queue_open 3 ,
 .Xr quark 7 ,
 .Xr quark-btf 8 ,
