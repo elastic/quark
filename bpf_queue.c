@@ -4,7 +4,7 @@
 #include <sys/epoll.h>
 #include <sys/param.h>
 #include <sys/mount.h>
-#include <sys/sysinfo.h>
+#include <sys/resource.h>
 
 #include <assert.h>
 #include <ctype.h>
@@ -29,6 +29,72 @@ struct bpf_queue {
 static int	bpf_queue_populate(struct quark_queue *);
 static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
+static u32	bpf_ringbuf_size(int);
+static void	bump_memlock(void);
+
+/*
+ * Shared eBPF ring buffer is sized from CPU count so large hosts can absorb
+ * a burst of variable-length execs (argv+env). 512 KiB per CPU is the
+ * per-CPU headroom of the historical 4 MiB default at 8 CPUs, the point
+ * at which bursty large execs did not drop. Result is rounded up to a
+ * power of two (BPF ringbuf requirement), never below 4 MiB, never above
+ * 64 MiB.
+ */
+#define RINGBUF_BYTES_PER_CPU	(1U << 19)	/* 512 KiB */
+#define RINGBUF_MIN_SIZE	(1U << 22)	/* 4 MiB */
+#define RINGBUF_MAX_SIZE	(1U << 26)	/* 64 MiB */
+
+static u32
+bpf_ringbuf_size(int ncpu)
+{
+	u64 bytes;
+
+	if (ncpu < 1)
+		ncpu = 1;
+
+	bytes = (u64)ncpu * RINGBUF_BYTES_PER_CPU;
+
+	/* round up to the next power of two */
+	if (bytes > 1) {
+		bytes--;
+		bytes |= bytes >> 1;
+		bytes |= bytes >> 2;
+		bytes |= bytes >> 4;
+		bytes |= bytes >> 8;
+		bytes |= bytes >> 16;
+		bytes |= bytes >> 32;
+		bytes++;
+	}
+
+	if (bytes < RINGBUF_MIN_SIZE)
+		bytes = RINGBUF_MIN_SIZE;
+	if (bytes > RINGBUF_MAX_SIZE)
+		bytes = RINGBUF_MAX_SIZE;
+
+	return ((u32)bytes);
+}
+
+static void
+bump_memlock(void)
+{
+	struct rlimit rlim;
+
+	rlim.rlim_cur = RLIM_INFINITY;
+	rlim.rlim_max = RLIM_INFINITY;
+	if (setrlimit(RLIMIT_MEMLOCK, &rlim) == 0)
+		return;
+
+	/*
+	 * Raising the hard limit needs CAP_SYS_RESOURCE; fall back to
+	 * using whatever ceiling we already have.
+	 */
+	if (getrlimit(RLIMIT_MEMLOCK, &rlim) == 0) {
+		rlim.rlim_cur = rlim.rlim_max;
+		if (setrlimit(RLIMIT_MEMLOCK, &rlim) == 0)
+			return;
+	}
+	qwarn("setrlimit RLIMIT_MEMLOCK");
+}
 
 struct quark_queue_ops queue_ops_bpf = {
 	.open	      = bpf_queue_open,
@@ -1051,7 +1117,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	struct bpf_queue		*bqq;
 	struct bpf_probes		*p;
 	struct bpf_program		*prog;
-	int				 cgroup_fd, i, off, ringbuf_fd;
+	int				 cgroup_fd, i, ncpu, off, ringbuf_fd;
+	u32				 ringbuf_size;
 	char				*cgroup_umount;
 	struct bpf_prog_skeleton	*ps;
 	struct btf			*btf;
@@ -1286,11 +1353,29 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_GETPID)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
 
-	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
-	    get_nprocs_conf()) != 0) {
+	/*
+	 * Older kernels account BPF maps against RLIMIT_MEMLOCK. libbpf
+	 * tries to bump this itself but skips it when it (sometimes
+	 * wrongly) thinks the kernel uses memcg accounting.
+	 */
+	bump_memlock();
+
+	ncpu = libbpf_num_possible_cpus();
+	if (ncpu <= 0) {
+		qwarnx("bad libbpf_num_possible_cpus: %d", ncpu);
+		goto fail;
+	}
+	if (bpf_map__set_max_entries(p->maps.event_buffer_map, ncpu) != 0) {
 		qwarn("bpf_map__set_max_entries event_buffer_map");
 		goto fail;
 	}
+
+	ringbuf_size = bpf_ringbuf_size(ncpu);
+	if (bpf_map__set_max_entries(p->maps.ringbuf, ringbuf_size) != 0) {
+		qwarn("bpf_map__set_max_entries ringbuf");
+		goto fail;
+	}
+	qdebugx("eBPF ringbuf size %u bytes (%d cpus)", ringbuf_size, ncpu);
 
 	if (bpf_probes__load(p) != 0) {
 		qwarn("bpf_probes__load");

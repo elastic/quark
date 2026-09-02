@@ -16,6 +16,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include <bpf/bpf.h>
+
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
@@ -835,6 +837,31 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "%s: quark_queue_open", t->name);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * CI boxes are small, so quark_queue_open() only allocates the 4 MiB
+ * floor. Create a 64 MiB ringbuf so RLIMIT_MEMLOCK / memcg accounting
+ * is exercised on every kernel we test.
+ */
+static int
+t_ringbuf_max(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	int			 fd;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+
+	fd = bpf_map_create(BPF_MAP_TYPE_RINGBUF, "quark_test_ringbuf",
+	    0, 0, 1U << 26, NULL);
+	if (fd < 0)
+		err(1, "%s: bpf_map_create 64MiB ringbuf", t->name);
+	close(fd);
+
 	quark_queue_close(&qq);
 
 	return (0);
@@ -2877,6 +2904,7 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 #define S(_x)		#_x
 struct test all_tests[] = {
 	T_EBPF(t_probe),
+	T_EBPF(t_ringbuf_max),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
 	T_KPROBE(t_kprobe_clockid),
