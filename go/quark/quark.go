@@ -595,32 +595,28 @@ func SetVerbose(level int) {
 	C.quark_verbose = C.int(level)
 }
 
-// UpdateBoottime refetches the boottime epoch used by TimeToWallclock.
-// Call it when the system clock might have been stepped, as when NTP
-// corrects a clock that was wrong at boot.
-func UpdateBoottime() error {
-	ret, err := C.quark_update_boottime()
-	if ret == -1 {
-		return wrapErrno(err)
-	}
-
-	return nil
-}
-
-// Boottime returns the boottime epoch used by TimeToWallclock: the
-// wallclock time of boot in nanoseconds since the Unix epoch, zero
-// before the first queue is opened.
+// Boottime returns the boottime epoch: the wallclock time of boot in
+// nanoseconds since the Unix epoch. Adding it to a time-since-boot, as
+// in Proc.TimeBoot, Exit.ExitTimeProcess, Socket.EstablishedTime and
+// Socket.CloseTime, yields nanoseconds since the Unix epoch.
+//
+// The value is stable across calls, only a system clock step moves it
+// once the accumulated change exceeds 10ms. Such system clock steps
+// are expected to be rare for most systems as they do not include
+// regular clock slewing that results in 0ns difference in Boottime.
+// The C counterpart is cheap, but a cgo call per event is not: fetch
+// it once per batch and convert with plain addition:
+//
+//	epoch := quark.Boottime()
+//	for _, ev := range events {
+//		wallclock := ev.Process.Proc.TimeBoot + epoch
+//		...
+//	}
+//
+// Times-since-boot are immune to system clock changes, convert at the
+// last moment, when a time leaves the system for display or storage.
 func Boottime() uint64 {
 	return uint64(C.quark_get_boottime())
-}
-
-// TimeToWallclock translates timeSinceBoot from nanoseconds since boot,
-// as in Proc.TimeBoot, Exit.ExitTimeProcess, Socket.EstablishedTime and
-// Socket.CloseTime, to nanoseconds since the Unix epoch. Times since
-// boot are immune to system clock changes; translate at the last moment
-// and keep the epoch fresh with UpdateBoottime.
-func TimeToWallclock(timeSinceBoot uint64) uint64 {
-	return uint64(C.quark_time_to_wallclock(C.u64(timeSinceBoot)))
 }
 
 // DisableAggregation clears every entry in Quark's aggregation matrix.
