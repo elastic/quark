@@ -172,3 +172,12 @@ Changes from 0.8 to 0.9
     CLOCK_BOOTTIME. This effectively drops support for kernels without perf
     clockid support (< 4.1 or RHEL before 7.4).
   o quark_queue_stats{} got a "stalls" member.
+  o BREAKING: quark_time_to_wallclock(3) and quark_update_boottime(3)
+    were removed. quark_get_boottime(3) is now self-maintaining and has
+    nanosecond resolution: it keeps the epoch fresh by itself and only
+    moves it on an actual clock step, so there is nothing to update.
+    Users should translate timestamps to wallclock by fetching the epoch
+    once per batch and adding it to the boottime timestamps.
+  o The Go bindings (go/quark) lost UpdateBoottime() and TimeToWallclock().
+    Boottime() remains: fetch it once per batch and convert to wallclock
+    with plain addition, avoiding a cgo call per event.
