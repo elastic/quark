@@ -2052,20 +2052,25 @@ t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
 	struct quark_queue_attr	 attr;
 	size_t			 i;
 	int			 backend_flags;
+	/*
+	 * Every combination that is not exactly one backend. The entries that
+	 * name no synthetic backend must stay out of the #ifdef, or a build
+	 * with WITH_SYNTHETIC=1 stops covering them.
+	 */
 	int			 bad_backends[] = {
 		0,
 		QQ_EBPF | QQ_KPROBE,
 		QQ_EBPF | QQ_NOVA,
+		QQ_KPROBE | QQ_NOVA,
+		QQ_EBPF | QQ_KPROBE | QQ_NOVA,
 #ifdef WITH_SYNTHETIC
 		QQ_EBPF | QQ_SYNTHETIC,
-#endif
-		QQ_KPROBE | QQ_NOVA,
-#ifdef WITH_SYNTHETIC
 		QQ_KPROBE | QQ_SYNTHETIC,
 		QQ_NOVA | QQ_SYNTHETIC,
+		QQ_EBPF | QQ_KPROBE | QQ_SYNTHETIC,
+		QQ_EBPF | QQ_NOVA | QQ_SYNTHETIC,
+		QQ_KPROBE | QQ_NOVA | QQ_SYNTHETIC,
 		QQ_EBPF | QQ_KPROBE | QQ_NOVA | QQ_SYNTHETIC,
-#else
-		QQ_EBPF | QQ_KPROBE | QQ_NOVA,
 #endif
 	};
 
