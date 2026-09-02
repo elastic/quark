@@ -46,6 +46,7 @@ enum ebpf_event_type {
     EBPF_EVENT_PROCESS_LOAD_MODULE          = (1 << 19),
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
     EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
+    EBPF_EVENT_PROCESS_MPROTECT             = (1 << 22),
 };
 
 struct ebpf_event_header {
@@ -378,6 +379,20 @@ struct ebpf_process_load_module_event {
     uint64_t taints;
     // Variable length fields: filename, mod version, mod srcversion
     struct ebpf_varlen_fields_start vl_fields;
+} __attribute__((packed));
+
+struct ebpf_process_mprotect_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    uint64_t vma_start;
+    uint64_t vma_end;
+    uint64_t prev_prot;
+    uint64_t req_prot;
+    uint64_t effective_prot;
+    uint64_t inode;
+    uint32_t dev_major;
+    uint32_t dev_minor;
+    uint32_t file_backed;
 } __attribute__((packed));
 
 enum ebpf_net_info_transport {
