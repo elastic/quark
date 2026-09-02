@@ -64,6 +64,15 @@ Process input includes credentials, capabilities, parent, process-group and
 session relationships, controlling TTY, namespaces, start and exit data,
 cwd, cgroup, argv, environment, comm, and executable.
 It applies to fork, exec, exit and setsid events only.
+.Va argv
+and
+.Va executable
+are recorded by an exec only, which is the only event a backend reports them
+on.
+Both are ignored on a fork, exit or setsid, so a caller may reuse one process
+for a whole lifecycle.
+A fork still reports a cmdline, inherited from its parent as it is with a
+backend.
 A file event uses just
 .Va event.process.pid
 and the file fields; its process is resolved through the process cache, so it

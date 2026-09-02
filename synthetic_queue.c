@@ -242,6 +242,17 @@ quark_queue_inject(struct quark_queue *qq,
 	if (raw_type != RAW_FILE &&
 	    (proc->comm == NULL || proc->comm[0] == 0))
 		return (errno = EINVAL, -1);
+	/*
+	 * argv is deliberately not rejected for the other event kinds. Only
+	 * the exec event of a backend carries argv at all, so an argv on a
+	 * fork, exit or setsid has nowhere to go and is ignored, exactly as
+	 * the field's absence is ignored in a backend event. Ignoring it also
+	 * lets a caller reuse one process across a whole lifecycle, which is
+	 * the normal way to drive this queue.
+	 *
+	 * A fork still reports a cmdline: process_cache_inherit() copies it
+	 * from the parent, which is where a backend gets it from too.
+	 */
 
 	raw = raw_event_alloc(raw_type);
 	if (raw == NULL)

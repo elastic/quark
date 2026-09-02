@@ -211,6 +211,8 @@ func TestSyntheticCommSurvivesEventSequence(t *testing.T) {
 	require.NoError(t, err)
 	defer queue.Close()
 
+	// One process reused across the whole lifecycle, which is how a caller
+	// is expected to drive this queue.
 	process := syntheticTestProcess()
 
 	// Exit is deliberately not in this list: it marks the process for GC,
@@ -240,7 +242,7 @@ func TestSyntheticCommSurvivesEventSequence(t *testing.T) {
 	require.NoError(t, queue.Inject(SyntheticEvent{
 		Kind:    QUARK_SYNTHETIC_FILE_CREATE,
 		Time:    2000,
-		Process: SyntheticProcess{Pid: process.Pid},
+		Process: process,
 		File:    SyntheticFile{Path: "/tmp/canary"},
 	}))
 	event, ok := queue.GetEvent()
@@ -257,6 +259,68 @@ func TestSyntheticCommSurvivesEventSequence(t *testing.T) {
 	event, ok = queue.GetEvent()
 	require.True(t, ok)
 	require.Equal(t, process.Comm, event.Process.Comm)
+}
+
+// TestSyntheticArgvOnlyAppliesToExec pins the documented behaviour: argv is
+// recorded by an exec and ignored by every other event kind, since raw_exec
+// is the only raw type with a place to put it. This is what the backends do,
+// where argv is simply not a field of a fork, exit or setsid event.
+//
+// A fork still reports a cmdline, but it comes from process_cache_inherit()
+// copying the parent's, not from the argv passed with the fork.
+func TestSyntheticArgvOnlyAppliesToExec(t *testing.T) {
+	queue, err := OpenSyntheticQueue(syntheticTestAttr())
+	require.NoError(t, err)
+	defer queue.Close()
+
+	const parentPid = 4000
+
+	// A setsid carrying argv is accepted, and the argv is not recorded.
+	orphan := syntheticTestProcess()
+	orphan.Pid = parentPid
+	orphan.Tid = parentPid
+	orphan.Argv = []string{"ignored", "--ignored"}
+
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_SETSID,
+		Time:    3000,
+		Process: orphan,
+	}))
+	event, ok := queue.GetEvent()
+	require.True(t, ok)
+	require.Empty(t, event.Process.Cmdline,
+		"argv on a setsid must not be recorded")
+
+	// An exec does record it.
+	parent := syntheticTestProcess()
+	parent.Pid = parentPid
+	parent.Tid = parentPid
+
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_EXEC,
+		Time:    3001,
+		Process: parent,
+	}))
+	event, ok = queue.GetEvent()
+	require.True(t, ok)
+	require.Equal(t, parent.Argv, event.Process.Cmdline)
+
+	// A fork inherits the parent's cmdline regardless of its own argv.
+	child := syntheticTestProcess()
+	child.Pid = parentPid + 1
+	child.Tid = parentPid + 1
+	child.Ppid = parentPid
+	child.Argv = []string{"not-used"}
+
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_FORK,
+		Time:    3002,
+		Process: child,
+	}))
+	event, ok = queue.GetEvent()
+	require.True(t, ok)
+	require.Equal(t, parent.Argv, event.Process.Cmdline,
+		"a fork's cmdline comes from the parent, not from its own argv")
 }
 
 // TestSyntheticFileEventUncachedPid verifies that a file injection for a pid
