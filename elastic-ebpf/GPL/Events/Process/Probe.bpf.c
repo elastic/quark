@@ -40,6 +40,13 @@ DECL_FIELD_OFFSET(iov_iter, __iov);
 #define EEXIST 17 /* uapi asm-generic/errno-base.h; not carried by vmlinux.h */
 #endif
 
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, u32);
+    __type(value, struct ebpf_mprotect_stats);
+    __uint(max_entries, 1);
+} mprotect_stats SEC(".maps");
+
 /*
  * One mprotect event per (transition, file-backedness) per process life.
  * Key is tgid << 8 | transition id; the transition id packs the previous
@@ -533,6 +540,9 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
                                          unsigned long req_prot,
                                          unsigned long effective_prot)
 {
+    u32 zero = 0;
+    struct ebpf_mprotect_stats *stats = bpf_map_lookup_elem(&mprotect_stats, &zero);
+
     if (ebpf_events_is_trusted_pid() || !vma)
         goto out;
 
@@ -565,12 +575,18 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     // against -EEXIST never matches there. Ordinary helpers return through a
     // u64 wrapper and are sign-extended correctly; only map helpers need this.
     if ((int)bpf_map_update_elem(&mprotect_seen, &dedup_key, &dedup_val,
-                                 BPF_NOEXIST) == -EEXIST)
+                                 BPF_NOEXIST) == -EEXIST) {
+        if (stats)
+            stats->suppressed++;
         goto out;
+    }
 
     struct ebpf_process_mprotect_event *event = get_zeroed_event_buffer(sizeof(*event));
-    if (!event)
+    if (!event) {
+        if (stats)
+            stats->reserve_failed++;
         goto out;
+    }
 
     event->hdr.type = EBPF_EVENT_PROCESS_MPROTECT;
     event->hdr.ts   = bpf_ktime_get_boot_ns();
@@ -602,7 +618,11 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
         }
     }
 
-    ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
+    if (ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0) == 0) {
+        if (stats)
+            stats->submitted++;
+    } else if (stats)
+        stats->reserve_failed++;
 
 out:
     return 0;

@@ -462,4 +462,12 @@ struct ebpf_event_stats {
     uint64_t dns_zero_body; // indicates that the dns body of a sk_buff was unavailable
 } __attribute__((aligned(8)));
 
+// Executable mprotect attempt accounting.
+struct ebpf_mprotect_stats {
+    uint64_t submitted;      // events written to the ring buffer
+    uint64_t suppressed;     // attempts deduplicated (transition already
+                             // reported for this process life)
+    uint64_t reserve_failed; // event buffer/ring buffer write failures
+} __attribute__((aligned(8)));
+
 #endif // EBPF_EVENTPROBE_EBPFEVENTPROTO_H

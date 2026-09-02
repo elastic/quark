@@ -108,6 +108,15 @@ has been reached.
 This is used purely for internal debugging.
 .It Fl M
 Run in a simple benchmark form that only counts and display stats.
+When executable mprotect events are enabled with
+.Fl u ,
+also display the cumulative mprotect counters: events submitted
+.Pq Li mpro-sent ,
+attempts suppressed because the same protection transition was already
+reported for that process life
+.Pq Li mpro-dup ,
+and event write failures
+.Pq Li mpro-rsvfail .
 .It Fl N
 Enable DNS events (experimental).
 .It Fl n

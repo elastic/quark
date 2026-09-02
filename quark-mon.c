@@ -57,6 +57,26 @@ dump_stats(struct quark_queue *qq)
 	    s.insertions, s.removals, s.aggregations,
 	    s.non_aggregations, s.lost, s.garbage_collections, s.stalls);
 	fputc('\n', stderr);
+
+	if (!(qq->flags & QQ_MPROTECT))
+		return;
+
+	fprintf(stderr,
+	    "%14s"
+	    "%14s"
+	    "%14s",
+	    "mpro-sent",
+	    "mpro-dup",
+	    "mpro-rsvfail");
+	fputc('\n', stderr);
+	fprintf(stderr,
+	    "%14llu"
+	    "%14llu"
+	    "%14llu",
+	    s.mprotect.submitted,
+	    s.mprotect.suppressed,
+	    s.mprotect.reserve_failed);
+	fputc('\n', stderr);
 }
 
 static const char *

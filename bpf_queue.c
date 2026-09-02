@@ -1439,11 +1439,12 @@ bpf_queue_populate(struct quark_queue *qq)
 static int
 bpf_queue_update_stats(struct quark_queue *qq)
 {
-	struct bpf_queue	*bqq  = qq->queue_be;
-	struct ebpf_event_stats	*pcpu_ees;
-	u32			 zero = 0;
-	u64			 lost;
-	int			 i, num_cpus;
+	struct bpf_queue			*bqq  = qq->queue_be;
+	struct ebpf_event_stats		*pcpu_ees = NULL;
+	struct ebpf_mprotect_stats	*pcpu_mps = NULL;
+	u32				 zero = 0;
+	u64				 lost;
+	int				 i, num_cpus;
 
 	if ((num_cpus = libbpf_num_possible_cpus()) <= 0) {
 		qwarnx("bad libbpf_num_possible_cpus: %d", num_cpus);
@@ -1469,11 +1470,40 @@ bpf_queue_update_stats(struct quark_queue *qq)
 		lost += pcpu_ees[i].lost;
 	qq->stats.lost = lost;
 	free(pcpu_ees);
+	pcpu_ees = NULL;
+
+	if (!(qq->flags & QQ_MPROTECT))
+		return (0);
+
+	if ((pcpu_mps = calloc(num_cpus, sizeof(*pcpu_mps))) == NULL) {
+		qwarn("calloc");
+		goto fail;
+	}
+
+#ifdef HAVE_STATIC_ASSERT
+	static_assert(sizeof(*pcpu_mps) % 8 == 0,
+	    "struct ebpf_mprotect_stats must be 8 byte aligned");
+#endif
+
+	if (bpf_map__lookup_elem(bqq->probes->maps.mprotect_stats, &zero,
+	    sizeof(zero), pcpu_mps, sizeof(*pcpu_mps) * num_cpus, 0) != 0) {
+		qwarn("bpf_map__lookup_elem");
+		goto fail;
+	}
+
+	bzero(&qq->stats.mprotect, sizeof(qq->stats.mprotect));
+	for (i = 0; i < num_cpus; i++) {
+		qq->stats.mprotect.submitted += pcpu_mps[i].submitted;
+		qq->stats.mprotect.suppressed += pcpu_mps[i].suppressed;
+		qq->stats.mprotect.reserve_failed += pcpu_mps[i].reserve_failed;
+	}
+	free(pcpu_mps);
 
 	return (0);
 
 fail:
 	free(pcpu_ees);
+	free(pcpu_mps);
 
 	return (-1);
 }

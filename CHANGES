@@ -181,3 +181,5 @@ Changes from 0.8 to 0.9
     Only the first occurrence of each protection transition (previous
     protection, effective protection, file-backedness) is reported per process
     life; the state resets on execve() and process exit.
+  o quark_queue_stats{} got a quark_mprotect_stats member (submitted,
+    suppressed, reserve_failed), also shown by quark-mon -M.

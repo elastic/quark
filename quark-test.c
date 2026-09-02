@@ -1555,6 +1555,7 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	void				*suppressed_addr;
 	const size_t			 len = 4096;
 	struct stat			 st;
+	struct quark_queue_stats	 stats;
 	const int			 expected[] = {
 		PROT_EXEC,
 		PROT_READ | PROT_EXEC,
@@ -1664,6 +1665,15 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	assert(qmprotect->inode == (u64)st.st_ino);
 	assert(qmprotect->dev_major == (u32)major(st.st_dev));
 	assert(qmprotect->dev_minor == (u32)minor(st.st_dev));
+
+	/*
+	 * The counters must reflect the above: at least the four anonymous
+	 * transitions plus the file-backed one were submitted, and the repeated
+	 * RW->X transition was suppressed.
+	 */
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.mprotect.submitted >= nitems(expected) + 1);
+	assert(stats.mprotect.suppressed >= 1);
 
 #ifdef SYS_pkey_mprotect
 	/* The common LSM hook also observes pkey_mprotect without another probe. */

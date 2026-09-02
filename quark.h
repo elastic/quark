@@ -887,6 +887,13 @@ struct quark_sysinfo {
 	char	 *os_pretty_name;
 };
 
+struct quark_mprotect_stats {
+	u64	submitted;	/* events written to the ring buffer */
+	u64	suppressed;	/* deduplicated: transition already reported
+				   for that process life */
+	u64	reserve_failed;	/* event buffer/ring buffer write failures */
+};
+
 struct quark_queue_stats {
 	u64	insertions;
 	u64	removals;
@@ -896,6 +903,7 @@ struct quark_queue_stats {
 	u64	garbage_collections;
 	u64	stalls;     /* stalled perf rings due to corruption, only for QQ_KPROBE */
 	int	backend;    /* active backend, QQ_EBPF or QQ_KPROBE */
+	struct quark_mprotect_stats mprotect;
 	/* TODO u64    peak_nodes; */
 };
 
