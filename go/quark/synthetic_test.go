@@ -6,6 +6,10 @@
 package quark
 
 import (
+	"os"
+	"runtime/debug"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -173,4 +177,111 @@ func TestSyntheticQueueInvalidInput(t *testing.T) {
 		})
 	}
 	require.ErrorIs(t, (*Queue)(nil).Inject(valid), syscall.EINVAL)
+}
+
+// TestSyntheticAllocationsFree pins down the receiver of free(). Inject() sets
+// up `defer allocations.free()` before it allocates anything, so free() must
+// see the appends that happen afterwards. A value receiver would snapshot the
+// empty slice header at defer time and free nothing.
+func TestSyntheticAllocationsFree(t *testing.T) {
+	var allocations syntheticAllocations
+
+	func() {
+		defer allocations.free()
+
+		comm, err := allocations.cString("comm", "some-program")
+		require.NoError(t, err)
+		require.NotNil(t, comm)
+
+		argv, argvLen, err := allocations.cStringList("argv", []string{"a", "bb"})
+		require.NoError(t, err)
+		require.NotNil(t, argv)
+		require.EqualValues(t, 5, argvLen)
+
+		require.Len(t, allocations, 2)
+	}()
+
+	require.Empty(t, allocations, "free() did not observe the tracked allocations")
+}
+
+// rssKB reports the resident set size of the test process in kilobytes.
+func rssKB(t *testing.T) int {
+	t.Helper()
+
+	// Hand pages we no longer need back to the OS so the reading reflects
+	// what is still live rather than the Go heap's high water mark.
+	debug.FreeOSMemory()
+
+	status, err := os.ReadFile("/proc/self/status")
+	require.NoError(t, err)
+
+	for _, line := range strings.Split(string(status), "\n") {
+		if !strings.HasPrefix(line, "VmRSS:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		require.Len(t, fields, 3, "unexpected VmRSS line %q", line)
+		kb, err := strconv.Atoi(fields[1])
+		require.NoError(t, err)
+		return kb
+	}
+
+	t.Fatal("no VmRSS in /proc/self/status")
+	return 0
+}
+
+// TestSyntheticQueueInjectDoesNotLeak guards the whole Inject() path against
+// allocations that never make it back to free(). It measures the steady-state
+// slope rather than the absolute growth, so the one-off cost of the process
+// cache and the Go runtime warming up is not mistaken for a leak.
+func TestSyntheticQueueInjectDoesNotLeak(t *testing.T) {
+	const (
+		warmupInjects  = 20000
+		measureInjects = 200000
+		// A leak of a single tracked allocation costs at least the size of
+		// the environment below, so the real signal is hundreds of megabytes.
+		// Keep the bound loose enough to absorb allocator noise.
+		maxGrowthKB = 16 * 1024
+		// Bounded so the process cache stays a fixed size.
+		distinctPids = 50
+	)
+
+	queue, err := OpenSyntheticQueue(syntheticTestAttr())
+	require.NoError(t, err)
+	defer queue.Close()
+
+	process := syntheticTestProcess()
+	// A fat environment makes a leaked allocation obvious in RSS.
+	process.Env = []string{"LEAK_CANARY=" + strings.Repeat("x", 4096)}
+
+	// time must keep increasing: raw_event_insert() bumps colliding timestamps.
+	time := uint64(1000)
+	inject := func(injects int) {
+		for i := 0; i < injects; i++ {
+			process.Pid = uint32(1000 + i%distinctPids)
+			process.Tid = process.Pid
+			require.NoError(t, queue.Inject(SyntheticEvent{
+				Kind:    QUARK_SYNTHETIC_EXEC,
+				Time:    time,
+				Process: process,
+			}))
+			time++
+
+			// Drain, otherwise the queue itself grows and we measure that.
+			for {
+				if _, ok := queue.GetEvent(); !ok {
+					break
+				}
+			}
+		}
+	}
+
+	inject(warmupInjects)
+	baseline := rssKB(t)
+	inject(measureInjects)
+	growth := rssKB(t) - baseline
+
+	t.Logf("RSS grew %d kB over %d injects (%d kB baseline)", growth, measureInjects, baseline)
+	require.Less(t, growth, maxGrowthKB,
+		"RSS grew %d kB over %d injects, Inject() is leaking", growth, measureInjects)
 }

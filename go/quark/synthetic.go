@@ -143,10 +143,13 @@ func (allocations *syntheticAllocations) cStringList(field string, values []stri
 	return (*C.char)(p), C.size_t(len(buf)), nil
 }
 
-func (allocations syntheticAllocations) free() {
-	for _, p := range allocations {
+// free must take a pointer receiver: a value receiver would make the deferred
+// call snapshot the slice header before cString/cStringList append to it.
+func (allocations *syntheticAllocations) free() {
+	for _, p := range *allocations {
 		C.free(p)
 	}
+	*allocations = nil
 }
 
 // Inject copies event into queue immediately before Quark's raw-event insert
