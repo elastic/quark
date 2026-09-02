@@ -162,6 +162,25 @@ func TestSyntheticQueueInvalidInput(t *testing.T) {
 		{"zero pid", func() SyntheticEvent { event := valid; event.Process.Pid = 0; return event }()},
 		{"missing executable", func() SyntheticEvent { event := valid; event.Process.Executable = ""; return event }()},
 		{"missing file path", SyntheticEvent{Kind: QUARK_SYNTHETIC_FILE_CREATE, Time: 1000, Process: syntheticTestProcess()}},
+		{"missing comm on exec", func() SyntheticEvent { event := valid; event.Process.Comm = ""; return event }()},
+		{"missing comm on fork", func() SyntheticEvent {
+			event := valid
+			event.Kind = QUARK_SYNTHETIC_FORK
+			event.Process.Comm = ""
+			return event
+		}()},
+		{"missing comm on exit", func() SyntheticEvent {
+			event := valid
+			event.Kind = QUARK_SYNTHETIC_EXIT
+			event.Process.Comm = ""
+			return event
+		}()},
+		{"missing comm on setsid", func() SyntheticEvent {
+			event := valid
+			event.Kind = QUARK_SYNTHETIC_SETSID
+			event.Process.Comm = ""
+			return event
+		}()},
 		{"NUL in argv", func() SyntheticEvent { event := valid; event.Process.Argv = []string{"bad\x00arg"}; return event }()},
 		{"NUL in path", func() SyntheticEvent {
 			event := valid
@@ -179,20 +198,89 @@ func TestSyntheticQueueInvalidInput(t *testing.T) {
 	require.ErrorIs(t, (*Queue)(nil).Inject(valid), syscall.EINVAL)
 }
 
-// TestSyntheticFileEventFreshPid verifies that a file injection for a pid that
-// has never been seen before yields a valid event with full process data.
-// Before the fix, RAW_FILE injections skipped synthetic_task_copy(), so the
-// process cache was never populated and GetEvent() dropped the event entirely.
-func TestSyntheticFileEventFreshPid(t *testing.T) {
+// TestSyntheticCommSurvivesEventSequence verifies that the cached comm is
+// stable across a sequence of process events for the same pid.
+//
+// raw_event_process1() copies raw_task->comm into the cache on every event.
+// raw_task.comm is a char[16], not a pointer, so a zero-filled array is
+// indistinguishable from "absent" and would silently clear the cached value.
+// quark_queue_inject() therefore requires comm on every process event, which
+// is the same contract the ebpf backend satisfies.
+func TestSyntheticCommSurvivesEventSequence(t *testing.T) {
 	queue, err := OpenSyntheticQueue(syntheticTestAttr())
 	require.NoError(t, err)
 	defer queue.Close()
 
-	const freshPid = 9999
+	process := syntheticTestProcess()
+
+	// Exit is deliberately not in this list: it marks the process for GC,
+	// and syntheticTestAttr() uses CacheGraceTime 0, so the cache entry is
+	// collected on the next GetEvent and later events see a miss.
+	kinds := []SyntheticEventKind{
+		QUARK_SYNTHETIC_EXEC,
+		QUARK_SYNTHETIC_SETSID,
+	}
+
+	for i, kind := range kinds {
+		require.NoError(t, queue.Inject(SyntheticEvent{
+			Kind:    kind,
+			Time:    uint64(1000 + i),
+			Process: process,
+		}))
+
+		event, ok := queue.GetEvent()
+		require.True(t, ok)
+		require.NotZero(t, event.Events)
+		require.Equal(t, process.Comm, event.Process.Comm,
+			"comm was clobbered by event kind %d", kind)
+	}
+
+	// A file event carries no raw_task, so it must not disturb the comm the
+	// preceding process events established.
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_FILE_CREATE,
+		Time:    2000,
+		Process: SyntheticProcess{Pid: process.Pid},
+		File:    SyntheticFile{Path: "/tmp/canary"},
+	}))
+	event, ok := queue.GetEvent()
+	require.True(t, ok)
+	require.Equal(t, uint64(QUARK_EV_FILE), event.Events)
+	require.Equal(t, process.Comm, event.Process.Comm)
+
+	// Exit still reports the comm on the event itself.
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_EXIT,
+		Time:    2001,
+		Process: process,
+	}))
+	event, ok = queue.GetEvent()
+	require.True(t, ok)
+	require.Equal(t, process.Comm, event.Process.Comm)
+}
+
+// TestSyntheticFileEventUncachedPid verifies that a file injection for a pid
+// that is not in the process cache still yields the event, with no process
+// data attached.
+//
+// This mirrors the ebpf backend: an ebpf file event carries only a pid and the
+// file fields, so raw_event_file() resolves the process through the cache and
+// legitimately produces a NULL process on a miss. The synthetic queue must
+// keep that behaviour, otherwise a benchmark never exercises the cache-miss
+// path.
+//
+// GetEvent() used to treat a NULL process the same as "no event", which both
+// dropped the file event and made the caller's drain loop exit early.
+func TestSyntheticFileEventUncachedPid(t *testing.T) {
+	queue, err := OpenSyntheticQueue(syntheticTestAttr())
+	require.NoError(t, err)
+	defer queue.Close()
+
+	const uncachedPid = 9999
 
 	process := syntheticTestProcess()
-	process.Pid = freshPid
-	process.Tid = freshPid
+	process.Pid = uncachedPid
+	process.Tid = uncachedPid
 
 	file := SyntheticFile{
 		Path:  "/tmp/canary",
@@ -208,17 +296,48 @@ func TestSyntheticFileEventFreshPid(t *testing.T) {
 	}))
 
 	event, ok := queue.GetEvent()
-	require.True(t, ok, "GetEvent returned false — file event for a fresh pid was dropped")
+	require.True(t, ok, "GetEvent returned false — file event for an uncached pid was dropped")
 	require.Equal(t, uint64(QUARK_EV_FILE), event.Events)
 	require.NotNil(t, event.File)
 	require.Equal(t, file.Path, event.File.Path)
 
-	// Process data must be present (the whole point of the fix).
-	require.Equal(t, freshPid, int(event.Process.Pid))
+	// A cache miss leaves the process zero-valued, exactly as with ebpf. The
+	// injected process payload is not consulted for file events.
+	require.Zero(t, event.Process.Pid)
+	require.Empty(t, event.Process.Comm)
+}
+
+// TestSyntheticFileEventCachedPid is the cache-hit counterpart: once an exec
+// has populated the cache for a pid, a later file event resolves against it.
+func TestSyntheticFileEventCachedPid(t *testing.T) {
+	queue, err := OpenSyntheticQueue(syntheticTestAttr())
+	require.NoError(t, err)
+	defer queue.Close()
+
+	process := syntheticTestProcess()
+
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_EXEC,
+		Time:    1000,
+		Process: process,
+	}))
+	event, ok := queue.GetEvent()
+	require.True(t, ok)
+	require.Equal(t, uint64(QUARK_EV_EXEC), event.Events)
+
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_FILE_CREATE,
+		Time:    1001,
+		Process: process,
+		File:    SyntheticFile{Path: "/tmp/canary"},
+	}))
+
+	event, ok = queue.GetEvent()
+	require.True(t, ok)
+	require.Equal(t, uint64(QUARK_EV_FILE), event.Events)
+	require.Equal(t, process.Pid, event.Process.Pid)
 	require.Equal(t, process.Comm, event.Process.Comm)
 	require.Equal(t, process.Executable, event.Process.Exe)
-	require.Equal(t, process.Cwd, event.Process.Cwd)
-	require.Equal(t, process.CapEffective, event.Process.Proc.CapEffective)
 }
 
 // TestSyntheticAllocationsFree pins down the receiver of free(). Inject() sets

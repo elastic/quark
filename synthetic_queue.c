@@ -8,13 +8,9 @@
 
 #include "quark.h"
 
-int	quark_process_cache_seed(struct quark_queue *, struct raw_event *);
-
 static int	synthetic_queue_populate(struct quark_queue *);
 static int	synthetic_queue_update_stats(struct quark_queue *);
 static void	synthetic_queue_close(struct quark_queue *);
-static int	synthetic_task_copy(struct quark_queue *, struct raw_task *,
-		    const struct quark_synthetic_process *);
 
 static struct quark_queue_ops queue_ops_synthetic = {
 	.open		= synthetic_queue_open,
@@ -70,58 +66,6 @@ synthetic_strdup(const char *src)
 		return (NULL);
 
 	return (strdup(src));
-}
-
-/*
- * Seed the process cache from a synthetic file injection. RAW_FILE events
- * carry no raw_task in the union, so synthetic_task_copy() is never called
- * for them and raw_event_process1() never runs — leaving the cache empty for
- * a fresh pid, which makes raw_event_file() return qev->process == NULL.
- *
- * We build a scratch RAW_EXEC event, populate it via the same helpers used
- * for the normal inject path (synthetic_task_copy + exe/argv), then drive
- * raw_event_process1() against the cache entry directly, without inserting
- * the scratch event into the event tree. raw_event_process1() steals the
- * heap strings out of the scratch event, so raw_event_free() is safe to call
- * unconditionally at the end.
- */
-static int
-synthetic_process_seed(struct quark_queue *qq,
-    const struct quark_synthetic_process *proc)
-{
-	struct raw_event	*seed;
-
-	seed = raw_event_alloc(RAW_EXEC);
-	if (seed == NULL)
-		return (-1);
-	seed->pid = proc->pid;
-	seed->tid = proc->tid != 0 ? proc->tid : proc->pid;
-	seed->exec.flags = RAW_EXEC_F_EXT;
-
-	if (proc->executable != NULL) {
-		seed->exec.filename = strdup(proc->executable);
-		if (seed->exec.filename == NULL)
-			goto fail;
-	}
-	if (proc->argv_len > 0 && proc->argv != NULL) {
-		seed->exec.ext.args = malloc(proc->argv_len);
-		if (seed->exec.ext.args == NULL)
-			goto fail;
-		memcpy(seed->exec.ext.args, proc->argv, proc->argv_len);
-		seed->exec.ext.args_len = proc->argv_len;
-	}
-	if (synthetic_task_copy(qq, &seed->exec.ext.task, proc) == -1)
-		goto fail;
-
-	if (quark_process_cache_seed(qq, seed) == -1)
-		goto fail;
-
-	raw_event_free(seed);
-	return (0);
-
-fail:
-	raw_event_free(seed);
-	return (-1);
 }
 
 static int
@@ -284,6 +228,20 @@ quark_queue_inject(struct quark_queue *qq,
 	if (raw_type == RAW_FILE &&
 	    (event->file.path == NULL || event->file.path[0] == 0))
 		return (errno = EINVAL, -1);
+	/*
+	 * Every process event from a real backend carries a comm: the kernel
+	 * always has a non-empty task->comm, and the backends copy it
+	 * unconditionally into raw_task. raw_event_process1() relies on that
+	 * and overwrites the cached comm on each event, so an absent comm here
+	 * would clear a known-good value instead of leaving it alone. Require
+	 * it, and keep raw_task's contract identical to the ebpf backend's.
+	 *
+	 * File events carry no raw_task and never reach that code, so they are
+	 * exempt, again matching ebpf.
+	 */
+	if (raw_type != RAW_FILE &&
+	    (proc->comm == NULL || proc->comm[0] == 0))
+		return (errno = EINVAL, -1);
 
 	raw = raw_event_alloc(raw_type);
 	if (raw == NULL)
@@ -310,8 +268,6 @@ quark_queue_inject(struct quark_queue *qq,
 		break;
 	case RAW_FILE:
 		if (synthetic_file_copy(raw, &event->file, op_mask) == -1)
-			goto fail;
-		if (synthetic_process_seed(qq, proc) == -1)
 			goto fail;
 		break;
 	case RAW_ID_CHANGE:
