@@ -514,10 +514,6 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     event->prev_prot       = prev_prot;
     event->req_prot        = req_prot;
     event->effective_prot  = effective_prot;
-    event->file_backed     = 0;
-    event->inode           = 0;
-    event->dev_major       = 0;
-    event->dev_minor       = 0;
 
     if (file) {
         event->file_backed = 1;
