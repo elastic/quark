@@ -4,7 +4,7 @@
 #include <sys/epoll.h>
 #include <sys/param.h>
 #include <sys/mount.h>
-#include <sys/sysinfo.h>
+#include <sys/resource.h>
 
 #include <assert.h>
 #include <ctype.h>
@@ -30,6 +30,7 @@ static int	bpf_queue_populate(struct quark_queue *);
 static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
 static u32	bpf_ringbuf_size(int);
+static void	bump_memlock(void);
 
 /*
  * Shared eBPF ring buffer is sized from CPU count so large hosts can absorb
@@ -71,6 +72,28 @@ bpf_ringbuf_size(int ncpu)
 		bytes = RINGBUF_MAX_SIZE;
 
 	return ((u32)bytes);
+}
+
+static void
+bump_memlock(void)
+{
+	struct rlimit rlim;
+
+	rlim.rlim_cur = RLIM_INFINITY;
+	rlim.rlim_max = RLIM_INFINITY;
+	if (setrlimit(RLIMIT_MEMLOCK, &rlim) == 0)
+		return;
+
+	/*
+	 * Raising the hard limit needs CAP_SYS_RESOURCE; fall back to
+	 * using whatever ceiling we already have.
+	 */
+	if (getrlimit(RLIMIT_MEMLOCK, &rlim) == 0) {
+		rlim.rlim_cur = rlim.rlim_max;
+		if (setrlimit(RLIMIT_MEMLOCK, &rlim) == 0)
+			return;
+	}
+	qwarn("setrlimit RLIMIT_MEMLOCK");
 }
 
 struct quark_queue_ops queue_ops_bpf = {
@@ -1330,7 +1353,18 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_GETPID)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
 
-	ncpu = get_nprocs_conf();
+	/*
+	 * Older kernels account BPF maps against RLIMIT_MEMLOCK. libbpf
+	 * tries to bump this itself but skips it when it (sometimes
+	 * wrongly) thinks the kernel uses memcg accounting.
+	 */
+	bump_memlock();
+
+	ncpu = libbpf_num_possible_cpus();
+	if (ncpu <= 0) {
+		qwarnx("bad libbpf_num_possible_cpus: %d", ncpu);
+		goto fail;
+	}
 	if (bpf_map__set_max_entries(p->maps.event_buffer_map, ncpu) != 0) {
 		qwarn("bpf_map__set_max_entries event_buffer_map");
 		goto fail;
