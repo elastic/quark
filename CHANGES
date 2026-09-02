@@ -183,4 +183,6 @@ Changes from 0.8 to 0.9
     assert that the protection change ultimately succeeded.
     Only the first occurrence of each protection transition (previous
     protection, effective protection, file-backedness) is reported per process
-    life; the state resets on execve() and process exit.
+    life; the state resets on execve() and process exit. File-backed attempts
+    additionally carry the mount-namespace relative path in
+    quark_mprotect.path, NULL for anonymous mappings.

@@ -421,6 +421,7 @@ struct quark_mprotect {
 	u32	dev_major;	/* zero for anonymous mappings */
 	u32	dev_minor;	/* zero for anonymous mappings */
 	u32	file_backed;
+	char   *path;		/* mount-ns relative; NULL for anonymous */
 };
 
 struct raw_ptrace {

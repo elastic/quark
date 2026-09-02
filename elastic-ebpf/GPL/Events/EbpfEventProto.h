@@ -393,6 +393,9 @@ struct ebpf_process_mprotect_event {
     uint32_t dev_major;
     uint32_t dev_minor;
     uint32_t file_backed;
+
+    // Variable length fields: path (only present when file_backed)
+    struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 
 enum ebpf_net_info_transport {

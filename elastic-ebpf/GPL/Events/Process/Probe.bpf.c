@@ -592,6 +592,8 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     event->req_prot        = req_prot;
     event->effective_prot  = effective_prot;
 
+    ebpf_vl_fields__init(&event->vl_fields);
+
     if (file) {
         event->file_backed = 1;
 
@@ -606,9 +608,18 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
                 event->dev_minor = (u32)dev & MPROTECT_MINORMASK;
             }
         }
+
+        // File-backed executable transitions are rare and high signal
+        // (library tampering, packers, memfd JITs); annotate them with the
+        // mount-namespace-relative path. Anonymous memory has no path.
+        struct ebpf_varlen_field *field =
+            ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
+        struct path p = BPF_CORE_READ(file, f_path);
+        long size     = ebpf_resolve_path_to_string(field->data, &p, task);
+        ebpf_vl_field__set_size(&event->vl_fields, field, size);
     }
 
-    ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
+    ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
 
 out:
     return 0;

@@ -698,6 +698,21 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		qmprotect->dev_major = mprotect->dev_major;
 		qmprotect->dev_minor = mprotect->dev_minor;
 		qmprotect->file_backed = mprotect->file_backed;
+		qmprotect->path = NULL;
+
+		FOR_EACH_VARLEN_FIELD(mprotect->vl_fields, field) {
+			switch (field->type) {
+			case EBPF_VL_FIELD_PATH:
+				if (field->size > 0)
+					qmprotect->path =
+					    strndup(field->data, field->size);
+				break;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				break;
+			}
+		}
+
 		break;
 	}
 	case EBPF_EVENT_PROCESS_LOAD_MODULE: {

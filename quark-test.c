@@ -1668,7 +1668,7 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	if (mprotect(addr[0], len, expected[0]) == -1)
 		err(1, "mprotect");
 
-	/* File-backed identity is carried without resolving a pathname in BPF. */
+	/* File-backed attempts carry identity and a mount-ns relative path. */
 	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
 		err(1, "open");
 	if (fstat(fd, &st) == -1)
@@ -1691,6 +1691,17 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	assert(qmprotect->inode == (u64)st.st_ino);
 	assert(qmprotect->dev_major == (u32)major(st.st_dev));
 	assert(qmprotect->dev_minor == (u32)minor(st.st_dev));
+	{
+		char	self[PATH_MAX];
+		ssize_t	n;
+
+		n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+		if (n == -1)
+			err(1, "readlink");
+		self[n] = '\0';
+		assert(qmprotect->path != NULL);
+		assert(strcmp(qmprotect->path, self) == 0);
+	}
 
 #ifdef SYS_pkey_mprotect
 	/* The common LSM hook also observes pkey_mprotect without another probe. */

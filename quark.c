@@ -233,7 +233,9 @@ raw_event_free(struct raw_event *raw)
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
 	case RAW_PTRACE:	/* nada */
-	case RAW_MPROTECT:	/* nada */
+		break;
+	case RAW_MPROTECT:
+		free(raw->mprotect.quark_mprotect.path);
 		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
@@ -452,6 +454,7 @@ event_storage_clear(struct quark_queue *qq)
 	free(qq->event_storage.file);
 	qq->event_storage.file = NULL;
 	bzero(&qq->event_storage.ptrace, sizeof(qq->event_storage.ptrace));
+	free(qq->event_storage.mprotect.path);
 	bzero(&qq->event_storage.mprotect, sizeof(qq->event_storage.mprotect));
 	if (qq->event_storage.module_load != NULL) {
 		free(qq->event_storage.module_load->name);
@@ -2301,6 +2304,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    mprotect->effective_prot, effective_prot,
 		    mprotect->file_backed, mprotect->inode,
 		    mprotect->dev_major, mprotect->dev_minor);
+		if (mprotect->path != NULL)
+			PF(fl, "path=%s\n", mprotect->path);
 	}
 
 	if (qp == NULL)
@@ -4888,6 +4893,8 @@ raw_event_mprotect(struct quark_queue *qq, struct raw_event *raw)
 	qev->events = QUARK_EV_MPROTECT;
 	qev->process = quark_process_lookup(qq, raw->pid);
 	qev->mprotect = raw->mprotect.quark_mprotect;
+	/* Steal the path; event_storage_clear() frees it */
+	raw->mprotect.quark_mprotect.path = NULL;
 
 	return (qev);
 }
