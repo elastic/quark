@@ -36,10 +36,6 @@ DECL_FIELD_OFFSET(iov_iter, __iov);
 #define MPROTECT_MINORBITS 20
 #define MPROTECT_MINORMASK ((1U << MPROTECT_MINORBITS) - 1)
 
-#ifndef EEXIST
-#define EEXIST 17 /* uapi asm-generic/errno-base.h; not carried by vmlinux.h */
-#endif
-
 // Set from userspace when QQ_MPROTECT is enabled. Everything that touches
 // mprotect_seen from the always loaded exec and exit probes is behind this
 // flag, so with the feature off the verifier prunes it and the map is not
@@ -49,67 +45,47 @@ const volatile bool mprotect_enabled = false;
 /*
  * Executable mprotect transitions already reported for a process life, one
  * entry per tgid. A transition id packs the previous protection (3 bits), the
- * effective new protection (3 bits) and whether the mapping is file backed
- * (1 bit), so all 128 fit a two word bitmap. The entry is dropped when the
- * process execs or dies (each program image starts fresh); LRU eviction is a
- * safe backstop since an evicted entry only causes a duplicate event, never a
- * lost one. Sized from userspace, see bpf_queue_open1().
+ * read/write bits of the effective new protection (2 bits, execute is always
+ * set by the time we get here) and whether the mapping is file backed (1 bit),
+ * so all 64 fit one word. The entry is dropped when the process execs or dies
+ * (each program image starts fresh); LRU eviction is a safe backstop since an
+ * evicted entry only causes a duplicate event, never a lost one. Sized from
+ * userspace, see bpf_queue_open1().
  */
-struct mprotect_seen_bits {
-    u64 bits[2];
-};
-
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, u32);
-    __type(value, struct mprotect_seen_bits);
+    __type(value, u64);
     __uint(max_entries, 0);
 } mprotect_seen SEC(".maps");
 
 static u32 mprotect_transition_id(u64 prev_prot, u64 effective_prot, u64 file_backed)
 {
-    return ((prev_prot & 0x7) << 4) | ((effective_prot & 0x7) << 1) | (file_backed & 0x1);
+    return ((prev_prot & 0x7) << 3) | ((effective_prot & 0x3) << 1) | (file_backed & 0x1);
 }
 
 // Returns true if the transition was already reported for this process life.
-// The first transition of a life creates the entry with BPF_NOEXIST so
-// concurrent threads racing for it get exactly one winner. Only a confirmed
-// "already reported" suppresses -- any other failure reports, so the failure
-// mode is a duplicate event, never a lost one.
+// Best effort: the bit is claimed with a plain read-test-write since an atomic
+// or needs Linux 5.12 and -mcpu=v3, and the entry is created with BPF_NOEXIST
+// so a racing thread can't clobber bits already set. Two threads of one
+// process racing on the same transition can both report, and any map failure
+// reports, so the failure mode is a duplicate event, never a lost one.
 static bool mprotect_seen__test_and_set(u32 tgid, u32 id)
 {
-    u32 word = (id >> 6) & 1;
-    u64 bit  = 1ULL << (id & 63);
+    u64  bit  = 1ULL << (id & 63);
+    u64 *seen = bpf_map_lookup_elem(&mprotect_seen, &tgid);
 
-    struct mprotect_seen_bits *seen = bpf_map_lookup_elem(&mprotect_seen, &tgid);
     if (seen == NULL) {
-        // Constant stack offsets on purpose: indexing the stack copy by word
-        // is a variable offset stack access, which kernels before 5.13 reject.
-        struct mprotect_seen_bits fresh = {
-            .bits = { word ? 0 : bit, word ? bit : 0 },
-        };
+        u64 zero = 0;
 
-        // Compare in 32 bits: with the JIT enabled, the verifier rewrites map
-        // helper calls into direct calls to the map ops (fixup_bpf_calls), and
-        // those returned int until Linux 6.4 (d7ba4cc900bf), leaving a
-        // zero-extended 32-bit value in r0 on older kernels. A 64-bit compare
-        // against -EEXIST never matches there. Ordinary helpers return through
-        // a u64 wrapper and are sign-extended correctly; only map helpers need
-        // this.
-        if ((int)bpf_map_update_elem(&mprotect_seen, &tgid, &fresh, BPF_NOEXIST) != -EEXIST)
-            return false;
-        // Lost the race for the entry, test the bit in the winner's.
+        bpf_map_update_elem(&mprotect_seen, &tgid, &zero, BPF_NOEXIST);
         seen = bpf_map_lookup_elem(&mprotect_seen, &tgid);
         if (seen == NULL)
             return false;
     }
-
-    if (seen->bits[word] & bit)
+    if (*seen & bit)
         return true;
-    // Plain read-test-write: an atomic or needs Linux 5.12 and -mcpu=v3. Two
-    // threads of one process racing on the same transition can both get here
-    // and both report, a duplicate, never a lost event.
-    seen->bits[word] |= bit;
+    *seen |= bit;
 
     return false;
 }
