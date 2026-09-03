@@ -36,6 +36,68 @@ DECL_FIELD_OFFSET(iov_iter, __iov);
 #define MPROTECT_MINORBITS 20
 #define MPROTECT_MINORMASK ((1U << MPROTECT_MINORBITS) - 1)
 
+// Set from userspace when QQ_MPROTECT is enabled. Everything that touches
+// mprotect_seen from the always loaded exec and exit probes is behind this
+// flag, so with the feature off the verifier prunes it and the map is not
+// even created.
+const volatile bool mprotect_enabled = false;
+
+/*
+ * Executable mprotect transitions already reported for a process life, one
+ * entry per tgid. A transition id packs the previous protection (3 bits), the
+ * read/write bits of the effective new protection (2 bits, execute is always
+ * set by the time we get here) and whether the mapping is file backed (1 bit),
+ * so all 64 fit one word. The entry is dropped when the process execs or dies
+ * (each program image starts fresh); LRU eviction is a safe backstop since an
+ * evicted entry only causes a duplicate event, never a lost one. Sized from
+ * userspace, see bpf_queue_open1().
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, u32);
+    __type(value, u64);
+    __uint(max_entries, 0);
+} mprotect_seen SEC(".maps");
+
+static u32 mprotect_transition_id(u64 prev_prot, u64 effective_prot, u64 file_backed)
+{
+    return ((prev_prot & 0x7) << 3) | ((effective_prot & 0x3) << 1) | (file_backed & 0x1);
+}
+
+// Returns true if the transition was already reported for this process life.
+// Best effort: the bit is claimed with a plain read-test-write since an atomic
+// or needs Linux 5.12 and -mcpu=v3, and the entry is created with BPF_NOEXIST
+// so a racing thread can't clobber bits already set. Two threads of one
+// process racing on the same transition can both report, and any map failure
+// reports, so the failure mode is a duplicate event, never a lost one.
+static bool mprotect_seen__test_and_set(u32 tgid, u32 id)
+{
+    u64  bit  = 1ULL << (id & 63);
+    u64 *seen = bpf_map_lookup_elem(&mprotect_seen, &tgid);
+
+    if (seen == NULL) {
+        u64 zero = 0;
+
+        bpf_map_update_elem(&mprotect_seen, &tgid, &zero, BPF_NOEXIST);
+        seen = bpf_map_lookup_elem(&mprotect_seen, &tgid);
+        if (seen == NULL)
+            return false;
+    }
+    if (*seen & bit)
+        return true;
+    *seen |= bit;
+
+    return false;
+}
+
+static void mprotect_seen__clear(u32 tgid)
+{
+    if (!mprotect_enabled)
+        return;
+
+    bpf_map_delete_elem(&mprotect_seen, &tgid);
+}
+
 SEC("tp_btf/sched_process_fork")
 int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct task_struct *child)
 {
@@ -103,6 +165,10 @@ int BPF_PROG(sched_process_exec,
     // exec is valid and something we want to capture
     if (is_kernel_thread(task))
         goto out;
+
+    // The address space is replaced on exec; reported mprotect transitions
+    // belong to the previous program image, so start fresh.
+    mprotect_seen__clear(BPF_CORE_READ(task, tgid));
 
     struct ebpf_process_exec_event *event = get_event_buffer();
     if (!event)
@@ -214,6 +280,11 @@ static int disassociate_ctty__enter(int on_exit)
 
     if (!on_exit || is_kernel_thread(task))
         return 0;
+
+    // do_exit calls disassociate_ctty(1) only when the whole thread group is
+    // dead, so this runs exactly once per process; drop its dedup state so a
+    // recycled tgid does not inherit (and suppress) old transitions.
+    mprotect_seen__clear(BPF_CORE_READ(task, tgid));
 
     event = get_event_buffer();
     if (event == NULL)
@@ -500,6 +571,12 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     unsigned long vm_flags = BPF_CORE_READ(vma, vm_flags);
     u64 prev_prot          = mprotect_vm_flags_to_prot(vm_flags);
     struct file *file      = BPF_CORE_READ(vma, vm_file);
+
+    // One event per (transition, file-backedness) per process life.
+    u32 tgid = bpf_get_current_pid_tgid() >> 32;
+    if (mprotect_seen__test_and_set(tgid, mprotect_transition_id(prev_prot, effective_prot,
+                                                                 file != NULL)))
+        goto out;
 
     struct ebpf_process_mprotect_event *event = get_zeroed_event_buffer(sizeof(*event));
     if (!event)

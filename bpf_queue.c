@@ -43,6 +43,8 @@ static void	bump_memlock(void);
 #define RINGBUF_BYTES_PER_CPU	(1U << 19)	/* 512 KiB */
 #define RINGBUF_MIN_SIZE	(1U << 22)	/* 4 MiB */
 #define RINGBUF_MAX_SIZE	(1U << 26)	/* 64 MiB */
+/* Processes with a reported executable mprotect transition, see probes */
+#define MPROTECT_SEEN_MAX_ENTRIES	16384
 
 static u32
 bpf_ringbuf_size(int ncpu)
@@ -1380,6 +1382,20 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		else
 			bpf_program__set_autoload(
 			    p->progs.kprobe__security_file_mprotect, 1);
+		/*
+		 * Turns on the dedup bookkeeping in the always loaded exec
+		 * and exit probes; the map is only sized (and created) here,
+		 * so it costs nothing when the feature is off.
+		 */
+		p->rodata->mprotect_enabled = 1;
+		if (bpf_map__set_max_entries(p->maps.mprotect_seen,
+		    MPROTECT_SEEN_MAX_ENTRIES) != 0) {
+			qwarn("bpf_map__set_max_entries mprotect_seen");
+			goto fail;
+		}
+	} else if (bpf_map__set_autocreate(p->maps.mprotect_seen, 0) != 0) {
+		qwarn("bpf_map__set_autocreate mprotect_seen");
+		goto fail;
 	}
 
 	if (qq->flags & QQ_GETPID)

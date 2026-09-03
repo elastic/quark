@@ -540,7 +540,6 @@ struct quark_event {
 #define QUARK_EV_SHM			(1 << 12)
 #define QUARK_EV_TTY			(1 << 13)
 #define QUARK_EV_GETPID			(1 << 14)
-/* Experimental: not yet deduplicated, don't use */
 #define QUARK_EV_MPROTECT		(1 << 15)
 	u64				 events;
 	u64				 time;
@@ -923,7 +922,6 @@ struct quark_queue_attr {
 #define QQ_MODULE_LOAD		(1 << 12)
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
-/* Experimental: not yet deduplicated, don't use */
 #define QQ_MPROTECT		(1 << 15)
 	int			 flags;
 	int			 max_length;
