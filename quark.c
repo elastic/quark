@@ -2,6 +2,7 @@
 /* Copyright (c) 2024-2026 Elastic NV */
 
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -192,6 +193,7 @@ raw_event_alloc(int type)
 	case RAW_PACKET:	/* caller allocates */
 	case RAW_FILE:		/* caller allocates */
 	case RAW_PTRACE:	/* nada */
+	case RAW_MPROTECT:	/* nada */
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
@@ -231,6 +233,7 @@ raw_event_free(struct raw_event *raw)
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
 	case RAW_PTRACE:	/* nada */
+	case RAW_MPROTECT:	/* nada */
 		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
@@ -449,6 +452,7 @@ event_storage_clear(struct quark_queue *qq)
 	free(qq->event_storage.file);
 	qq->event_storage.file = NULL;
 	bzero(&qq->event_storage.ptrace, sizeof(qq->event_storage.ptrace));
+	bzero(&qq->event_storage.mprotect, sizeof(qq->event_storage.mprotect));
 	if (qq->event_storage.module_load != NULL) {
 		free(qq->event_storage.module_load->name);
 		free(qq->event_storage.module_load->version);
@@ -1788,6 +1792,8 @@ event_type_str(u64 event)
 		return "TTY";
 	case QUARK_EV_GETPID:
 		return "GETPID";
+	case QUARK_EV_MPROTECT:
+		return "MPROTECT";
 	default:
 		return "?";
 	}
@@ -2127,6 +2133,28 @@ module_taints_str(u64 taints, char *buf, size_t len)
 	buf[n] = 0;
 }
 
+static void
+mprotect_prot_str(u64 prot, char *buf, size_t len)
+{
+	size_t	n;
+
+	*buf = 0;
+	n = 0;
+	if (prot & PROT_READ) {
+		if (n + 1 < len)
+			buf[n++] = 'R';
+	}
+	if (prot & PROT_WRITE) {
+		if (n + 1 < len)
+			buf[n++] = 'W';
+	}
+	if (prot & PROT_EXEC) {
+		if (n + 1 < len)
+			buf[n++] = 'X';
+	}
+	buf[n] = 0;
+}
+
 #define P(...)						\
 	do {						\
 		if (fprintf(f, __VA_ARGS__) < 0)	\
@@ -2153,6 +2181,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_container	*container;
 	const struct quark_ptrace	*ptrace;
 	const struct quark_module_load	*qml;
+	const struct quark_mprotect	*mprotect;
+	char				 prev_prot[4], req_prot[4];
+	char				 effective_prot[4];
 	int				 pid;
 
 	if (qev->events == QUARK_EV_BYPASS) {
@@ -2249,6 +2280,27 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		PF(fl, "name=%s version=%s srcversion=%s taints=0x%llx (%s)\n",
 		    qml->name, qml->version, qml->src_version,
 		    qml->taints, buf);
+	}
+
+	if (qev->events & QUARK_EV_MPROTECT) {
+		fl = "MPRO";
+
+		mprotect = &qev->mprotect;
+		mprotect_prot_str(mprotect->prev_prot, prev_prot,
+		    sizeof(prev_prot));
+		mprotect_prot_str(mprotect->req_prot, req_prot,
+		    sizeof(req_prot));
+		mprotect_prot_str(mprotect->effective_prot, effective_prot,
+		    sizeof(effective_prot));
+		PF(fl, "attempt vma=[0x%llx,0x%llx) "
+		    "prev=0x%llx (%s) req=0x%llx (%s) effective=0x%llx (%s) "
+		    "file_backed=%u inode=%llu dev=%u:%u\n",
+		    mprotect->vma_start, mprotect->vma_end,
+		    mprotect->prev_prot, prev_prot,
+		    mprotect->req_prot, req_prot,
+		    mprotect->effective_prot, effective_prot,
+		    mprotect->file_backed, mprotect->inode,
+		    mprotect->dev_major, mprotect->dev_minor);
 	}
 
 	if (qp == NULL)
@@ -4827,6 +4879,20 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static struct quark_event *
+raw_event_mprotect(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_MPROTECT;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->mprotect = raw->mprotect.quark_mprotect;
+
+	return (qev);
+}
+
+static struct quark_event *
 raw_event_module_load(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -5241,6 +5307,9 @@ quark_queue_get_event1(struct quark_queue *qq)
 			break;
 		case RAW_PTRACE:
 			qev = raw_event_ptrace(qq, raw);
+			break;
+		case RAW_MPROTECT:
+			qev = raw_event_mprotect(qq, raw);
 			break;
 		case RAW_MODULE_LOAD:
 			qev = raw_event_module_load(qq, raw);
