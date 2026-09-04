@@ -131,16 +131,24 @@ struct {
     __uint(max_entries, 0);
 } mprotect_file_seen SEC(".maps");
 
-// The exec generation of the process. self_exec_id is u64 since Linux 5.7,
-// which every kernel this ring buffer backend loads on has, but read it by its
-// relocated size anyway; the targets are little endian so a narrower field
-// lands in the low bytes.
+// The exec generation of the process. self_exec_id is u64 since Linux 5.7 and
+// u32 before, so read it by its relocated size; the targets are little endian
+// so a narrower field lands in the low bytes. RHEL 8 (4.18) backported the
+// widening under kABI and the live field only exists in the task_struct_rh
+// extension there, see vmlinux_extra.h; a kernel with neither yields zero and
+// falls back to start_time alone.
 static u64 mprotect_exec_id(const struct task_struct *task)
 {
     const struct task_struct *leader = BPF_CORE_READ(task, group_leader);
     u64                       exec_id = 0;
 
-    bpf_core_read(&exec_id, bpf_core_field_size(leader->self_exec_id), &leader->self_exec_id);
+    if (bpf_core_field_exists(leader->self_exec_id)) {
+        bpf_core_read(&exec_id, bpf_core_field_size(leader->self_exec_id),
+                      &leader->self_exec_id);
+    } else if (bpf_core_field_exists(struct task_struct___el8, task_struct_rh)) {
+        exec_id = BPF_CORE_READ((const struct task_struct___el8 *)leader, task_struct_rh,
+                                self_exec_id);
+    }
 
     return exec_id;
 }
