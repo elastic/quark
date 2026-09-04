@@ -43,8 +43,9 @@ static void	bump_memlock(void);
 #define RINGBUF_BYTES_PER_CPU	(1U << 19)	/* 512 KiB */
 #define RINGBUF_MIN_SIZE	(1U << 22)	/* 4 MiB */
 #define RINGBUF_MAX_SIZE	(1U << 26)	/* 64 MiB */
-/* Processes with a reported executable mprotect transition, see probes */
+/* Processes and files with a reported executable mprotect transition */
 #define MPROTECT_SEEN_MAX_ENTRIES	16384
+#define MPROTECT_FILE_SEEN_MAX_ENTRIES	16384
 
 static u32
 bpf_ringbuf_size(int ncpu)
@@ -1408,9 +1409,20 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			qwarn("bpf_map__set_max_entries mprotect_seen");
 			goto fail;
 		}
-	} else if (bpf_map__set_autocreate(p->maps.mprotect_seen, 0) != 0) {
-		qwarn("bpf_map__set_autocreate mprotect_seen");
-		goto fail;
+		if (bpf_map__set_max_entries(p->maps.mprotect_file_seen,
+		    MPROTECT_FILE_SEEN_MAX_ENTRIES) != 0) {
+			qwarn("bpf_map__set_max_entries mprotect_file_seen");
+			goto fail;
+		}
+	} else {
+		if (bpf_map__set_autocreate(p->maps.mprotect_seen, 0) != 0) {
+			qwarn("bpf_map__set_autocreate mprotect_seen");
+			goto fail;
+		}
+		if (bpf_map__set_autocreate(p->maps.mprotect_file_seen, 0) != 0) {
+			qwarn("bpf_map__set_autocreate mprotect_file_seen");
+			goto fail;
+		}
 	}
 
 	if (qq->flags & QQ_GETPID)
