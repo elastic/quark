@@ -98,6 +98,94 @@ static void mprotect_seen__clear(u32 tgid)
     bpf_map_delete_elem(&mprotect_seen, &tgid);
 }
 
+/*
+ * File-backed transitions are deduplicated per file instead: one entry per
+ * (tgid, device, inode) with the transitions already reported for that file,
+ * so making a second file executable the same way is reported again. The
+ * value carries the process start time and self_exec_id, which the kernel
+ * bumps on every exec and never reuses within a process life; an entry left
+ * behind by a dead process (recycled tgid) or by a previous program image no
+ * longer matches and is simply claimed anew, so a stale entry never suppresses
+ * and this map needs no exec or exit clearing. (The mm pointer would not do:
+ * it is freed at exec and can come straight back from the slab two images
+ * later.) LRU eviction takes care of the leftovers and at worst costs a
+ * duplicate. Only referenced from the mprotect probes, sized from userspace,
+ * see bpf_queue_open1().
+ */
+struct mprotect_file_key {
+    u32 tgid;
+    u32 dev;
+    u64 inode;
+};
+
+struct mprotect_file_seen {
+    u64 start_time_ns;
+    u64 exec_id;
+    u64 bits;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, struct mprotect_file_key);
+    __type(value, struct mprotect_file_seen);
+    __uint(max_entries, 0);
+} mprotect_file_seen SEC(".maps");
+
+// The exec generation of the process. self_exec_id is u64 since Linux 5.7 and
+// u32 before, so read it by its relocated size; the targets are little endian
+// so a narrower field lands in the low bytes. RHEL 8 (4.18) backported the
+// widening under kABI and the live field only exists in the task_struct_rh
+// extension there, see vmlinux_extra.h; a kernel with neither yields zero and
+// falls back to start_time alone.
+static u64 mprotect_exec_id(const struct task_struct *task)
+{
+    const struct task_struct *leader = BPF_CORE_READ(task, group_leader);
+    u64                       exec_id = 0;
+
+    if (bpf_core_field_exists(leader->self_exec_id)) {
+        bpf_core_read(&exec_id, bpf_core_field_size(leader->self_exec_id),
+                      &leader->self_exec_id);
+    } else if (bpf_core_field_exists(struct task_struct___el8, task_struct_rh)) {
+        exec_id = BPF_CORE_READ((const struct task_struct___el8 *)leader, task_struct_rh,
+                                self_exec_id);
+    }
+
+    return exec_id;
+}
+
+// Same contract as mprotect_seen__test_and_set(), per file. Best effort with
+// the same plain read-test-write, and a lost race on a fresh or stale entry
+// overwrites it, so the failure mode is a duplicate event, never a lost one.
+static bool mprotect_file_seen__test_and_set(const struct task_struct *task, u32 tgid, u32 dev,
+                                             u64 inode, u32 id)
+{
+    struct mprotect_file_key key = {
+        .tgid  = tgid,
+        .dev   = dev,
+        .inode = inode,
+    };
+    u64 start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
+    u64 exec_id       = mprotect_exec_id(task);
+    u64 bit           = 1ULL << (id & 63);
+
+    struct mprotect_file_seen *seen = bpf_map_lookup_elem(&mprotect_file_seen, &key);
+    if (seen == NULL || seen->start_time_ns != start_time_ns || seen->exec_id != exec_id) {
+        struct mprotect_file_seen fresh = {
+            .start_time_ns = start_time_ns,
+            .exec_id       = exec_id,
+            .bits          = bit,
+        };
+
+        bpf_map_update_elem(&mprotect_file_seen, &key, &fresh, BPF_ANY);
+        return false;
+    }
+    if (seen->bits & bit)
+        return true;
+    seen->bits |= bit;
+
+    return false;
+}
+
 SEC("tp_btf/sched_process_fork")
 int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct task_struct *child)
 {
@@ -572,10 +660,25 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     u64 prev_prot          = mprotect_vm_flags_to_prot(vm_flags);
     struct file *file      = BPF_CORE_READ(vma, vm_file);
 
-    // One event per (transition, file-backedness) per process life.
+    u64 inode = 0;
+    u32 dev   = 0;
+    if (file) {
+        struct inode *ino = BPF_CORE_READ(file, f_inode);
+        if (ino) {
+            inode = BPF_CORE_READ(ino, i_ino);
+
+            struct super_block *sb = BPF_CORE_READ(ino, i_sb);
+            if (sb)
+                dev = BPF_CORE_READ(sb, s_dev);
+        }
+    }
+
+    // One event per transition per program image for anonymous mappings, per
+    // transition per file for file-backed ones.
     u32 tgid = bpf_get_current_pid_tgid() >> 32;
-    if (mprotect_seen__test_and_set(tgid, mprotect_transition_id(prev_prot, effective_prot,
-                                                                 file != NULL)))
+    u32 id   = mprotect_transition_id(prev_prot, effective_prot, file != NULL);
+    if (file ? mprotect_file_seen__test_and_set(task, tgid, dev, inode, id)
+             : mprotect_seen__test_and_set(tgid, id))
         goto out;
 
     struct ebpf_process_mprotect_event *event = get_zeroed_event_buffer(sizeof(*event));
@@ -592,23 +695,25 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     event->req_prot        = req_prot;
     event->effective_prot  = effective_prot;
 
+    ebpf_vl_fields__init(&event->vl_fields);
+
     if (file) {
         event->file_backed = 1;
+        event->inode       = inode;
+        event->dev_major   = dev >> MPROTECT_MINORBITS;
+        event->dev_minor   = dev & MPROTECT_MINORMASK;
 
-        struct inode *inode = BPF_CORE_READ(file, f_inode);
-        if (inode) {
-            event->inode = BPF_CORE_READ(inode, i_ino);
-
-            struct super_block *sb = BPF_CORE_READ(inode, i_sb);
-            if (sb) {
-                dev_t dev       = BPF_CORE_READ(sb, s_dev);
-                event->dev_major = (u32)dev >> MPROTECT_MINORBITS;
-                event->dev_minor = (u32)dev & MPROTECT_MINORMASK;
-            }
-        }
+        // File-backed executable transitions are rare and high signal
+        // (library tampering, packers, memfd JITs); annotate them with the
+        // mount-namespace-relative path. Anonymous memory has no path.
+        struct ebpf_varlen_field *field =
+            ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
+        struct path p = BPF_CORE_READ(file, f_path);
+        long size     = ebpf_resolve_path_to_string(field->data, &p, task);
+        ebpf_vl_field__set_size(&event->vl_fields, field, size);
     }
 
-    ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
+    ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
 
 out:
     return 0;

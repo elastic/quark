@@ -1579,9 +1579,12 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_mprotect	*qmprotect;
 	void				*addr[4];
 	void				*file_addr;
+	void				*file2_addr;
 	void				*suppressed_addr;
 	const size_t			 len = 4096;
-	struct stat			 st;
+	struct stat			 st, st2;
+	const char			*true_path;
+	int				 fd2;
 	const int			 expected[] = {
 		PROT_EXEC,
 		PROT_READ | PROT_EXEC,
@@ -1668,7 +1671,7 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	if (mprotect(addr[0], len, expected[0]) == -1)
 		err(1, "mprotect");
 
-	/* File-backed identity is carried without resolving a pathname in BPF. */
+	/* File-backed attempts carry identity and a mount-ns relative path. */
 	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
 		err(1, "open");
 	if (fstat(fd, &st) == -1)
@@ -1691,6 +1694,57 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	assert(qmprotect->inode == (u64)st.st_ino);
 	assert(qmprotect->dev_major == (u32)major(st.st_dev));
 	assert(qmprotect->dev_minor == (u32)minor(st.st_dev));
+	{
+		char	self[PATH_MAX];
+		ssize_t	n;
+
+		n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+		if (n == -1)
+			err(1, "readlink");
+		self[n] = '\0';
+		assert(qmprotect->path != NULL);
+		assert(strcmp(qmprotect->path, self) == 0);
+	}
+
+	/*
+	 * File-backed transitions are deduplicated per file. Redo the same
+	 * R->RX on the first file, which must not be reported, then do it on
+	 * a second file, which must. The second file's event doubles as the
+	 * sentinel: if the repeat were wrongly emitted it would be drained
+	 * first and the identity asserts would trip.
+	 */
+	if (mprotect(file_addr, len, PROT_READ) == -1)
+		err(1, "mprotect");
+	if (mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	if (stat("/usr/bin/true", &st2) == 0)
+		true_path = "/usr/bin/true";
+	else if (stat("/bin/true", &st2) == 0)
+		true_path = "/bin/true";
+	else
+		err(1, "no true binary");
+	assert(st2.st_ino != st.st_ino || st2.st_dev != st.st_dev);
+	if ((fd2 = open(true_path, O_RDONLY)) == -1)
+		err(1, "open");
+	file2_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd2, 0);
+	if (file2_addr == MAP_FAILED)
+		err(1, "mmap");
+	if (mprotect(file2_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	do {
+		qev = drain_for_pid(&qq, getpid());
+	} while (!(qev->events & QUARK_EV_MPROTECT));
+	qmprotect = &qev->mprotect;
+	assert(qmprotect->vma_start <= (u64)(uintptr_t)file2_addr);
+	assert(qmprotect->vma_end >= (u64)(uintptr_t)file2_addr + len);
+	assert(qmprotect->prev_prot == PROT_READ);
+	assert(qmprotect->effective_prot == (PROT_READ | PROT_EXEC));
+	assert(qmprotect->file_backed);
+	assert(qmprotect->inode == (u64)st2.st_ino);
+	assert(qmprotect->dev_major == (u32)major(st2.st_dev));
+	assert(qmprotect->dev_minor == (u32)minor(st2.st_dev));
+	assert(qmprotect->path != NULL);
+	assert(strcmp(qmprotect->path, true_path) == 0);
 
 #ifdef SYS_pkey_mprotect
 	/* The common LSM hook also observes pkey_mprotect without another probe. */
@@ -1735,6 +1789,10 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	if (munmap(file_addr, len) == -1)
 		err(1, "munmap");
 	if (close(fd) == -1)
+		err(1, "close");
+	if (munmap(file2_addr, len) == -1)
+		err(1, "munmap");
+	if (close(fd2) == -1)
 		err(1, "close");
 
 	quark_queue_close(&qq);

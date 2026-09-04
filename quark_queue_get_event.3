@@ -70,6 +70,14 @@ The
 .Em mprotect
 member contains the VMA bounds, normalized previous protection,
 userspace-requested and kernel-adjusted protection, and backing-file identity.
+For file-backed mappings,
+.Em path
+is the mount-namespace relative path of the backing file; it is
+.Dv NULL
+for anonymous mappings.
+Anonymous attempts are reported once per protection transition per process
+life, file-backed attempts once per protection transition per file per process
+life.
 It describes an attempt and does not assert that the protection change was
 committed.
 .El
