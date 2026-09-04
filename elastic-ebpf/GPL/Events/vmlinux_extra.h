@@ -237,4 +237,19 @@ struct inode___6_11 {
 	void			*i_private; /* fs or device private pointer */
 };
 
+/*
+ * RHEL 8 (4.18) backported the 5.7 widening of self_exec_id to u64 under
+ * kABI: the live field moved into the task_struct_rh extension, reached
+ * through task_struct.task_struct_rh, while task_struct keeps a dead
+ * rh_reserved_self_exec_id. Partial definitions, CO-RE matches by name.
+ */
+struct task_struct_rh___el8 {
+	u64			parent_exec_id;
+	u64			self_exec_id;
+};
+
+struct task_struct___el8 {
+	struct task_struct_rh___el8	*task_struct_rh;
+};
+
 #endif	/* _VMLINUX_EXTRA_H_ */
