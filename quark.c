@@ -156,7 +156,8 @@ quark_get_boottime(void)
 		return (old);
 	now = TS_TO_NS(ts);
 	/* Check if enough time has passed from previous sampling */
-	if (now - __atomic_load_n(&sampled, __ATOMIC_RELAXED) <
+	if (old != 0 &&
+		now - __atomic_load_n(&sampled, __ATOMIC_RELAXED) <
 	    BOOTTIME_RESAMPLE_NS)
 		return (old);
 	__atomic_store_n(&sampled, now, __ATOMIC_RELAXED);
