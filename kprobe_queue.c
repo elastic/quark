@@ -717,10 +717,13 @@ perf_mmap_read(struct perf_mmap *mm, u8 *wrapped_event_buf)
 	if (diff < (int)sizeof(*evh))
 		return (NULL);
 	/*
-	 * Snapshot the size, the ring is a shared mapping and the checks below
-	 * are useless against a value that changes under our feet.
+	 * The header can't change under us: on a writable mapping the kernel
+	 * only writes beyond data_head and never into [data_tail, data_head)
+	 * (see __perf_output_begin()), and we don't publish a new data_tail
+	 * until perf_mmap_consume(). Same reason we can return a pointer into
+	 * the ring below.
 	 */
-	evsize = __atomic_load_n(&evh->size, __ATOMIC_RELAXED);
+	evsize = evh->size;
 	/*
 	 * A record smaller than its header is corruption, consuming it would
 	 * spin on the same offset forever, warn once and stall the ring
