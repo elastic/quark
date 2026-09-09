@@ -252,6 +252,7 @@ enum raw_types {
 	RAW_SHM,
 	RAW_TTY,
 	RAW_GETPID,
+	RAW_PROCESS_VM_ACCESS,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -397,6 +398,26 @@ struct raw_ptrace {
 	struct quark_ptrace quark_ptrace;
 };
 
+enum process_vm_access_operation {
+	QUARK_PROCESS_VM_ACCESS_READ  = 1,
+	QUARK_PROCESS_VM_ACCESS_WRITE = 2,
+};
+
+struct quark_process_vm_access {
+	u32	target_pid;	/* resolved global tgid of the target */
+	u32	operation;	/* enum process_vm_access_operation */
+	u64	target_start_time_ns;
+	u64	local_iovcnt;
+	u64	remote_iovcnt;
+	u64	remote_addr;
+	u64	bytes_requested;
+	s64	ret;
+};
+
+struct raw_process_vm_access {
+	struct quark_process_vm_access quark_process_vm_access;
+};
+
 struct quark_module_load {
 	char *name;
 	char *version;
@@ -471,6 +492,7 @@ struct raw_event {
 		struct raw_module_load		module_load;
 		struct raw_shm			shm;
 		struct raw_tty			tty;
+		struct raw_process_vm_access	process_vm_access;
 	};
 };
 
@@ -504,6 +526,7 @@ struct quark_event {
 #define QUARK_EV_SHM			(1 << 12)
 #define QUARK_EV_TTY			(1 << 13)
 #define QUARK_EV_GETPID			(1 << 14)
+#define QUARK_EV_PROCESS_VM_ACCESS	(1 << 15)
 	u64				 events;
 	u64				 time;
 	const struct quark_process	*process;
@@ -515,6 +538,7 @@ struct quark_event {
 	struct quark_module_load	*module_load;
 	struct quark_shm		*shm;
 	struct quark_tty		*tty;
+	struct quark_process_vm_access	 process_vm_access;
 #define QUARK_ID_CHANGE_SETSID		(1 << 0)
 #define QUARK_ID_CHANGE_SETUID		(1 << 1)
 #define QUARK_ID_CHANGE_SETGID		(1 << 2)
@@ -883,6 +907,7 @@ struct quark_queue_attr {
 #define QQ_MODULE_LOAD		(1 << 12)
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
+#define QQ_PROCESS_VM_ACCESS	(1 << 15)
 #define QQ_ALL_BACKENDS		(QQ_KPROBE | QQ_EBPF)	/* QQ_NOVA excluded for now */
 	int			 flags;
 	int			 max_length;
