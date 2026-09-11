@@ -198,6 +198,32 @@ type Mprotect struct {
 	Path          string // mount-ns relative; empty for anonymous mappings
 }
 
+// FileAccess describes the open of a file whose name was registered with
+// Queue.FileAccessNameAdd, or such an open failing with EACCES, EPERM or
+// ENOENT. Path is the resolved path, empty when unknown; Requested, BaseDir
+// and Dfd are only set for failed opens. Target* are set when Flags carries
+// QUARK_FILE_ACCESS_F_PROCFS and name the task whose /proc/<pid>/ entry was
+// opened.
+type FileAccess struct {
+	Path            string
+	Requested       string
+	BaseDir         string
+	SymTarget       string
+	Inode           uint64
+	Size            uint64
+	Mode            uint32
+	Uid             uint32
+	Gid             uint32
+	OpenFlags       uint32
+	Fmode           uint32
+	Error           int32
+	Dfd             int32
+	Flags           uint32
+	TargetTid       uint32
+	TargetPid       uint32
+	TargetStartTime uint64
+}
+
 type ModuleLoad struct {
 	Name       string
 	Version    string
@@ -243,6 +269,7 @@ type Event struct {
 	File       *File
 	Ptrace     *Ptrace
 	Mprotect   *Mprotect
+	FileAccess *FileAccess
 	ModuleLoad *ModuleLoad
 	Shm        *any // ShmGet, MemFd or ShmOpen
 	Tty        *Tty
@@ -271,6 +298,7 @@ const (
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
 	QQ_MPROTECT      = int(C.QQ_MPROTECT)
+	QQ_FILE_ACCESS   = int(C.QQ_FILE_ACCESS)
 
 	// Event.events
 	QUARK_EV_FORK                  = uint64(C.QUARK_EV_FORK)
@@ -287,6 +315,7 @@ const (
 	QUARK_EV_SHM                   = uint64(C.QUARK_EV_SHM)
 	QUARK_EV_TTY                   = uint64(C.QUARK_EV_TTY)
 	QUARK_EV_MPROTECT              = uint64(C.QUARK_EV_MPROTECT)
+	QUARK_EV_FILE_ACCESS           = uint64(C.QUARK_EV_FILE_ACCESS)
 
 	// EntryLeaderType
 	QUARK_ELT_UNKNOWN   = int(C.QUARK_ELT_UNKNOWN)
@@ -309,6 +338,15 @@ const (
 	QUARK_FILE_CH_PERMS   = uint32(C.QUARK_FILE_CH_PERMS)
 	QUARK_FILE_CH_OWNER   = uint32(C.QUARK_FILE_CH_OWNER)
 	QUARK_FILE_CH_XATTRS  = uint32(C.QUARK_FILE_CH_XATTRS)
+
+	// Queue.FileAccessNameAdd roles
+	QUARK_FILE_ACCESS_NAME_LEAF   = int(C.QUARK_FILE_ACCESS_NAME_LEAF)
+	QUARK_FILE_ACCESS_NAME_PARENT = int(C.QUARK_FILE_ACCESS_NAME_PARENT)
+
+	// FileAccess.Flags
+	QUARK_FILE_ACCESS_F_FAILED   = uint32(C.QUARK_FILE_ACCESS_F_FAILED)
+	QUARK_FILE_ACCESS_F_RELATIVE = uint32(C.QUARK_FILE_ACCESS_F_RELATIVE)
+	QUARK_FILE_ACCESS_F_PROCFS   = uint32(C.QUARK_FILE_ACCESS_F_PROCFS)
 
 	// MemFd.Kind
 	QUARK_SHM_MEMFD_CREATE = int(C.QUARK_SHM_MEMFD_CREATE)
@@ -490,6 +528,10 @@ func (queue *Queue) GetEvent() (Event, bool) {
 		mprotect := mprotectFromC(&cev.mprotect)
 		event.Mprotect = &mprotect
 	}
+	if cev.file_access != nil {
+		fileAccess := fileAccessFromC(cev.file_access)
+		event.FileAccess = &fileAccess
+	}
 	if cev.module_load != nil {
 		ml := moduleLoadFromC(cev.module_load)
 		event.ModuleLoad = &ml
@@ -659,6 +701,30 @@ func (queue *Queue) DisableAggregation() error {
 	return nil
 }
 
+// FileAccessNameAdd registers a file or directory name for file access
+// events, roles is a mask of QUARK_FILE_ACCESS_NAME_LEAF and
+// QUARK_FILE_ACCESS_NAME_PARENT. The queue must have been opened with
+// QQ_FILE_ACCESS.
+func (queue *Queue) FileAccessNameAdd(name string, roles int) error {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+
+	ret, err := C.quark_queue_file_access_name_add(queue.quarkQueue, cname, C.int(roles))
+	if ret != 0 {
+		return wrapErrno(err)
+	}
+	return nil
+}
+
+// FileAccessNameReset removes every name registered with FileAccessNameAdd.
+func (queue *Queue) FileAccessNameReset() error {
+	ret, err := C.quark_queue_file_access_name_reset(queue.quarkQueue)
+	if ret != 0 {
+		return wrapErrno(err)
+	}
+	return nil
+}
+
 // processFromC converts the C process structure to a go process.
 func processFromC(cProcess *C.struct_quark_process) Process {
 	var process Process
@@ -815,6 +881,30 @@ func mprotectFromC(cMprotect *C.struct_quark_mprotect) Mprotect {
 	mprotect.Path = C.GoString(cMprotect.path)
 
 	return mprotect
+}
+
+func fileAccessFromC(cFa *C.struct_quark_file_access) FileAccess {
+	var fa FileAccess
+
+	fa.Path = C.GoString(cFa.path)
+	fa.Requested = C.GoString(cFa.requested)
+	fa.BaseDir = C.GoString(cFa.base_dir)
+	fa.SymTarget = C.GoString(cFa.sym_target)
+	fa.Inode = uint64(cFa.inode)
+	fa.Size = uint64(cFa.size)
+	fa.Mode = uint32(cFa.mode)
+	fa.Uid = uint32(cFa.uid)
+	fa.Gid = uint32(cFa.gid)
+	fa.OpenFlags = uint32(cFa.open_flags)
+	fa.Fmode = uint32(cFa.fmode)
+	fa.Error = int32(cFa.error)
+	fa.Dfd = int32(cFa.dfd)
+	fa.Flags = uint32(cFa.flags)
+	fa.TargetTid = uint32(cFa.target_tid)
+	fa.TargetPid = uint32(cFa.target_pid)
+	fa.TargetStartTime = uint64(cFa.target_start_time)
+
+	return fa
 }
 
 func moduleLoadFromC(cM *C.struct_quark_module_load) ModuleLoad {
