@@ -3282,6 +3282,147 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * A stranger reaching the trusted map through bpf(2) is reported, the
+ * consumer's own updates are not. The child does what the published bypass
+ * does: find the map by walking ids, insert its tgid, delete it.
+ */
+static int
+t_tamper(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_tamper	*tamper;
+	pid_t				 child;
+	int				 status, seen, frozen, fd;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	/* Whether the kernel freezes maps decides what the last write returns */
+	frozen = 0;
+	fd = bpf_map_create(BPF_MAP_TYPE_HASH, NULL, sizeof(u32), sizeof(u32),
+	    1, NULL);
+	if (fd >= 0) {
+		frozen = bpf_map_freeze(fd) == 0;
+		close(fd);
+	}
+
+	qa->flags |= QQ_TAMPER | QQ_SOCK_CONN;
+	qa->hold_time = 10;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* The consumer's own writes are not reported */
+	assert(!quark_queue_trusted_pid_add(&qq, getpid()));
+	assert(!quark_queue_trusted_pid_reset(&qq));
+	msleep(qa->hold_time * 10);
+	while ((qev = quark_queue_get_event(&qq)) != NULL)
+		assert((qev->events & QUARK_EV_TAMPER) == 0);
+
+	/*
+	 * A stranger's are. The child does what the published bypass does:
+	 * walk map ids, take an fd to the trusted map, insert its tgid,
+	 * delete it. Then it tries to write sk_to_tgid, which is frozen.
+	 */
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	else if (child == 0) {
+		struct bpf_map_info	info;
+		u64			key64;
+		u32			pid, v;
+		int			mfd;
+
+		mfd = find_trusted_map();
+		pid = getpid();
+		v = 1;
+		if (bpf_map_update_elem(mfd, &pid, &v, BPF_ANY) != 0)
+			_exit(1);
+		if (bpf_map_delete_elem(mfd, &pid) != 0)
+			_exit(2);
+		close(mfd);
+		mfd = find_map(&info, BPF_MAP_TYPE_HASH, sizeof(void *),
+		    sizeof(u32), "sk_to_tgid");
+		key64 = 0xdeadbeef;
+		/* The parent checks the outcome through the event */
+		(void)bpf_map_update_elem(mfd, &key64, &v, BPF_ANY);
+		_exit(0);
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+	/*
+	 * The walk over map ids touches every one of our maps, so there is a
+	 * GET_FD_BY_ID and an OBJ_GET_INFO_BY_FD per map; every reported map
+	 * must be one we can name and those two are the only commands allowed
+	 * on maps other than the two the child writes. On the trusted map we
+	 * expect, in order, the fd acquisition, the info lookup, the insert
+	 * and the delete, then the refused write on sk_to_tgid. drain_for_pid()
+	 * times out if any is missing.
+	 */
+	seen = 0;
+	while (seen != 0x1f) {
+		qev = drain_for_pid(&qq, child);
+		if ((qev->events & QUARK_EV_TAMPER) == 0)
+			continue;
+		tamper = &qev->tamper;
+		assert(tamper->map_id != 0);
+		assert(tamper->map_name != NULL);
+		if (!strcmp(tamper->map_name, "elastic_ebpf_events_trusted_pids")) {
+			switch (tamper->cmd) {
+			case BPF_MAP_GET_FD_BY_ID:
+				assert(seen == 0x0);
+				assert(tamper->ret > 0);
+				seen |= 0x1;
+				break;
+			case BPF_OBJ_GET_INFO_BY_FD:
+				assert(seen == 0x1);
+				assert(tamper->ret == 0);
+				seen |= 0x2;
+				break;
+			case BPF_MAP_UPDATE_ELEM:
+				assert(seen == 0x3);
+				assert(tamper->flags & QUARK_TAMPER_F_KEY);
+				assert(tamper->key == (u32)child);
+				assert(tamper->ret == 0);
+				seen |= 0x4;
+				break;
+			case BPF_MAP_DELETE_ELEM:
+				assert(seen == 0x7);
+				assert(tamper->flags & QUARK_TAMPER_F_KEY);
+				assert(tamper->key == (u32)child);
+				assert(tamper->ret == 0);
+				seen |= 0x8;
+				break;
+			default:
+				errx(1, "unexpected cmd %u on trusted map",
+				    tamper->cmd);
+			}
+		} else if (!strcmp(tamper->map_name, "sk_to_tgid") &&
+		    tamper->cmd == BPF_MAP_UPDATE_ELEM) {
+			assert(seen == 0xf);
+			assert(tamper->flags & QUARK_TAMPER_F_KEY);
+			assert(tamper->key == 0xdeadbeef);
+			assert(tamper->ret == (frozen ? -EPERM : 0));
+			seen |= 0x10;
+		} else {
+			/* Reconnaissance on the other maps */
+			assert(tamper->cmd == BPF_MAP_GET_FD_BY_ID ||
+			    tamper->cmd == BPF_OBJ_GET_INFO_BY_FD);
+			assert(tamper->ret >= 0);
+		}
+	}
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_nova(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -3388,6 +3529,7 @@ struct test all_tests[] = {
 	T_EBPF(t_trusted_pid),
 	T_EBPF(t_trusted_map_rdonly),
 	T_EBPF(t_map_freeze),
+	T_EBPF(t_tamper),
 	T_NOVA(t_nova),		/* XXX temporary XXX */
 	{ NULL,	NULL, 0, 0 }
 };
