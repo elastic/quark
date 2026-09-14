@@ -493,9 +493,6 @@ SEC("tp_btf/module_load")
 int BPF_PROG(module_load, struct module *mod)
 {
     preempt_disable();
-    if (ebpf_events_is_trusted_pid())
-        goto out;
-
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
     if (is_kernel_thread(task))
@@ -553,9 +550,6 @@ static int ptrace_event(struct task_struct *child,
                         unsigned long addr,
                         unsigned long data)
 {
-    if (ebpf_events_is_trusted_pid())
-        goto out;
-
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     if (is_kernel_thread(task))
         goto out;
@@ -756,9 +750,6 @@ SEC("tracepoint/syscalls/sys_enter_shmget")
 int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
 {
     preempt_disable();
-    if (ebpf_events_is_trusted_pid())
-        goto out;
-
     const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
     if (is_kernel_thread(task))
@@ -800,9 +791,6 @@ static int emit_memfd_create_event(const char *name)
 {
     struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_MEMFD_CREATE);
     if (!state)
-        goto out;
-
-    if (ebpf_events_is_trusted_pid())
         goto out;
 
     const struct task_struct *task = (struct task_struct *)bpf_get_current_task();

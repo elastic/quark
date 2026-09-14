@@ -192,3 +192,9 @@ Changes from 0.8 to 0.9
     instead of hard-coded record offsets. On RHEL 9.3 (5.14.0-362) this fixes
     quark_shm memfd_create_flags and shmget_{key,size,shmflg}, which were
     read from the wrong offsets on that kernel.
+  o Trusted pids (quark_queue_trusted_pid_add()) no longer suppress module
+    load, ptrace, shmget and memfd_create events, only file, network and
+    mprotect events remain suppressed. Trust is meant to shed the volume of a
+    chatty but benign application; the rare security relevant events cost
+    nothing to keep and a process that can write the trusted map could
+    otherwise hide exactly those.

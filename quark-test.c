@@ -3056,10 +3056,72 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 }
 
 
+/*
+ * Connect to ourselves over loopback, enough to produce SOCK_CONN events
+ * without forking, so that they are attributed to our own pid.
+ */
+static void
+loopback_connect(void)
+{
+	struct sockaddr_in	sin;
+	socklen_t		len;
+	int			lfd, cfd, afd;
+
+	if ((lfd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+		err(1, "socket");
+	bzero(&sin, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	sin.sin_port = 0;
+	if (bind(lfd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
+		err(1, "bind");
+	if (listen(lfd, 1) == -1)
+		err(1, "listen");
+	len = sizeof(sin);
+	if (getsockname(lfd, (struct sockaddr *)&sin, &len) == -1)
+		err(1, "getsockname");
+
+	if ((cfd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+		err(1, "socket");
+	if (connect(cfd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
+		err(1, "connect");
+	if ((afd = accept(lfd, NULL, NULL)) == -1)
+		err(1, "accept");
+
+	close(afd);
+	close(cfd);
+	close(lfd);
+}
+
+/*
+ * Drain the queue dry and assert none of the events for pid carries a bit
+ * from mask.
+ */
+static void
+drain_assert_none(struct quark_queue *qq, pid_t pid, u64 mask)
+{
+	const struct quark_event	*qev;
+
+	while ((qev = quark_queue_get_event(qq)) != NULL) {
+		if (qev->process == NULL || qev->process->pid != (u32)pid)
+			continue;
+		assert((qev->events & mask) == 0);
+	}
+}
+
+/*
+ * Trust is a volume knob: a trusted pid loses its socket events but keeps the
+ * rare, security relevant ones, otherwise anyone who can write the trusted map
+ * could hide exactly those.
+ */
 static int
 t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const u64			 sock_mask = QUARK_EV_SOCK_CONN_ESTABLISHED |
+	    QUARK_EV_SOCK_CONN_CLOSED;
+	int				 id;
 
 	if (in_valgrind) {
 		warnx("%s: skipping due to valgrind false positive: "
@@ -3067,11 +3129,41 @@ t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
 		return (0);
 	}
 
+	assert_localhost();
+
+	qa->flags |= QQ_SHM | QQ_SOCK_CONN;
+	qa->hold_time = 10;
+
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
 	assert(!quark_queue_trusted_pid_add(&qq, getpid()));
+
+	/* Socket events are suppressed while trusted */
+	loopback_connect();
+	msleep(qa->hold_time * 10);
+	drain_assert_none(&qq, getpid(), sock_mask);
+
+	/* shmget(2) is not */
+	if ((id = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0600)) == -1)
+		err(1, "shmget");
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_SHM);
+	assert(qev->shm->kind == QUARK_SHM_SHMGET);
+	assert(qev->shm->shmget_size == 4096);
+	if (shmctl(id, IPC_RMID, NULL) == -1)
+		err(1, "shmctl");
+
+	/*
+	 * Untrust and connect again, this time the socket events must show
+	 * up, which proves the suppression above was not vacuous.
+	 */
 	assert(!quark_queue_trusted_pid_reset(&qq));
+	loopback_connect();
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & sock_mask);
+	assert(qev->socket != NULL);
+	assert(qev->socket->local.u.addr4 == htonl(INADDR_LOOPBACK));
 
 	quark_queue_close(&qq);
 
