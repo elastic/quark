@@ -2307,13 +2307,21 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 			return (-1);
 
 		file_access_flags_str(qfa->open_flags, buf, sizeof(buf));
-		PF(fl, "access=%s open_flags=0%o\n", buf, qfa->open_flags);
-		PF(fl, "path=%s\n", qfa->path);
+		PF(fl, "access=%s open_flags=0%o error=%d\n",
+		    buf, qfa->open_flags, qfa->error);
+		if (qfa->path != NULL)
+			PF(fl, "path=%s\n", qfa->path);
+		if (qfa->requested != NULL)
+			PF(fl, "requested=%s dfd=%d\n", qfa->requested,
+			    qfa->dfd);
+		if (qfa->base_dir != NULL)
+			PF(fl, "base_dir=%s\n", qfa->base_dir);
 		if (qfa->sym_target != NULL)
 			PF(fl, "sym_target=%s\n", qfa->sym_target);
-		PF(fl, "mode=0%o uid=%d gid=%d size=%llu inode=%llu "
-		    "fmode=0x%x\n", qfa->mode, qfa->uid, qfa->gid,
-		    qfa->size, qfa->inode, qfa->fmode);
+		if (!(qfa->flags & QUARK_FILE_ACCESS_F_FAILED))
+			PF(fl, "mode=0%o uid=%d gid=%d size=%llu inode=%llu "
+			    "fmode=0x%x\n", qfa->mode, qfa->uid, qfa->gid,
+			    qfa->size, qfa->inode, qfa->fmode);
 	}
 
 	if (qev->events & QUARK_EV_PTRACE) {

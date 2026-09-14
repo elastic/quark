@@ -405,9 +405,13 @@ struct raw_file {
 };
 
 /*
- * A successful open(2) family call on a file whose name matched one of the
- * anchors given to quark_queue_file_access_name_add(3). One event per
- * process life, file and access class (read, write, exec, path only).
+ * An open(2) family call on a file whose name matched one of the anchors
+ * given to quark_queue_file_access_name_add(3), successful or failed with
+ * EACCES, EPERM or ENOENT. Successful opens carry the resolved path and inode
+ * data; failed opens carry the requested string (requested) and, for a
+ * relative name, the directory it was relative to (base_dir), path is then
+ * the join of both when base_dir is known. One event per process life, file
+ * and access class; see QUARK_FILE_ACCESS_F_*.
  */
 /*
  * Roles for quark_queue_file_access_name_add(3), name is a file or a
@@ -417,16 +421,24 @@ struct raw_file {
 #define QUARK_FILE_ACCESS_NAME_PARENT	(1 << 1)
 #define QUARK_FILE_ACCESS_NAME_MAX	64		/* including NUL */
 
+#define QUARK_FILE_ACCESS_F_FAILED	(1 << 0)	/* error set, inode data absent */
+#define QUARK_FILE_ACCESS_F_RELATIVE	(1 << 1)	/* requested is relative to base_dir */
+
 struct quark_file_access {
-	const char	*path;		/* resolved path */
+	const char	*path;		/* resolved path, NULL if unknown */
+	const char	*requested;	/* string passed to open(2), failed opens only */
+	const char	*base_dir;	/* dir of a relative failed open, NULL if unknown */
 	const char	*sym_target;	/* NULL or symlink target */
-	u64		 inode;		/* as stat.st_ino */
+	u64		 inode;		/* as stat.st_ino, 0 on failure */
 	u64		 size;
-	u32		 mode;		/* as stat.st_mode */
+	u32		 mode;		/* as stat.st_mode, 0 on failure */
 	u32		 uid;
 	u32		 gid;
 	u32		 open_flags;	/* O_* the kernel used, as in fcntl.h */
-	u32		 fmode;		/* kernel FMODE_* */
+	u32		 fmode;		/* kernel FMODE_* on success */
+	s32		 error;		/* 0 or errno of the failed open */
+	s32		 dfd;		/* dirfd of a relative failed open */
+	u32		 flags;		/* QUARK_FILE_ACCESS_F_* */
 	char		 storage[];	/* strings point here */
 };
 

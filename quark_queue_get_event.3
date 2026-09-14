@@ -83,14 +83,21 @@ committed.
 .It Dv QUARK_EV_FILE_ACCESS
 A file whose name was registered with
 .Fn quark_queue_file_access_name_add
-was opened.
+was opened, or such an open failed with EACCES, EPERM or ENOENT.
 The
 .Em file_access
 member carries the resolved
 .Em path ,
-the open flags as passed by the caller, the file identity and owner.
-Each combination of file and access class (read, write, exec, path only)
-is reported once per process life.
+the open flags as passed by the caller, the file identity and owner,
+and for a failed open the
+.Em error ,
+the string the caller
+.Em requested
+and, when that string was relative, the
+.Em base_dir
+it was resolved against.
+Each combination of file and access class (read, write, exec, path only,
+failed) is reported once per process life.
 .El
 .Pp
 It's important to note that

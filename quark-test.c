@@ -1478,9 +1478,10 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	char				 dir[] = "/tmp/quark-test-fa.XXXXXX";
 	char				 leaf[PATH_MAX], parent_dir[PATH_MAX];
 	char				 parent_file[PATH_MAX], other[PATH_MAX];
-	char				 noexec[PATH_MAX];
+	char				 missing[PATH_MAX], noexec[PATH_MAX];
 	char				 deep[PATH_MAX], toodeep[PATH_MAX];
 	int				 fd;
+	pid_t				 child;
 
 	qa->flags |= QQ_FILE_ACCESS;
 
@@ -1492,6 +1493,8 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	    QUARK_FILE_ACCESS_NAME_LEAF));
 	assert(!quark_queue_file_access_name_add(&qq, "quark-test-anchor",
 	    QUARK_FILE_ACCESS_NAME_PARENT));
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-missing",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
 	assert(!quark_queue_file_access_name_add(&qq, "quark-test-noexec",
 	    QUARK_FILE_ACCESS_NAME_LEAF));
 	/* Bad input is refused */
@@ -1506,6 +1509,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	snprintf(parent_file, sizeof(parent_file), "%s/quark-test-anchor/plain",
 	    dir);
 	snprintf(other, sizeof(other), "%s/plain", dir);
+	snprintf(missing, sizeof(missing), "%s/quark-test-missing", dir);
 	snprintf(noexec, sizeof(noexec), "%s/quark-test-noexec", dir);
 	if (mkdir(parent_dir, 0700) == -1)
 		err(1, "mkdir");
@@ -1531,6 +1535,8 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(qev->events == QUARK_EV_FILE_ACCESS);
 	qfa = qev->file_access;
 	assert(qfa != NULL);
+	assert(qfa->flags == 0);
+	assert(qfa->error == 0);
 	assert(!strcmp(qfa->path, leaf));
 	assert(qfa->inode == st.st_ino);
 	assert(qfa->mode == st.st_mode);
@@ -1576,8 +1582,45 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert_next_access_path(&qq, parent_file);
 
 	/*
-	 * A parent anchor reaches three levels down: deep is reported, toodeep
-	 * (four levels) is not, so the read of noexec is the next event.
+	 * Failed opens: an anchored missing name is reported with ENOENT and
+	 * the requested string, a non anchored missing name is not (the next
+	 * event is the relative open, joined with its base directory).
+	 */
+	assert(open(missing, O_RDONLY) == -1 && errno == ENOENT);
+	snprintf(other, sizeof(other), "%s/i-am-not-anchored", dir);
+	assert(open(other, O_RDONLY) == -1 && errno == ENOENT);
+	if (chdir(dir) == -1)
+		err(1, "chdir");
+	assert(open("quark-test-missing", O_WRONLY) == -1 && errno == ENOENT);
+	if (chdir("/") == -1)
+		err(1, "chdir");
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+	assert(qfa->error == ENOENT);
+	assert(qfa->inode == 0);
+	assert(!strcmp(qfa->requested, missing));
+	assert(!strcmp(qfa->path, missing));
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_RELATIVE);
+	assert(qfa->error == ENOENT);
+	assert(!strcmp(qfa->requested, "quark-test-missing"));
+	assert(qfa->base_dir != NULL && !strcmp(qfa->base_dir, dir));
+	assert(!strcmp(qfa->path, missing));
+	/* Same failure again is not re-emitted, a read of noexec is next */
+	assert(open(missing, O_RDONLY) == -1 && errno == ENOENT);
+	if ((fd = open(noexec, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	assert_next_access_path(&qq, noexec);
+
+	/*
+	 * A parent anchor reaches three levels down, on the dentry of a
+	 * completed open and on the string of a failed one: deep is reported,
+	 * toodeep (four levels) is not, nor is a missing name four levels
+	 * down. A relative name exposes the anchor it spells out.
 	 */
 	snprintf(deep, sizeof(deep), "%s/quark-test-anchor/a", dir);
 	if (mkdir(deep, 0700) == -1)
@@ -1597,14 +1640,62 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	if ((fd = open(toodeep, O_WRONLY|O_CREAT, 0600)) == -1)
 		err(1, "open");
 	close(fd);
-	if ((fd = open(noexec, O_RDONLY)) == -1)
-		err(1, "open");
-	close(fd);
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/a/b/c/nothing", dir);
+	assert(open(other, O_RDONLY) == -1 && errno == ENOENT);
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/nothing", dir);
+	assert(open(other, O_RDONLY) == -1 && errno == ENOENT);
+	if (chdir(dir) == -1)
+		err(1, "chdir");
+	assert(open("quark-test-anchor/a/nothing", O_RDONLY) == -1 &&
+	    errno == ENOENT);
+	if (chdir("/") == -1)
+		err(1, "chdir");
 	qev = drain_file_access(&qq);
 	qfa = qev->file_access;
+	assert(qfa->flags == 0);
 	assert(!strcmp(qfa->path, deep));
 	assert(qfa->open_flags & O_CREAT);
-	assert_next_access_path(&qq, noexec);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+	assert(!(qfa->flags & QUARK_FILE_ACCESS_F_RELATIVE));
+	assert(qfa->error == ENOENT);
+	assert(!strcmp(qfa->requested, other));
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_RELATIVE);
+	assert(qfa->error == ENOENT);
+	assert(!strcmp(qfa->requested, "quark-test-anchor/a/nothing"));
+	assert(qfa->base_dir != NULL && !strcmp(qfa->base_dir, dir));
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/a/nothing", dir);
+	assert(!strcmp(qfa->path, other));
+
+	/*
+	 * EACCES: exec of a file without execute permission fails in the
+	 * kernel's own open for execve, root included.
+	 */
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0) {
+		execl(noexec, noexec, NULL);
+		_exit(errno == EACCES ? 0 : 1);
+	}
+	{
+		int status;
+
+		if (waitpid(child, &status, 0) == -1)
+			err(1, "waitpid");
+		assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	}
+	qev = drain_for_pid(&qq, child);
+	while (!(qev->events & QUARK_EV_FILE_ACCESS))
+		qev = drain_for_pid(&qq, child);
+	qfa = qev->file_access;
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+	assert(qfa->error == EACCES);
+	assert(!strcmp(qfa->requested, noexec));
+	assert(qfa->open_flags & 0x20); /* __FMODE_EXEC */
 
 	assert(!quark_queue_file_access_name_reset(&qq));
 

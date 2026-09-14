@@ -183,6 +183,8 @@ opened path, so a user with a list of full paths registers the leaf of each and
 filters the resolved path in the resulting
 .Vt quark_file_access
 itself.
+Failed opens are matched the same way on the requested string, so a relative
+name only exposes the components it spells out.
 The walk does not cross mount points.
 .Pp
 .Ft void

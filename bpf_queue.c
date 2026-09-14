@@ -667,8 +667,10 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 	case EBPF_EVENT_FILE_ACCESS: {
 		struct ebpf_file_access_event	*access;
 		struct quark_file_access	*qfa;
-		const char			*path, *sym_target;
-		size_t				 path_len, sym_target_len;
+		const char			*path, *requested, *base_dir;
+		const char			*sym_target;
+		size_t				 path_len, requested_len;
+		size_t				 base_dir_len, sym_target_len;
 		size_t				 alloc_len, tmp_len, off;
 		u32				 dummy;
 
@@ -679,8 +681,8 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		raw->pid = access->pids.tgid;
 		raw->time = ev->ts;
 
-		path = sym_target = NULL;
-		path_len = sym_target_len = 0;
+		path = requested = base_dir = sym_target = NULL;
+		path_len = requested_len = base_dir_len = sym_target_len = 0;
 
 		FOR_EACH_VARLEN_FIELD_PTR(&access->vl_fields, field, dummy) {
 			tmp_len = strlen(field->data);
@@ -689,6 +691,18 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 				if (tmp_len > 0) {
 					path = field->data;
 					path_len = tmp_len + 1; /* with NUL */
+				}
+				break;
+			case EBPF_VL_FIELD_FILENAME:
+				if (tmp_len > 0) {
+					requested = field->data;
+					requested_len = tmp_len + 1;
+				}
+				break;
+			case EBPF_VL_FIELD_CWD:
+				if (tmp_len > 0) {
+					base_dir = field->data;
+					base_dir_len = tmp_len + 1;
 				}
 				break;
 			case EBPF_VL_FIELD_SYMLINK_TARGET_PATH:
@@ -705,14 +719,26 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			}
 		}
 
-		if (path == NULL) {
+		if (path == NULL && requested == NULL) {
 			qwarnx("no path");
 			goto bad;
 		}
 
-		/* Same single block layout as quark_file */
+		/*
+		 * A failed open has no resolved path, use the requested
+		 * string when absolute or join it with base_dir when
+		 * relative, so the user sees the same shape as a successful
+		 * open. Same single block layout as quark_file.
+		 */
 		alloc_len = sizeof(*raw->file_access.quark_file_access);
-		alloc_len += path_len + sym_target_len;
+		if (path == NULL && requested != NULL) {
+			if (requested[0] == '/')
+				path_len = requested_len;
+			else if (base_dir != NULL)
+				path_len = base_dir_len + requested_len; /* NUL + '/' */
+		}
+		alloc_len += path_len + requested_len + base_dir_len +
+		    sym_target_len;
 		alloc_len++;			     /* extra NUL for paranoia */
 
 		raw->file_access.quark_file_access = calloc(1, alloc_len);
@@ -720,9 +746,31 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			goto bad;
 		qfa = raw->file_access.quark_file_access;
 		off = 0;
-		qfa->path = qfa->storage + off;
-		memcpy(qfa->storage + off, path, path_len);
-		off += path_len;
+		if (path != NULL) {
+			qfa->path = qfa->storage + off;
+			memcpy(qfa->storage + off, path, path_len);
+			off += path_len;
+		} else if (path_len > 0) {
+			qfa->path = qfa->storage + off;
+			if (requested[0] == '/')
+				memcpy(qfa->storage + off, requested, path_len);
+			else if (snprintf(qfa->storage + off, path_len,
+			    "%s%s%s", base_dir,
+			    base_dir[strlen(base_dir) - 1] == '/' ? "" : "/",
+			    requested) < 0)
+				goto bad;
+			off += path_len;
+		}
+		if (requested != NULL) {
+			qfa->requested = qfa->storage + off;
+			memcpy(qfa->storage + off, requested, requested_len);
+			off += requested_len;
+		}
+		if (base_dir != NULL) {
+			qfa->base_dir = qfa->storage + off;
+			memcpy(qfa->storage + off, base_dir, base_dir_len);
+			off += base_dir_len;
+		}
 		if (sym_target != NULL) {
 			qfa->sym_target = qfa->storage + off;
 			memcpy(qfa->storage + off, sym_target, sym_target_len);
@@ -736,6 +784,13 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		qfa->gid = access->finfo.gid;
 		qfa->open_flags = access->open_flags;
 		qfa->fmode = access->fmode;
+		qfa->error = access->error;
+		qfa->dfd = access->dfd;
+		qfa->flags = 0;
+		if (access->flags & EBPF_FILE_ACCESS_F_FAILED)
+			qfa->flags |= QUARK_FILE_ACCESS_F_FAILED;
+		if (access->flags & EBPF_FILE_ACCESS_F_RELATIVE)
+			qfa->flags |= QUARK_FILE_ACCESS_F_RELATIVE;
 
 		break;
 	}
@@ -1459,9 +1514,15 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			qwarn("bpf_map__set_max_entries file_access_file_seen");
 			goto fail;
 		}
+		if (bpf_map__set_max_entries(p->maps.elastic_ebpf_file_access_fail_seen,
+		    FILE_ACCESS_SEEN_MAX_ENTRIES) != 0) {
+			qwarn("bpf_map__set_max_entries file_access_fail_seen");
+			goto fail;
+		}
 	} else {
 		if (bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_anchors, 0) != 0 ||
 		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_file_seen, 0) != 0 ||
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_fail_seen, 0) != 0 ||
 		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0) {
 			qwarn("bpf_map__set_autocreate file_access");
 			goto fail;

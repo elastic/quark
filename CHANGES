@@ -192,5 +192,7 @@ Changes from 0.8 to 0.9
     -a on quark-mon), quark_event{} gets a file_access member. The
     EBPF probe reports the open of any file whose name, or one of
     its three nearest directories, was registered through
-    quark_queue_file_access_name_add(3). Events are deduplicated in
-    the kernel per process life, file and access class. Experimental.
+    quark_queue_file_access_name_add(3), and failed opens with
+    EACCES, EPERM or ENOENT of a matching requested name. Events are
+    deduplicated in the kernel per process life, file and access
+    class. Experimental.

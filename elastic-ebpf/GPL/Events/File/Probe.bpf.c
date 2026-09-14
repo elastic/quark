@@ -345,11 +345,12 @@ static void prepare_and_send_file_event(struct file *f,
 
 /*
  * File access: report opens of files whose leaf or parent name is in the
- * anchor map, from the same do_filp_open() return the create event is taken
- * from. Userspace applies the real path patterns; the probe only has to be
- * cheap on the miss path, which is every other open on the host. Off by
- * default: userspace sets the flag when it wants the event, so with it off
- * the verifier prunes the whole branch and the maps below are never created.
+ * anchor map, and failed opens of such names, from the same do_filp_open()
+ * return the create event is taken from. Userspace applies the real path
+ * patterns; the probe only has to be cheap on the miss path, which is every
+ * other open on the host. Off by default: userspace sets the flag when it
+ * wants the event, so with it off the verifier prunes the whole branch and
+ * the maps below are never created.
  */
 const volatile bool file_access_enabled = false;
 
@@ -388,11 +389,32 @@ struct {
     __uint(max_entries, 0); // sized by userspace, see bpf_queue_open1()
 } elastic_ebpf_file_access_file_seen SEC(".maps");
 
+/*
+ * Failed opens have no inode; they are deduplicated per (process life, dirfd,
+ * requested string, errno) instead, the string as a 32 bit FNV-1a hash. Same
+ * value and same contract as the file map, a hash collision costs a
+ * duplicate suppression of a different name and nothing else.
+ */
+struct file_access_fail_key {
+    u32 tgid;
+    s32 error;
+    s32 dfd;
+    u32 name_hash;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, struct file_access_fail_key);
+    __type(value, struct file_access_seen);
+    __uint(max_entries, 0); // sized by userspace, see bpf_queue_open1()
+} elastic_ebpf_file_access_fail_seen SEC(".maps");
+
 // Bits of file_access_seen.bits, one per access class of open_flags.
 #define FILE_ACCESS_CLASS_READ (1ULL << 0)
 #define FILE_ACCESS_CLASS_WRITE (1ULL << 1)
 #define FILE_ACCESS_CLASS_EXEC (1ULL << 2)
 #define FILE_ACCESS_CLASS_PATH (1ULL << 3)
+#define FILE_ACCESS_CLASS_FAILED (1ULL << 4)
 
 // include/uapi/asm-generic/fcntl.h, include/linux/fs.h (__FMODE_EXEC)
 #define FILE_ACCESS_O_ACCMODE 00000003
@@ -410,11 +432,19 @@ struct {
 #define FILE_ACCESS_ANCESTORS 3
 
 // Per-cpu scratch, safe since the callers run with preemption disabled. The
-// keys and paths live here rather than on the stack: do_filp_open__exit()
-// sits close to the 512 byte combined stack limit already.
+// requested pathname of a failed open is read here, and the keys and paths
+// live here rather than on the stack: do_filp_open__exit() sits close to the
+// 512 byte combined stack limit already.
+#define FILE_ACCESS_FILENAME_MAX 256
+
 struct file_access_scratch {
+    char filename[FILE_ACCESS_FILENAME_MAX];
     struct ebpf_file_access_name key;
+    u32 leaf;
+    int len;
+    s32 slash[FILE_ACCESS_ANCESTORS + 1]; // last separators of filename, most recent first, -1 if none
     struct file_access_file_key file_key;
+    struct file_access_fail_key fail_key;
     struct file_access_seen fresh;
     struct path path;
 };
@@ -574,6 +604,9 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     ebpf_file_info__fill(&event->finfo, de);
     event->open_flags = open_flags;
     event->fmode      = BPF_CORE_READ(f, f_mode);
+    event->error      = 0;
+    event->flags      = 0;
+    event->dfd        = 0;
 
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);
@@ -600,6 +633,178 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
 }
 
+// The string counterpart of the ancestor walk in file_access_anchored(): true
+// if one of the FILE_ACCESS_ANCESTORS directory components before the leaf of
+// scratch->filename is a parent anchor. Component i lies between slash[i + 1]
+// and slash[i]; a relative name's first component starts at 0, which is what
+// the -1 sentinel yields. The indices come from map memory for the same
+// reason as leaf and len in the caller.
+static __always_inline bool file_access_string_anchored(struct file_access_scratch *scratch)
+{
+    u32 *roles;
+    int  i, start, end, clen;
+
+    for (i = 0; i < FILE_ACCESS_ANCESTORS; i++) {
+        end   = *(volatile s32 *)&scratch->slash[i];
+        start = *(volatile s32 *)&scratch->slash[i + 1] + 1;
+        if (end < 0)
+            return false;
+        clen = end - start;
+        if (clen <= 0 || clen >= EBPF_FILE_ACCESS_NAME_MAX)
+            continue;
+        start &= FILE_ACCESS_FILENAME_MAX - 1;
+        clen &= EBPF_FILE_ACCESS_NAME_MAX - 1;
+        __builtin_memset(&scratch->key, 0, sizeof(scratch->key));
+        if (bpf_probe_read_kernel(scratch->key.name, clen, &scratch->filename[start]) != 0)
+            return false;
+        roles = bpf_map_lookup_elem(&elastic_ebpf_file_access_anchors, &scratch->key);
+        if (roles != NULL && (*roles & EBPF_FILE_ACCESS_ANCHOR_PARENT))
+            return true;
+    }
+
+    return false;
+}
+
+// A failed open: only EACCES, EPERM and ENOENT are of interest, and only when
+// the leaf of the requested string is a leaf anchor or one of the directory
+// components before it is a parent anchor. There is no dentry, so the names
+// are matched on the string and the base directory of a relative name is
+// resolved so userspace can rebuild the path.
+static __attribute__((noinline)) void file_access__open_failed(int dfd, struct filename *pathname,
+                                                               u32 open_flags, long error)
+{
+    struct ebpf_file_access_event *event;
+    struct file_access_scratch    *scratch;
+    struct task_struct            *task;
+    const char                    *name;
+    u32                            zero = 0, hash;
+    int                            len, leaf, i, j;
+    bool                           relative;
+
+    if (error != EACCES && error != EPERM && error != ENOENT)
+        return;
+    if (pathname == NULL)
+        return;
+    if (ebpf_events_is_trusted_pid())
+        return;
+
+    scratch = bpf_map_lookup_elem(&elastic_ebpf_file_access_scratch, &zero);
+    if (scratch == NULL)
+        return;
+
+    name = BPF_CORE_READ(pathname, name);
+    len  = bpf_probe_read_kernel_str(scratch->filename, sizeof(scratch->filename), name);
+    if (len <= 1 || len >= (int)sizeof(scratch->filename)) // empty, or truncated: leaf unknown
+        return;
+
+    // FNV-1a over the whole string for the dedup key, the leaf start, which
+    // is the byte after the last '/', and the positions of the last few '/'
+    // for the ancestor components. The length and indices live in the
+    // scratch map across the loop on purpose: a register the verifier
+    // tracks as a distinct range on every iteration turns each loop exit
+    // into a separate verification of everything after it, map memory is
+    // opaque to it. The volatile reloads keep clang from forwarding the
+    // stored values.
+    scratch->leaf = 0;
+    scratch->len  = len;
+    for (i = 0; i < FILE_ACCESS_ANCESTORS + 1; i++)
+        scratch->slash[i] = -1;
+    hash = 2166136261u;
+    for (i = 0; i < FILE_ACCESS_FILENAME_MAX; i++) {
+        if (i >= len - 1) // len includes the NUL
+            break;
+        hash = (hash ^ (u8)scratch->filename[i]) * 16777619u;
+        if (scratch->filename[i] == '/') {
+            scratch->leaf = i + 1;
+            for (j = FILE_ACCESS_ANCESTORS; j > 0; j--)
+                scratch->slash[j] = scratch->slash[j - 1];
+            scratch->slash[0] = i;
+        }
+    }
+    len  = *(volatile int *)&scratch->len;
+    leaf = *(volatile u32 *)&scratch->leaf & (FILE_ACCESS_FILENAME_MAX - 1);
+    if (len - 1 - leaf >= EBPF_FILE_ACCESS_NAME_MAX) // too long to be an anchor
+        return;
+    __builtin_memset(&scratch->key, 0, sizeof(scratch->key));
+    if (bpf_probe_read_kernel_str(scratch->key.name, sizeof(scratch->key.name),
+                                  &scratch->filename[leaf]) <= 0)
+        return;
+    u32 *roles = bpf_map_lookup_elem(&elastic_ebpf_file_access_anchors, &scratch->key);
+    if ((roles == NULL || !(*roles & EBPF_FILE_ACCESS_ANCHOR_LEAF)) &&
+        !file_access_string_anchored(scratch))
+        return;
+
+    task                        = (struct task_struct *)bpf_get_current_task();
+    scratch->fail_key.tgid      = BPF_CORE_READ(task, tgid);
+    scratch->fail_key.error     = error;
+    scratch->fail_key.dfd       = dfd;
+    scratch->fail_key.name_hash = hash;
+    if (file_access_seen__test_and_set(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key,
+                                       scratch, task, FILE_ACCESS_CLASS_FAILED))
+        return;
+
+    event = get_event_buffer();
+    if (!event)
+        return;
+
+    file_access_event__fill_task(event, task);
+    __builtin_memset(&event->finfo, 0, sizeof(event->finfo));
+    event->open_flags = open_flags;
+    event->fmode      = 0;
+    event->error      = error;
+    event->flags      = EBPF_FILE_ACCESS_F_FAILED;
+    event->dfd        = dfd;
+
+    // Variable length fields
+    ebpf_vl_fields__init(&event->vl_fields);
+    struct ebpf_varlen_field *field;
+    long size;
+
+    // filename: the requested string
+    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_FILENAME);
+    size  = bpf_probe_read_kernel_str(field->data, FILE_ACCESS_FILENAME_MAX, scratch->filename);
+    if (size <= 0) {
+        field->data[0] = '\0';
+        size = 1;
+    }
+    ebpf_vl_field__set_size(&event->vl_fields, field, size);
+
+    // cwd: the directory a relative name was resolved against
+    relative = scratch->filename[0] != '/';
+    if (relative) {
+        event->flags |= EBPF_FILE_ACCESS_F_RELATIVE;
+        if (dfd == AT_FDCWD) {
+            scratch->path = BPF_CORE_READ(task, fs, pwd);
+        } else {
+            struct file **fdt = BPF_CORE_READ(task, files, fdt, fd);
+            struct file  *df  = NULL;
+            u32           max = BPF_CORE_READ(task, files, fdt, max_fds);
+
+            scratch->path.dentry = NULL;
+            scratch->path.mnt    = NULL;
+            if (dfd >= 0 && (u32)dfd < max)
+                bpf_core_read(&df, sizeof(df), &fdt[dfd]);
+            if (df != NULL)
+                scratch->path = BPF_CORE_READ(df, f_path);
+        }
+        field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_CWD);
+        if (scratch->path.dentry != NULL)
+            size = ebpf_resolve_path_to_string(field->data, &scratch->path, task);
+        else {
+            field->data[0] = '\0';
+            size = 1;
+        }
+        ebpf_vl_field__set_size(&event->vl_fields, field, size);
+    }
+
+    // pids ss cgroup path
+    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH);
+    size  = ebpf_resolve_pids_ss_cgroup_path_to_string(field->data, task);
+    ebpf_vl_field__set_size(&event->vl_fields, field, size);
+
+    ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+}
+
 static int do_filp_open__exit(int dfd, struct filename *pathname, const struct open_flags *op,
                               struct file *f)
 {
@@ -609,8 +814,13 @@ static int do_filp_open__exit(int dfd, struct filename *pathname, const struct o
     Read more: github.com/torvalds/linux/commit/588a25e92458c6efeb7a261d5ca5726f5de89184
     */
 
-    if (IS_ERR_OR_NULL(f))
+    if (IS_ERR_OR_NULL(f)) {
+        if (file_access_enabled && f != NULL)
+            file_access__open_failed(dfd, pathname,
+                                     op != NULL ? (u32)BPF_CORE_READ(op, open_flag) : 0,
+                                     -(long)f);
         goto out;
+    }
 
     if (ebpf_events_is_trusted_pid())
         goto out;

@@ -247,6 +247,10 @@ struct ebpf_file_access_name {
 #define EBPF_FILE_ACCESS_ANCHOR_LEAF (1 << 0)
 #define EBPF_FILE_ACCESS_ANCHOR_PARENT (1 << 1)
 
+// ebpf_file_access_event.flags
+#define EBPF_FILE_ACCESS_F_FAILED (1 << 0)   // open failed: error set, finfo and path empty
+#define EBPF_FILE_ACCESS_F_RELATIVE (1 << 1) // failed open of a relative name: cwd holds the base dir
+
 struct ebpf_file_access_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
@@ -255,9 +259,13 @@ struct ebpf_file_access_event {
     uint32_t mntns;
     char comm[TASK_COMM_LEN];
     uint32_t open_flags; // O_* the kernel used (open_flags.open_flag), before do_dentry_open strips
-    uint32_t fmode;      // file.f_mode
+    uint32_t fmode;      // file.f_mode on success, 0 on failure
+    int32_t error;       // 0 on success, positive errno on failure
+    uint32_t flags;      // EBPF_FILE_ACCESS_F_*
+    int32_t dfd;         // failed relative opens: the dirfd the name was relative to
 
-    // Variable length fields: path, symlink_target_path, pids_ss_cgroup_path
+    // Variable length fields: path, symlink_target_path, pids_ss_cgroup_path;
+    // failed opens carry filename (the requested string) and, when relative, cwd
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 
