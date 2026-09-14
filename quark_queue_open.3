@@ -123,6 +123,11 @@ Enable EBPF-only executable mprotect attempt events.
 Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
+.It Dv QQ_FILE_ACCESS
+Enable EBPF-only file access events (experimental).
+Nothing is reported until names are registered with
+.Fn quark_queue_file_access_name_add ,
+see below.
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.
@@ -152,6 +157,38 @@ decreases the more loaded it is.
 Details are described in
 .Xr quark 7 .
 .El
+.Sh FILE ACCESS NAMES
+.Ft int
+.Fn quark_queue_file_access_name_add "struct quark_queue *qq" "const char *name" "int roles"
+.Pp
+Registers
+.Fa name ,
+a single path component without slashes and shorter than
+.Dv QUARK_FILE_ACCESS_NAME_MAX ,
+as a name of interest on a queue opened with
+.Dv QQ_FILE_ACCESS .
+.Fa roles
+is a bitmask of
+.Dv QUARK_FILE_ACCESS_NAME_LEAF ,
+which reports opens of a file called
+.Fa name ,
+and
+.Dv QUARK_FILE_ACCESS_NAME_PARENT ,
+which reports opens of any file whose directory, or one of the two directories
+above it, is called
+.Fa name .
+Registering an existing name adds to its roles.
+The names are matched in the kernel against the last four components of the
+opened path, so a user with a list of full paths registers the leaf of each and
+filters the resolved path in the resulting
+.Vt quark_file_access
+itself.
+The walk does not cross mount points.
+.Pp
+.Ft void
+.Fn quark_queue_file_access_name_reset "struct quark_queue *qq"
+.Pp
+Removes every registered name, after which nothing is reported.
 .Sh RETURN VALUES
 Zero on success, -1 otherwise and
 .Va errno

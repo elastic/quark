@@ -188,3 +188,9 @@ Changes from 0.8 to 0.9
     quark_mprotect.path (NULL for anonymous mappings) and are deduplicated per
     file within the process life rather than per process, so a process making
     a second file executable the same way is reported again.
+  o Added file access events (QUARK_EV_FILE_ACCESS, QQ_FILE_ACCESS,
+    -a on quark-mon), quark_event{} gets a file_access member. The
+    EBPF probe reports the open of any file whose name, or one of
+    its three nearest directories, was registered through
+    quark_queue_file_access_name_add(3). Events are deduplicated in
+    the kernel per process life, file and access class. Experimental.

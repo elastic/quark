@@ -23,6 +23,7 @@ enum ebpf_events_state_op {
     EBPF_EVENTS_STATE_CHOWN          = 9,
     EBPF_EVENTS_STATE_FS_CREATE      = 10,
     EBPF_EVENTS_STATE_MEMFD_CREATE   = 11,
+    EBPF_EVENTS_STATE_FILP_OPEN      = 12,
 };
 
 struct ebpf_events_key {
@@ -86,6 +87,14 @@ struct ebpf_events_memfd_create_state {
     unsigned int flags;
 };
 
+// do_filp_open() arguments, kept from the kprobe to the kretprobe on kernels
+// without fexit. Both point at the caller's memory, which outlives the call.
+struct ebpf_events_filp_open_state {
+    int dfd;
+    struct filename *pathname;
+    const struct open_flags *op;
+};
+
 struct ebpf_events_state {
     union {
         struct ebpf_events_unlink_state unlink;
@@ -98,6 +107,7 @@ struct ebpf_events_state {
         struct ebpf_events_writev_state writev;
         struct ebpf_events_chown_state chown;
         struct ebpf_events_memfd_create_state memfd;
+        struct ebpf_events_filp_open_state filp_open;
         /* struct ebpf_events_fs_create fs_create; nada */
     };
 };

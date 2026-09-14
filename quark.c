@@ -197,6 +197,7 @@ raw_event_alloc(int type)
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
+	case RAW_FILE_ACCESS:	/* caller allocates */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -263,6 +264,9 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_TTY:
 		free(raw->tty.quark_tty);
+		break;
+	case RAW_FILE_ACCESS:
+		free(raw->file_access.quark_file_access);
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -480,6 +484,8 @@ event_storage_clear(struct quark_queue *qq)
 	}
 	free(qq->event_storage.tty);
 	qq->event_storage.tty = NULL;
+	free(qq->event_storage.file_access);
+	qq->event_storage.file_access = NULL;
 	qq->event_storage.id_change = 0;
 }
 
@@ -1797,6 +1803,8 @@ event_type_str(u64 event)
 		return "GETPID";
 	case QUARK_EV_MPROTECT:
 		return "MPROTECT";
+	case QUARK_EV_FILE_ACCESS:
+		return "FILE_ACCESS";
 	default:
 		return "?";
 	}
@@ -2158,6 +2166,34 @@ mprotect_prot_str(u64 prot, char *buf, size_t len)
 	buf[n] = 0;
 }
 
+/*
+ * Decode the access classes of an open(2), fixed order so the string can be
+ * matched downstream: R (read), W (write), C (create), T (truncate),
+ * A (append), X (exec, the kernel's own open for execve), P (O_PATH).
+ */
+static void
+file_access_flags_str(u32 open_flags, char *buf, size_t len)
+{
+	int	acc;
+
+	*buf = 0;
+	acc = open_flags & O_ACCMODE;
+	if (acc == O_RDONLY || acc == O_RDWR)
+		(void)strlcat(buf, "R", len);	/* O_RDONLY, O_RDWR */
+	if (acc == O_WRONLY || acc == O_RDWR)
+		(void)strlcat(buf, "W", len);	/* O_WRONLY, O_RDWR */
+	if (open_flags & O_CREAT)
+		(void)strlcat(buf, "C", len);	/* O_CREAT */
+	if (open_flags & O_TRUNC)
+		(void)strlcat(buf, "T", len);	/* O_TRUNC */
+	if (open_flags & O_APPEND)
+		(void)strlcat(buf, "A", len);	/* O_APPEND */
+	if (open_flags & 0x20)
+		(void)strlcat(buf, "X", len);	/* __FMODE_EXEC, linux/fs.h */
+	if (open_flags & O_PATH)
+		(void)strlcat(buf, "P", len);	/* O_PATH */
+}
+
 #define P(...)						\
 	do {						\
 		if (fprintf(f, __VA_ARGS__) < 0)	\
@@ -2260,6 +2296,24 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    file->mode, file->uid, file->gid, file->size, file->inode);
 		PF(fl, "atime=%llu mtime=%llu ctime=%llu\n",
 		    file->atime, file->mtime, file->ctime);
+	}
+
+	if (qev->events & QUARK_EV_FILE_ACCESS) {
+		const struct quark_file_access	*qfa;
+
+		fl = "FACC";
+
+		if ((qfa = qev->file_access) == NULL)
+			return (-1);
+
+		file_access_flags_str(qfa->open_flags, buf, sizeof(buf));
+		PF(fl, "access=%s open_flags=0%o\n", buf, qfa->open_flags);
+		PF(fl, "path=%s\n", qfa->path);
+		if (qfa->sym_target != NULL)
+			PF(fl, "sym_target=%s\n", qfa->sym_target);
+		PF(fl, "mode=0%o uid=%d gid=%d size=%llu inode=%llu "
+		    "fmode=0x%x\n", qfa->mode, qfa->uid, qfa->gid,
+		    qfa->size, qfa->inode, qfa->fmode);
 	}
 
 	if (qev->events & QUARK_EV_PTRACE) {
@@ -4870,6 +4924,29 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static struct quark_event *
+raw_event_file_access(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	if (raw->file_access.quark_file_access == NULL) {
+		qwarnx("quark_file_access is null");
+
+		return (NULL);
+	}
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_FILE_ACCESS;
+	qev->process = quark_process_lookup(qq, raw->pid);
+
+	/* Steal the file access */
+	qev->file_access = raw->file_access.quark_file_access;
+	raw->file_access.quark_file_access = NULL;
+
+	return (qev);
+}
+
+static struct quark_event *
 raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -5326,6 +5403,9 @@ quark_queue_get_event1(struct quark_queue *qq)
 			break;
 		case RAW_TTY:
 			qev = raw_event_tty(qq, raw);
+			break;
+		case RAW_FILE_ACCESS:
+			qev = raw_event_file_access(qq, raw);
 			break;
 		default:
 			qwarnx("unhandled raw->type: %d", raw->type);

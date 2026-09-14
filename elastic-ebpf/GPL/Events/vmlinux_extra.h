@@ -252,4 +252,19 @@ struct task_struct___el8 {
 	struct task_struct_rh___el8	*task_struct_rh;
 };
 
+/*
+ * Before 4.19 (2c4704756cab7cfa031ada4dab361562f0e357c0) a task hung off its
+ * struct pid through pid_link.node inside task_struct.pids[]; 4.19 flattened
+ * it into pid_links[]. Partial definition for the old layout, PIDTYPE_PID is
+ * index 0 so the node of pids[0] sits at the offset of pids itself.
+ */
+struct pid_link___4_18 {
+	struct hlist_node	node;
+	struct pid		*pid;
+};
+
+struct task_struct___4_18 {
+	struct pid_link___4_18	pids[3];
+};
+
 #endif	/* _VMLINUX_EXTRA_H_ */
