@@ -128,6 +128,39 @@ const volatile int consumer_pid = 0;
 #define DECL_FIELD_OFFSET(struct, field) const volatile int off__##struct##__##field##__ = 0;
 #define FIELD_OFFSET(struct, field) off__##struct##__##field##__
 
+/*
+ * Syscall argument n at a tracepoint/syscalls/sys_enter_* program, and the
+ * return value at sys_exit_*. Relocated against struct syscall_tp_t, the
+ * layout the kernel actually hands us, with struct syscall_trace_{enter,exit}
+ * as the fallback for a BTF that lacks the function-local type; see
+ * vmlinux_extra.h for why the two can disagree. Never restate the record
+ * layout in C, the offsets are not stable across kernels.
+ *
+ * The reads go through bpf_probe_read_kernel() rather than the context
+ * pointer on purpose: perf_event_set_bpf_prog() rejects a program whose
+ * direct context accesses reach past the size of the format record, and on
+ * the kernels where the layouts diverge the last argument lives past it.
+ */
+#define SYSCALL_ENTER_ARG(ctx, n)                                                                  \
+    ({                                                                                             \
+        unsigned long _arg;                                                                        \
+        if (bpf_core_field_exists(struct syscall_tp_t___enter, args))                              \
+            _arg = BPF_CORE_READ((struct syscall_tp_t___enter *)(ctx), args[n]);                   \
+        else                                                                                       \
+            _arg = BPF_CORE_READ((struct syscall_trace_enter *)(ctx), args[n]);                    \
+        _arg;                                                                                      \
+    })
+
+#define SYSCALL_EXIT_RET(ctx)                                                                      \
+    ({                                                                                             \
+        long _ret;                                                                                 \
+        if (bpf_core_field_exists(struct syscall_tp_t___exit, ret))                                \
+            _ret = BPF_CORE_READ((struct syscall_tp_t___exit *)(ctx), ret);                        \
+        else                                                                                       \
+            _ret = BPF_CORE_READ((struct syscall_trace_exit *)(ctx), ret);                         \
+        _ret;                                                                                      \
+    })
+
 // From linux/err.h
 #define MAX_ERRNO 4095
 
