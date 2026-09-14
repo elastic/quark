@@ -7,6 +7,7 @@
 .Sh SYNOPSIS
 .Nm quark-mon
 .Op Fl BbDEeFGgHhkMNnSsTtuv
+.Op Fl a Ar name
 .Op Fl C Ar filename
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
@@ -31,6 +32,14 @@ runs until a SIGINT is received.
 .Pp
 The options are as follows:
 .Bl -tag -width Dtb
+.It Fl a Ar name
+Enable file access events (EBPF only) and report opens of files named
+.Ar name .
+If
+.Ar name
+ends in a slash it is a directory name instead, and opens of any file up to
+three levels below a directory of that name are reported.
+May be given multiple times.
 .It Fl B
 Test bypass mode, where EBPF events are passed up directly without any
 processing.

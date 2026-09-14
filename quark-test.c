@@ -1437,6 +1437,198 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Next FILE_ACCESS event for our pid, skipping unrelated process events.
+ */
+static const struct quark_event *
+drain_file_access(struct quark_queue *qq)
+{
+	const struct quark_event	*qev;
+
+	for (;;) {
+		qev = drain_for_pid(qq, getpid());
+		if (qev->events & QUARK_EV_FILE_ACCESS)
+			return (qev);
+	}
+}
+
+/*
+ * Two consecutive triggers: the first must not be reported, the second must.
+ * Since quark orders by time, the next event being the second trigger proves
+ * the first was suppressed.
+ */
+static void
+assert_next_access_path(struct quark_queue *qq, const char *path)
+{
+	const struct quark_event	*qev;
+
+	qev = drain_file_access(qq);
+	assert(qev->file_access->path != NULL);
+	if (strcmp(qev->file_access->path, path) != 0)
+		errx(1, "expected %s, got %s", path, qev->file_access->path);
+}
+
+static int
+t_file_access(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_file_access	*qfa;
+	struct stat			 st;
+	char				 dir[] = "/tmp/quark-test-fa.XXXXXX";
+	char				 leaf[PATH_MAX], parent_dir[PATH_MAX];
+	char				 parent_file[PATH_MAX], other[PATH_MAX];
+	char				 noexec[PATH_MAX];
+	char				 deep[PATH_MAX], toodeep[PATH_MAX];
+	int				 fd;
+
+	qa->flags |= QQ_FILE_ACCESS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* One name as a leaf, one as a parent */
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-secret",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-anchor",
+	    QUARK_FILE_ACCESS_NAME_PARENT));
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-noexec",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+	/* Bad input is refused */
+	assert(quark_queue_file_access_name_add(&qq, "a/b",
+	    QUARK_FILE_ACCESS_NAME_LEAF) == -1);
+	assert(quark_queue_file_access_name_add(&qq, "", 0) == -1);
+
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	snprintf(leaf, sizeof(leaf), "%s/quark-test-secret", dir);
+	snprintf(parent_dir, sizeof(parent_dir), "%s/quark-test-anchor", dir);
+	snprintf(parent_file, sizeof(parent_file), "%s/quark-test-anchor/plain",
+	    dir);
+	snprintf(other, sizeof(other), "%s/plain", dir);
+	snprintf(noexec, sizeof(noexec), "%s/quark-test-noexec", dir);
+	if (mkdir(parent_dir, 0700) == -1)
+		err(1, "mkdir");
+	if ((fd = open(leaf, O_WRONLY|O_CREAT|O_TRUNC, 0600)) == -1)
+		err(1, "open");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+	if ((fd = open(parent_file, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(other, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(noexec, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+
+	/*
+	 * Creating the leaf: write class, created with O_CREAT|O_TRUNC
+	 */
+	qev = drain_file_access(&qq);
+	assert(qev->events == QUARK_EV_FILE_ACCESS);
+	qfa = qev->file_access;
+	assert(qfa != NULL);
+	assert(!strcmp(qfa->path, leaf));
+	assert(qfa->inode == st.st_ino);
+	assert(qfa->mode == st.st_mode);
+	assert(qfa->uid == getuid());
+	assert(qfa->gid == getgid());
+	assert((qfa->open_flags & O_ACCMODE) == O_WRONLY);
+	assert(qfa->open_flags & O_CREAT);
+	assert(qfa->open_flags & O_TRUNC);
+
+	/*
+	 * Creating a file under the parent anchor is reported, the same
+	 * name outside of it is not.
+	 */
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, parent_file));
+	assert(qfa->open_flags & O_CREAT);
+
+	/*
+	 * Creating noexec is the next one: other/plain was not reported.
+	 */
+	qev = drain_file_access(&qq);
+	assert(!strcmp(qev->file_access->path, noexec));
+
+	/*
+	 * A read of the leaf is a new class, a second read is not re-emitted:
+	 * the next event must be the read of parent_file.
+	 */
+	if ((fd = open(leaf, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(leaf, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(parent_file, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, leaf));
+	assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+	assert(!(qfa->open_flags & O_CREAT));
+	assert_next_access_path(&qq, parent_file);
+
+	/*
+	 * A parent anchor reaches three levels down: deep is reported, toodeep
+	 * (four levels) is not, so the read of noexec is the next event.
+	 */
+	snprintf(deep, sizeof(deep), "%s/quark-test-anchor/a", dir);
+	if (mkdir(deep, 0700) == -1)
+		err(1, "mkdir");
+	snprintf(deep, sizeof(deep), "%s/quark-test-anchor/a/b", dir);
+	if (mkdir(deep, 0700) == -1)
+		err(1, "mkdir");
+	snprintf(toodeep, sizeof(toodeep), "%s/quark-test-anchor/a/b/c", dir);
+	if (mkdir(toodeep, 0700) == -1)
+		err(1, "mkdir");
+	snprintf(deep, sizeof(deep), "%s/quark-test-anchor/a/b/deep", dir);
+	snprintf(toodeep, sizeof(toodeep), "%s/quark-test-anchor/a/b/c/toodeep",
+	    dir);
+	if ((fd = open(deep, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(toodeep, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(noexec, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, deep));
+	assert(qfa->open_flags & O_CREAT);
+	assert_next_access_path(&qq, noexec);
+
+	assert(!quark_queue_file_access_name_reset(&qq));
+
+	(void)unlink(leaf);
+	(void)unlink(parent_file);
+	(void)unlink(noexec);
+	(void)unlink(deep);
+	(void)unlink(toodeep);
+	snprintf(other, sizeof(other), "%s/plain", dir);
+	(void)unlink(other);
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/a/b/c", dir);
+	(void)rmdir(other);
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/a/b", dir);
+	(void)rmdir(other);
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/a", dir);
+	(void)rmdir(other);
+	(void)rmdir(parent_dir);
+	(void)rmdir(dir);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_memfd(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -3150,6 +3342,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
+	T_EBPF(t_file_access),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_shmget),

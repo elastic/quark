@@ -21,6 +21,11 @@
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
+/* Names watched by the file access probe */
+#define FILE_ACCESS_ANCHORS_MAX_ENTRIES	1024
+/* Files and failed names with a reported access, per process */
+#define FILE_ACCESS_SEEN_MAX_ENTRIES	16384
+
 struct bpf_queue {
 	struct bpf_probes	*probes;
 	struct ring_buffer	*ringbuf;
@@ -656,6 +661,81 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		file->gid = info->gid;
 		file->op_mask = op_mask;
 		file->change_mask = change_mask;
+
+		break;
+	}
+	case EBPF_EVENT_FILE_ACCESS: {
+		struct ebpf_file_access_event	*access;
+		struct quark_file_access	*qfa;
+		const char			*path, *sym_target;
+		size_t				 path_len, sym_target_len;
+		size_t				 alloc_len, tmp_len, off;
+		u32				 dummy;
+
+		access = (struct ebpf_file_access_event *)ev;
+		if ((raw = raw_event_alloc(RAW_FILE_ACCESS)) == NULL)
+			goto bad;
+
+		raw->pid = access->pids.tgid;
+		raw->time = ev->ts;
+
+		path = sym_target = NULL;
+		path_len = sym_target_len = 0;
+
+		FOR_EACH_VARLEN_FIELD_PTR(&access->vl_fields, field, dummy) {
+			tmp_len = strlen(field->data);
+			switch (field->type) {
+			case EBPF_VL_FIELD_PATH:
+				if (tmp_len > 0) {
+					path = field->data;
+					path_len = tmp_len + 1; /* with NUL */
+				}
+				break;
+			case EBPF_VL_FIELD_SYMLINK_TARGET_PATH:
+				if (tmp_len > 0) {
+					sym_target = field->data;
+					sym_target_len = tmp_len + 1;
+				}
+				break;
+			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH: /* ignored */
+				break;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				goto bad;
+			}
+		}
+
+		if (path == NULL) {
+			qwarnx("no path");
+			goto bad;
+		}
+
+		/* Same single block layout as quark_file */
+		alloc_len = sizeof(*raw->file_access.quark_file_access);
+		alloc_len += path_len + sym_target_len;
+		alloc_len++;			     /* extra NUL for paranoia */
+
+		raw->file_access.quark_file_access = calloc(1, alloc_len);
+		if (raw->file_access.quark_file_access == NULL)
+			goto bad;
+		qfa = raw->file_access.quark_file_access;
+		off = 0;
+		qfa->path = qfa->storage + off;
+		memcpy(qfa->storage + off, path, path_len);
+		off += path_len;
+		if (sym_target != NULL) {
+			qfa->sym_target = qfa->storage + off;
+			memcpy(qfa->storage + off, sym_target, sym_target_len);
+			off += sym_target_len;
+		}
+
+		qfa->inode = access->finfo.inode;
+		qfa->size = access->finfo.size;
+		qfa->mode = access->finfo.mode;
+		qfa->uid = access->finfo.uid;
+		qfa->gid = access->finfo.gid;
+		qfa->open_flags = access->open_flags;
+		qfa->fmode = access->fmode;
 
 		break;
 	}
@@ -1341,6 +1421,53 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			goto fail;
 	}
 
+	if (qq->flags & QQ_FILE_ACCESS) {
+		int filp_open_renamed =
+		    (btf_number_of_params(btf, "do_filp_open") == -1);
+
+		/*
+		 * Shares the do_filp_open() return with the file create
+		 * event; the entry kprobe is only needed to carry the
+		 * arguments to a kretprobe.
+		 */
+		if (use_fentry) {
+			if (filp_open_renamed)
+				bpf_program__set_autoload(p->progs.fexit__do_file_open, 1);
+			else
+				bpf_program__set_autoload(p->progs.fexit__do_filp_open, 1);
+		} else {
+			if (filp_open_renamed) {
+				bpf_program__set_autoload(p->progs.kprobe__do_file_open, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__do_file_open, 1);
+			} else {
+				bpf_program__set_autoload(p->progs.kprobe__do_filp_open, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__do_filp_open, 1);
+			}
+		}
+		/*
+		 * Turns on the branch in the always loaded open probe; the
+		 * maps are only sized (and created) here, see the else.
+		 */
+		p->rodata->file_access_enabled = 1;
+		if (bpf_map__set_max_entries(p->maps.elastic_ebpf_file_access_anchors,
+		    FILE_ACCESS_ANCHORS_MAX_ENTRIES) != 0) {
+			qwarn("bpf_map__set_max_entries file_access_anchors");
+			goto fail;
+		}
+		if (bpf_map__set_max_entries(p->maps.elastic_ebpf_file_access_file_seen,
+		    FILE_ACCESS_SEEN_MAX_ENTRIES) != 0) {
+			qwarn("bpf_map__set_max_entries file_access_file_seen");
+			goto fail;
+		}
+	} else {
+		if (bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_anchors, 0) != 0 ||
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_file_seen, 0) != 0 ||
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0) {
+			qwarn("bpf_map__set_autocreate file_access");
+			goto fail;
+		}
+	}
+
 	if (qq->flags & QQ_DNS) {
 		cgroup_fd = cgroup2_open_fd(&cgroup_umount);
 		if (cgroup_fd == -1) {
@@ -1681,6 +1808,76 @@ quark_queue_trusted_pid_add(struct quark_queue *qq, u32 pid)
 	v = 1;
 	if (bpf_map__update_elem(m, &pid, sizeof(pid),
 	    &v, sizeof(v), BPF_ANY) < 0)
+		return (-1);
+
+	return (0);
+}
+
+static struct bpf_map *
+file_access_anchors_map(struct quark_queue *qq)
+{
+	struct bpf_probes	*p;
+	struct bpf_map		*m;
+
+	if (!(qq->flags & QQ_FILE_ACCESS))
+		return (errno = EINVAL, NULL);
+	if ((p = quark_get_bpf_probes(qq)) == NULL)
+		return (NULL);
+	if ((m = p->maps.elastic_ebpf_file_access_anchors) == NULL)
+		return (errno = EINVAL, NULL);
+
+	return (m);
+}
+
+int
+quark_queue_file_access_name_reset(struct quark_queue *qq)
+{
+	struct bpf_map			*m;
+	struct ebpf_file_access_name	 k;
+	int				 r;
+
+	if ((m = file_access_anchors_map(qq)) == NULL)
+		return (-1);
+	while ((r = bpf_map__get_next_key(m, NULL, &k, sizeof(k))) == 0) {
+		if (bpf_map__delete_elem(m, &k, sizeof(k), 0) != 0)
+			return (-1);
+	}
+
+	return (r == -ENOENT ? 0 : -1);
+}
+
+/*
+ * Roles accumulate: a name added as a leaf and then as a parent matches both.
+ * The name is one path component, the probe compares exactly that.
+ */
+int
+quark_queue_file_access_name_add(struct quark_queue *qq, const char *name,
+    int roles)
+{
+	struct bpf_map			*m;
+	struct ebpf_file_access_name	 k;
+	u32				 v, cur;
+	size_t				 len;
+
+	if (name == NULL || roles == 0 ||
+	    (roles & ~(QUARK_FILE_ACCESS_NAME_LEAF|QUARK_FILE_ACCESS_NAME_PARENT)))
+		return (errno = EINVAL, -1);
+	len = strlen(name);
+	if (len == 0 || len >= sizeof(k.name) || strchr(name, '/') != NULL)
+		return (errno = EINVAL, -1);
+	if ((m = file_access_anchors_map(qq)) == NULL)
+		return (-1);
+	bzero(&k, sizeof(k));
+	memcpy(k.name, name, len);
+	v = 0;
+	if (roles & QUARK_FILE_ACCESS_NAME_LEAF)
+		v |= EBPF_FILE_ACCESS_ANCHOR_LEAF;
+	if (roles & QUARK_FILE_ACCESS_NAME_PARENT)
+		v |= EBPF_FILE_ACCESS_ANCHOR_PARENT;
+	if (bpf_map__lookup_elem(m, &k, sizeof(k), &cur, sizeof(cur), 0) == 0)
+		v |= cur;
+	if (bpf_map__update_elem(m, &k, sizeof(k), &v, sizeof(v),
+	    BPF_ANY) < 0)
 		return (-1);
 
 	return (0);
