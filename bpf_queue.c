@@ -22,9 +22,22 @@
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
+/* Tamper flags are copied straight from the probe into quark_tamper */
+#ifdef HAVE_STATIC_ASSERT
+static_assert(QUARK_TAMPER_F_KEY == EBPF_TAMPER_F_KEY, "tamper flags drifted");
+#endif
+
+/* One entry per created map, to name the map a tamper event points at */
+struct bpf_map_name {
+	u32		 id;
+	const char	*name;
+};
+
 struct bpf_queue {
 	struct bpf_probes	*probes;
 	struct ring_buffer	*ringbuf;
+	struct bpf_map_name	 map_names[64];
+	int			 n_map_names;
 };
 
 static int	bpf_queue_populate(struct quark_queue *);
@@ -32,6 +45,7 @@ static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
 static u32	bpf_ringbuf_size(int);
 static void	bump_memlock(void);
+static const char *bpf_map_name_lookup(struct bpf_queue *, u32);
 
 /*
  * Shared eBPF ring buffer is sized from CPU count so large hosts can absorb
@@ -679,6 +693,28 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_PROCESS_TAMPER: {
+		struct ebpf_process_tamper_event *tamper;
+		struct quark_tamper *qtamper;
+
+		tamper = (struct ebpf_process_tamper_event *)ev;
+		if ((raw = raw_event_alloc(RAW_TAMPER)) == NULL)
+			goto bad;
+
+		raw->pid = tamper->pids.tgid;
+		raw->time = ev->ts;
+
+		qtamper = &raw->tamper.quark_tamper;
+		qtamper->map_id = tamper->map_id;
+		qtamper->map_name = bpf_map_name_lookup(qq->queue_be,
+		    tamper->map_id);
+		qtamper->cmd = tamper->cmd;
+		qtamper->flags = tamper->flags;
+		qtamper->key = tamper->key;
+		qtamper->ret = tamper->ret;
+
+		break;
+	}
 	case EBPF_EVENT_PROCESS_MPROTECT: {
 		struct ebpf_process_mprotect_event *mprotect;
 		struct quark_mprotect *qmprotect;
@@ -1221,6 +1257,61 @@ bpf_maps_freeze(struct bpf_probes *p)
 	}
 }
 
+static const char *
+bpf_map_name_lookup(struct bpf_queue *bqq, u32 id)
+{
+	int	i;
+
+	for (i = 0; i < bqq->n_map_names; i++) {
+		if (bqq->map_names[i].id == id)
+			return (bqq->map_names[i].name);
+	}
+
+	return (NULL);
+}
+
+/*
+ * Tell the tamper probes which maps are ours: every created map, including
+ * the id set itself, goes into elastic_ebpf_events_map_ids. Remember id to
+ * name for the events. Runs after load and before the maps are frozen, so
+ * the set becomes immutable together with the rest.
+ */
+static int
+bpf_map_ids_fill(struct bpf_queue *bqq, struct bpf_probes *p)
+{
+	struct bpf_map		*m;
+	struct bpf_map_info	 info;
+	u32			 len, one;
+	int			 fd;
+
+	one = 1;
+	bqq->n_map_names = 0;
+	bpf_object__for_each_map(m, p->obj) {
+		if (!bpf_map__autocreate(m) || (fd = bpf_map__fd(m)) < 0)
+			continue;
+		bzero(&info, sizeof(info));
+		len = sizeof(info);
+		if (bpf_map_get_info_by_fd(fd, &info, &len) != 0) {
+			qwarn("bpf_map_get_info_by_fd %s", bpf_map__name(m));
+			return (-1);
+		}
+		if (bqq->n_map_names == (int)nitems(bqq->map_names)) {
+			qwarnx("too many maps for map_names");
+			return (-1);
+		}
+		bqq->map_names[bqq->n_map_names].id = info.id;
+		bqq->map_names[bqq->n_map_names].name = bpf_map__name(m);
+		bqq->n_map_names++;
+		if (bpf_map__update_elem(p->maps.elastic_ebpf_events_map_ids,
+		    &info.id, sizeof(info.id), &one, sizeof(one), BPF_ANY) != 0) {
+			qwarn("bpf_map__update_elem map_ids %s", bpf_map__name(m));
+			return (-1);
+		}
+	}
+
+	return (0);
+}
+
 static int
 bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
@@ -1470,6 +1561,13 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
 	}
 
+	if (qq->flags & QQ_TAMPER) {
+		bpf_program__set_autoload(
+		    p->progs.tracepoint_syscalls_sys_enter_bpf, 1);
+		bpf_program__set_autoload(
+		    p->progs.tracepoint_syscalls_sys_exit_bpf, 1);
+	}
+
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
 
@@ -1538,6 +1636,11 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			qwarn("bpf_map__set_map_flags init_buffer");
 			goto fail;
 		}
+		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_events_map_ids,
+		    BPF_F_RDONLY_PROG) != 0) {
+			qwarn("bpf_map__set_map_flags map_ids");
+			goto fail;
+		}
 	} else
 		qdebugx("kernel lacks BPF_F_RDONLY_PROG, "
 		    "trusted map stays writable by BPF programs");
@@ -1563,6 +1666,9 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		qwarn("bpf_probes__load");
 		goto fail;
 	}
+
+	if (bpf_map_ids_fill(bqq, p) == -1)
+		goto fail;
 
 	if (harden & BPF_HARDEN_FREEZE)
 		bpf_maps_freeze(p);
