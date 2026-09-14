@@ -188,3 +188,7 @@ Changes from 0.8 to 0.9
     quark_mprotect.path (NULL for anonymous mappings) and are deduplicated per
     file within the process life rather than per process, so a process making
     a second file executable the same way is reported again.
+  o The eBPF backend now reads syscall tracepoint arguments through CO-RE
+    instead of hard-coded record offsets. On RHEL 9.3 (5.14.0-362) this fixes
+    quark_shm memfd_create_flags and shmget_{key,size,shmflg}, which were
+    read from the wrong offsets on that kernel.

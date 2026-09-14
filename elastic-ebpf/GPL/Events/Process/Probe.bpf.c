@@ -456,7 +456,10 @@ out:
 }
 
 // tracepoint/syscalls/sys_[enter/exit]_[name] tracepoints are not available
-// with BTF type information, so we must use a non-BTF tracepoint
+// with BTF type information, so we must use a non-BTF tracepoint. Arguments
+// and return values are read through SYSCALL_ENTER_ARG/SYSCALL_EXIT_RET, the
+// context layout is not the one the tracepoint format describes on every
+// kernel, see vmlinux_extra.h.
 SEC("tracepoint/syscalls/sys_exit_setsid")
 int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
 {
@@ -464,7 +467,7 @@ int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
 
     r = 0;
     preempt_disable();
-    if (BPF_CORE_READ(args, ret) < 0)
+    if (SYSCALL_EXIT_RET(args) < 0)
         goto out;
 
     r = setsid__exit(EBPF_EVENT_PROCESS_SETSID);
@@ -756,17 +759,6 @@ int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    struct shmget_args {
-        short common_type;
-        char common_flags;
-        char common_preempt_count;
-        int common_pid;
-        int __syscall_nr;
-        long key;
-        size_t size;
-        long shmflg;
-    };
-    struct shmget_args *ex_args    = (struct shmget_args *)ctx;
     const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
     if (is_kernel_thread(task))
@@ -780,9 +772,10 @@ int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
     event->hdr.ts   = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->pids, task);
 
-    event->key    = ex_args->key;
-    event->size   = ex_args->size;
-    event->shmflg = ex_args->shmflg;
+    // shmget(key_t key, size_t size, int shmflg)
+    event->key    = (long)SYSCALL_ENTER_ARG(ctx, 0);
+    event->size   = SYSCALL_ENTER_ARG(ctx, 1);
+    event->shmflg = (long)SYSCALL_ENTER_ARG(ctx, 2);
 
     ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
 out:
@@ -794,20 +787,10 @@ SEC("tracepoint/syscalls/sys_enter_memfd_create")
 int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
 {
     preempt_disable();
-    // from: /sys/kernel/debug/tracing/events/syscalls/sys_enter_memfd_create/format
-    struct memfd_create_args {
-        short common_type;
-        char common_flags;
-        char common_preempt_count;
-        int common_pid;
-        int __syscall_nr;
-        const char *uname;
-        unsigned long flags;
-    };
-    struct memfd_create_args *ex_args = (struct memfd_create_args *)ctx;
 
+    // memfd_create(const char *uname, unsigned int flags)
     struct ebpf_events_state state = {};
-    state.memfd.flags = ex_args->flags;
+    state.memfd.flags = SYSCALL_ENTER_ARG(ctx, 1);
     ebpf_events_state__set(EBPF_EVENTS_STATE_MEMFD_CREATE, &state);
     preempt_enable();
     return 0;
