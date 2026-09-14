@@ -3078,6 +3078,210 @@ t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Find one of our maps the way a stranger would: walk every map id and match
+ * type, sizes and name (bpf_map_info.name is truncated to 15 characters).
+ * A zero value_size matches any. Returns an fd and fills info.
+ */
+static int
+find_map(struct bpf_map_info *info, u32 type, u32 key_size, u32 value_size,
+    const char *name)
+{
+	u32	id, len;
+	int	fd;
+
+	id = 0;
+	while (bpf_map_get_next_id(id, &id) == 0) {
+		if ((fd = bpf_map_get_fd_by_id(id)) < 0) {
+			if (fd == -ENOENT)
+				continue;
+			errno = -fd;
+			err(1, "bpf_map_get_fd_by_id");
+		}
+		bzero(info, sizeof(*info));
+		len = sizeof(*info);
+		if (bpf_map_get_info_by_fd(fd, info, &len) != 0)
+			err(1, "bpf_map_get_info_by_fd");
+		if (info->type == type &&
+		    info->key_size == key_size &&
+		    (value_size == 0 || info->value_size == value_size) &&
+		    !strncmp(info->name, name, 15))
+			return (fd);
+		close(fd);
+	}
+	errx(1, "map %s not found", name);
+}
+
+static int
+find_trusted_map(void)
+{
+	struct bpf_map_info	info;
+	int			fd;
+
+	fd = find_map(&info, BPF_MAP_TYPE_HASH, sizeof(u32), sizeof(u32),
+	    "elastic_ebpf_events_trusted_pids");
+	assert(info.max_entries == 512);
+
+	return (fd);
+}
+
+/*
+ * Load a hand assembled program that calls helper(map, &key, &value, 0) with
+ * a zeroed u32 key and value on the stack. Extra arguments are ignored by
+ * map_lookup_elem, so the same body tests both a reader and a writer.
+ * Returns 0 if the program loads, -1 with errno set otherwise.
+ */
+static int
+load_map_prog(int map_fd, int helper)
+{
+	struct bpf_insn	insns[] = {
+		/* r1 = map */
+		{ .code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = 1,
+		  .src_reg = BPF_PSEUDO_MAP_FD, .imm = map_fd },
+		{ 0 },
+		/* *(u32 *)(r10 - 4) = 0; r2 = r10 - 4 */
+		{ .code = BPF_ST | BPF_W | BPF_MEM, .dst_reg = 10, .off = -4 },
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_X, .dst_reg = 2, .src_reg = 10 },
+		{ .code = BPF_ALU64 | BPF_ADD | BPF_K, .dst_reg = 2, .imm = -4 },
+		/* *(u32 *)(r10 - 8) = 0; r3 = r10 - 8 */
+		{ .code = BPF_ST | BPF_W | BPF_MEM, .dst_reg = 10, .off = -8 },
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_X, .dst_reg = 3, .src_reg = 10 },
+		{ .code = BPF_ALU64 | BPF_ADD | BPF_K, .dst_reg = 3, .imm = -8 },
+		/* r4 = 0 (BPF_ANY) */
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 4 },
+		{ .code = BPF_JMP | BPF_CALL, .imm = helper },
+		/* return 0 */
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 0 },
+		{ .code = BPF_JMP | BPF_EXIT },
+	};
+	int		fd;
+
+	fd = bpf_prog_load(BPF_PROG_TYPE_SOCKET_FILTER, "quark_test_map_prog",
+	    "GPL", insns, nitems(insns), NULL);
+	if (fd < 0) {
+		errno = -fd;
+		return (-1);
+	}
+	close(fd);
+
+	return (0);
+}
+
+/*
+ * The trusted pids map is BPF_F_RDONLY_PROG: userspace still writes it, a
+ * BPF program that reads it still loads, one that writes it does not.
+ */
+static int
+t_trusted_map_rdonly(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct bpf_map_info	 info;
+	LIBBPF_OPTS(bpf_map_create_opts, opts,
+	    .map_flags = BPF_F_RDONLY_PROG);
+	u32			 len = sizeof(info), pid, v;
+	int			 fd;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	fd = bpf_map_create(BPF_MAP_TYPE_HASH, NULL, sizeof(u32), sizeof(u32),
+	    1, &opts);
+	if (fd < 0) {
+		warnx("%s: kernel lacks BPF_F_RDONLY_PROG, skipping", __func__);
+		return (0);
+	}
+	close(fd);
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	fd = find_trusted_map();
+	if (bpf_map_get_info_by_fd(fd, &info, &len) != 0)
+		err(1, "bpf_map_get_info_by_fd");
+	assert(info.map_flags & BPF_F_RDONLY_PROG);
+
+	/* Userspace writes still go through, ours and a stranger's */
+	assert(!quark_queue_trusted_pid_add(&qq, getpid()));
+	assert(!quark_queue_trusted_pid_reset(&qq));
+	pid = getpid();
+	v = 1;
+	assert(bpf_map_update_elem(fd, &pid, &v, BPF_ANY) == 0);
+	assert(bpf_map_delete_elem(fd, &pid) == 0);
+
+	/* A BPF reader loads, a BPF writer is refused by the verifier */
+	if (load_map_prog(fd, BPF_FUNC_map_lookup_elem) != 0)
+		err(1, "load_map_prog lookup");
+	assert(load_map_prog(fd, BPF_FUNC_map_update_elem) == -1);
+	assert(errno == EACCES);
+
+	close(fd);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Every map but the trusted one and the ring buffer is frozen: a stranger's
+ * bpf(2) write fails with EPERM. Checked on sk_to_tgid, a hash the probes
+ * fill, and on the init buffer, which additionally is read-only for programs.
+ * The trusted map must still take writes, t_trusted_map_rdonly covers that.
+ */
+static int
+t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct bpf_map_info	 info;
+	LIBBPF_OPTS(bpf_map_create_opts, opts,
+	    .map_flags = BPF_F_RDONLY_PROG);
+	u64			 key64;
+	u32			 v, zero;
+	int			 fd;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	fd = bpf_map_create(BPF_MAP_TYPE_HASH, NULL, sizeof(u32), sizeof(u32),
+	    1, &opts);
+	if (fd < 0 || bpf_map_freeze(fd) != 0) {
+		warnx("%s: kernel lacks BPF_MAP_FREEZE, skipping", __func__);
+		if (fd >= 0)
+			close(fd);
+		return (0);
+	}
+	close(fd);
+
+	qa->flags |= QQ_SOCK_CONN;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* sk_to_tgid: struct sock * -> u32 */
+	fd = find_map(&info, BPF_MAP_TYPE_HASH, sizeof(void *), sizeof(u32),
+	    "sk_to_tgid");
+	key64 = 0xdeadbeef;
+	v = 1;
+	assert(bpf_map_update_elem(fd, &key64, &v, BPF_ANY) == -EPERM);
+	assert(bpf_map_delete_elem(fd, &key64) == -EPERM);
+	close(fd);
+
+	/* init buffer: frozen and read-only for programs */
+	fd = find_map(&info, BPF_MAP_TYPE_PERCPU_ARRAY, sizeof(u32), 0,
+	    "elastic_ebpf_events_init_buffer");
+	assert(info.map_flags & BPF_F_RDONLY_PROG);
+	zero = 0;
+	assert(bpf_map_update_elem(fd, &zero, &zero, BPF_ANY) == -EPERM);
+	close(fd);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_nova(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -3182,6 +3386,8 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
 	T_EBPF(t_trusted_pid),
+	T_EBPF(t_trusted_map_rdonly),
+	T_EBPF(t_map_freeze),
 	T_NOVA(t_nova),		/* XXX temporary XXX */
 	{ NULL,	NULL, 0, 0 }
 };
