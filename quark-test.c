@@ -1488,7 +1488,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	/* One name as a leaf, one as a parent */
+	/* One name as a leaf, one as a parent, procfs maps as a leaf */
 	assert(!quark_queue_file_access_name_add(&qq, "quark-test-secret",
 	    QUARK_FILE_ACCESS_NAME_LEAF));
 	assert(!quark_queue_file_access_name_add(&qq, "quark-test-anchor",
@@ -1496,6 +1496,8 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(!quark_queue_file_access_name_add(&qq, "quark-test-missing",
 	    QUARK_FILE_ACCESS_NAME_LEAF));
 	assert(!quark_queue_file_access_name_add(&qq, "quark-test-noexec",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+	assert(!quark_queue_file_access_name_add(&qq, "maps",
 	    QUARK_FILE_ACCESS_NAME_LEAF));
 	/* Bad input is refused */
 	assert(quark_queue_file_access_name_add(&qq, "a/b",
@@ -1696,6 +1698,41 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(qfa->error == EACCES);
 	assert(!strcmp(qfa->requested, noexec));
 	assert(qfa->open_flags & 0x20); /* __FMODE_EXEC */
+
+	/*
+	 * procfs: opening another task's maps names the target
+	 */
+	{
+		int	pfd[2];
+		char	buf[PATH_MAX], c;
+
+		if (pipe(pfd) == -1)
+			err(1, "pipe");
+		if ((child = fork()) == -1)
+			err(1, "fork");
+		if (child == 0) {
+			close(pfd[1]);
+			if (read(pfd[0], &c, 1) == -1)
+				_exit(1);
+			_exit(0);
+		}
+		close(pfd[0]);
+		snprintf(buf, sizeof(buf), "/proc/%d/maps", child);
+		if ((fd = open(buf, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_PROCFS);
+		assert(!strcmp(qfa->path, buf));
+		assert(qfa->target_pid == (u32)child);
+		assert(qfa->target_tid == (u32)child);
+		assert(qfa->target_start_time > 0);
+		assert(write(pfd[1], "x", 1) == 1);
+		close(pfd[1]);
+		if (waitpid(child, NULL, 0) == -1)
+			err(1, "waitpid");
+	}
 
 	assert(!quark_queue_file_access_name_reset(&qq));
 

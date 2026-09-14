@@ -250,6 +250,7 @@ struct ebpf_file_access_name {
 // ebpf_file_access_event.flags
 #define EBPF_FILE_ACCESS_F_FAILED (1 << 0)   // open failed: error set, finfo and path empty
 #define EBPF_FILE_ACCESS_F_RELATIVE (1 << 1) // failed open of a relative name: cwd holds the base dir
+#define EBPF_FILE_ACCESS_F_PROCFS (1 << 2)   // procfs entry of another task: target_* set
 
 struct ebpf_file_access_event {
     struct ebpf_event_header hdr;
@@ -263,6 +264,9 @@ struct ebpf_file_access_event {
     int32_t error;       // 0 on success, positive errno on failure
     uint32_t flags;      // EBPF_FILE_ACCESS_F_*
     int32_t dfd;         // failed relative opens: the dirfd the name was relative to
+    uint32_t target_tid;
+    uint32_t target_tgid;
+    uint64_t target_start_time_ns;
 
     // Variable length fields: path, symlink_target_path, pids_ss_cgroup_path;
     // failed opens carry filename (the requested string) and, when relative, cwd

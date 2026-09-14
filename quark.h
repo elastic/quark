@@ -423,6 +423,7 @@ struct raw_file {
 
 #define QUARK_FILE_ACCESS_F_FAILED	(1 << 0)	/* error set, inode data absent */
 #define QUARK_FILE_ACCESS_F_RELATIVE	(1 << 1)	/* requested is relative to base_dir */
+#define QUARK_FILE_ACCESS_F_PROCFS	(1 << 2)	/* /proc/<pid>/ entry, target_* set */
 
 struct quark_file_access {
 	const char	*path;		/* resolved path, NULL if unknown */
@@ -439,6 +440,9 @@ struct quark_file_access {
 	s32		 error;		/* 0 or errno of the failed open */
 	s32		 dfd;		/* dirfd of a relative failed open */
 	u32		 flags;		/* QUARK_FILE_ACCESS_F_* */
+	u32		 target_tid;	/* QUARK_FILE_ACCESS_F_PROCFS */
+	u32		 target_pid;	/* QUARK_FILE_ACCESS_F_PROCFS, 0 if the task is gone */
+	u64		 target_start_time;
 	char		 storage[];	/* strings point here */
 };
 

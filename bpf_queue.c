@@ -791,6 +791,11 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			qfa->flags |= QUARK_FILE_ACCESS_F_FAILED;
 		if (access->flags & EBPF_FILE_ACCESS_F_RELATIVE)
 			qfa->flags |= QUARK_FILE_ACCESS_F_RELATIVE;
+		if (access->flags & EBPF_FILE_ACCESS_F_PROCFS)
+			qfa->flags |= QUARK_FILE_ACCESS_F_PROCFS;
+		qfa->target_tid = access->target_tid;
+		qfa->target_pid = access->target_tgid;
+		qfa->target_start_time = access->target_start_time_ns;
 
 		break;
 	}

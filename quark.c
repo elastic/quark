@@ -2322,6 +2322,10 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 			PF(fl, "mode=0%o uid=%d gid=%d size=%llu inode=%llu "
 			    "fmode=0x%x\n", qfa->mode, qfa->uid, qfa->gid,
 			    qfa->size, qfa->inode, qfa->fmode);
+		if (qfa->flags & QUARK_FILE_ACCESS_F_PROCFS)
+			PF(fl, "target_pid=%d target_tid=%d "
+			    "target_start_time=%llu\n", qfa->target_pid,
+			    qfa->target_tid, qfa->target_start_time);
 	}
 
 	if (qev->events & QUARK_EV_PTRACE) {

@@ -553,6 +553,42 @@ static __always_inline bool file_access_anchored(struct ebpf_file_access_name *k
     return false;
 }
 
+// Fills target_* for an entry of another task's /proc/<pid>/ tree, returns
+// true if the file is such an entry. PROC_I(inode)->pid identifies the task
+// regardless of how the caller spelled the pid (self, a tid, a pid namespace).
+static bool file_access_procfs_target(struct ebpf_file_access_event *event, struct dentry *de)
+{
+    struct inode       *inode = BPF_CORE_READ(de, d_inode);
+    struct proc_inode  *pi;
+    struct pid         *pid;
+    struct hlist_node  *node;
+    struct task_struct *task;
+
+    if (BPF_CORE_READ(inode, i_sb, s_magic) != PROC_SUPER_MAGIC)
+        return false;
+    pi  = (struct proc_inode *)((char *)inode - bpf_core_field_offset(struct proc_inode, vfs_inode));
+    pid = BPF_CORE_READ(pi, pid);
+    if (pid == NULL)
+        return false;
+
+    event->target_tid = BPF_CORE_READ(pid, numbers[0].nr);
+    node              = BPF_CORE_READ(pid, tasks[0].first); // PIDTYPE_PID
+    if (node == NULL) // the task is gone, the entry still names it
+        return true;
+    if (bpf_core_field_exists(struct task_struct, pid_links))
+        task = (struct task_struct *)((char *)node -
+                                      bpf_core_field_offset(struct task_struct, pid_links));
+    else if (bpf_core_field_exists(struct task_struct___4_18, pids))
+        task = (struct task_struct *)((char *)node -
+                                      bpf_core_field_offset(struct task_struct___4_18, pids));
+    else
+        return true;
+    event->target_tgid          = BPF_CORE_READ(task, tgid);
+    event->target_start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
+
+    return true;
+}
+
 static void file_access_event__fill_task(struct ebpf_file_access_event *event,
                                          struct task_struct *task)
 {
@@ -602,11 +638,16 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
 
     file_access_event__fill_task(event, task);
     ebpf_file_info__fill(&event->finfo, de);
-    event->open_flags = open_flags;
-    event->fmode      = BPF_CORE_READ(f, f_mode);
-    event->error      = 0;
-    event->flags      = 0;
-    event->dfd        = 0;
+    event->open_flags           = open_flags;
+    event->fmode                = BPF_CORE_READ(f, f_mode);
+    event->error                = 0;
+    event->flags                = 0;
+    event->dfd                  = 0;
+    event->target_tid           = 0;
+    event->target_tgid          = 0;
+    event->target_start_time_ns = 0;
+    if (file_access_procfs_target(event, de))
+        event->flags |= EBPF_FILE_ACCESS_F_PROCFS;
 
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);
@@ -749,11 +790,14 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
 
     file_access_event__fill_task(event, task);
     __builtin_memset(&event->finfo, 0, sizeof(event->finfo));
-    event->open_flags = open_flags;
-    event->fmode      = 0;
-    event->error      = error;
-    event->flags      = EBPF_FILE_ACCESS_F_FAILED;
-    event->dfd        = dfd;
+    event->open_flags           = open_flags;
+    event->fmode                = 0;
+    event->error                = error;
+    event->flags                = EBPF_FILE_ACCESS_F_FAILED;
+    event->dfd                  = dfd;
+    event->target_tid           = 0;
+    event->target_tgid          = 0;
+    event->target_start_time_ns = 0;
 
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);

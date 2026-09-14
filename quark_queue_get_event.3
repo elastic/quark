@@ -96,6 +96,15 @@ the string the caller
 and, when that string was relative, the
 .Em base_dir
 it was resolved against.
+An open of an entry under another task's
+.Pa /proc/<pid>/
+carries
+.Dv QUARK_FILE_ACCESS_F_PROCFS
+and names that task in
+.Em target_pid ,
+.Em target_tid
+and
+.Em target_start_time .
 Each combination of file and access class (read, write, exec, path only,
 failed) is reported once per process life.
 .El
