@@ -105,8 +105,9 @@ and names that task in
 .Em target_tid
 and
 .Em target_start_time .
-Each combination of file and access class (read, write, exec, path only,
-failed) is reported once per process life.
+Each combination of file and access class (read, write, exec, path only)
+is reported once per process life, a failed open once per requested name,
+error and access class.
 .El
 .Pp
 It's important to note that
