@@ -13,11 +13,18 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#include "Dedup.h"
 #include "File.h"
 #include "Helpers.h"
 #include "PathResolver.h"
 #include "State.h"
 #include "Varlen.h"
+
+// Set from userspace when QQ_FILE is enabled. The do_filp_open() return is
+// shared with file_access, which loads it on its own; the file event side of
+// that hook (create, memfd and shmem opens) is behind this flag so that
+// file_access alone does not emit file events.
+const volatile bool file_events_enabled = false;
 
 /* vfs_unlink */
 DECL_FUNC_ARG(vfs_unlink, dentry);
@@ -363,29 +370,14 @@ struct {
 
 /*
  * Access classes already reported for a (process life, file), one entry per
- * (tgid, device, inode) so a second watched file is reported again. The value
- * carries the process start time and self_exec_id, which the kernel bumps on
- * every exec and never reuses within a process life; a stale entry (recycled
- * tgid or previous program image) no longer matches and is claimed anew, so
- * it never suppresses and the map needs no exec or exit clearing. LRU
- * eviction and procfs inode churn cost a duplicate, never a lost event.
+ * (tgid, device, inode) so a second watched file is reported again. Stale
+ * entries never suppress, see Dedup.h; LRU eviction and procfs inode churn
+ * cost a duplicate, never a lost event.
  */
-struct file_access_file_key {
-    u32 tgid;
-    u32 dev;
-    u64 inode;
-};
-
-struct file_access_seen {
-    u64 start_time_ns;
-    u64 exec_id;
-    u64 bits;
-};
-
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, struct file_access_file_key);
-    __type(value, struct file_access_seen);
+    __type(key, struct ebpf_dedup_file_key);
+    __type(value, struct ebpf_dedup_seen);
     __uint(max_entries, 0); // sized by userspace, see bpf_queue_open1()
 } elastic_ebpf_file_access_file_seen SEC(".maps");
 
@@ -405,11 +397,11 @@ struct file_access_fail_key {
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, struct file_access_fail_key);
-    __type(value, struct file_access_seen);
+    __type(value, struct ebpf_dedup_seen);
     __uint(max_entries, 0); // sized by userspace, see bpf_queue_open1()
 } elastic_ebpf_file_access_fail_seen SEC(".maps");
 
-// Bits of file_access_seen.bits, one per access class of open_flags.
+// Bits of ebpf_dedup_seen.bits, one per access class of open_flags.
 #define FILE_ACCESS_CLASS_READ (1ULL << 0)
 #define FILE_ACCESS_CLASS_WRITE (1ULL << 1)
 #define FILE_ACCESS_CLASS_EXEC (1ULL << 2)
@@ -426,9 +418,10 @@ struct {
 #define FILE_ACCESS_O_PATH 010000000
 #define FILE_ACCESS___FMODE_EXEC 0x20
 
-// How many directories above the leaf a parent anchor is looked for, so that
-// a directory of interest also covers files a few levels below it. Bounded:
-// every open on the system pays for the misses.
+// How many directories are tested for a parent anchor, counting the leaf's
+// own directory as the first: with 3, a/b/c/leaf is reported for an anchor on
+// a, a/b/c/d/leaf is not. Bounded: every open on the system pays for the
+// misses.
 #define FILE_ACCESS_ANCESTORS 3
 
 // Per-cpu scratch, safe since the callers run with preemption disabled. The
@@ -443,9 +436,9 @@ struct file_access_scratch {
     u32 leaf;
     int len;
     s32 slash[FILE_ACCESS_ANCESTORS + 1]; // last separators of filename, most recent first, -1 if none
-    struct file_access_file_key file_key;
+    struct ebpf_dedup_file_key file_key;
     struct file_access_fail_key fail_key;
-    struct file_access_seen fresh;
+    struct ebpf_dedup_seen fresh;
     struct path path;
 };
 
@@ -466,55 +459,6 @@ static u64 file_access_class(u32 open_flags)
         (open_flags & (FILE_ACCESS_O_CREAT | FILE_ACCESS_O_TRUNC | FILE_ACCESS_O_APPEND)))
         return FILE_ACCESS_CLASS_WRITE;
     return FILE_ACCESS_CLASS_READ;
-}
-
-// The exec generation of the process. self_exec_id is u64 since Linux 5.7 and
-// u32 before, so read it by its relocated size; the targets are little endian
-// so a narrower field lands in the low bytes. RHEL 8 (4.18) backported the
-// widening under kABI and the live field only exists in the task_struct_rh
-// extension there, see vmlinux_extra.h; a kernel with neither yields zero and
-// falls back to start_time alone.
-static u64 file_access_exec_id(const struct task_struct *task)
-{
-    const struct task_struct *leader  = BPF_CORE_READ(task, group_leader);
-    u64                       exec_id = 0;
-
-    if (bpf_core_field_exists(leader->self_exec_id)) {
-        bpf_core_read(&exec_id, bpf_core_field_size(leader->self_exec_id),
-                      &leader->self_exec_id);
-    } else if (bpf_core_field_exists(struct task_struct___el8, task_struct_rh)) {
-        exec_id = BPF_CORE_READ((const struct task_struct___el8 *)leader, task_struct_rh,
-                                self_exec_id);
-    }
-
-    return exec_id;
-}
-
-// Returns true if the class was already reported for this process life and
-// key. Best effort with a plain read-test-write (an atomic or needs 5.12 and
-// -mcpu=v3); a lost race on a fresh or stale entry overwrites it, so the
-// failure mode is a duplicate event, never a lost one.
-static __always_inline bool file_access_seen__test_and_set(void *map, const void *key,
-                                                           struct file_access_scratch *scratch,
-                                                           const struct task_struct  *task,
-                                                           u64                        bit)
-{
-    u64 start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
-    u64 exec_id       = file_access_exec_id(task);
-
-    struct file_access_seen *seen = bpf_map_lookup_elem(map, key);
-    if (seen == NULL || seen->start_time_ns != start_time_ns || seen->exec_id != exec_id) {
-        scratch->fresh.start_time_ns = start_time_ns;
-        scratch->fresh.exec_id       = exec_id;
-        scratch->fresh.bits          = bit;
-        bpf_map_update_elem(map, key, &scratch->fresh, BPF_ANY);
-        return false;
-    }
-    if (seen->bits & bit)
-        return true;
-    seen->bits |= bit;
-
-    return false;
 }
 
 // Anchor roles of a dentry name, 0 when the name is not an anchor.
@@ -592,8 +536,8 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     scratch->file_key.tgid  = BPF_CORE_READ(task, tgid);
     scratch->file_key.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
     scratch->file_key.inode = BPF_CORE_READ(de, d_inode, i_ino);
-    if (file_access_seen__test_and_set(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
-                                       scratch, task, class))
+    if (ebpf_dedup__test_and_set(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
+                                 &scratch->fresh, task, class))
         return;
 
     event = get_event_buffer();
@@ -739,8 +683,8 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
     scratch->fail_key.error     = error;
     scratch->fail_key.dfd       = dfd;
     scratch->fail_key.name_hash = hash;
-    if (file_access_seen__test_and_set(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key,
-                                       scratch, task, FILE_ACCESS_CLASS_FAILED))
+    if (ebpf_dedup__test_and_set(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key,
+                                 &scratch->fresh, task, FILE_ACCESS_CLASS_FAILED))
         return;
 
     event = get_event_buffer();
@@ -825,9 +769,18 @@ static int do_filp_open__exit(int dfd, struct filename *pathname, const struct o
     if (ebpf_events_is_trusted_pid())
         goto out;
 
+    // op is NULL on a kretprobe kernel when the entry state was missed; f_flags
+    // is then the fallback, and do_dentry_open() has already stripped
+    // O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC from it, so such an open is classified
+    // and reported without them.
     if (file_access_enabled)
         file_access__open(f, op != NULL ? (u32)BPF_CORE_READ(op, open_flag)
                                         : (u32)BPF_CORE_READ(f, f_flags));
+
+    // The rest is the file event side of this hook, which file_access alone
+    // must not turn on.
+    if (!file_events_enabled)
+        goto out;
 
     fmode_t fmode = BPF_CORE_READ(f, f_mode);
     if ((fmode & (fmode_t)0x100000) ||                                 // FMODE_CREATED
