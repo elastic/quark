@@ -203,7 +203,8 @@ type Mprotect struct {
 // ENOENT. Path is the resolved path, empty when unknown; Requested, BaseDir
 // and Dfd are only set for failed opens. Target* are set when Flags carries
 // QUARK_FILE_ACCESS_F_PROCFS and name the task whose /proc/<pid>/ entry was
-// opened.
+// opened, the opener's own included; TargetStartTime is on the clock of
+// Proc.TimeBoot.
 type FileAccess struct {
 	Path            string
 	Requested       string
@@ -340,8 +341,9 @@ const (
 	QUARK_FILE_CH_XATTRS  = uint32(C.QUARK_FILE_CH_XATTRS)
 
 	// Queue.FileAccessNameAdd roles
-	QUARK_FILE_ACCESS_NAME_LEAF   = int(C.QUARK_FILE_ACCESS_NAME_LEAF)
-	QUARK_FILE_ACCESS_NAME_PARENT = int(C.QUARK_FILE_ACCESS_NAME_PARENT)
+	QUARK_FILE_ACCESS_NAME_LEAF       = int(C.QUARK_FILE_ACCESS_NAME_LEAF)
+	QUARK_FILE_ACCESS_NAME_PARENT     = int(C.QUARK_FILE_ACCESS_NAME_PARENT)
+	QUARK_FILE_ACCESS_NAME_OTHER_TASK = int(C.QUARK_FILE_ACCESS_NAME_OTHER_TASK)
 
 	// FileAccess.Flags
 	QUARK_FILE_ACCESS_F_FAILED   = uint32(C.QUARK_FILE_ACCESS_F_FAILED)
@@ -703,8 +705,10 @@ func (queue *Queue) DisableAggregation() error {
 
 // FileAccessNameAdd registers a file or directory name for file access
 // events, roles is a mask of QUARK_FILE_ACCESS_NAME_LEAF and
-// QUARK_FILE_ACCESS_NAME_PARENT. The queue must have been opened with
-// QQ_FILE_ACCESS.
+// QUARK_FILE_ACCESS_NAME_PARENT, optionally with
+// QUARK_FILE_ACCESS_NAME_OTHER_TASK to report /proc/<pid>/ entries reached
+// through the name for other tasks only. The queue must have been opened
+// with QQ_FILE_ACCESS.
 func (queue *Queue) FileAccessNameAdd(name string, roles int) error {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
