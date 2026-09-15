@@ -2193,6 +2193,41 @@ bpf_cmd_str(u32 cmd)
 		return "MAP_UPDATE_BATCH";
 	case BPF_MAP_DELETE_BATCH:
 		return "MAP_DELETE_BATCH";
+	case BPF_PROG_GET_FD_BY_ID:
+		return "PROG_GET_FD_BY_ID";
+	case BPF_LINK_GET_FD_BY_ID:
+		return "LINK_GET_FD_BY_ID";
+	case BPF_PROG_TEST_RUN:
+		return "PROG_TEST_RUN";
+	case BPF_PROG_ATTACH:
+		return "PROG_ATTACH";
+	case BPF_PROG_DETACH:
+		return "PROG_DETACH";
+	case BPF_LINK_CREATE:
+		return "LINK_CREATE";
+	case BPF_LINK_UPDATE:
+		return "LINK_UPDATE";
+	case BPF_LINK_DETACH:
+		return "LINK_DETACH";
+	case BPF_RAW_TRACEPOINT_OPEN:
+		return "RAW_TRACEPOINT_OPEN";
+	case BPF_PROG_BIND_MAP:
+		return "PROG_BIND_MAP";
+	default:
+		return "?";
+	}
+}
+
+static const char *
+tamper_kind_str(u32 kind)
+{
+	switch (kind) {
+	case QUARK_TAMPER_MAP:
+		return "map";
+	case QUARK_TAMPER_PROG:
+		return "prog";
+	case QUARK_TAMPER_LINK:
+		return "link";
 	default:
 		return "?";
 	}
@@ -2353,9 +2388,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		fl = "TAMPER";
 
 		tamper = &qev->tamper;
-		PF(fl, "map=%s(%u) cmd=%s(%u) ret=%lld",
-		    tamper->map_name != NULL ? tamper->map_name : "?",
-		    tamper->map_id,
+		PF(fl, "%s=%s(%u) cmd=%s(%u) ret=%lld",
+		    tamper_kind_str(tamper->kind),
+		    tamper->name != NULL ? tamper->name : "?", tamper->id,
 		    bpf_cmd_str(tamper->cmd), tamper->cmd, tamper->ret);
 		if (tamper->flags & QUARK_TAMPER_F_KEY)
 			P(" key=%u", tamper->key);

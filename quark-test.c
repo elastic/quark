@@ -3513,9 +3513,10 @@ t_tamper(const struct test *t, struct quark_queue_attr *qa)
 		if ((qev->events & QUARK_EV_TAMPER) == 0)
 			continue;
 		tamper = &qev->tamper;
-		assert(tamper->map_id != 0);
-		assert(tamper->map_name != NULL);
-		if (!strcmp(tamper->map_name, "elastic_ebpf_events_trusted_pids")) {
+		assert(tamper->kind == QUARK_TAMPER_MAP);
+		assert(tamper->id != 0);
+		assert(tamper->name != NULL);
+		if (!strcmp(tamper->name, "elastic_ebpf_events_trusted_pids")) {
 			switch (tamper->cmd) {
 			case BPF_MAP_GET_FD_BY_ID:
 				assert((seen & 0xc) == 0);
@@ -3545,7 +3546,7 @@ t_tamper(const struct test *t, struct quark_queue_attr *qa)
 				errx(1, "unexpected cmd %u on trusted map",
 				    tamper->cmd);
 			}
-		} else if (!strcmp(tamper->map_name, "sk_to_tgid") &&
+		} else if (!strcmp(tamper->name, "sk_to_tgid") &&
 		    tamper->cmd == BPF_MAP_UPDATE_ELEM) {
 			assert(seen == 0xf);
 			assert(tamper->flags & QUARK_TAMPER_F_KEY);
@@ -3565,6 +3566,174 @@ t_tamper(const struct test *t, struct quark_queue_attr *qa)
 	while ((qev = quark_queue_get_event(&qq)) != NULL) {
 		if (qev->process != NULL && qev->process->pid == (u32)child)
 			assert((qev->events & QUARK_EV_TAMPER) == 0);
+	}
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Programs and links get the same treatment as maps. The child finds our
+ * always loaded sched_process_fork program by walking program ids, asks for
+ * its info and runs it on demand, then finds the link that attaches it and
+ * tries to detach it. Tracing links can't be detached (EOPNOTSUPP), which is
+ * rather the point, but the attempt is loud. Exit status 3 from the child
+ * means the kernel has no link ids (legacy attach), the link half is then
+ * skipped.
+ */
+static int
+t_tamper_progs(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_tamper	*tamper;
+	pid_t				 child;
+	int				 status, seen, want;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	qa->flags |= QQ_TAMPER;
+	qa->hold_time = 10;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	else if (child == 0) {
+		LIBBPF_OPTS(bpf_test_run_opts, topts);
+		struct bpf_prog_info	pinfo;
+		struct bpf_link_info	linfo;
+		u32			id, len, prog_id;
+		int			fd, r;
+
+		/* Find our program by walking every program id */
+		prog_id = 0;
+		id = 0;
+		while (bpf_prog_get_next_id(id, &id) == 0) {
+			if ((fd = bpf_prog_get_fd_by_id(id)) < 0) {
+				if (fd == -ENOENT)
+					continue;
+				_exit(10);
+			}
+			bzero(&pinfo, sizeof(pinfo));
+			len = sizeof(pinfo);
+			if (bpf_prog_get_info_by_fd(fd, &pinfo, &len) != 0)
+				_exit(11);
+			if (!strncmp(pinfo.name, "sched_process_fork", 15)) {
+				prog_id = id;
+				break;
+			}
+			close(fd);
+		}
+		if (prog_id == 0)
+			_exit(12);
+		/* Run it on demand, tracing programs refuse, the try is what counts */
+		(void)bpf_prog_test_run_opts(fd, &topts);
+		close(fd);
+
+		/* Find its link and try to detach it */
+		id = 0;
+		r = bpf_link_get_next_id(id, &id);
+		if (r == -EINVAL || r == -ENOSYS)
+			_exit(3);
+		for (; r == 0; r = bpf_link_get_next_id(id, &id)) {
+			if ((fd = bpf_link_get_fd_by_id(id)) < 0) {
+				if (fd == -ENOENT)
+					continue;
+				_exit(13);
+			}
+			bzero(&linfo, sizeof(linfo));
+			len = sizeof(linfo);
+			if (bpf_link_get_info_by_fd(fd, &linfo, &len) != 0)
+				_exit(14);
+			if (linfo.prog_id == prog_id) {
+				(void)bpf_link_detach(fd);
+				_exit(0);
+			}
+			close(fd);
+		}
+		_exit(3);
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	assert(WIFEXITED(status));
+	assert(WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == 3);
+	if (WEXITSTATUS(status) == 3)
+		warnx("%s: kernel has no link ids, link half skipped", __func__);
+	/* Program half is bits 0-2, link half bits 3-5 */
+	want = WEXITSTATUS(status) == 0 ? 0x3f : 0x7;
+
+	/*
+	 * Only reconnaissance may show up on objects other than our program
+	 * and its link, and every reported object must be nameable.
+	 */
+	seen = 0;
+	while (seen != want) {
+		qev = drain_for_pid(&qq, child);
+		if ((qev->events & QUARK_EV_TAMPER) == 0)
+			continue;
+		tamper = &qev->tamper;
+		assert(tamper->id != 0);
+		assert(tamper->name != NULL);
+		assert(tamper->kind == QUARK_TAMPER_MAP ||
+		    tamper->kind == QUARK_TAMPER_PROG ||
+		    tamper->kind == QUARK_TAMPER_LINK);
+		if (tamper->kind == QUARK_TAMPER_PROG &&
+		    !strcmp(tamper->name, "sched_process_fork")) {
+			switch (tamper->cmd) {
+			case BPF_PROG_GET_FD_BY_ID:
+				assert(seen == 0x0);
+				assert(tamper->ret > 0);
+				seen |= 0x1;
+				break;
+			case BPF_OBJ_GET_INFO_BY_FD:
+				assert(seen == 0x1);
+				assert(tamper->ret == 0);
+				seen |= 0x2;
+				break;
+			case BPF_PROG_TEST_RUN:
+				assert(seen == 0x3);
+				assert(tamper->ret < 0);
+				seen |= 0x4;
+				break;
+			default:
+				errx(1, "unexpected cmd %u on our program",
+				    tamper->cmd);
+			}
+		} else if (tamper->kind == QUARK_TAMPER_LINK &&
+		    !strcmp(tamper->name, "sched_process_fork")) {
+			switch (tamper->cmd) {
+			case BPF_LINK_GET_FD_BY_ID:
+				assert(seen == 0x7);
+				assert(tamper->ret > 0);
+				seen |= 0x8;
+				break;
+			case BPF_OBJ_GET_INFO_BY_FD:
+				assert(seen == 0xf);
+				assert(tamper->ret == 0);
+				seen |= 0x10;
+				break;
+			case BPF_LINK_DETACH:
+				assert(seen == 0x1f);
+				assert(tamper->ret == -EOPNOTSUPP);
+				seen |= 0x20;
+				break;
+			default:
+				errx(1, "unexpected cmd %u on our link",
+				    tamper->cmd);
+			}
+		} else {
+			assert(tamper->cmd == BPF_PROG_GET_FD_BY_ID ||
+			    tamper->cmd == BPF_LINK_GET_FD_BY_ID ||
+			    tamper->cmd == BPF_OBJ_GET_INFO_BY_FD);
+			assert(tamper->ret >= 0);
+		}
 	}
 
 	quark_queue_close(&qq);
@@ -3681,6 +3850,7 @@ struct test all_tests[] = {
 	T_EBPF(t_trusted_map_rdonly),
 	T_EBPF(t_map_freeze),
 	T_EBPF(t_tamper),
+	T_EBPF(t_tamper_progs),
 	T_NOVA(t_nova),		/* XXX temporary XXX */
 	{ NULL,	NULL, 0, 0 }
 };
