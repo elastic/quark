@@ -1438,7 +1438,9 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
- * Next FILE_ACCESS event for our pid, skipping unrelated process events.
+ * Next FILE_ACCESS event for our pid, skipping unrelated process events. The
+ * queue was opened without QQ_FILE, so a file event from the shared
+ * do_filp_open() probe is a leak, not something to skip.
  */
 static const struct quark_event *
 drain_file_access(struct quark_queue *qq)
@@ -1447,6 +1449,8 @@ drain_file_access(struct quark_queue *qq)
 
 	for (;;) {
 		qev = drain_for_pid(qq, getpid());
+		if (qev->events & QUARK_EV_FILE)
+			errx(1, "QUARK_EV_FILE without QQ_FILE");
 		if (qev->events & QUARK_EV_FILE_ACCESS)
 			return (qev);
 	}
@@ -1480,6 +1484,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	char				 parent_file[PATH_MAX], other[PATH_MAX];
 	char				 missing[PATH_MAX], noexec[PATH_MAX];
 	char				 deep[PATH_MAX], toodeep[PATH_MAX];
+	char				 longname[QUARK_FILE_ACCESS_NAME_MAX + 8];
 	int				 fd;
 	pid_t				 child;
 
@@ -1499,10 +1504,14 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	    QUARK_FILE_ACCESS_NAME_LEAF));
 	assert(!quark_queue_file_access_name_add(&qq, "maps",
 	    QUARK_FILE_ACCESS_NAME_LEAF));
+	assert(!quark_queue_file_access_name_add(&qq, "status",
+	    QUARK_FILE_ACCESS_NAME_LEAF|QUARK_FILE_ACCESS_NAME_OTHER_TASK));
 	/* Bad input is refused */
 	assert(quark_queue_file_access_name_add(&qq, "a/b",
 	    QUARK_FILE_ACCESS_NAME_LEAF) == -1);
 	assert(quark_queue_file_access_name_add(&qq, "", 0) == -1);
+	assert(quark_queue_file_access_name_add(&qq, "status",
+	    QUARK_FILE_ACCESS_NAME_OTHER_TASK) == -1);
 
 	if (mkdtemp(dir) == NULL)
 		err(1, "mkdtemp");
@@ -1584,6 +1593,26 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert_next_access_path(&qq, parent_file);
 
 	/*
+	 * O_PATH is a class of its own: the leaf was read already but is
+	 * reported again, the repeat is not, so the next event is the O_PATH
+	 * open of parent_file.
+	 */
+	if ((fd = open(leaf, O_PATH)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(leaf, O_PATH)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(parent_file, O_PATH)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, leaf));
+	assert(qfa->open_flags & O_PATH);
+	assert_next_access_path(&qq, parent_file);
+
+	/*
 	 * Failed opens: an anchored missing name is reported with ENOENT and
 	 * the requested string, a non anchored missing name is not (the next
 	 * event is the relative open, joined with its base directory).
@@ -1611,11 +1640,22 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qfa->requested, "quark-test-missing"));
 	assert(qfa->base_dir != NULL && !strcmp(qfa->base_dir, dir));
 	assert(!strcmp(qfa->path, missing));
-	/* Same failure again is not re-emitted, a read of noexec is next */
+	/*
+	 * The same failure again is not re-emitted, the same failure with
+	 * another access class is: the next events are the write intent
+	 * failure and the read of noexec.
+	 */
 	assert(open(missing, O_RDONLY) == -1 && errno == ENOENT);
+	assert(open(missing, O_WRONLY) == -1 && errno == ENOENT);
 	if ((fd = open(noexec, O_RDONLY)) == -1)
 		err(1, "open");
 	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+	assert(qfa->error == ENOENT);
+	assert(!strcmp(qfa->requested, missing));
+	assert((qfa->open_flags & O_ACCMODE) == O_WRONLY);
 	assert_next_access_path(&qq, noexec);
 
 	/*
@@ -1674,6 +1714,21 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qfa->path, other));
 
 	/*
+	 * A leaf too long to be an anchor itself is still reported under a
+	 * parent anchor, as a completed open of it would be.
+	 */
+	memset(longname, 'x', sizeof(longname) - 1);
+	longname[sizeof(longname) - 1] = '\0';
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/%s", dir,
+	    longname);
+	assert(open(other, O_RDONLY) == -1 && errno == ENOENT);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+	assert(qfa->error == ENOENT);
+	assert(!strcmp(qfa->requested, other));
+
+	/*
 	 * EACCES: exec of a file without execute permission fails in the
 	 * kernel's own open for execve, root included.
 	 */
@@ -1700,7 +1755,10 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(qfa->open_flags & 0x20); /* __FMODE_EXEC */
 
 	/*
-	 * procfs: opening another task's maps names the target
+	 * procfs: an open of a task's entry names the target, the opener's
+	 * own included, unless the name carries OTHER_TASK: our own maps is
+	 * reported with ourselves as the target, our own status is not, and
+	 * the child's status and maps name the child.
 	 */
 	{
 		int	pfd[2];
@@ -1717,6 +1775,28 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 			_exit(0);
 		}
 		close(pfd[0]);
+		if ((fd = open("/proc/self/maps", O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		if ((fd = open("/proc/self/status", O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		snprintf(buf, sizeof(buf), "/proc/%d/status", child);
+		if ((fd = open(buf, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_PROCFS);
+		snprintf(other, sizeof(other), "/proc/%d/maps", getpid());
+		assert(!strcmp(qfa->path, other));
+		assert(qfa->target_pid == (u32)getpid());
+		assert(qfa->target_start_time > 0);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_PROCFS);
+		assert(!strcmp(qfa->path, buf));
+		assert(qfa->target_pid == (u32)child);
 		snprintf(buf, sizeof(buf), "/proc/%d/maps", child);
 		if ((fd = open(buf, O_RDONLY)) == -1)
 			err(1, "open");

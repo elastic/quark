@@ -177,17 +177,30 @@ and
 which reports opens of any file whose directory, or one of the two directories
 above it, is called
 .Fa name .
-Registering an existing name adds to its roles.
+.Dv QUARK_FILE_ACCESS_NAME_OTHER_TASK
+modifies either: an entry under
+.Pa /proc/<pid>/
+matched through
+.Fa name
+is only reported when it belongs to another process than the one opening it,
+which spares the read a process makes of its own
+.Pa /proc/self/maps
+or
+.Pa environ
+while keeping the same read of another process.
+Registering an existing name adds to its roles, a modifier once given stays
+until
+.Fn quark_queue_file_access_name_reset .
 The names are matched in the kernel against the last four components of the
 opened path, so a user with a list of full paths registers the leaf of each and
 filters the resolved path in the resulting
 .Vt quark_file_access
 itself.
+The walk does not cross mount points.
 Failed opens are matched the same way on the requested string, so a relative
 name only exposes the components it spells out.
-The walk does not cross mount points.
 .Pp
-.Ft void
+.Ft int
 .Fn quark_queue_file_access_name_reset "struct quark_queue *qq"
 .Pp
 Removes every registered name, after which nothing is reported.
@@ -195,9 +208,15 @@ Removes every registered name, after which nothing is reported.
 Zero on success, -1 otherwise and
 .Va errno
 is set.
-In the case of an error, the internal state is cleared up and a
+In the case of an error from
+.Fn quark_queue_open ,
+the internal state is cleared up and a
 .Xr quark_queue_close 3
-should NOT be issued.
+should NOT be issued; a failed
+.Fn quark_queue_file_access_name_add
+or
+.Fn quark_queue_file_access_name_reset
+leaves the queue usable.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
 .Xr quark_process_lookup 3 ,

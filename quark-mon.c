@@ -381,20 +381,30 @@ main(int argc, char *argv[])
 	if (quark_verbose)
 		fprintf(stderr, "using %s for backend\n", fetch_backend(qq));
 
-	/* A trailing slash makes the name a parent anchor, see quark(7) */
+	/*
+	 * A trailing slash makes the name a parent anchor, a leading @ reports
+	 * procfs entries of other tasks only, see quark-mon(8)
+	 */
 	for (i = 0; i < naccess; i++) {
-		char	 name[QUARK_FILE_ACCESS_NAME_MAX];
-		size_t	 len;
-		int	 role;
+		char		 name[QUARK_FILE_ACCESS_NAME_MAX];
+		const char	*arg;
+		size_t		 len;
+		int		 role;
 
-		len = strlcpy(name, access_names[i], sizeof(name));
+		arg = access_names[i];
+		role = 0;
+		if (*arg == '@') {
+			role |= QUARK_FILE_ACCESS_NAME_OTHER_TASK;
+			arg++;
+		}
+		len = strlcpy(name, arg, sizeof(name));
 		if (len >= sizeof(name))
 			errx(1, "-a %s: name too long", access_names[i]);
-		role = QUARK_FILE_ACCESS_NAME_LEAF;
 		if (len > 1 && name[len - 1] == '/') {
 			name[len - 1] = 0;
-			role = QUARK_FILE_ACCESS_NAME_PARENT;
-		}
+			role |= QUARK_FILE_ACCESS_NAME_PARENT;
+		} else
+			role |= QUARK_FILE_ACCESS_NAME_LEAF;
 		if (quark_queue_file_access_name_add(qq, name, role) == -1)
 			err(1, "-a %s", access_names[i]);
 	}

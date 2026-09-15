@@ -246,11 +246,14 @@ struct ebpf_file_access_name {
 // Value of the anchor map, which roles a name is allowed to match in.
 #define EBPF_FILE_ACCESS_ANCHOR_LEAF (1 << 0)
 #define EBPF_FILE_ACCESS_ANCHOR_PARENT (1 << 1)
+// Modifier: a /proc/<pid>/ entry matched through this name is only reported
+// when it belongs to a task other than the caller's.
+#define EBPF_FILE_ACCESS_ANCHOR_OTHER_TASK (1 << 2)
 
 // ebpf_file_access_event.flags
 #define EBPF_FILE_ACCESS_F_FAILED (1 << 0)   // open failed: error set, finfo and path empty
 #define EBPF_FILE_ACCESS_F_RELATIVE (1 << 1) // failed open of a relative name: cwd holds the base dir
-#define EBPF_FILE_ACCESS_F_PROCFS (1 << 2)   // procfs entry of another task: target_* set
+#define EBPF_FILE_ACCESS_F_PROCFS (1 << 2)   // entry of a task's /proc/<pid>/, the caller's own included: target_* set
 
 struct ebpf_file_access_event {
     struct ebpf_event_header hdr;
