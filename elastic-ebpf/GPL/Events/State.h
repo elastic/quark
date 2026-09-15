@@ -88,7 +88,8 @@ struct ebpf_events_memfd_create_state {
 };
 
 struct ebpf_events_bpf_state {
-    u32 map_id;
+    u32 kind;
+    u32 id;
     u32 cmd;
     u32 flags;
     u32 key;

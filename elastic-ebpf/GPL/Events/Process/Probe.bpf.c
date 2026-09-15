@@ -1217,20 +1217,22 @@ int BPF_KPROBE(kprobe__tty_write_old_sig, struct file *file, const char *buf, si
 }
 
 /*
- * Map tamper telemetry
+ * Tamper telemetry
  *
  * Our maps are written by the probes, and the trusted pids map by the consumer
- * through bpf(2). Any other process reaching one of them through bpf(2) is
- * reported: which map, which command, which key when there is one, and what
- * the kernel answered. The syscall boundary is where the fd is still the
+ * through bpf(2); our programs and links are only ever touched by the
+ * consumer. Any other process reaching one of them through bpf(2) is
+ * reported: which object, which command, which key when there is one, and
+ * what the kernel answered. The syscall boundary is where the fd is still the
  * caller's to resolve. A privileged process can still do all of this, just
  * not quietly.
  */
 
 /*
- * Ids of every map we created. Filled by userspace right after load, then
- * frozen and read-only for programs, so nobody can edit the set. Key is the
- * map id, the value is unused.
+ * Ids of every map, program and link we created, one set per kind since the
+ * kernel numbers them separately. Filled by userspace after attach, then
+ * frozen and read-only for programs, so nobody can edit the sets. Key is the
+ * id, the value is unused.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -1238,6 +1240,20 @@ struct {
     __uint(value_size, sizeof(u32));
     __uint(max_entries, 64);
 } elastic_ebpf_events_map_ids SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(key_size, sizeof(u32));
+    __uint(value_size, sizeof(u32));
+    __uint(max_entries, 128);
+} elastic_ebpf_events_prog_ids SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(key_size, sizeof(u32));
+    __uint(value_size, sizeof(u32));
+    __uint(max_entries, 128);
+} elastic_ebpf_events_link_ids SEC(".maps");
 
 /* Prefixes of union bpf_attr, only what we read back from userspace */
 struct bpf_attr_elem {
@@ -1255,40 +1271,103 @@ struct bpf_attr_batch {
     u32 map_fd;
 };
 
+struct bpf_attr_attach {
+    u32 target_fd;
+    u32 attach_bpf_fd;
+    u32 attach_type;
+};
+
+struct bpf_attr_raw_tp {
+    u64 name;
+    u32 prog_fd;
+};
+
 static bool is_our_map(u32 id)
 {
     return id != 0 && bpf_map_lookup_elem(&elastic_ebpf_events_map_ids, &id) != NULL;
 }
 
-/*
- * The id of the bpf map behind an fd of the current task, 0 if it can't be
- * resolved. If the fd is not a map, private_data is some other struct and the
- * value read is garbage; it is only ever looked up in our small id set, so a
- * false hit is as likely as a garbage word matching one of a dozen ids.
- */
-static u32 bpf_map_id_from_fd(u32 fd)
+static bool is_our_prog(u32 id)
+{
+    return id != 0 && bpf_map_lookup_elem(&elastic_ebpf_events_prog_ids, &id) != NULL;
+}
+
+static bool is_our_link(u32 id)
+{
+    return id != 0 && bpf_map_lookup_elem(&elastic_ebpf_events_link_ids, &id) != NULL;
+}
+
+/* The cgroup attach types of our network probes, a legacy detach names only these */
+static bool is_our_attach_type(u32 type)
+{
+    switch (type) {
+    case BPF_CGROUP_INET_INGRESS:
+    case BPF_CGROUP_INET_EGRESS:
+    case BPF_CGROUP_INET_SOCK_CREATE:
+    case BPF_CGROUP_INET_SOCK_RELEASE:
+    case BPF_CGROUP_INET4_CONNECT:
+    case BPF_CGROUP_UDP4_SENDMSG:
+    case BPF_CGROUP_UDP4_RECVMSG:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* The bpf object behind an fd of the current task, its private_data, or NULL */
+static void *bpf_obj_from_fd(u32 fd)
 {
     const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     struct files_struct *files     = BPF_CORE_READ(task, files);
     struct fdtable *fdt            = BPF_CORE_READ(files, fdt);
     struct file **fdarr;
     struct file *file = NULL;
-    struct bpf_map *map;
 
     if (!fdt || fd >= BPF_CORE_READ(fdt, max_fds))
-        return 0;
+        return NULL;
     fdarr = BPF_CORE_READ(fdt, fd);
     if (!fdarr)
-        return 0;
+        return NULL;
     if (bpf_probe_read_kernel(&file, sizeof(file), &fdarr[fd]))
-        return 0;
+        return NULL;
     if (!file)
-        return 0;
-    map = BPF_CORE_READ(file, private_data);
-    if (!map)
-        return 0;
+        return NULL;
 
-    return BPF_CORE_READ(map, id);
+    return BPF_CORE_READ(file, private_data);
+}
+
+/*
+ * Classify the object behind fd as one of ours: returns the kind and stores
+ * the id, or returns 0. private_data is a struct bpf_map, bpf_prog or bpf_link
+ * and nothing cheap says which, so read the id at each struct's offset and
+ * look it up in that kind's set. A wrong-kind read yields garbage, or fails
+ * outright when it chases a garbage pointer, and is only ever compared against
+ * a few dozen ids.
+ */
+static u32 our_obj_from_fd(u32 fd, u32 *idp)
+{
+    void *obj = bpf_obj_from_fd(fd);
+    u32 id;
+
+    if (!obj)
+        return 0;
+    id = BPF_CORE_READ((struct bpf_map *)obj, id);
+    if (is_our_map(id)) {
+        *idp = id;
+        return EBPF_TAMPER_MAP;
+    }
+    id = BPF_CORE_READ((struct bpf_prog *)obj, aux, id);
+    if (is_our_prog(id)) {
+        *idp = id;
+        return EBPF_TAMPER_PROG;
+    }
+    id = BPF_CORE_READ((struct bpf_link *)obj, id);
+    if (is_our_link(id)) {
+        *idp = id;
+        return EBPF_TAMPER_LINK;
+    }
+
+    return 0;
 }
 
 SEC("tracepoint/syscalls/sys_enter_bpf")
@@ -1297,8 +1376,10 @@ int tracepoint_syscalls_sys_enter_bpf(struct syscall_trace_enter *ctx)
     struct ebpf_events_state state = {};
     struct bpf_attr_elem elem;
     struct bpf_attr_batch batch;
+    struct bpf_attr_attach attach;
+    struct bpf_attr_raw_tp raw_tp;
     void *uattr;
-    u32 cmd, map_id, fd;
+    u32 cmd, kind, id, fd;
 
     preempt_disable();
     if (is_consumer())
@@ -1307,6 +1388,7 @@ int tracepoint_syscalls_sys_enter_bpf(struct syscall_trace_enter *ctx)
     // bpf(int cmd, union bpf_attr *uattr, unsigned int size)
     cmd   = SYSCALL_ENTER_ARG(ctx, 0);
     uattr = (void *)SYSCALL_ENTER_ARG(ctx, 1);
+    id    = 0;
 
     switch (cmd) {
     case BPF_MAP_LOOKUP_ELEM:
@@ -1316,8 +1398,8 @@ int tracepoint_syscalls_sys_enter_bpf(struct syscall_trace_enter *ctx)
     case BPF_MAP_LOOKUP_AND_DELETE_ELEM:
         if (bpf_probe_read_user(&elem, sizeof(elem), uattr))
             goto out;
-        map_id = bpf_map_id_from_fd(elem.map_fd);
-        if (!is_our_map(map_id))
+        kind = our_obj_from_fd(elem.map_fd, &id);
+        if (kind != EBPF_TAMPER_MAP)
             goto out;
         if (elem.key && !bpf_probe_read_user(&state.tamper.key, sizeof(state.tamper.key),
                                              (void *)elem.key))
@@ -1329,31 +1411,81 @@ int tracepoint_syscalls_sys_enter_bpf(struct syscall_trace_enter *ctx)
     case BPF_MAP_DELETE_BATCH:
         if (bpf_probe_read_user(&batch, sizeof(batch), uattr))
             goto out;
-        map_id = bpf_map_id_from_fd(batch.map_fd);
-        if (!is_our_map(map_id))
+        kind = our_obj_from_fd(batch.map_fd, &id);
+        if (kind != EBPF_TAMPER_MAP)
             goto out;
         break;
     case BPF_MAP_FREEZE:
     case BPF_OBJ_GET_INFO_BY_FD:
-        // both start with the fd
+        // both start with the fd, the latter takes any kind
         if (bpf_probe_read_user(&fd, sizeof(fd), uattr))
             goto out;
-        map_id = bpf_map_id_from_fd(fd);
-        if (!is_our_map(map_id))
+        kind = our_obj_from_fd(fd, &id);
+        if (!kind)
             goto out;
         break;
+    case BPF_PROG_TEST_RUN:
+    case BPF_LINK_CREATE:
+    case BPF_PROG_BIND_MAP:
+        // all start with prog_fd
+        if (bpf_probe_read_user(&fd, sizeof(fd), uattr))
+            goto out;
+        kind = our_obj_from_fd(fd, &id);
+        if (kind != EBPF_TAMPER_PROG)
+            goto out;
+        break;
+    case BPF_RAW_TRACEPOINT_OPEN:
+        if (bpf_probe_read_user(&raw_tp, sizeof(raw_tp), uattr))
+            goto out;
+        kind = our_obj_from_fd(raw_tp.prog_fd, &id);
+        if (kind != EBPF_TAMPER_PROG)
+            goto out;
+        break;
+    case BPF_LINK_UPDATE:
+    case BPF_LINK_DETACH:
+        // both start with link_fd
+        if (bpf_probe_read_user(&fd, sizeof(fd), uattr))
+            goto out;
+        kind = our_obj_from_fd(fd, &id);
+        if (kind != EBPF_TAMPER_LINK)
+            goto out;
+        break;
+    case BPF_PROG_ATTACH:
+    case BPF_PROG_DETACH:
+        if (bpf_probe_read_user(&attach, sizeof(attach), uattr))
+            goto out;
+        kind = our_obj_from_fd(attach.attach_bpf_fd, &id);
+        if (kind == EBPF_TAMPER_PROG)
+            break;
+        // a legacy cgroup detach names no program, only an attach type
+        if (cmd == BPF_PROG_DETACH && is_our_attach_type(attach.attach_type)) {
+            kind = EBPF_TAMPER_ATTACH_TYPE;
+            id   = attach.attach_type;
+            break;
+        }
+        goto out;
     case BPF_MAP_GET_FD_BY_ID:
-        if (bpf_probe_read_user(&map_id, sizeof(map_id), uattr))
+        if (bpf_probe_read_user(&id, sizeof(id), uattr) || !is_our_map(id))
             goto out;
-        if (!is_our_map(map_id))
+        kind = EBPF_TAMPER_MAP;
+        break;
+    case BPF_PROG_GET_FD_BY_ID:
+        if (bpf_probe_read_user(&id, sizeof(id), uattr) || !is_our_prog(id))
             goto out;
+        kind = EBPF_TAMPER_PROG;
+        break;
+    case BPF_LINK_GET_FD_BY_ID:
+        if (bpf_probe_read_user(&id, sizeof(id), uattr) || !is_our_link(id))
+            goto out;
+        kind = EBPF_TAMPER_LINK;
         break;
     default:
         goto out;
     }
 
-    state.tamper.map_id = map_id;
-    state.tamper.cmd    = cmd;
+    state.tamper.kind = kind;
+    state.tamper.id   = id;
+    state.tamper.cmd  = cmd;
     ebpf_events_state__set(EBPF_EVENTS_STATE_BPF, &state);
 out:
     preempt_enable();
@@ -1380,11 +1512,12 @@ int tracepoint_syscalls_sys_exit_bpf(struct syscall_trace_exit *ctx)
     event->hdr.type = EBPF_EVENT_PROCESS_TAMPER;
     event->hdr.ts   = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->pids, task);
-    event->map_id = state->tamper.map_id;
-    event->cmd    = state->tamper.cmd;
-    event->flags  = state->tamper.flags;
-    event->key    = state->tamper.key;
-    event->ret    = SYSCALL_EXIT_RET(ctx);
+    event->kind  = state->tamper.kind;
+    event->id    = state->tamper.id;
+    event->cmd   = state->tamper.cmd;
+    event->flags = state->tamper.flags;
+    event->key   = state->tamper.key;
+    event->ret   = SYSCALL_EXIT_RET(ctx);
 
     ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
 del:
