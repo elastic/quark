@@ -1337,6 +1337,12 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		int renameat2_renamed =
 		    (btf_number_of_params(btf, "do_renameat2") == -1);
 
+		/*
+		 * The do_filp_open() return is shared with QQ_FILE_ACCESS,
+		 * the file event side of it is behind this flag.
+		 */
+		p->rodata->file_events_enabled = 1;
+
 		if (use_fentry) {
 			if (renameat2_renamed)
 				bpf_program__set_autoload(p->progs.fentry__filename_renameat2, 1);

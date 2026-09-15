@@ -1438,7 +1438,9 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
- * Next FILE_ACCESS event for our pid, skipping unrelated process events.
+ * Next FILE_ACCESS event for our pid, skipping unrelated process events. The
+ * queue was opened without QQ_FILE, so a file event from the shared
+ * do_filp_open() probe is a leak, not something to skip.
  */
 static const struct quark_event *
 drain_file_access(struct quark_queue *qq)
@@ -1447,6 +1449,8 @@ drain_file_access(struct quark_queue *qq)
 
 	for (;;) {
 		qev = drain_for_pid(qq, getpid());
+		if (qev->events & QUARK_EV_FILE)
+			errx(1, "QUARK_EV_FILE without QQ_FILE");
 		if (qev->events & QUARK_EV_FILE_ACCESS)
 			return (qev);
 	}
@@ -1573,6 +1577,26 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qfa->path, leaf));
 	assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
 	assert(!(qfa->open_flags & O_CREAT));
+	assert_next_access_path(&qq, parent_file);
+
+	/*
+	 * O_PATH is a class of its own: the leaf was read already but is
+	 * reported again, the repeat is not, so the next event is the O_PATH
+	 * open of parent_file.
+	 */
+	if ((fd = open(leaf, O_PATH)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(leaf, O_PATH)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(parent_file, O_PATH)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, leaf));
+	assert(qfa->open_flags & O_PATH);
 	assert_next_access_path(&qq, parent_file);
 
 	/*

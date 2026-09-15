@@ -185,7 +185,7 @@ filters the resolved path in the resulting
 itself.
 The walk does not cross mount points.
 .Pp
-.Ft void
+.Ft int
 .Fn quark_queue_file_access_name_reset "struct quark_queue *qq"
 .Pp
 Removes every registered name, after which nothing is reported.
@@ -193,9 +193,15 @@ Removes every registered name, after which nothing is reported.
 Zero on success, -1 otherwise and
 .Va errno
 is set.
-In the case of an error, the internal state is cleared up and a
+In the case of an error from
+.Fn quark_queue_open ,
+the internal state is cleared up and a
 .Xr quark_queue_close 3
-should NOT be issued.
+should NOT be issued; a failed
+.Fn quark_queue_file_access_name_add
+or
+.Fn quark_queue_file_access_name_reset
+leaves the queue usable.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
 .Xr quark_process_lookup 3 ,
