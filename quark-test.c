@@ -1484,6 +1484,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	char				 parent_file[PATH_MAX], other[PATH_MAX];
 	char				 missing[PATH_MAX], noexec[PATH_MAX];
 	char				 deep[PATH_MAX], toodeep[PATH_MAX];
+	char				 longname[QUARK_FILE_ACCESS_NAME_MAX + 8];
 	int				 fd;
 	pid_t				 child;
 
@@ -1633,11 +1634,22 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qfa->requested, "quark-test-missing"));
 	assert(qfa->base_dir != NULL && !strcmp(qfa->base_dir, dir));
 	assert(!strcmp(qfa->path, missing));
-	/* Same failure again is not re-emitted, a read of noexec is next */
+	/*
+	 * The same failure again is not re-emitted, the same failure with
+	 * another access class is: the next events are the write intent
+	 * failure and the read of noexec.
+	 */
 	assert(open(missing, O_RDONLY) == -1 && errno == ENOENT);
+	assert(open(missing, O_WRONLY) == -1 && errno == ENOENT);
 	if ((fd = open(noexec, O_RDONLY)) == -1)
 		err(1, "open");
 	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+	assert(qfa->error == ENOENT);
+	assert(!strcmp(qfa->requested, missing));
+	assert((qfa->open_flags & O_ACCMODE) == O_WRONLY);
 	assert_next_access_path(&qq, noexec);
 
 	/*
@@ -1694,6 +1706,21 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(qfa->base_dir != NULL && !strcmp(qfa->base_dir, dir));
 	snprintf(other, sizeof(other), "%s/quark-test-anchor/a/nothing", dir);
 	assert(!strcmp(qfa->path, other));
+
+	/*
+	 * A leaf too long to be an anchor itself is still reported under a
+	 * parent anchor, as a completed open of it would be.
+	 */
+	memset(longname, 'x', sizeof(longname) - 1);
+	longname[sizeof(longname) - 1] = '\0';
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/%s", dir,
+	    longname);
+	assert(open(other, O_RDONLY) == -1 && errno == ENOENT);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+	assert(qfa->error == ENOENT);
+	assert(!strcmp(qfa->requested, other));
 
 	/*
 	 * EACCES: exec of a file without execute permission fails in the

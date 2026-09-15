@@ -384,8 +384,9 @@ struct {
 /*
  * Failed opens have no inode; they are deduplicated per (process life, dirfd,
  * requested string, errno) instead, the string as a 32 bit FNV-1a hash. Same
- * value and same contract as the file map, a hash collision costs a
- * duplicate suppression of a different name and nothing else.
+ * value, same per class bits and same contract as the file map; a hash
+ * collision costs a duplicate suppression of a different name and nothing
+ * else.
  */
 struct file_access_fail_key {
     u32 tgid;
@@ -406,7 +407,6 @@ struct {
 #define FILE_ACCESS_CLASS_WRITE (1ULL << 1)
 #define FILE_ACCESS_CLASS_EXEC (1ULL << 2)
 #define FILE_ACCESS_CLASS_PATH (1ULL << 3)
-#define FILE_ACCESS_CLASS_FAILED (1ULL << 4)
 
 // include/uapi/asm-generic/fcntl.h, include/linux/fs.h (__FMODE_EXEC)
 #define FILE_ACCESS_O_ACCMODE 00000003
@@ -667,13 +667,16 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
     }
     len  = *(volatile int *)&scratch->len;
     leaf = *(volatile u32 *)&scratch->leaf & (FILE_ACCESS_FILENAME_MAX - 1);
-    if (len - 1 - leaf >= EBPF_FILE_ACCESS_NAME_MAX) // too long to be an anchor
-        return;
-    __builtin_memset(&scratch->key, 0, sizeof(scratch->key));
-    if (bpf_probe_read_kernel_str(scratch->key.name, sizeof(scratch->key.name),
-                                  &scratch->filename[leaf]) <= 0)
-        return;
-    u32 *roles = bpf_map_lookup_elem(&elastic_ebpf_file_access_anchors, &scratch->key);
+    // A leaf too long to be an anchor can still sit under a parent anchor,
+    // as on the success path.
+    u32 *roles = NULL;
+    if (len - 1 - leaf < EBPF_FILE_ACCESS_NAME_MAX) {
+        __builtin_memset(&scratch->key, 0, sizeof(scratch->key));
+        if (bpf_probe_read_kernel_str(scratch->key.name, sizeof(scratch->key.name),
+                                      &scratch->filename[leaf]) <= 0)
+            return;
+        roles = bpf_map_lookup_elem(&elastic_ebpf_file_access_anchors, &scratch->key);
+    }
     if ((roles == NULL || !(*roles & EBPF_FILE_ACCESS_ANCHOR_LEAF)) &&
         !file_access_string_anchored(scratch))
         return;
@@ -684,7 +687,7 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
     scratch->fail_key.dfd       = dfd;
     scratch->fail_key.name_hash = hash;
     if (ebpf_dedup__test_and_set(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key,
-                                 &scratch->fresh, task, FILE_ACCESS_CLASS_FAILED))
+                                 &scratch->fresh, task, file_access_class(open_flags)))
         return;
 
     event = get_event_buffer();
