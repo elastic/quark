@@ -415,15 +415,18 @@ struct raw_file {
  */
 /*
  * Roles for quark_queue_file_access_name_add(3), name is a file or a
- * directory; a directory covers up to three levels below it.
+ * directory; a directory covers up to three levels below it. OTHER_TASK
+ * modifies either: a /proc/<pid>/ entry reached through the name is only
+ * reported when it belongs to another task than the caller.
  */
 #define QUARK_FILE_ACCESS_NAME_LEAF	(1 << 0)
 #define QUARK_FILE_ACCESS_NAME_PARENT	(1 << 1)
+#define QUARK_FILE_ACCESS_NAME_OTHER_TASK (1 << 2)
 #define QUARK_FILE_ACCESS_NAME_MAX	64		/* including NUL */
 
 #define QUARK_FILE_ACCESS_F_FAILED	(1 << 0)	/* error set, inode data absent */
 #define QUARK_FILE_ACCESS_F_RELATIVE	(1 << 1)	/* requested is relative to base_dir */
-#define QUARK_FILE_ACCESS_F_PROCFS	(1 << 2)	/* /proc/<pid>/ entry, target_* set */
+#define QUARK_FILE_ACCESS_F_PROCFS	(1 << 2)	/* a task's /proc/<pid>/ entry, own included, target_* set */
 
 struct quark_file_access {
 	const char	*path;		/* resolved path, NULL if unknown */

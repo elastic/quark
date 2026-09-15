@@ -1504,10 +1504,14 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	    QUARK_FILE_ACCESS_NAME_LEAF));
 	assert(!quark_queue_file_access_name_add(&qq, "maps",
 	    QUARK_FILE_ACCESS_NAME_LEAF));
+	assert(!quark_queue_file_access_name_add(&qq, "status",
+	    QUARK_FILE_ACCESS_NAME_LEAF|QUARK_FILE_ACCESS_NAME_OTHER_TASK));
 	/* Bad input is refused */
 	assert(quark_queue_file_access_name_add(&qq, "a/b",
 	    QUARK_FILE_ACCESS_NAME_LEAF) == -1);
 	assert(quark_queue_file_access_name_add(&qq, "", 0) == -1);
+	assert(quark_queue_file_access_name_add(&qq, "status",
+	    QUARK_FILE_ACCESS_NAME_OTHER_TASK) == -1);
 
 	if (mkdtemp(dir) == NULL)
 		err(1, "mkdtemp");
@@ -1751,7 +1755,10 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(qfa->open_flags & 0x20); /* __FMODE_EXEC */
 
 	/*
-	 * procfs: opening another task's maps names the target
+	 * procfs: an open of a task's entry names the target, the opener's
+	 * own included, unless the name carries OTHER_TASK: our own maps is
+	 * reported with ourselves as the target, our own status is not, and
+	 * the child's status and maps name the child.
 	 */
 	{
 		int	pfd[2];
@@ -1768,6 +1775,28 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 			_exit(0);
 		}
 		close(pfd[0]);
+		if ((fd = open("/proc/self/maps", O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		if ((fd = open("/proc/self/status", O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		snprintf(buf, sizeof(buf), "/proc/%d/status", child);
+		if ((fd = open(buf, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_PROCFS);
+		snprintf(other, sizeof(other), "/proc/%d/maps", getpid());
+		assert(!strcmp(qfa->path, other));
+		assert(qfa->target_pid == (u32)getpid());
+		assert(qfa->target_start_time > 0);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_PROCFS);
+		assert(!strcmp(qfa->path, buf));
+		assert(qfa->target_pid == (u32)child);
 		snprintf(buf, sizeof(buf), "/proc/%d/maps", child);
 		if ((fd = open(buf, O_RDONLY)) == -1)
 			err(1, "open");
