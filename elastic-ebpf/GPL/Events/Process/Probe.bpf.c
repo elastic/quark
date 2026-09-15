@@ -1215,3 +1215,181 @@ int BPF_KPROBE(kprobe__tty_write_old_sig, struct file *file, const char *buf, si
 
     return r;
 }
+
+/*
+ * Map tamper telemetry
+ *
+ * Our maps are written by the probes, and the trusted pids map by the consumer
+ * through bpf(2). Any other process reaching one of them through bpf(2) is
+ * reported: which map, which command, which key when there is one, and what
+ * the kernel answered. The syscall boundary is where the fd is still the
+ * caller's to resolve. A privileged process can still do all of this, just
+ * not quietly.
+ */
+
+/*
+ * Ids of every map we created. Filled by userspace right after load, then
+ * frozen and read-only for programs, so nobody can edit the set. Key is the
+ * map id, the value is unused.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(key_size, sizeof(u32));
+    __uint(value_size, sizeof(u32));
+    __uint(max_entries, 64);
+} elastic_ebpf_events_map_ids SEC(".maps");
+
+/* Prefixes of union bpf_attr, only what we read back from userspace */
+struct bpf_attr_elem {
+    u32 map_fd;
+    u32 pad;
+    u64 key;
+};
+
+struct bpf_attr_batch {
+    u64 in_batch;
+    u64 out_batch;
+    u64 keys;
+    u64 values;
+    u32 count;
+    u32 map_fd;
+};
+
+static bool is_our_map(u32 id)
+{
+    return id != 0 && bpf_map_lookup_elem(&elastic_ebpf_events_map_ids, &id) != NULL;
+}
+
+/*
+ * The id of the bpf map behind an fd of the current task, 0 if it can't be
+ * resolved. If the fd is not a map, private_data is some other struct and the
+ * value read is garbage; it is only ever looked up in our small id set, so a
+ * false hit is as likely as a garbage word matching one of a dozen ids.
+ */
+static u32 bpf_map_id_from_fd(u32 fd)
+{
+    const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    struct files_struct *files     = BPF_CORE_READ(task, files);
+    struct fdtable *fdt            = BPF_CORE_READ(files, fdt);
+    struct file **fdarr;
+    struct file *file = NULL;
+    struct bpf_map *map;
+
+    if (!fdt || fd >= BPF_CORE_READ(fdt, max_fds))
+        return 0;
+    fdarr = BPF_CORE_READ(fdt, fd);
+    if (!fdarr)
+        return 0;
+    if (bpf_probe_read_kernel(&file, sizeof(file), &fdarr[fd]))
+        return 0;
+    if (!file)
+        return 0;
+    map = BPF_CORE_READ(file, private_data);
+    if (!map)
+        return 0;
+
+    return BPF_CORE_READ(map, id);
+}
+
+SEC("tracepoint/syscalls/sys_enter_bpf")
+int tracepoint_syscalls_sys_enter_bpf(struct syscall_trace_enter *ctx)
+{
+    struct ebpf_events_state state = {};
+    struct bpf_attr_elem elem;
+    struct bpf_attr_batch batch;
+    void *uattr;
+    u32 cmd, map_id, fd;
+
+    preempt_disable();
+    if (is_consumer())
+        goto out;
+
+    // bpf(int cmd, union bpf_attr *uattr, unsigned int size)
+    cmd   = SYSCALL_ENTER_ARG(ctx, 0);
+    uattr = (void *)SYSCALL_ENTER_ARG(ctx, 1);
+
+    switch (cmd) {
+    case BPF_MAP_LOOKUP_ELEM:
+    case BPF_MAP_UPDATE_ELEM:
+    case BPF_MAP_DELETE_ELEM:
+    case BPF_MAP_GET_NEXT_KEY:
+    case BPF_MAP_LOOKUP_AND_DELETE_ELEM:
+        if (bpf_probe_read_user(&elem, sizeof(elem), uattr))
+            goto out;
+        map_id = bpf_map_id_from_fd(elem.map_fd);
+        if (!is_our_map(map_id))
+            goto out;
+        if (elem.key && !bpf_probe_read_user(&state.tamper.key, sizeof(state.tamper.key),
+                                             (void *)elem.key))
+            state.tamper.flags |= EBPF_TAMPER_F_KEY;
+        break;
+    case BPF_MAP_LOOKUP_BATCH:
+    case BPF_MAP_LOOKUP_AND_DELETE_BATCH:
+    case BPF_MAP_UPDATE_BATCH:
+    case BPF_MAP_DELETE_BATCH:
+        if (bpf_probe_read_user(&batch, sizeof(batch), uattr))
+            goto out;
+        map_id = bpf_map_id_from_fd(batch.map_fd);
+        if (!is_our_map(map_id))
+            goto out;
+        break;
+    case BPF_MAP_FREEZE:
+    case BPF_OBJ_GET_INFO_BY_FD:
+        // both start with the fd
+        if (bpf_probe_read_user(&fd, sizeof(fd), uattr))
+            goto out;
+        map_id = bpf_map_id_from_fd(fd);
+        if (!is_our_map(map_id))
+            goto out;
+        break;
+    case BPF_MAP_GET_FD_BY_ID:
+        if (bpf_probe_read_user(&map_id, sizeof(map_id), uattr))
+            goto out;
+        if (!is_our_map(map_id))
+            goto out;
+        break;
+    default:
+        goto out;
+    }
+
+    state.tamper.map_id = map_id;
+    state.tamper.cmd    = cmd;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_BPF, &state);
+out:
+    preempt_enable();
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_bpf")
+int tracepoint_syscalls_sys_exit_bpf(struct syscall_trace_exit *ctx)
+{
+    struct ebpf_events_state *state;
+    struct ebpf_process_tamper_event *event;
+    const struct task_struct *task;
+
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_BPF);
+    if (!state)
+        goto out;
+
+    task  = (struct task_struct *)bpf_get_current_task();
+    event = get_zeroed_event_buffer(sizeof(*event));
+    if (!event)
+        goto del;
+
+    event->hdr.type = EBPF_EVENT_PROCESS_TAMPER;
+    event->hdr.ts   = bpf_ktime_get_boot_ns();
+    ebpf_pid_info__fill(&event->pids, task);
+    event->map_id = state->tamper.map_id;
+    event->cmd    = state->tamper.cmd;
+    event->flags  = state->tamper.flags;
+    event->key    = state->tamper.key;
+    event->ret    = SYSCALL_EXIT_RET(ctx);
+
+    ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
+del:
+    ebpf_events_state__del(EBPF_EVENTS_STATE_BPF);
+out:
+    preempt_enable();
+    return 0;
+}

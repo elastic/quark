@@ -123,6 +123,13 @@ Enable EBPF-only executable mprotect attempt events.
 Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
+.It Dv QQ_TAMPER
+Enable EBPF-only map tamper events.
+Each event describes one
+.Xr bpf 2
+call by a process other than the consumer that reached one of quark's eBPF
+maps, including the trusted pids map, see
+.Fn quark_queue_trusted_pid_add .
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.

@@ -260,6 +260,7 @@ enum raw_types {
 	RAW_TTY,
 	RAW_GETPID,
 	RAW_MPROTECT,
+	RAW_TAMPER,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -432,6 +433,28 @@ struct raw_mprotect {
 	struct quark_mprotect quark_mprotect;
 };
 
+/*
+ * A process other than the consumer reached one of quark's maps through
+ * bpf(2). Reported at syscall exit, ret is what the kernel answered, so a
+ * stranger's insert into the trusted map that succeeded shows as cmd
+ * BPF_MAP_UPDATE_ELEM, map_name "elastic_ebpf_events_trusted_pids", key its
+ * tgid, ret 0. map_name is owned by the queue and valid until
+ * quark_queue_close(3).
+ */
+#define QUARK_TAMPER_F_KEY		(1 << 0)	/* key is valid */
+struct quark_tamper {
+	u32		 map_id;	/* kernel id of the map reached */
+	u32		 cmd;		/* enum bpf_cmd */
+	u32		 flags;		/* QUARK_TAMPER_F_* */
+	u32		 key;		/* map key, a tgid, if QUARK_TAMPER_F_KEY */
+	s64		 ret;		/* bpf(2) return value */
+	const char	*map_name;	/* ELF name of the map */
+};
+
+struct raw_tamper {
+	struct quark_tamper quark_tamper;
+};
+
 struct quark_module_load {
 	char *name;
 	char *version;
@@ -505,6 +528,7 @@ struct raw_event {
 		struct raw_file			file;
 		struct raw_ptrace		ptrace;
 		struct raw_mprotect		mprotect;
+		struct raw_tamper		tamper;
 		struct raw_module_load		module_load;
 		struct raw_shm			shm;
 		struct raw_tty			tty;
@@ -542,6 +566,7 @@ struct quark_event {
 #define QUARK_EV_TTY			(1 << 13)
 #define QUARK_EV_GETPID			(1 << 14)
 #define QUARK_EV_MPROTECT		(1 << 15)
+#define QUARK_EV_TAMPER			(1 << 16)
 	u64				 events;
 	u64				 time;
 	const struct quark_process	*process;
@@ -551,6 +576,7 @@ struct quark_event {
 	struct quark_file		*file;
 	struct quark_ptrace		 ptrace;
 	struct quark_mprotect		 mprotect;
+	struct quark_tamper		 tamper;
 	struct quark_module_load	*module_load;
 	struct quark_shm		*shm;
 	struct quark_tty		*tty;
@@ -924,6 +950,7 @@ struct quark_queue_attr {
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
 #define QQ_MPROTECT		(1 << 15)
+#define QQ_TAMPER		(1 << 16)
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */

@@ -47,6 +47,7 @@ enum ebpf_event_type {
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
     EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
     EBPF_EVENT_PROCESS_MPROTECT             = (1 << 22),
+    EBPF_EVENT_PROCESS_TAMPER               = (1 << 23),
 };
 
 struct ebpf_event_header {
@@ -396,6 +397,22 @@ struct ebpf_process_mprotect_event {
 
     // Variable length fields: path (only present when file_backed)
     struct ebpf_varlen_fields_start vl_fields;
+} __attribute__((packed));
+
+#define EBPF_TAMPER_F_KEY (1 << 0) // key is valid
+
+/*
+ * A process other than the consumer reached one of our maps through bpf(2).
+ * Reported at syscall exit, so ret is what the kernel answered.
+ */
+struct ebpf_process_tamper_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    uint32_t map_id; // kernel id of the map reached
+    uint32_t cmd;    // enum bpf_cmd
+    uint32_t flags;  // EBPF_TAMPER_F_*
+    uint32_t key;    // map key, a tgid, when EBPF_TAMPER_F_KEY
+    int64_t ret;     // bpf(2) return value
 } __attribute__((packed));
 
 enum ebpf_net_info_transport {
