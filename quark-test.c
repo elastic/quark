@@ -2413,8 +2413,8 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 
 /*
  * Initialize a backend-less queue for tests that only exercise the
- * process and container caches. No queue_ops means populate and close
- * are NOPs.
+ * process and container caches. No queue_ops means populate, stats and
+ * close are NOPs.
  */
 static void
 test_queue_init(struct quark_queue *qq)
@@ -2486,6 +2486,20 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	assert(TAILQ_FIRST(&container.processes) == &qp);
 
 	/*
+	 * A nested cgroup inside the same container must preserve the
+	 * cached ID and the container link.
+	 */
+	cgroup = strdup("/system.slice/docker-old.scope/init.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(!strcmp(qp.cgroup, "/system.slice/docker-old.scope/init.scope"));
+	assert(qp.container == &container);
+	assert(qp.container_id == cached);
+	assert(qp.container_id_parsed);
+	assert(TAILQ_FIRST(&container.processes) == &qp);
+
+	/*
 	 * A different cgroup must remove the old link and clear the
 	 * cached ID.
 	 */
@@ -2500,8 +2514,24 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 
 	assert(!strcmp(process_container_id(&qp), "containerd://new"));
 	assert(qp.container_id_parsed);
+	cached = qp.container_id;
 
-	/* Cache a negative parse result. */
+	/*
+	 * A cgroup that does not name a container keeps the last known
+	 * container ID, the process may have moved to a nested cgroup.
+	 */
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container_id == cached);
+	assert(qp.container_id_parsed);
+
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	/* Cache a negative parse result on a fresh process. */
+	bzero(&qp, sizeof(qp));
 	cgroup = strdup("/user.slice/user-1000.slice");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
@@ -2511,6 +2541,15 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 
 	/* The second call uses the cached negative result. */
 	assert(process_container_id(&qp) == NULL);
+	assert(qp.container_id_parsed);
+
+	/* A container cgroup after a negative result must be parsed. */
+	cgroup = strdup("/system.slice/docker-late.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(!qp.container_id_parsed);
+	assert(!strcmp(process_container_id(&qp), "docker://late"));
 	assert(qp.container_id_parsed);
 
 	free(qp.cgroup);
@@ -2531,6 +2570,7 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_process	*iter_qp, *lookup_qp;
 	struct quark_process_iter qi;
 	struct quark_container	*container;
+	struct quark_queue_stats qs;
 	const struct quark_process *seen;
 	const char		*cached;
 
@@ -2593,6 +2633,10 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	assert(iter_qp->container != NULL);
 	assert(!strcmp(iter_qp->container->container_id, "docker://iterator"));
 	assert(quark_process_iter_next(&qi) == NULL);
+
+	/* Stats must work without a backend. */
+	quark_queue_get_stats(&qq, &qs);
+	assert(qs.insertions == 2);
 
 	quark_queue_close(&qq);
 	assert(qp.container == NULL);
