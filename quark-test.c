@@ -1485,7 +1485,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	char				 parent_file[PATH_MAX], other[PATH_MAX];
 	char				 missing[PATH_MAX], noexec[PATH_MAX];
 	char				 deep[PATH_MAX], toodeep[PATH_MAX];
-	char				 flood[PATH_MAX];
+	char				 flood[PATH_MAX], one[PATH_MAX], two[PATH_MAX];
 	char				 longname[QUARK_FILE_ACCESS_NAME_MAX + 8];
 	u64				 lost;
 	int				 fd, i, nflood;
@@ -1654,6 +1654,54 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qfa->requested, missing));
 	assert((qfa->open_flags & O_ACCMODE) == O_WRONLY);
 	assert_next_access_path(&qq, noexec);
+
+	/*
+	 * The base directory is part of the failure key, not the dirfd
+	 * number: the same relative name missing from two directories is two
+	 * attempts, through AT_FDCWD after a chdir and through a dirfd whose
+	 * number was reused for the other directory.
+	 */
+	snprintf(one, sizeof(one), "%s/one", dir);
+	snprintf(two, sizeof(two), "%s/two", dir);
+	if (mkdir(one, 0700) == -1 || mkdir(two, 0700) == -1)
+		err(1, "mkdir");
+	if (chdir(one) == -1)
+		err(1, "chdir");
+	assert(open("quark-test-missing", O_RDONLY) == -1 && errno == ENOENT);
+	if (chdir(two) == -1)
+		err(1, "chdir");
+	assert(open("quark-test-missing", O_RDONLY) == -1 && errno == ENOENT);
+	if (chdir("/") == -1)
+		err(1, "chdir");
+	if ((fd = open(one, O_RDONLY|O_DIRECTORY)) == -1)
+		err(1, "open");
+	assert(openat(fd, "quark-test-missing", O_WRONLY) == -1 &&
+	    errno == ENOENT);
+	close(fd);
+	if ((i = open(two, O_RDONLY|O_DIRECTORY)) == -1)
+		err(1, "open");
+	assert(i == fd); /* the number is reused */
+	assert(openat(fd, "quark-test-missing", O_WRONLY) == -1 &&
+	    errno == ENOENT);
+	close(fd);
+	for (i = 0; i < 4; i++) {
+		const char	*base = (i & 1) ? "two" : "one";
+
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_RELATIVE);
+		assert(qfa->error == ENOENT);
+		assert(!strcmp(qfa->requested, "quark-test-missing"));
+		snprintf(other, sizeof(other), "%s/%s", dir, base);
+		assert(qfa->base_dir != NULL && !strcmp(qfa->base_dir, other));
+		snprintf(other, sizeof(other), "%s/%s/quark-test-missing", dir,
+		    base);
+		assert(!strcmp(qfa->path, other));
+		assert((qfa->open_flags & O_ACCMODE) ==
+		    (i < 2 ? O_RDONLY : O_WRONLY));
+		assert(qfa->dfd == (i < 2 ? AT_FDCWD : fd));
+	}
 
 	/*
 	 * A parent anchor reaches three levels down, on the dentry of a
@@ -1838,6 +1886,8 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	(void)rmdir(other);
 	snprintf(other, sizeof(other), "%s/quark-test-anchor/a", dir);
 	(void)rmdir(other);
+	(void)rmdir(one);
+	(void)rmdir(two);
 	(void)rmdir(parent_dir);
 	(void)rmdir(dir);
 

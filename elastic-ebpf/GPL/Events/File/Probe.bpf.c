@@ -383,17 +383,22 @@ struct {
 } elastic_ebpf_file_access_file_seen SEC(".maps");
 
 /*
- * Failed opens have no inode; they are deduplicated per (process life, dirfd,
- * requested string, errno) instead, the string as a 32 bit FNV-1a hash. Same
- * value, same per class bits and same contract as the file map; a hash
- * collision costs a duplicate suppression of a different name and nothing
- * else.
+ * Failed opens have no inode; they are deduplicated per (process life, base
+ * directory, requested string, errno) instead, the string as a 32 bit FNV-1a
+ * hash. The base directory is the inode a relative name was resolved
+ * against, not the dirfd number: AT_FDCWD names a different directory after
+ * every chdir() and a closed descriptor is reused, so the number would fold
+ * the same relative name in different directories into one attempt. It is
+ * zero for an absolute name. Same value, same per class bits and same
+ * contract as the file map; a hash collision costs a duplicate suppression
+ * of a different name and nothing else.
  */
 struct file_access_fail_key {
     u32 tgid;
     s32 error;
-    s32 dfd;
+    u32 base_dev;
     u32 name_hash;
+    u64 base_inode;
 };
 
 struct {
@@ -624,6 +629,7 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
     struct ebpf_file_access_event *event;
     struct file_access_scratch    *scratch;
     struct task_struct            *task;
+    struct dentry                 *base;
     const char                    *name;
     u32                            zero = 0, hash;
     int                            len, leaf, i, j;
@@ -685,13 +691,41 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
         !file_access_string_anchored(scratch))
         return;
 
-    task                        = (struct task_struct *)bpf_get_current_task();
-    scratch->fail_key.tgid      = BPF_CORE_READ(task, tgid);
-    scratch->fail_key.error     = error;
-    scratch->fail_key.dfd       = dfd;
-    scratch->fail_key.name_hash = hash;
-    if (ebpf_dedup__test_and_set(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key,
-                                 &scratch->fresh, task, file_access_class(open_flags)))
+    task = (struct task_struct *)bpf_get_current_task();
+
+    // The base directory of a relative name, part of the dedup key and the
+    // cwd field below. Left empty for an absolute name or a dirfd that is
+    // not a valid descriptor.
+    scratch->path.dentry = NULL;
+    scratch->path.mnt    = NULL;
+    relative             = scratch->filename[0] != '/';
+    if (relative) {
+        if (dfd == AT_FDCWD) {
+            scratch->path = BPF_CORE_READ(task, fs, pwd);
+        } else {
+            struct file **fdt = BPF_CORE_READ(task, files, fdt, fd);
+            struct file  *df  = NULL;
+            u32           max = BPF_CORE_READ(task, files, fdt, max_fds);
+
+            if (dfd >= 0 && (u32)dfd < max)
+                bpf_core_read(&df, sizeof(df), &fdt[dfd]);
+            if (df != NULL)
+                scratch->path = BPF_CORE_READ(df, f_path);
+        }
+    }
+
+    scratch->fail_key.tgid       = BPF_CORE_READ(task, tgid);
+    scratch->fail_key.error      = error;
+    scratch->fail_key.base_dev   = 0;
+    scratch->fail_key.name_hash  = hash;
+    scratch->fail_key.base_inode = 0;
+    base = scratch->path.dentry; // a plain load: scratch is not a kernel type
+    if (base != NULL) {
+        scratch->fail_key.base_dev   = BPF_CORE_READ(base, d_inode, i_sb, s_dev);
+        scratch->fail_key.base_inode = BPF_CORE_READ(base, d_inode, i_ino);
+    }
+    if (ebpf_dedup__test(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key, &scratch->fresh,
+                         task, file_access_class(open_flags)))
         return;
 
     event = get_event_buffer();
@@ -721,23 +755,8 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // cwd: the directory a relative name was resolved against
-    relative = scratch->filename[0] != '/';
     if (relative) {
         event->flags |= EBPF_FILE_ACCESS_F_RELATIVE;
-        if (dfd == AT_FDCWD) {
-            scratch->path = BPF_CORE_READ(task, fs, pwd);
-        } else {
-            struct file **fdt = BPF_CORE_READ(task, files, fdt, fd);
-            struct file  *df  = NULL;
-            u32           max = BPF_CORE_READ(task, files, fdt, max_fds);
-
-            scratch->path.dentry = NULL;
-            scratch->path.mnt    = NULL;
-            if (dfd >= 0 && (u32)dfd < max)
-                bpf_core_read(&df, sizeof(df), &fdt[dfd]);
-            if (df != NULL)
-                scratch->path = BPF_CORE_READ(df, f_path);
-        }
         field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_CWD);
         if (scratch->path.dentry != NULL)
             size = ebpf_resolve_path_to_string(field->data, &scratch->path, task);
@@ -753,7 +772,10 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
     size  = ebpf_resolve_pids_ss_cgroup_path_to_string(field->data, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
-    ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+    // The class is claimed only once the event is out, see ebpf_dedup__set().
+    if (ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0) == 0)
+        ebpf_dedup__set(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key,
+                        &scratch->fresh);
 }
 
 static int do_filp_open__exit(int dfd, struct filename *pathname, const struct open_flags *op,
