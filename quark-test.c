@@ -3158,10 +3158,18 @@ t_container_remove(const struct test *t, struct quark_queue_attr *qa)
 	process.container = container;
 	TAILQ_INSERT_TAIL(&container->processes, &process, entry_container);
 
-	quark_container_remove(&qq, "container");
+	errno = 0;
+	assert(quark_container_remove(&qq, "absent") == -1);
+	assert(errno == ESRCH);
+	assert(quark_pod_remove(&qq, "absent") == -1);
+	assert(errno == ESRCH);
+	assert(TAILQ_EMPTY(&qq.event_gc));
+
+	assert(quark_container_remove(&qq, "container") == 0);
 	marked = container->gc.gc_time;
 	assert(marked != 0);
-	quark_container_remove(&qq, "container");
+	/* Repeated removal is idempotent and still reports success. */
+	assert(quark_container_remove(&qq, "container") == 0);
 	assert(container->gc.gc_time == marked);
 	assert(TAILQ_FIRST(&qq.event_gc) == &container->gc);
 	assert(TAILQ_NEXT(&container->gc, gc_entry) == NULL);
@@ -3179,8 +3187,13 @@ t_container_remove(const struct test *t, struct quark_queue_attr *qa)
 	assert(TAILQ_EMPTY(&qq.event_gc));
 	assert(quark_container_lookup(&qq, "orphan") == orphan);
 
-	quark_container_remove(&qq, "orphan");
-	quark_container_remove(&qq, "orphan");
+	/* A collected id is absent again. */
+	errno = 0;
+	assert(quark_container_remove(&qq, "container") == -1);
+	assert(errno == ESRCH);
+
+	assert(quark_container_remove(&qq, "orphan") == 0);
+	assert(quark_container_remove(&qq, "orphan") == 0);
 	assert(quark_queue_get_event(&qq) == NULL);
 	assert(quark_container_lookup(&qq, "orphan") == NULL);
 	assert(TAILQ_EMPTY(&qq.event_gc));
@@ -3216,14 +3229,14 @@ t_pod_remove(const struct test *t, struct quark_queue_attr *qa)
 		TAILQ_INSERT_TAIL(&child->processes, &process, entry_container);
 
 		if (child_first)
-			quark_container_remove(&qq, "queued");
-		quark_pod_remove(&qq, "pod");
+			assert(quark_container_remove(&qq, "queued") == 0);
+		assert(quark_pod_remove(&qq, "pod") == 0);
 		marked = pod->gc.gc_time;
 		assert(marked != 0);
-		quark_pod_remove(&qq, "pod");
+		assert(quark_pod_remove(&qq, "pod") == 0);
 		assert(pod->gc.gc_time == marked);
 		if (!child_first)
-			quark_container_remove(&qq, "queued");
+			assert(quark_container_remove(&qq, "queued") == 0);
 		assert(quark_queue_get_event(&qq) == NULL);
 		assert(quark_pod_lookup(&qq, "pod") == pod);
 		assert(quark_container_lookup(&qq, "child") == child);
@@ -3237,6 +3250,9 @@ t_pod_remove(const struct test *t, struct quark_queue_attr *qa)
 		assert(process.container == NULL);
 		assert(TAILQ_EMPTY(&qq.event_gc));
 		assert(quark_container_lookup(&qq, "orphan") == orphan);
+		errno = 0;
+		assert(quark_pod_remove(&qq, "pod") == -1);
+		assert(errno == ESRCH);
 		quark_queue_close(&qq);
 	}
 

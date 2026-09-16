@@ -95,8 +95,8 @@ struct quark_pod	*quark_pod_create(struct quark_queue *, const char *,
 struct quark_container	*quark_container_create(struct quark_queue *,
 			     const char *, const char *, const char *,
 			     const char *);
-void			 quark_pod_remove(struct quark_queue *, const char *);
-void			 quark_container_remove(struct quark_queue *, const char *);
+int			 quark_pod_remove(struct quark_queue *, const char *);
+int			 quark_container_remove(struct quark_queue *, const char *);
 void			 quark_ruleset_init(struct quark_ruleset *);
 void			 quark_ruleset_clear(struct quark_ruleset *);
 int			 quark_ruleset_parse(struct quark_ruleset *, FILE *,
@@ -619,9 +619,10 @@ struct gc_link {
 };
 
 /*
- * gc queue, after processes or sockets are are marked for deletion, they still
- * get a grace time of qq->cache_grace_time before removal, this is to allow
- * lookups from users on processes and sockets that have just vanished.
+ * gc queue, after processes, sockets, pods or containers are marked for
+ * deletion, they still get a grace time of qq->cache_grace_time before removal,
+ * this is to allow lookups from users on objects that have just vanished.
+ * Marking is final, nothing unmarks an object once it is in the queue.
  */
 TAILQ_HEAD(gc_queue, gc_link);
 
@@ -727,7 +728,10 @@ RB_HEAD(label_tree, label_node);
 RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
 
 /*
- * A container's lifecycle is tied to its parent quark_pod.
+ * A container is removed when its parent quark_pod is removed, or on its own
+ * through quark_container_remove(). Either way it stays valid for the gc grace
+ * time and is then freed, possibly while its pod is still alive. A container
+ * without a pod has a NULL pod backpointer.
  */
 struct quark_container {
 	struct gc_link			 gc;		/* must be first */
