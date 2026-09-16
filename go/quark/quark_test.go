@@ -294,14 +294,14 @@ func TestBoottime(t *testing.T) {
 			}(seen[w])
 		}
 		wg.Wait()
-		all := make(map[uint64]struct{})
+
+		seenAny := false
 		for _, m := range seen {
 			for v := range m {
-				all[v] = struct{}{}
+                seenAny = true
+                require.Equal(t, boottime, v)
 			}
 		}
-		require.Len(t, all, 1)
-		_, ok := all[boottime]
-		require.True(t, ok)
+		require.True(t, seenAny, "no boottime value returned from any worker")
 	})
 }
