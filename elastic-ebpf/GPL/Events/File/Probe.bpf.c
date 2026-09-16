@@ -436,6 +436,13 @@ struct {
 // 512 byte combined stack limit already.
 #define FILE_ACCESS_FILENAME_MAX 256
 
+// The task a /proc/<pid>/ entry belongs to, see file_access_procfs_target().
+struct file_access_target {
+    u32 tid;
+    u32 tgid;
+    u64 start_time_ns;
+};
+
 struct file_access_scratch {
     char filename[FILE_ACCESS_FILENAME_MAX];
     struct ebpf_file_access_name key;
@@ -445,6 +452,7 @@ struct file_access_scratch {
     struct ebpf_dedup_file_key file_key;
     struct file_access_fail_key fail_key;
     struct ebpf_dedup_seen fresh;
+    struct file_access_target target;
     struct path path;
 };
 
@@ -480,27 +488,71 @@ static __always_inline u32 file_access_anchor(struct ebpf_file_access_name *key,
     return roles != NULL ? *roles : 0;
 }
 
-// True if the leaf is a leaf anchor or one of its FILE_ACCESS_ANCESTORS
-// nearest ancestors is a parent anchor. The walk stops at the root of the
-// dentry tree, which is its own parent, so it does not cross mounts.
-static __always_inline bool file_access_anchored(struct ebpf_file_access_name *key, struct dentry *de)
+// Roles of the anchor that matched: the leaf's if it is a leaf anchor, else
+// those of the first of its FILE_ACCESS_ANCESTORS nearest ancestors that is a
+// parent anchor, 0 if neither. The walk stops at the root of the dentry
+// tree, which is its own parent, so it does not cross mounts.
+static __always_inline u32 file_access_anchored(struct ebpf_file_access_name *key, struct dentry *de)
 {
     struct dentry *parent;
+    u32            roles;
     int            i;
 
-    if (file_access_anchor(key, BPF_CORE_READ(de, d_name.name)) & EBPF_FILE_ACCESS_ANCHOR_LEAF)
-        return true;
+    roles = file_access_anchor(key, BPF_CORE_READ(de, d_name.name));
+    if (roles & EBPF_FILE_ACCESS_ANCHOR_LEAF)
+        return roles;
     for (i = 0; i < FILE_ACCESS_ANCESTORS; i++) {
         parent = BPF_CORE_READ(de, d_parent);
         if (parent == NULL || parent == de)
-            return false;
-        if (file_access_anchor(key, BPF_CORE_READ(parent, d_name.name)) &
-            EBPF_FILE_ACCESS_ANCHOR_PARENT)
-            return true;
+            return 0;
+        roles = file_access_anchor(key, BPF_CORE_READ(parent, d_name.name));
+        if (roles & EBPF_FILE_ACCESS_ANCHOR_PARENT)
+            return roles;
         de = parent;
     }
 
-    return false;
+    return 0;
+}
+
+// Fills target with the task a /proc/<pid>/ entry belongs to, the caller's
+// own included, and returns true if the file is such an entry.
+// PROC_I(inode)->pid identifies the task regardless of how the caller
+// spelled the pid (self, a tid, a pid inside a pid namespace). A task that
+// already exited still yields its tid, tgid and start time are then 0.
+static bool file_access_procfs_target(struct file_access_target *target, struct dentry *de)
+{
+    struct inode       *inode = BPF_CORE_READ(de, d_inode);
+    struct proc_inode  *pi;
+    struct pid         *pid;
+    struct hlist_node  *node;
+    struct task_struct *task;
+
+    target->tid           = 0;
+    target->tgid          = 0;
+    target->start_time_ns = 0;
+    if (BPF_CORE_READ(inode, i_sb, s_magic) != PROC_SUPER_MAGIC)
+        return false;
+    pi  = (struct proc_inode *)((char *)inode - bpf_core_field_offset(struct proc_inode, vfs_inode));
+    pid = BPF_CORE_READ(pi, pid);
+    if (pid == NULL)
+        return false;
+
+    target->tid = BPF_CORE_READ(pid, numbers[0].nr);
+    node        = BPF_CORE_READ(pid, tasks[0].first); // PIDTYPE_PID
+    if (node == NULL) // the task is gone, the entry still names it
+        return true;
+    if (bpf_core_field_exists(struct task_struct, pid_links))
+        task = (struct task_struct *)((char *)node -
+                                      bpf_core_field_offset(struct task_struct, pid_links));
+    else if (bpf_core_field_exists(struct task_struct___4_18, pids))
+        task = (struct task_struct *)((char *)node -
+                                      bpf_core_field_offset(struct task_struct___4_18, pids));
+    else
+        return true;
+    target->tgid          = BPF_CORE_READ(task, tgid);
+    target->start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
+
+    return true;
 }
 
 static void file_access_event__fill_task(struct ebpf_file_access_event *event,
@@ -526,20 +578,30 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     struct file_access_scratch    *scratch;
     struct task_struct            *task;
     struct dentry                 *de;
-    u32                            zero = 0;
+    u32                            zero = 0, roles;
     u64                            class;
+    bool                           procfs;
 
     scratch = bpf_map_lookup_elem(&elastic_ebpf_file_access_scratch, &zero);
     if (scratch == NULL)
         return;
 
-    de = BPF_CORE_READ(f, f_path.dentry);
-    if (!file_access_anchored(&scratch->key, de))
+    de    = BPF_CORE_READ(f, f_path.dentry);
+    roles = file_access_anchored(&scratch->key, de);
+    if (roles == 0)
         return;
 
-    task                    = (struct task_struct *)bpf_get_current_task();
+    task                   = (struct task_struct *)bpf_get_current_task();
+    scratch->file_key.tgid = BPF_CORE_READ(task, tgid);
+
+    // The target of a procfs entry is taken before the dedup test so that an
+    // open skipped for being the caller's own does not claim the slot.
+    procfs = file_access_procfs_target(&scratch->target, de);
+    if (procfs && (roles & EBPF_FILE_ACCESS_ANCHOR_OTHER_TASK) &&
+        scratch->target.tgid == scratch->file_key.tgid)
+        return;
+
     class                   = file_access_class(open_flags);
-    scratch->file_key.tgid  = BPF_CORE_READ(task, tgid);
     scratch->file_key.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
     scratch->file_key.inode = BPF_CORE_READ(de, d_inode, i_ino);
     if (ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key, &scratch->fresh,
@@ -552,11 +614,14 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
 
     file_access_event__fill_task(event, task);
     ebpf_file_info__fill(&event->finfo, de);
-    event->open_flags = open_flags;
-    event->fmode      = BPF_CORE_READ(f, f_mode);
-    event->error      = 0;
-    event->flags      = 0;
-    event->dfd        = 0;
+    event->open_flags           = open_flags;
+    event->fmode                = BPF_CORE_READ(f, f_mode);
+    event->error                = 0;
+    event->flags                = procfs ? EBPF_FILE_ACCESS_F_PROCFS : 0;
+    event->dfd                  = 0;
+    event->target_tid           = scratch->target.tid;
+    event->target_tgid          = scratch->target.tgid;
+    event->target_start_time_ns = scratch->target.start_time_ns;
 
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);
@@ -734,11 +799,14 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
 
     file_access_event__fill_task(event, task);
     __builtin_memset(&event->finfo, 0, sizeof(event->finfo));
-    event->open_flags = open_flags;
-    event->fmode      = 0;
-    event->error      = error;
-    event->flags      = EBPF_FILE_ACCESS_F_FAILED;
-    event->dfd        = dfd;
+    event->open_flags           = open_flags;
+    event->fmode                = 0;
+    event->error                = error;
+    event->flags                = EBPF_FILE_ACCESS_F_FAILED;
+    event->dfd                  = dfd;
+    event->target_tid           = 0;
+    event->target_tgid          = 0;
+    event->target_start_time_ns = 0;
 
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);

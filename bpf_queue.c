@@ -791,6 +791,11 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			qfa->flags |= QUARK_FILE_ACCESS_F_FAILED;
 		if (access->flags & EBPF_FILE_ACCESS_F_RELATIVE)
 			qfa->flags |= QUARK_FILE_ACCESS_F_RELATIVE;
+		if (access->flags & EBPF_FILE_ACCESS_F_PROCFS)
+			qfa->flags |= QUARK_FILE_ACCESS_F_PROCFS;
+		qfa->target_tid = access->target_tid;
+		qfa->target_pid = access->target_tgid;
+		qfa->target_start_time = access->target_start_time_ns;
 
 		break;
 	}
@@ -1914,8 +1919,9 @@ quark_queue_file_access_name_reset(struct quark_queue *qq)
 }
 
 /*
- * Roles accumulate: a name added as a leaf and then as a parent matches both.
- * The name is one path component, the probe compares exactly that.
+ * Roles accumulate: a name added as a leaf and then as a parent matches both,
+ * and OTHER_TASK once given for a name stays until the next reset. The name
+ * is one path component, the probe compares exactly that.
  */
 int
 quark_queue_file_access_name_add(struct quark_queue *qq, const char *name,
@@ -1926,8 +1932,10 @@ quark_queue_file_access_name_add(struct quark_queue *qq, const char *name,
 	u32				 v, cur;
 	size_t				 len;
 
-	if (name == NULL || roles == 0 ||
-	    (roles & ~(QUARK_FILE_ACCESS_NAME_LEAF|QUARK_FILE_ACCESS_NAME_PARENT)))
+	if (name == NULL ||
+	    !(roles & (QUARK_FILE_ACCESS_NAME_LEAF|QUARK_FILE_ACCESS_NAME_PARENT)) ||
+	    (roles & ~(QUARK_FILE_ACCESS_NAME_LEAF|QUARK_FILE_ACCESS_NAME_PARENT|
+	    QUARK_FILE_ACCESS_NAME_OTHER_TASK)))
 		return (errno = EINVAL, -1);
 	len = strlen(name);
 	if (len == 0 || len >= sizeof(k.name) || strchr(name, '/') != NULL)
@@ -1941,6 +1949,8 @@ quark_queue_file_access_name_add(struct quark_queue *qq, const char *name,
 		v |= EBPF_FILE_ACCESS_ANCHOR_LEAF;
 	if (roles & QUARK_FILE_ACCESS_NAME_PARENT)
 		v |= EBPF_FILE_ACCESS_ANCHOR_PARENT;
+	if (roles & QUARK_FILE_ACCESS_NAME_OTHER_TASK)
+		v |= EBPF_FILE_ACCESS_ANCHOR_OTHER_TASK;
 	if (bpf_map__lookup_elem(m, &k, sizeof(k), &cur, sizeof(cur), 0) == 0)
 		v |= cur;
 	if (bpf_map__update_elem(m, &k, sizeof(k), &v, sizeof(v),

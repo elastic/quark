@@ -195,4 +195,6 @@ Changes from 0.8 to 0.9
     quark_queue_file_access_name_add(3), and failed opens with
     EACCES, EPERM or ENOENT of a matching requested name. Events are
     deduplicated in the kernel per process life, file and access
-    class. Experimental.
+    class. Opens of a task's /proc/<pid>/ entries name the target
+    task, a name registered with QUARK_FILE_ACCESS_NAME_OTHER_TASK
+    reports them for other tasks only. Experimental.

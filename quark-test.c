@@ -1496,7 +1496,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	/* One name as a leaf, one as a parent */
+	/* One name as a leaf, one as a parent, procfs maps as a leaf */
 	assert(!quark_queue_file_access_name_add(&qq, "quark-test-secret",
 	    QUARK_FILE_ACCESS_NAME_LEAF));
 	assert(!quark_queue_file_access_name_add(&qq, "quark-test-anchor",
@@ -1505,10 +1505,18 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	    QUARK_FILE_ACCESS_NAME_LEAF));
 	assert(!quark_queue_file_access_name_add(&qq, "quark-test-noexec",
 	    QUARK_FILE_ACCESS_NAME_LEAF));
+	assert(!quark_queue_file_access_name_add(&qq, "maps",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+	assert(!quark_queue_file_access_name_add(&qq, "status",
+	    QUARK_FILE_ACCESS_NAME_LEAF|QUARK_FILE_ACCESS_NAME_OTHER_TASK));
+	assert(!quark_queue_file_access_name_add(&qq, "map_files",
+	    QUARK_FILE_ACCESS_NAME_PARENT));
 	/* Bad input is refused */
 	assert(quark_queue_file_access_name_add(&qq, "a/b",
 	    QUARK_FILE_ACCESS_NAME_LEAF) == -1);
 	assert(quark_queue_file_access_name_add(&qq, "", 0) == -1);
+	assert(quark_queue_file_access_name_add(&qq, "status",
+	    QUARK_FILE_ACCESS_NAME_OTHER_TASK) == -1);
 
 	if (mkdtemp(dir) == NULL)
 		err(1, "mkdtemp");
@@ -1805,6 +1813,102 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	} else
 		warnx("%s: skipping the exec EACCES case under valgrind",
 		    __func__);
+
+	/*
+	 * procfs: an open of a task's entry names the target, the opener's
+	 * own included, unless the name carries OTHER_TASK: our own maps is
+	 * reported with ourselves as the target, our own status is not, and
+	 * the child's status and maps name the child.
+	 */
+	{
+		int	pfd[2];
+		char	buf[PATH_MAX], c;
+
+		if (pipe(pfd) == -1)
+			err(1, "pipe");
+		if ((child = fork()) == -1)
+			err(1, "fork");
+		if (child == 0) {
+			close(pfd[1]);
+			if (read(pfd[0], &c, 1) == -1)
+				_exit(1);
+			_exit(0);
+		}
+		close(pfd[0]);
+		if ((fd = open("/proc/self/maps", O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		if ((fd = open("/proc/self/status", O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		snprintf(buf, sizeof(buf), "/proc/%d/status", child);
+		if ((fd = open(buf, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_PROCFS);
+		snprintf(other, sizeof(other), "/proc/%d/maps", getpid());
+		assert(!strcmp(qfa->path, other));
+		assert(qfa->target_pid == (u32)getpid());
+		assert(qfa->target_start_time > 0);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_PROCFS);
+		assert(!strcmp(qfa->path, buf));
+		assert(qfa->target_pid == (u32)child);
+		snprintf(buf, sizeof(buf), "/proc/%d/maps", child);
+		if ((fd = open(buf, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_PROCFS);
+		assert(!strcmp(qfa->path, buf));
+		assert(qfa->target_pid == (u32)child);
+		assert(qfa->target_tid == (u32)child);
+		assert(qfa->target_start_time > 0);
+
+		/*
+		 * A magic link is followed by an ordinary open: the file that
+		 * comes back is the child's mapped binary, which no anchor
+		 * names, so the open through map_files is not reported and
+		 * carries no target. O_PATH|O_NOFOLLOW opens the link itself, a
+		 * procfs entry under the map_files parent anchor.
+		 */
+		{
+			DIR		*dp;
+			struct dirent	*de;
+
+			snprintf(buf, sizeof(buf), "/proc/%d/map_files", child);
+			if ((dp = opendir(buf)) == NULL)
+				err(1, "opendir");
+			while ((de = readdir(dp)) != NULL)
+				if (de->d_name[0] != '.')
+					break;
+			assert(de != NULL);
+			snprintf(other, sizeof(other), "/proc/%d/map_files/%s",
+			    child, de->d_name);
+			closedir(dp);
+		}
+		if ((fd = open(other, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		if ((fd = open(other, O_PATH|O_NOFOLLOW)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->open_flags & O_PATH);
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_PROCFS);
+		assert(!strcmp(qfa->path, other));
+		assert(qfa->target_pid == (u32)child);
+
+		assert(write(pfd[1], "x", 1) == 1);
+		close(pfd[1]);
+		if (waitpid(child, NULL, 0) == -1)
+			err(1, "waitpid");
+	}
 
 	/*
 	 * A class is claimed only once its event is out. Fill the ring buffer
