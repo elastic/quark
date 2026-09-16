@@ -3138,13 +3138,14 @@ t_container_dump(const struct test *t, struct quark_queue_attr *qa)
 
 	for (i = 0; i < nitems(cases); i++) {
 		struct quark_queue	 qq = { .epollfd = -1 };
-		struct quark_process	 process = { 0 };
+		struct quark_process	 process;
 		struct quark_event	 event = { .process = &process };
 		struct quark_container	*container;
 		FILE			*f;
 		char			*buf = NULL;
 		size_t			 len = 0;
 
+		bzero(&process, sizeof(process));
 		container = quark_container_create(&qq, "container", NULL,
 		    cases[i].name, cases[i].image);
 		assert(container != NULL);
@@ -3187,13 +3188,14 @@ t_pod_dump(const struct test *t, struct quark_queue_attr *qa)
 
 	for (i = 0; i < nitems(cases); i++) {
 		struct quark_queue	 qq = { .epollfd = -1 };
-		struct quark_process	 process = { 0 };
+		struct quark_process	 process;
 		struct quark_event	 event = { .process = &process };
 		struct quark_pod		*pod;
 		FILE			*f;
 		char			*buf = NULL;
 		size_t			 len = 0;
 
+		bzero(&process, sizeof(process));
 		pod = quark_pod_create(&qq, "pod", cases[i].name,
 		    cases[i].ns, cases[i].phase);
 		assert(pod != NULL);
