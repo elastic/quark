@@ -123,7 +123,8 @@ for one scraped at startup) and tells a reused pid from the process the open
 was made against.
 Each combination of file and access class (read, write, exec, path only)
 is reported once per process life, a failed open once per requested name,
-error and access class.
+base directory, error and access class.
+An event lost to a full ring buffer does not count as reported.
 .El
 .Pp
 It's important to note that

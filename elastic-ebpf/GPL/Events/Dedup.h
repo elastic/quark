@@ -64,29 +64,53 @@ static u64 ebpf_dedup_exec_id(const struct task_struct *task)
 }
 
 // Returns true if bit was already reported for this process life and key.
-// fresh is caller provided storage for the replacement value (stack, or map
-// memory when the caller is short on stack). Best effort with a plain
-// read-test-write (an atomic or needs 5.12 and -mcpu=v3); a lost race on a
-// fresh or stale entry overwrites it, so the failure mode is a duplicate
+// Otherwise fresh, caller provided storage (stack, or map memory when the
+// caller is short on stack), receives the value that records the bit, for
+// ebpf_dedup__set() to store once the event is out. Best effort with a plain
+// read-test-write (an atomic or needs 5.12 and -mcpu=v3); two threads racing
+// between the two calls both report, so the failure mode is a duplicate
 // event, never a lost one.
+static __always_inline bool ebpf_dedup__test(void *map, const void *key,
+                                             struct ebpf_dedup_seen *fresh,
+                                             const struct task_struct *task, u64 bit)
+{
+    struct ebpf_dedup_seen *seen;
+
+    fresh->start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
+    fresh->exec_id       = ebpf_dedup_exec_id(task);
+    fresh->bits          = bit;
+    seen                 = bpf_map_lookup_elem(map, key);
+
+    return seen != NULL && seen->start_time_ns == fresh->start_time_ns &&
+           seen->exec_id == fresh->exec_id && (seen->bits & bit);
+}
+
+// Records the bit prepared by ebpf_dedup__test(): in place when the entry
+// still belongs to this process life, replacing a missing or stale one
+// otherwise. Called only after the event was written, so an event lost to a
+// full ring buffer leaves the bit unclaimed and the next occurrence gets
+// another try instead of being suppressed for the rest of the process life.
+static __always_inline void ebpf_dedup__set(void *map, const void *key,
+                                            struct ebpf_dedup_seen *fresh)
+{
+    struct ebpf_dedup_seen *seen = bpf_map_lookup_elem(map, key);
+
+    if (seen != NULL && seen->start_time_ns == fresh->start_time_ns &&
+        seen->exec_id == fresh->exec_id)
+        seen->bits |= fresh->bits;
+    else
+        bpf_map_update_elem(map, key, fresh, BPF_ANY);
+}
+
+// Both halves at once, for a caller that claims the bit before output and
+// accepts that an event lost to a full ring buffer is not retried.
 static __always_inline bool ebpf_dedup__test_and_set(void *map, const void *key,
                                                      struct ebpf_dedup_seen *fresh,
                                                      const struct task_struct *task, u64 bit)
 {
-    u64 start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
-    u64 exec_id       = ebpf_dedup_exec_id(task);
-
-    struct ebpf_dedup_seen *seen = bpf_map_lookup_elem(map, key);
-    if (seen == NULL || seen->start_time_ns != start_time_ns || seen->exec_id != exec_id) {
-        fresh->start_time_ns = start_time_ns;
-        fresh->exec_id       = exec_id;
-        fresh->bits          = bit;
-        bpf_map_update_elem(map, key, fresh, BPF_ANY);
-        return false;
-    }
-    if (seen->bits & bit)
+    if (ebpf_dedup__test(map, key, fresh, task, bit))
         return true;
-    seen->bits |= bit;
+    ebpf_dedup__set(map, key, fresh);
 
     return false;
 }

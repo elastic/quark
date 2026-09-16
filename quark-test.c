@@ -1478,14 +1478,17 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
 	const struct quark_file_access	*qfa;
+	struct quark_queue_stats	 stats;
 	struct stat			 st;
 	char				 dir[] = "/tmp/quark-test-fa.XXXXXX";
 	char				 leaf[PATH_MAX], parent_dir[PATH_MAX];
 	char				 parent_file[PATH_MAX], other[PATH_MAX];
 	char				 missing[PATH_MAX], noexec[PATH_MAX];
 	char				 deep[PATH_MAX], toodeep[PATH_MAX];
+	char				 flood[PATH_MAX], one[PATH_MAX], two[PATH_MAX];
 	char				 longname[QUARK_FILE_ACCESS_NAME_MAX + 8];
-	int				 fd;
+	u64				 lost;
+	int				 fd, i, nflood;
 	pid_t				 child;
 
 	qa->flags |= QQ_FILE_ACCESS;
@@ -1659,6 +1662,54 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert_next_access_path(&qq, noexec);
 
 	/*
+	 * The base directory is part of the failure key, not the dirfd
+	 * number: the same relative name missing from two directories is two
+	 * attempts, through AT_FDCWD after a chdir and through a dirfd whose
+	 * number was reused for the other directory.
+	 */
+	snprintf(one, sizeof(one), "%s/one", dir);
+	snprintf(two, sizeof(two), "%s/two", dir);
+	if (mkdir(one, 0700) == -1 || mkdir(two, 0700) == -1)
+		err(1, "mkdir");
+	if (chdir(one) == -1)
+		err(1, "chdir");
+	assert(open("quark-test-missing", O_RDONLY) == -1 && errno == ENOENT);
+	if (chdir(two) == -1)
+		err(1, "chdir");
+	assert(open("quark-test-missing", O_RDONLY) == -1 && errno == ENOENT);
+	if (chdir("/") == -1)
+		err(1, "chdir");
+	if ((fd = open(one, O_RDONLY|O_DIRECTORY)) == -1)
+		err(1, "open");
+	assert(openat(fd, "quark-test-missing", O_WRONLY) == -1 &&
+	    errno == ENOENT);
+	close(fd);
+	if ((i = open(two, O_RDONLY|O_DIRECTORY)) == -1)
+		err(1, "open");
+	assert(i == fd); /* the number is reused */
+	assert(openat(fd, "quark-test-missing", O_WRONLY) == -1 &&
+	    errno == ENOENT);
+	close(fd);
+	for (i = 0; i < 4; i++) {
+		const char	*base = (i & 1) ? "two" : "one";
+
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_RELATIVE);
+		assert(qfa->error == ENOENT);
+		assert(!strcmp(qfa->requested, "quark-test-missing"));
+		snprintf(other, sizeof(other), "%s/%s", dir, base);
+		assert(qfa->base_dir != NULL && !strcmp(qfa->base_dir, other));
+		snprintf(other, sizeof(other), "%s/%s/quark-test-missing", dir,
+		    base);
+		assert(!strcmp(qfa->path, other));
+		assert((qfa->open_flags & O_ACCMODE) ==
+		    (i < 2 ? O_RDONLY : O_WRONLY));
+		assert(qfa->dfd == (i < 2 ? AT_FDCWD : fd));
+	}
+
+	/*
 	 * A parent anchor reaches three levels down, on the dentry of a
 	 * completed open and on the string of a failed one: deep is reported,
 	 * toodeep (four levels) is not, nor is a missing name four levels
@@ -1814,8 +1865,80 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 			err(1, "waitpid");
 	}
 
-	assert(!quark_queue_file_access_name_reset(&qq));
+	/*
+	 * A class is claimed only once its event is out. Fill the ring buffer
+	 * with opens nobody drains, read flood while it is full so that its
+	 * read is lost, drain, and a second read must still be reported.
+	 * Skipped under valgrind, where it exercises the kernel at valgrind
+	 * speed.
+	 */
+	snprintf(flood, sizeof(flood), "%s/quark-test-anchor/flood", dir);
+	if ((fd = open(flood, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	assert_next_access_path(&qq, flood);
+	nflood = 0;
+	if (!in_valgrind) {
+		quark_queue_get_stats(&qq, &stats);
+		lost = stats.lost;
+		for (nflood = 0; lost == stats.lost; nflood++) {
+			if (nflood == 200000)
+				errx(1, "could not fill the ring buffer");
+			snprintf(other, sizeof(other),
+			    "%s/quark-test-anchor/a/%d", dir, nflood);
+			if ((fd = open(other, O_WRONLY|O_CREAT, 0600)) == -1)
+				err(1, "open");
+			close(fd);
+			if ((fd = open(other, O_PATH)) == -1)
+				err(1, "open");
+			close(fd);
+			if ((nflood & 255) == 255)
+				quark_queue_get_stats(&qq, &stats);
+		}
+		lost = stats.lost;
+		if ((fd = open(flood, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		quark_queue_get_stats(&qq, &stats);
+		assert(stats.lost > lost);
+		/*
+		 * Drain the flood until the queue stays idle past hold_time;
+		 * the lost read is not among them. Read again: with the class
+		 * unclaimed, this read is the next event.
+		 */
+		for (i = 0; i < 20; ) {
+			if (quark_queue_get_event(&qq) != NULL) {
+				i = 0;
+				continue;
+			}
+			if (quark_queue_block(&qq) == -1)
+				err(1, "quark_queue_block");
+			i++;
+		}
+		if ((fd = open(flood, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(!strcmp(qfa->path, flood));
+		assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+	} else
+		warnx("%s: skipping the ring buffer flood under valgrind",
+		    __func__);
 
+	/*
+	 * Same libbpf false positive as t_trusted_pid: bpf_map_get_next_key()
+	 * memsets bpf_attr short of flags and takes a NULL first key.
+	 */
+	if (!in_valgrind)
+		assert(!quark_queue_file_access_name_reset(&qq));
+
+	while (nflood-- > 0) {
+		snprintf(other, sizeof(other), "%s/quark-test-anchor/a/%d", dir,
+		    nflood);
+		(void)unlink(other);
+	}
+	(void)unlink(flood);
 	(void)unlink(leaf);
 	(void)unlink(parent_file);
 	(void)unlink(noexec);
@@ -1829,6 +1952,8 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	(void)rmdir(other);
 	snprintf(other, sizeof(other), "%s/quark-test-anchor/a", dir);
 	(void)rmdir(other);
+	(void)rmdir(one);
+	(void)rmdir(two);
 	(void)rmdir(parent_dir);
 	(void)rmdir(dir);
 
