@@ -55,7 +55,7 @@ static int	quark_group_cmp(struct quark_group *, struct quark_group *);
 
 static void	process_cache_delete(struct quark_queue *, struct quark_process *);
 static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
-static void	pod_delete(struct quark_queue *, struct quark_pod *);
+static int	pod_delete(struct quark_queue *, struct quark_pod *);
 static void	container_delete(struct quark_queue *, struct quark_container *);
 
 /* For debugging */
@@ -524,7 +524,8 @@ gc_collect(struct quark_queue *qq)
 			socket_cache_delete(qq, (struct quark_socket *)gc);
 			break;
 		case GC_POD:
-			pod_delete(qq, (struct quark_pod *)gc);
+			/* Containers freed with the pod count as collected too */
+			n += pod_delete(qq, (struct quark_pod *)gc);
 			break;
 		case GC_CONTAINER:
 			container_delete(qq, (struct quark_container *)gc);
@@ -904,11 +905,16 @@ pod_insert(struct quark_queue *qq, struct quark_pod *pod)
 	return (0);
 }
 
-static void
+/*
+ * Free a pod and every container still attached to it. Returns the number of
+ * containers freed.
+ */
+static int
 pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 {
 	struct quark_container	*container;
 	struct label_node	*node;
+	int			 n;
 
 	if (pod->linked) {
 		RB_REMOVE(pod_by_uid, &qq->pod_by_uid, pod);
@@ -924,12 +930,14 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	 * that case we will "steal" it and delete ourselves here with
 	 * everything else.
 	 */
+	n = 0;
 	while ((container = RB_ROOT(&pod->containers)) != NULL) {
 		if (container->pod != pod) {
 			qwarnx("BUG: corrupted pod<>container, leaking data");
-			return;
+			return (n);
 		}
 		container_delete(qq, container);
+		n++;
 	}
 
 	free(pod->name);
@@ -937,6 +945,8 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	free(pod->uid);
 	free(pod->phase);
 	free(pod);
+
+	return (n);
 }
 
 static struct quark_container *
@@ -1139,10 +1149,9 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 		if (strcmp(phase->valuestring, "Succeeded"))
 			return (0);
 		/*
-		 * gc_mark is idempotent
+		 * Idempotent, an already removed or unknown pod is fine.
 		 */
-		if (pod != NULL)
-			gc_mark(qq, &pod->gc, GC_POD);
+		(void)quark_pod_remove(qq, uid->valuestring);
 
 		return (0);
 	}
