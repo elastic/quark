@@ -1629,6 +1629,10 @@ t_process_vm_access(const struct test *t, struct quark_queue_attr *qa)
 	mmap_flags |= MAP_32BIT;
 	scenarios += 2;
 #endif
+	if (in_valgrind && scenarios > 16) {
+		warnx("%s: compat ABI cases skipped under valgrind", __func__);
+		scenarios = 16;
+	}
 	qa->flags |= QQ_PROCESS_VM_ACCESS;
 	if (pipe(ready) == -1 || pipe(done) == -1)
 		err(1, "pipe");
@@ -1649,7 +1653,8 @@ t_process_vm_access(const struct test *t, struct quark_queue_attr *qa)
 			MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
 		assert(stack != MAP_FAILED);
 		target_tid = clone(process_vm_target_thread, (char *)stack + 65536,
-			CLONE_VM | CLONE_SIGHAND | CLONE_THREAD, NULL);
+			CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
+			CLONE_THREAD | CLONE_SYSVSEM, NULL);
 		assert(target_tid > 0 && target_tid != getpid());
 
 		close(ready[0]);
@@ -1706,6 +1711,13 @@ t_process_vm_access(const struct test *t, struct quark_queue_attr *qa)
 		case 14: local[0].iov_len = ~(size_t)0; break;
 		case 15: remote[0].iov_len = ~(size_t)0; break;
 		}
+		/*
+		 * Invalid local vectors are the kernel's to reject; valgrind's
+		 * syscall checker reports them first and counts them as errors.
+		 */
+		if (in_valgrind && (scenario == 4 || scenario == 13 ||
+		    scenario == 14))
+			continue;
 		errno = 0;
 		result = write_op ? process_vm_writev(target, lp, lc, remote, rc, flags) :
 		    process_vm_readv(target, lp, lc, remote, rc, flags);
@@ -1821,6 +1833,11 @@ t_process_vm_access_identity(const struct test *t, struct quark_queue_attr *qa)
 	struct iovec local = { buffer, sizeof(buffer) };
 	struct iovec remote = { memory, sizeof(memory) };
 
+	if (in_valgrind) {
+		warnx("%s: skipping under valgrind: pid namespaces and credential drops are kernel work",
+		    __func__);
+		return (0);
+	}
 	qa->flags |= QQ_PROCESS_VM_ACCESS;
 	assert(pipe(report) == 0 && pipe(ready) == 0 && pipe(finish) == 0);
 	assert(quark_queue_open(&qq, qa) == 0);
@@ -1934,6 +1951,11 @@ t_process_vm_access_state(const struct test *t, struct quark_queue_attr *qa)
 	pid_t child;
 	char token;
 
+	if (in_valgrind) {
+		warnx("%s: skipping under valgrind: state-map pressure is kernel work",
+		    __func__);
+		return (0);
+	}
 	last = process_vm_last_map_id();
 	qa->flags &= ~QQ_PROCESS_VM_ACCESS;
 	assert(quark_queue_open(&qq, qa) == 0);
@@ -1998,6 +2020,11 @@ t_process_vm_access_concurrent(const struct test *t, struct quark_queue_attr *qa
 	struct timespec before, after;
 	u64 lower, upper;
 
+	if (in_valgrind) {
+		warnx("%s: skipping under valgrind: concurrent children are kernel work",
+		    __func__);
+		return (0);
+	}
 	qa->flags |= QQ_PROCESS_VM_ACCESS;
 	assert(quark_queue_open(&qq, qa) == 0);
 	assert(clock_gettime(CLOCK_BOOTTIME, &before) == 0);
