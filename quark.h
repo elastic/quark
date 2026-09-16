@@ -643,6 +643,7 @@ struct quark_process {
 	TAILQ_ENTRY(quark_process)	entry_container;
 	/* Always present */
 	u32	 pid;
+	u32	 container_id_parsed;	/* cgroup was parsed into container_id */
 
 #define QUARK_F_PROC		(1 << 0)
 #define QUARK_F_EXIT		(1 << 1)
@@ -685,7 +686,6 @@ struct quark_process {
 	char	*cwd;
 	char	*cgroup;
 	char	*container_id;
-	int	 container_id_parsed;
 	struct quark_container *container;
 	char	*env;
 	size_t	 env_len;
