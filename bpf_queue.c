@@ -1195,6 +1195,9 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 * Maps and other state
 	 */
 	p->rodata->consumer_pid = getpid();
+	/* Optional process_vm probes are not exposed by this private core. */
+	bpf_map__set_autocreate(p->maps.process_vm_access_state, 0);
+	bpf_map__set_autocreate(p->maps.process_vm_access_failures, 0);
 
 	/*
 	 * Unload everything since it has way more than we want
