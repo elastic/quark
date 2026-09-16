@@ -2401,9 +2401,10 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 
 			fl = "POD";
 			PF(fl, "name=%s namespace=%s\n",
-			    pod->name, pod->ns);
+			    pod->name != NULL ? pod->name : "<unknown>",
+			    pod->ns != NULL ? pod->ns : "<unknown>");
 			PF(fl, "uid=%s phase=%s\n",
-			    pod->uid, pod->phase);
+			    pod->uid, pod->phase != NULL ? pod->phase : "<unknown>");
 			PF(fl, "labels=");
 			P("[ ");
 
@@ -2419,7 +2420,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		}
 		if (container != NULL) {
 			fl = "CONT";
-			PF(fl, "name=%s image=%s\n", container->name, container->image);
+			PF(fl, "name=%s image=%s\n",
+			    container->name != NULL ? container->name : "<unknown>",
+			    container->image != NULL ? container->image : "<unknown>");
 			PF(fl, "container_id=%s\n", container->container_id);
 		}
 	}

@@ -3443,6 +3443,146 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_container_dump(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct {
+		const char *name, *image, *expected;
+	} cases[] = {
+		{ NULL, NULL, "name=<unknown> image=<unknown>\n" },
+		{ "test-container", "test-image",
+		  "name=test-container image=test-image\n" },
+		{ NULL, "test-image", "name=<unknown> image=test-image\n" },
+		{ "test-container", NULL, "name=test-container image=<unknown>\n" },
+	};
+	size_t	 i;
+
+	for (i = 0; i < nitems(cases); i++) {
+		struct quark_queue	 qq = { .epollfd = -1 };
+		struct quark_process	 process = { 0 };
+		struct quark_event	 event = { .process = &process };
+		struct quark_container	*container;
+		FILE			*f;
+		char			*buf = NULL;
+		size_t			 len = 0;
+
+		container = quark_container_create(&qq, "container", NULL,
+		    cases[i].name, cases[i].image);
+		assert(container != NULL);
+		process.container = container;
+		f = open_memstream(&buf, &len);
+		assert(f != NULL);
+		assert(quark_event_dump(&event, f) == 0);
+		assert(fclose(f) == 0);
+		assert(strstr(buf, cases[i].expected) != NULL);
+		assert(strstr(buf, "container_id=container\n") != NULL);
+		assert((container->name == NULL) == (cases[i].name == NULL));
+		assert((container->image == NULL) == (cases[i].image == NULL));
+		free(buf);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+static int
+t_pod_dump(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct {
+		const char *name, *ns, *phase;
+		const char *expected_name_ns, *expected_uid_phase;
+	} cases[] = {
+		{ NULL, NULL, NULL,
+		  "name=<unknown> namespace=<unknown>\n",
+		  "uid=pod phase=<unknown>\n" },
+		{ "test-pod", "test-ns", "Running",
+		  "name=test-pod namespace=test-ns\n", "uid=pod phase=Running\n" },
+		{ NULL, "test-ns", "Running",
+		  "name=<unknown> namespace=test-ns\n", "uid=pod phase=Running\n" },
+		{ "test-pod", NULL, "Running",
+		  "name=test-pod namespace=<unknown>\n", "uid=pod phase=Running\n" },
+		{ "test-pod", "test-ns", NULL,
+		  "name=test-pod namespace=test-ns\n", "uid=pod phase=<unknown>\n" },
+	};
+	size_t	 i;
+
+	for (i = 0; i < nitems(cases); i++) {
+		struct quark_queue	 qq = { .epollfd = -1 };
+		struct quark_process	 process = { 0 };
+		struct quark_event	 event = { .process = &process };
+		struct quark_pod		*pod;
+		FILE			*f;
+		char			*buf = NULL;
+		size_t			 len = 0;
+
+		pod = quark_pod_create(&qq, "pod", cases[i].name,
+		    cases[i].ns, cases[i].phase);
+		assert(pod != NULL);
+		process.container = quark_container_create(&qq, "container",
+		    "pod", "test-container", "test-image");
+		assert(process.container != NULL);
+		f = open_memstream(&buf, &len);
+		assert(f != NULL);
+		assert(quark_event_dump(&event, f) == 0);
+		assert(fclose(f) == 0);
+		assert(strstr(buf, cases[i].expected_name_ns) != NULL);
+		assert(strstr(buf, cases[i].expected_uid_phase) != NULL);
+		assert((pod->name == NULL) == (cases[i].name == NULL));
+		assert((pod->ns == NULL) == (cases[i].ns == NULL));
+		assert((pod->phase == NULL) == (cases[i].phase == NULL));
+		free(buf);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+static int
+t_pod_create(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq = { .epollfd = -1 };
+	struct quark_pod		*pod, *other;
+	char			 uid[] = "pod", name[] = "test-pod";
+	char			 ns[] = "test-ns", phase[] = "Running";
+
+	pod = quark_pod_create(&qq, uid, name, ns, phase);
+	assert(pod != NULL);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(quark_pod_get(&qq, "pod") == pod);
+	assert(RB_EMPTY(&pod->containers));
+	assert(RB_EMPTY(&pod->labels));
+	assert(pod->name != NULL && pod->ns != NULL && pod->phase != NULL);
+
+	/* Changes to input buffers must not change the stored values. */
+	uid[0] = name[0] = ns[0] = phase[0] = 'x';
+	assert(strcmp(pod->uid, "pod") == 0);
+	assert(strcmp(pod->name, "test-pod") == 0);
+	assert(strcmp(pod->ns, "test-ns") == 0);
+	assert(strcmp(pod->phase, "Running") == 0);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(quark_pod_lookup(&qq, uid) == NULL);
+
+	/* A duplicate UID must not replace the pod or its values. */
+	errno = 0;
+	assert(quark_pod_create(&qq, "pod", "new", "new", "Pending") == NULL);
+	assert(errno == EEXIST);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(strcmp(pod->name, "test-pod") == 0);
+	assert(strcmp(pod->ns, "test-ns") == 0);
+	assert(strcmp(pod->phase, "Running") == 0);
+
+	/* Optional fields can be absent. */
+	other = quark_pod_create(&qq, "other", NULL, NULL, NULL);
+	assert(other != NULL && other != pod);
+	assert(other->name == NULL && other->ns == NULL && other->phase == NULL);
+	assert(quark_pod_lookup(&qq, "other") == other);
+	assert(quark_pod_get(&qq, "other") == other);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.pod_by_uid));
+
+	return (0);
+}
+
+static int
 t_pod_get(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue	 qq = { .epollfd = -1 };
@@ -3481,6 +3621,66 @@ t_pod_get(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_pod_lookup(&qq, "other") == other);
 	assert(quark_pod_get(&qq, "pod") == pod);
 	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.pod_by_uid));
+
+	return (0);
+}
+
+static int
+t_container_create(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq = { .epollfd = -1 };
+	struct quark_pod		*pod, *other;
+	struct quark_container	*container, *orphan;
+	char			 id[] = "container", name[] = "test-container";
+	char			 image[] = "test-image";
+
+	pod = quark_pod_create(&qq, "pod", NULL, NULL, NULL);
+	other = quark_pod_create(&qq, "other", NULL, NULL, NULL);
+	assert(pod != NULL && other != NULL);
+	container = quark_container_create(&qq, id, "pod", name, image);
+	assert(container != NULL);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(quark_container_get(&qq, "container", "pod") == container);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(TAILQ_EMPTY(&container->processes));
+	assert(container->name != NULL && container->image != NULL);
+
+	/* Changes to input buffers must not change the stored values. */
+	id[0] = name[0] = image[0] = 'x';
+	assert(strcmp(container->container_id, "container") == 0);
+	assert(strcmp(container->name, "test-container") == 0);
+	assert(strcmp(container->image, "test-image") == 0);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(quark_container_lookup(&qq, id) == NULL);
+
+	/* A duplicate ID must not change the values or the parent pod. */
+	errno = 0;
+	assert(quark_container_create(&qq, "container", "other", "new", "new") == NULL);
+	assert(errno == EEXIST);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(strcmp(container->name, "test-container") == 0);
+	assert(strcmp(container->image, "test-image") == 0);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(RB_EMPTY(&other->containers));
+
+	/* A missing pod must not cause a container to be inserted. */
+	errno = 0;
+	assert(quark_container_create(&qq, "absent", "missing", NULL, NULL) == NULL);
+	assert(errno == ESRCH);
+	assert(quark_container_lookup(&qq, "absent") == NULL);
+
+	/* A container can have no pod and no optional fields. */
+	orphan = quark_container_create(&qq, "orphan", NULL, NULL, NULL);
+	assert(orphan != NULL && orphan != container);
+	assert(orphan->pod == NULL && !orphan->linked_by_pod);
+	assert(orphan->name == NULL && orphan->image == NULL);
+	assert(quark_container_lookup(&qq, "orphan") == orphan);
+	assert(quark_container_get(&qq, "orphan", NULL) == orphan);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.container_by_id));
 	assert(RB_EMPTY(&qq.pod_by_uid));
 
 	return (0);
@@ -3595,7 +3795,11 @@ struct test all_tests[] = {
 	T_KPROBE(t_stats),
 	T(t_backend_flags),
 	T(t_pod_get),
+	T(t_pod_create),
+	T(t_pod_dump),
+	T(t_container_dump),
 	T(t_container_get),
+	T(t_container_create),
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),
