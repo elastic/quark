@@ -91,6 +91,7 @@ member carries the resolved
 the open flags as passed by the caller, the file identity and owner.
 Each combination of file and access class (read, write, exec, path only)
 is reported once per process life.
+An event lost to a full ring buffer does not count as reported.
 .El
 .Pp
 It's important to note that
