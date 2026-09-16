@@ -736,10 +736,9 @@ struct quark_container {
 };
 
 /*
- * A quark_pod holds multiple containters in pod_containters.
- * The same containers are also linked in containters_by_id inside quark_kube.
- * This is to allow a search by container_id, which then can follow the pod
- * backpointer, to finally find the pod of a containter_id.
+ * A quark_pod holds its containers in pod_containers.
+ * All containers are indexed by container_id in quark_queue, including those
+ * without a pod. A container's pod backpointer identifies its parent, if any.
  */
 RB_HEAD(pod_containers, quark_container);
 RB_HEAD(container_by_id, quark_container);
@@ -761,7 +760,7 @@ struct quark_pod {
 };
 
 /*
- * A quark_pod indexed by uid, this is the main data structure for quark_kube{}.
+ * Pods indexed by uid in quark_queue.
  */
 RB_HEAD(pod_by_uid, quark_pod);
 

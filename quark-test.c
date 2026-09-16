@@ -3442,6 +3442,108 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_pod_get(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq = { .epollfd = -1 };
+	struct quark_pod		*pod, *other;
+	char			 uid[] = "pod";
+
+	errno = 0;
+	assert(quark_pod_lookup(&qq, uid) == NULL);
+	assert(errno == ESRCH);
+	pod = quark_pod_get(&qq, uid);
+	assert(pod != NULL);
+	assert(strcmp(pod->uid, "pod") == 0);
+	assert(RB_EMPTY(&pod->containers));
+	assert(RB_EMPTY(&pod->labels));
+	assert(pod->name == NULL && pod->ns == NULL && pod->phase == NULL);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+
+	/* The pod owns its UID independently of the caller's buffer. */
+	uid[0] = 'x';
+	assert(strcmp(pod->uid, "pod") == 0);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(quark_pod_lookup(&qq, uid) == NULL);
+
+	/* Getting an existing pod must preserve caller-populated metadata. */
+	pod->name = strdup("test-pod");
+	pod->ns = strdup("test-namespace");
+	pod->phase = strdup("Running");
+	assert(pod->name != NULL && pod->ns != NULL && pod->phase != NULL);
+	assert(quark_pod_get(&qq, "pod") == pod);
+	assert(strcmp(pod->name, "test-pod") == 0);
+	assert(strcmp(pod->ns, "test-namespace") == 0);
+	assert(strcmp(pod->phase, "Running") == 0);
+
+	other = quark_pod_get(&qq, "other");
+	assert(other != NULL && other != pod);
+	assert(quark_pod_lookup(&qq, "other") == other);
+	assert(quark_pod_get(&qq, "pod") == pod);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.pod_by_uid));
+
+	return (0);
+}
+
+static int
+t_container_get(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq = { .epollfd = -1 };
+	struct quark_pod		*pod, *other;
+	struct quark_container	*container, *direct;
+
+	/* These cache operations do not require a kernel backend. */
+	pod = quark_pod_get(&qq, "pod");
+	other = quark_pod_get(&qq, "other");
+	assert(pod != NULL && other != NULL);
+
+	container = quark_container_get(&qq, "container", NULL);
+	assert(container != NULL);
+	assert(container->pod == NULL && !container->linked_by_pod);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(quark_container_get(&qq, "container", NULL) == container);
+
+	/* A missing pod must leave the existing container unchanged. */
+	errno = 0;
+	assert(quark_container_get(&qq, "container", "missing") == NULL);
+	assert(errno == ESRCH);
+	assert(container->pod == NULL && !container->linked_by_pod);
+
+	/* Attach later, and allow repeated requests for the same pod. */
+	assert(quark_container_get(&qq, "container", "pod") == container);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(quark_container_get(&qq, "container", "pod") == container);
+	assert(quark_container_get(&qq, "container", NULL) == container);
+	assert(container->pod == pod && container->linked_by_pod);
+
+	/* Reject a different parent without changing either pod's tree. */
+	errno = 0;
+	assert(quark_container_get(&qq, "container", "other") == NULL);
+	assert(errno == EEXIST);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(RB_EMPTY(&other->containers));
+	assert(quark_container_lookup(&qq, "container") == container);
+
+	/* Creation with a parent and rejection of a missing parent. */
+	direct = quark_container_get(&qq, "direct", "other");
+	assert(direct != NULL && direct->pod == other);
+	assert(direct->linked_by_pod && RB_ROOT(&other->containers) == direct);
+	errno = 0;
+	assert(quark_container_get(&qq, "absent", "missing") == NULL);
+	assert(errno == ESRCH);
+	assert(quark_container_lookup(&qq, "absent") == NULL);
+
+	assert(quark_container_get(&qq, "orphan", NULL) != NULL);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.pod_by_uid));
+	assert(RB_EMPTY(&qq.container_by_id));
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  * Use T() for tests that require no queue.
@@ -3492,6 +3594,8 @@ struct test all_tests[] = {
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
 	T(t_backend_flags),
+	T(t_pod_get),
+	T(t_container_get),
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),
