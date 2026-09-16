@@ -124,7 +124,7 @@ int			 quark_can_aggregate_tty(struct quark_queue *,
 			     struct raw_event *, struct raw_event *);
 
 /* quark.c: These are exported for testing only */
-void		 quark_queue_init_trees(struct quark_queue *);
+void		 quark_queue_init_bare(struct quark_queue *);
 int		 parse_container_cgroup(const char *, char *, size_t);
 const char	*process_container_id(struct quark_process *);
 void		 process_set_cgroup(struct quark_process *, char **);
