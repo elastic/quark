@@ -1677,6 +1677,9 @@ process_container_id(struct quark_process *qp)
 void
 process_set_cgroup(struct quark_process *qp, char **cgroup)
 {
+	char	cid[NAME_MAX];
+	int	same_container;
+
 	if (*cgroup == NULL)
 		return;
 
@@ -1686,17 +1689,34 @@ process_set_cgroup(struct quark_process *qp, char **cgroup)
 		return;
 	}
 
+	/*
+	 * A process can move to a nested cgroup inside its own container,
+	 * like systemd as init moving to <container>.scope/init.scope. The
+	 * basename of the nested cgroup does not name a container, so keep
+	 * the cached ID and the container link unless the new cgroup names
+	 * a different container.
+	 */
+	same_container = 0;
+	if (qp->container_id_parsed && qp->container_id != NULL) {
+		if (parse_container_cgroup(*cgroup, cid, sizeof(cid)) == -1 ||
+		    !strcmp(cid, qp->container_id))
+			same_container = 1;
+	}
+
+	free(qp->cgroup);
+	qp->cgroup = *cgroup;
+	*cgroup = NULL;
+
+	if (same_container)
+		return;
+
 	if (qp->container != NULL) {
 		TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
 		qp->container = NULL;
 	}
-
-	free(qp->cgroup);
 	free(qp->container_id);
-	qp->cgroup = *cgroup;
 	qp->container_id = NULL;
 	qp->container_id_parsed = 0;
-	*cgroup = NULL;
 }
 
 void
@@ -4474,7 +4494,9 @@ quark_queue_get_epollfd(struct quark_queue *qq)
 void
 quark_queue_get_stats(struct quark_queue *qq, struct quark_queue_stats *qs)
 {
-	qq->queue_ops->update_stats(qq);
+	/* A queue without a backend has no backend stats (tests). */
+	if (qq->queue_ops != NULL)
+		qq->queue_ops->update_stats(qq);
 	*qs = qq->stats;
 }
 
@@ -5201,7 +5223,7 @@ raw_event_mprotect(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_MPROTECT;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 	qev->mprotect = raw->mprotect.quark_mprotect;
 	/* Steal the path; event_storage_clear() frees it */
 	raw->mprotect.quark_mprotect.path = NULL;
