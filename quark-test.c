@@ -3443,6 +3443,127 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_gc_populate(struct quark_queue *qq)
+{
+	return (0);
+}
+
+static void
+t_gc_close(struct quark_queue *qq)
+{
+}
+
+static struct quark_queue_ops t_gc_ops = {
+	.populate = t_gc_populate,
+	.close = t_gc_close,
+};
+
+static int
+t_container_remove(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq = { .epollfd = -1, .queue_ops = &t_gc_ops };
+	struct quark_process	 process;
+	struct quark_pod		*pod;
+	struct quark_container	*container, *orphan;
+	u64			 marked;
+
+	TAILQ_INIT(&qq.event_gc);
+	bzero(&process, sizeof(process));
+	qq.cache_grace_time = UINT64_MAX;
+	pod = quark_pod_get(&qq, "pod");
+	assert(pod != NULL);
+	container = quark_container_get(&qq, "container", "pod");
+	orphan = quark_container_get(&qq, "orphan", NULL);
+	assert(container != NULL && orphan != NULL);
+	process.container = container;
+	TAILQ_INSERT_TAIL(&container->processes, &process, entry_container);
+
+	quark_container_remove(&qq, "container");
+	marked = container->gc.gc_time;
+	assert(marked != 0);
+	quark_container_remove(&qq, "container");
+	assert(container->gc.gc_time == marked);
+	assert(TAILQ_FIRST(&qq.event_gc) == &container->gc);
+	assert(TAILQ_NEXT(&container->gc, gc_entry) == NULL);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(process.container == container);
+
+	/* End the grace period without a timed sleep. */
+	qq.cache_grace_time = 0;
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_container_lookup(&qq, "container") == NULL);
+	assert(process.container == NULL);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(RB_EMPTY(&pod->containers));
+	assert(TAILQ_EMPTY(&qq.event_gc));
+	assert(quark_container_lookup(&qq, "orphan") == orphan);
+
+	quark_container_remove(&qq, "orphan");
+	quark_container_remove(&qq, "orphan");
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_container_lookup(&qq, "orphan") == NULL);
+	assert(TAILQ_EMPTY(&qq.event_gc));
+	assert(qq.stats.garbage_collections == 2);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_pod_remove(const struct test *t, struct quark_queue_attr *qa)
+{
+	int	 child_first;
+
+	/* Both queue orders must remove each child only once. */
+	for (child_first = 0; child_first < 2; child_first++) {
+		struct quark_queue	 qq = { .epollfd = -1, .queue_ops = &t_gc_ops };
+		struct quark_process	 process;
+		struct quark_pod		*pod;
+		struct quark_container	*child, *queued, *orphan;
+		u64			 marked;
+
+		TAILQ_INIT(&qq.event_gc);
+		bzero(&process, sizeof(process));
+		qq.cache_grace_time = UINT64_MAX;
+		pod = quark_pod_get(&qq, "pod");
+		assert(pod != NULL);
+		child = quark_container_get(&qq, "child", "pod");
+		queued = quark_container_get(&qq, "queued", "pod");
+		orphan = quark_container_get(&qq, "orphan", NULL);
+		assert(child != NULL && queued != NULL && orphan != NULL);
+		process.container = child;
+		TAILQ_INSERT_TAIL(&child->processes, &process, entry_container);
+
+		if (child_first)
+			quark_container_remove(&qq, "queued");
+		quark_pod_remove(&qq, "pod");
+		marked = pod->gc.gc_time;
+		assert(marked != 0);
+		quark_pod_remove(&qq, "pod");
+		assert(pod->gc.gc_time == marked);
+		if (!child_first)
+			quark_container_remove(&qq, "queued");
+		assert(quark_queue_get_event(&qq) == NULL);
+		assert(quark_pod_lookup(&qq, "pod") == pod);
+		assert(quark_container_lookup(&qq, "child") == child);
+		assert(quark_container_lookup(&qq, "queued") == queued);
+
+		qq.cache_grace_time = 0;
+		assert(quark_queue_get_event(&qq) == NULL);
+		assert(quark_pod_lookup(&qq, "pod") == NULL);
+		assert(quark_container_lookup(&qq, "child") == NULL);
+		assert(quark_container_lookup(&qq, "queued") == NULL);
+		assert(process.container == NULL);
+		assert(TAILQ_EMPTY(&qq.event_gc));
+		assert(quark_container_lookup(&qq, "orphan") == orphan);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+static int
 t_container_dump(const struct test *t, struct quark_queue_attr *qa)
 {
 	const struct {
@@ -3802,6 +3923,8 @@ struct test all_tests[] = {
 	T(t_container_dump),
 	T(t_container_get),
 	T(t_container_create),
+	T(t_pod_remove),
+	T(t_container_remove),
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),

@@ -2587,15 +2587,23 @@ fail:
 }
 
 void
-quark_pod_remove(struct quark_queue *qq, struct quark_pod *pod)
+quark_pod_remove(struct quark_queue *qq, const char *uid)
 {
-	gc_mark(qq, &pod->gc, GC_POD);
+	struct quark_pod *pod;
+
+	pod = pod_lookup_by_uid(qq, (char *)uid);
+	if (pod != NULL)
+		gc_mark(qq, &pod->gc, GC_POD);
 }
 
 void
-quark_container_remove(struct quark_queue *qq, struct quark_container *container)
+quark_container_remove(struct quark_queue *qq, const char *container_id)
 {
-	gc_mark(qq, &container->gc, GC_CONTAINER);
+	struct quark_container *container;
+
+	container = container_lookup(qq, (char *)container_id);
+	if (container != NULL)
+		gc_mark(qq, &container->gc, GC_CONTAINER);
 }
 
 void
