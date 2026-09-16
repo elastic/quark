@@ -1646,9 +1646,12 @@ process_container_id(struct quark_process *qp)
 		return (NULL);
 	}
 
+	/*
+	 * If strdup fails, leave container_id_parsed unset so the next call
+	 * retries instead of treating this as a non-container cgroup.
+	 */
 	qp->container_id = strdup(cid);
 	if (qp->container_id == NULL)
-		// If strdup returns NULL, don't set qp->container_id_parsed to enable retries
 		return (NULL);
 
 	qp->container_id_parsed = 1;
@@ -4701,10 +4704,14 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 
 	/*
 	 * At this point, existing processes and container metadata have been
-	 * loaded. Now it is time to correlate them.
+	 * loaded. Now it is time to correlate them. Without a kube talker the
+	 * container tree is necessarily empty here, as metadata can only be
+	 * supplied after the queue is opened, so the pass would be a NOP.
 	 */
-	RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
-		link_container_data(qq, qp);
+	if (qq->qkube != NULL) {
+		RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
+			link_container_data(qq, qp);
+		}
 	}
 
 	/*
@@ -4985,6 +4992,9 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 int
 quark_queue_populate(struct quark_queue *qq)
 {
+	/* A queue without a backend has nothing to populate (tests). */
+	if (qq->queue_ops == NULL)
+		return (0);
 	return (qq->queue_ops->populate(qq));
 }
 
