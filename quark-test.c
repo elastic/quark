@@ -1783,29 +1783,36 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 
 	/*
 	 * EACCES: exec of a file without execute permission fails in the
-	 * kernel's own open for execve, root included.
+	 * kernel's own open for execve, root included. Not under valgrind:
+	 * its execve wrapper reads the file (a completed read of noexec by
+	 * the child) and refuses the exec itself, so the kernel never sees
+	 * it and there is no failure to report.
 	 */
-	if ((child = fork()) == -1)
-		err(1, "fork");
-	if (child == 0) {
-		execl(noexec, noexec, NULL);
-		_exit(errno == EACCES ? 0 : 1);
-	}
-	{
-		int status;
+	if (!in_valgrind) {
+		if ((child = fork()) == -1)
+			err(1, "fork");
+		if (child == 0) {
+			execl(noexec, noexec, NULL);
+			_exit(errno == EACCES ? 0 : 1);
+		}
+		{
+			int status;
 
-		if (waitpid(child, &status, 0) == -1)
-			err(1, "waitpid");
-		assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-	}
-	qev = drain_for_pid(&qq, child);
-	while (!(qev->events & QUARK_EV_FILE_ACCESS))
+			if (waitpid(child, &status, 0) == -1)
+				err(1, "waitpid");
+			assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+		}
 		qev = drain_for_pid(&qq, child);
-	qfa = qev->file_access;
-	assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
-	assert(qfa->error == EACCES);
-	assert(!strcmp(qfa->requested, noexec));
-	assert(qfa->open_flags & 0x20); /* __FMODE_EXEC */
+		while (!(qev->events & QUARK_EV_FILE_ACCESS))
+			qev = drain_for_pid(&qq, child);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+		assert(qfa->error == EACCES);
+		assert(!strcmp(qfa->requested, noexec));
+		assert(qfa->open_flags & 0x20); /* __FMODE_EXEC */
+	} else
+		warnx("%s: skipping the exec EACCES case under valgrind",
+		    __func__);
 
 	/*
 	 * procfs: an open of a task's entry names the target, the opener's
