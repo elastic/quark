@@ -121,9 +121,21 @@ so it compares with that member of the target returned by
 .Pa /proc
 for one scraped at startup) and tells a reused pid from the process the open
 was made against.
+An ordinary open through one of the task's magic links
+.Po
+.Pa exe , cwd , root , fd/<n> , map_files/<range> , ns/<name>
+.Pc
+is an open of the link's target: it is reported only if the target matches
+a registered name, and without
+.Dv QUARK_FILE_ACCESS_F_PROCFS
+or a target.
+Only an
+.Dv O_PATH | O_NOFOLLOW
+open of the link itself is a procfs entry.
 Each combination of file and access class (read, write, exec, path only)
 is reported once per process life, a failed open once per requested name,
-error and access class.
+base directory, error and access class.
+An event lost to a full ring buffer does not count as reported.
 .El
 .Pp
 It's important to note that
