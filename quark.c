@@ -626,16 +626,22 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 }
 
 static void
+process_unlink_container(struct quark_process *qp)
+{
+	if (qp->container == NULL)
+		return;
+	TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
+	qp->container = NULL;
+}
+
+static void
 process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 {
 	struct gc_link	*gc;
 
 	gc = &qp->gc;
 	RB_REMOVE(process_by_pid, &qq->process_by_pid, qp);
-	if (qp->container) {
-		TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
-		qp->container = NULL;
-	}
+	process_unlink_container(qp);
 	gc_unlink(qq, gc);
 	process_free(qp);
 }
@@ -852,10 +858,8 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 		container->linked_by_pod = 0;
 	}
 	gc_unlink(qq, &container->gc);
-	while ((qp = TAILQ_FIRST(&container->processes)) != NULL) {
-		TAILQ_REMOVE(&container->processes, qp, entry_container);
-		qp->container = NULL;
-	}
+	while ((qp = TAILQ_FIRST(&container->processes)) != NULL)
+		process_unlink_container(qp);
 
 	free(container->container_id);
 	free(container->name);
@@ -1710,10 +1714,7 @@ process_set_cgroup(struct quark_process *qp, char **cgroup)
 	if (same_container)
 		return;
 
-	if (qp->container != NULL) {
-		TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
-		qp->container = NULL;
-	}
+	process_unlink_container(qp);
 	free(qp->container_id);
 	qp->container_id = NULL;
 	qp->container_id_parsed = 0;
