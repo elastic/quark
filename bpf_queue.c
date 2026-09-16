@@ -678,6 +678,37 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_PROCESS_VM_ACCESS: {
+		struct ebpf_process_vm_access_event *pva;
+		struct quark_process_vm_access *qpva;
+
+		pva = (struct ebpf_process_vm_access_event *)ev;
+		if ((raw = raw_event_alloc(RAW_PROCESS_VM_ACCESS)) == NULL)
+			goto bad;
+
+		raw->pid = pva->pids.tgid;
+		raw->time = ev->ts;
+
+		qpva = &raw->process_vm_access.quark_process_vm_access;
+		qpva->target_pid = pva->target_pid;
+		qpva->operation = pva->operation;
+		qpva->target_start_time_ns = pva->target_start_time_ns;
+		qpva->local_iovcnt = pva->local_iovcnt;
+		qpva->remote_iovcnt = pva->remote_iovcnt;
+		qpva->first_remote_addr = pva->first_remote_addr;
+		qpva->first_remote_len = pva->first_remote_len;
+		qpva->ret = pva->ret;
+		qpva->requested_pid = pva->requested_pid;
+		qpva->caller_pidns = pva->caller_pidns;
+		qpva->flags = pva->flags;
+		qpva->local_capacity = pva->local_capacity;
+		qpva->remote_capacity = pva->remote_capacity;
+		qpva->local_snapshot_status = pva->local_snapshot_status;
+		qpva->remote_snapshot_status = pva->remote_snapshot_status;
+		qpva->first_remote_valid = pva->first_remote_valid;
+		qpva->target_resolved = pva->target_resolved;
+		break;
+	}
 	case EBPF_EVENT_PROCESS_MPROTECT: {
 		struct ebpf_process_mprotect_event *mprotect;
 		struct quark_mprotect *qmprotect;
@@ -1195,9 +1226,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 * Maps and other state
 	 */
 	p->rodata->consumer_pid = getpid();
-	/* Optional process_vm probes are not exposed by this private core. */
-	bpf_map__set_autocreate(p->maps.process_vm_access_state, 0);
-	bpf_map__set_autocreate(p->maps.process_vm_access_failures, 0);
 
 	/*
 	 * Unload everything since it has way more than we want
@@ -1391,6 +1419,22 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.kprobe__ptrace_attach, 1);
 	}
 
+	if (qq->flags & QQ_PROCESS_VM_ACCESS) {
+		bpf_program__set_autoload(p->progs.raw_tracepoint__process_vm_enter, 1);
+		bpf_program__set_autoload(p->progs.raw_tracepoint__process_vm_exit, 1);
+		bpf_program__set_autoload(p->progs.raw_tracepoint__process_vm_cleanup, 1);
+		if (use_fentry)
+			bpf_program__set_autoload(p->progs.fentry__mm_access, 1);
+		else
+			bpf_program__set_autoload(p->progs.kprobe__mm_access, 1);
+		p->rodata->process_vm_access_enabled = 1;
+		if (bpf_map__set_max_entries(p->maps.process_vm_access_state, 4096) != 0 ||
+		    bpf_map__set_max_entries(p->maps.process_vm_access_failures, 1) != 0)
+			goto fail;
+	} else if (bpf_map__set_autocreate(p->maps.process_vm_access_state, 0) != 0 ||
+	    bpf_map__set_autocreate(p->maps.process_vm_access_failures, 0) != 0)
+		goto fail;
+
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
 
@@ -1574,6 +1618,7 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	struct ebpf_event_stats	*pcpu_ees;
 	u32			 zero = 0;
 	u64			 lost;
+	u64			*failures = NULL;
 	int			 i, num_cpus;
 
 	if ((num_cpus = libbpf_num_possible_cpus()) <= 0) {
@@ -1599,11 +1644,24 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	for (i = 0, lost = 0; i < num_cpus; i++)
 		lost += pcpu_ees[i].lost;
 	qq->stats.lost = lost;
+	if (qq->flags & QQ_PROCESS_VM_ACCESS) {
+		failures = calloc(num_cpus, sizeof(*failures));
+		if (failures == NULL)
+			goto fail;
+		if (bpf_map__lookup_elem(bqq->probes->maps.process_vm_access_failures,
+		    &zero, sizeof(zero), failures, sizeof(*failures) * num_cpus, 0) != 0)
+			goto fail;
+		qq->stats.process_vm_state_failures = 0;
+		for (i = 0; i < num_cpus; i++)
+			qq->stats.process_vm_state_failures += failures[i];
+	}
+	free(failures);
 	free(pcpu_ees);
 
 	return (0);
 
 fail:
+	free(failures);
 	free(pcpu_ees);
 
 	return (-1);
