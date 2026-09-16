@@ -909,7 +909,7 @@ func shmFromC(cShm *C.struct_quark_shm) (any, error) {
 }
 
 // optCString returns a C string allocated with C.CString, or nil when s is
-// empty. Caller must C.free the returned pointer if non-nil.
+// empty. The result may always be passed to C.free, which ignores nil.
 func optCString(s string) *C.char {
 	if s == "" {
 		return nil
@@ -925,17 +925,11 @@ func (queue *Queue) CreatePod(uid, name, ns, phase string) (PodInfo, error) {
 	cUID := C.CString(uid)
 	defer C.free(unsafe.Pointer(cUID))
 	cName := optCString(name)
-	if cName != nil {
-		defer C.free(unsafe.Pointer(cName))
-	}
+	defer C.free(unsafe.Pointer(cName))
 	cNS := optCString(ns)
-	if cNS != nil {
-		defer C.free(unsafe.Pointer(cNS))
-	}
+	defer C.free(unsafe.Pointer(cNS))
 	cPhase := optCString(phase)
-	if cPhase != nil {
-		defer C.free(unsafe.Pointer(cPhase))
-	}
+	defer C.free(unsafe.Pointer(cPhase))
 
 	pod, err := C.quark_pod_create(queue.quarkQueue, cUID, cName, cNS, cPhase)
 	if pod == nil {
@@ -970,17 +964,11 @@ func (queue *Queue) CreateContainer(containerID, podUID, name, image string) (Co
 	cContainerID := C.CString(containerID)
 	defer C.free(unsafe.Pointer(cContainerID))
 	cPodUID := optCString(podUID)
-	if cPodUID != nil {
-		defer C.free(unsafe.Pointer(cPodUID))
-	}
+	defer C.free(unsafe.Pointer(cPodUID))
 	cName := optCString(name)
-	if cName != nil {
-		defer C.free(unsafe.Pointer(cName))
-	}
+	defer C.free(unsafe.Pointer(cName))
 	cImage := optCString(image)
-	if cImage != nil {
-		defer C.free(unsafe.Pointer(cImage))
-	}
+	defer C.free(unsafe.Pointer(cImage))
 
 	container, err := C.quark_container_create(queue.quarkQueue, cContainerID, cPodUID, cName, cImage)
 	if container == nil {

@@ -3570,6 +3570,8 @@ t_pod_remove(const struct test *t, struct quark_queue_attr *qa)
 		assert(process.container == NULL);
 		assert(TAILQ_EMPTY(&qq.event_gc));
 		assert(quark_container_lookup(&qq, "orphan") == orphan);
+		/* Pod plus both containers, regardless of removal order. */
+		assert(qq.stats.garbage_collections == 3);
 		errno = 0;
 		assert(quark_pod_remove(&qq, "pod") == -1);
 		assert(errno == ESRCH);
