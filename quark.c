@@ -4480,9 +4480,7 @@ quark_queue_get_epollfd(struct quark_queue *qq)
 void
 quark_queue_get_stats(struct quark_queue *qq, struct quark_queue_stats *qs)
 {
-	/* A queue without a backend has no backend stats (tests). */
-	if (qq->queue_ops != NULL)
-		qq->queue_ops->update_stats(qq);
+	qq->queue_ops->update_stats(qq);
 	*qs = qq->stats;
 }
 
@@ -4517,7 +4515,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->ruleset = NULL;		/* no rules */
 }
 
-void
+static void
 quark_queue_init_trees(struct quark_queue *qq)
 {
 	RB_INIT(&qq->raw_event_by_time);
@@ -4529,6 +4527,40 @@ quark_queue_init_trees(struct quark_queue *qq)
 	RB_INIT(&qq->container_by_id);
 	RB_INIT(&qq->pod_by_uid);
 	TAILQ_INIT(&qq->event_gc);
+}
+
+static int
+queue_ops_none_nop(struct quark_queue *qq)
+{
+	return (0);
+}
+
+static void
+queue_ops_none_close(struct quark_queue *qq)
+{
+}
+
+/* Backend that does nothing, for queues that only exercise the caches */
+static struct quark_queue_ops queue_ops_none = {
+	.open		= queue_ops_none_nop,
+	.populate	= queue_ops_none_nop,
+	.update_stats	= queue_ops_none_nop,
+	.close		= queue_ops_none_close,
+};
+
+/*
+ * Initialize a queue without a kernel backend. Tests use it to exercise
+ * the process and container caches; populate, stats and close are NOPs.
+ * The queue must still be released with quark_queue_close().
+ */
+void
+quark_queue_init_bare(struct quark_queue *qq)
+{
+	bzero(qq, sizeof(*qq));
+	quark_queue_init_trees(qq);
+	qq->epollfd = -1;
+	qq->max_length = 1;
+	qq->queue_ops = &queue_ops_none;
 }
 
 int
@@ -5014,9 +5046,6 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 int
 quark_queue_populate(struct quark_queue *qq)
 {
-	/* A queue without a backend has nothing to populate (tests). */
-	if (qq->queue_ops == NULL)
-		return (0);
 	return (qq->queue_ops->populate(qq));
 }
 

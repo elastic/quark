@@ -2298,20 +2298,6 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
-/*
- * Initialize a backend-less queue for tests that only exercise the
- * process and container caches. No queue_ops means populate, stats and
- * close are NOPs.
- */
-static void
-test_queue_init(struct quark_queue *qq)
-{
-	bzero(qq, sizeof(*qq));
-	quark_queue_init_trees(qq);
-	qq->epollfd = -1;
-	qq->max_length = 1;
-}
-
 static struct quark_process *
 test_process_event(struct quark_queue *qq, u32 pid, const char *cgroup)
 {
@@ -2461,7 +2447,7 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_process *seen;
 	const char		*cached;
 
-	test_queue_init(&qq);
+	quark_queue_init_bare(&qq);
 	bzero(&qp, sizeof(qp));
 
 	qp.cgroup = strdup("/system.slice/docker-target.scope");
@@ -3367,7 +3353,7 @@ t_container_remove(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_container	*container, *orphan;
 	u64			 marked;
 
-	test_queue_init(&qq);
+	quark_queue_init_bare(&qq);
 	bzero(&process, sizeof(process));
 	qq.cache_grace_time = UINT64_MAX;
 	pod = quark_pod_get(&qq, "pod");
@@ -3436,7 +3422,7 @@ t_pod_remove(const struct test *t, struct quark_queue_attr *qa)
 		struct quark_container	*child, *queued, *orphan;
 		u64			 marked;
 
-		test_queue_init(&qq);
+		quark_queue_init_bare(&qq);
 		bzero(&process, sizeof(process));
 		qq.cache_grace_time = UINT64_MAX;
 		pod = quark_pod_get(&qq, "pod");
@@ -3496,7 +3482,7 @@ t_container_dump(const struct test *t, struct quark_queue_attr *qa)
 	size_t	 i;
 
 	for (i = 0; i < nitems(cases); i++) {
-		struct quark_queue	 qq = { .epollfd = -1 };
+		struct quark_queue	 qq;
 		struct quark_process	 process;
 		struct quark_event	 event = { .process = &process };
 		struct quark_container	*container;
@@ -3504,6 +3490,7 @@ t_container_dump(const struct test *t, struct quark_queue_attr *qa)
 		char			*buf = NULL;
 		size_t			 len = 0;
 
+		quark_queue_init_bare(&qq);
 		bzero(&process, sizeof(process));
 		container = quark_container_create(&qq, "container", NULL,
 		    cases[i].name, cases[i].image);
@@ -3546,7 +3533,7 @@ t_pod_dump(const struct test *t, struct quark_queue_attr *qa)
 	size_t	 i;
 
 	for (i = 0; i < nitems(cases); i++) {
-		struct quark_queue	 qq = { .epollfd = -1 };
+		struct quark_queue	 qq;
 		struct quark_process	 process;
 		struct quark_event	 event = { .process = &process };
 		struct quark_pod		*pod;
@@ -3554,6 +3541,7 @@ t_pod_dump(const struct test *t, struct quark_queue_attr *qa)
 		char			*buf = NULL;
 		size_t			 len = 0;
 
+		quark_queue_init_bare(&qq);
 		bzero(&process, sizeof(process));
 		pod = quark_pod_create(&qq, "pod", cases[i].name,
 		    cases[i].ns, cases[i].phase);
@@ -3580,11 +3568,12 @@ t_pod_dump(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_pod_create(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	 qq = { .epollfd = -1 };
+	struct quark_queue	 qq;
 	struct quark_pod		*pod, *other;
 	char			 uid[] = "pod", name[] = "test-pod";
 	char			 ns[] = "test-ns", phase[] = "Running";
 
+	quark_queue_init_bare(&qq);
 	pod = quark_pod_create(&qq, uid, name, ns, phase);
 	assert(pod != NULL);
 	assert(quark_pod_lookup(&qq, "pod") == pod);
@@ -3626,10 +3615,11 @@ t_pod_create(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_pod_get(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	 qq = { .epollfd = -1 };
+	struct quark_queue	 qq;
 	struct quark_pod		*pod, *other;
 	char			 uid[] = "pod";
 
+	quark_queue_init_bare(&qq);
 	errno = 0;
 	assert(quark_pod_lookup(&qq, uid) == NULL);
 	assert(errno == ESRCH);
@@ -3670,12 +3660,13 @@ t_pod_get(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_container_create(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	 qq = { .epollfd = -1 };
+	struct quark_queue	 qq;
 	struct quark_pod		*pod, *other;
 	struct quark_container	*container, *orphan;
 	char			 id[] = "container", name[] = "test-container";
 	char			 image[] = "test-image";
 
+	quark_queue_init_bare(&qq);
 	pod = quark_pod_create(&qq, "pod", NULL, NULL, NULL);
 	other = quark_pod_create(&qq, "other", NULL, NULL, NULL);
 	assert(pod != NULL && other != NULL);
@@ -3730,10 +3721,11 @@ t_container_create(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_container_get(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	 qq = { .epollfd = -1 };
+	struct quark_queue	 qq;
 	struct quark_pod		*pod, *other;
 	struct quark_container	*container, *direct;
 
+	quark_queue_init_bare(&qq);
 	/* These cache operations do not require a kernel backend. */
 	pod = quark_pod_get(&qq, "pod");
 	other = quark_pod_get(&qq, "other");
