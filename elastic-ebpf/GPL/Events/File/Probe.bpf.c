@@ -370,9 +370,10 @@ struct {
 
 /*
  * Access classes already reported for a (process life, file), one entry per
- * (tgid, device, inode) so a second watched file is reported again. Stale
- * entries never suppress, see Dedup.h; LRU eviction and procfs inode churn
- * cost a duplicate, never a lost event.
+ * (tgid, device, inode) so a second watched file is reported again. A class
+ * is claimed only once its event is in the ring buffer. Stale entries never
+ * suppress, see Dedup.h; LRU eviction, procfs inode churn and a full ring
+ * buffer cost a duplicate, never a lost event.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -536,8 +537,8 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     scratch->file_key.tgid  = BPF_CORE_READ(task, tgid);
     scratch->file_key.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
     scratch->file_key.inode = BPF_CORE_READ(de, d_inode, i_ino);
-    if (ebpf_dedup__test_and_set(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
-                                 &scratch->fresh, task, class))
+    if (ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key, &scratch->fresh,
+                         task, class))
         return;
 
     event = get_event_buffer();
@@ -574,7 +575,10 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     size  = ebpf_resolve_pids_ss_cgroup_path_to_string(field->data, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
-    ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+    // The class is claimed only once the event is out, see ebpf_dedup__set().
+    if (ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0) == 0)
+        ebpf_dedup__set(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
+                        &scratch->fresh);
 }
 
 // The string counterpart of the ancestor walk in file_access_anchored(): true

@@ -1478,14 +1478,17 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
 	const struct quark_file_access	*qfa;
+	struct quark_queue_stats	 stats;
 	struct stat			 st;
 	char				 dir[] = "/tmp/quark-test-fa.XXXXXX";
 	char				 leaf[PATH_MAX], parent_dir[PATH_MAX];
 	char				 parent_file[PATH_MAX], other[PATH_MAX];
 	char				 missing[PATH_MAX], noexec[PATH_MAX];
 	char				 deep[PATH_MAX], toodeep[PATH_MAX];
+	char				 flood[PATH_MAX];
 	char				 longname[QUARK_FILE_ACCESS_NAME_MAX + 8];
-	int				 fd;
+	u64				 lost;
+	int				 fd, i, nflood;
 	pid_t				 child;
 
 	qa->flags |= QQ_FILE_ACCESS;
@@ -1748,8 +1751,80 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qfa->requested, noexec));
 	assert(qfa->open_flags & 0x20); /* __FMODE_EXEC */
 
-	assert(!quark_queue_file_access_name_reset(&qq));
+	/*
+	 * A class is claimed only once its event is out. Fill the ring buffer
+	 * with opens nobody drains, read flood while it is full so that its
+	 * read is lost, drain, and a second read must still be reported.
+	 * Skipped under valgrind, where it exercises the kernel at valgrind
+	 * speed.
+	 */
+	snprintf(flood, sizeof(flood), "%s/quark-test-anchor/flood", dir);
+	if ((fd = open(flood, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	assert_next_access_path(&qq, flood);
+	nflood = 0;
+	if (!in_valgrind) {
+		quark_queue_get_stats(&qq, &stats);
+		lost = stats.lost;
+		for (nflood = 0; lost == stats.lost; nflood++) {
+			if (nflood == 200000)
+				errx(1, "could not fill the ring buffer");
+			snprintf(other, sizeof(other),
+			    "%s/quark-test-anchor/a/%d", dir, nflood);
+			if ((fd = open(other, O_WRONLY|O_CREAT, 0600)) == -1)
+				err(1, "open");
+			close(fd);
+			if ((fd = open(other, O_PATH)) == -1)
+				err(1, "open");
+			close(fd);
+			if ((nflood & 255) == 255)
+				quark_queue_get_stats(&qq, &stats);
+		}
+		lost = stats.lost;
+		if ((fd = open(flood, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		quark_queue_get_stats(&qq, &stats);
+		assert(stats.lost > lost);
+		/*
+		 * Drain the flood until the queue stays idle past hold_time;
+		 * the lost read is not among them. Read again: with the class
+		 * unclaimed, this read is the next event.
+		 */
+		for (i = 0; i < 20; ) {
+			if (quark_queue_get_event(&qq) != NULL) {
+				i = 0;
+				continue;
+			}
+			if (quark_queue_block(&qq) == -1)
+				err(1, "quark_queue_block");
+			i++;
+		}
+		if ((fd = open(flood, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(!strcmp(qfa->path, flood));
+		assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+	} else
+		warnx("%s: skipping the ring buffer flood under valgrind",
+		    __func__);
 
+	/*
+	 * Same libbpf false positive as t_trusted_pid: bpf_map_get_next_key()
+	 * memsets bpf_attr short of flags and takes a NULL first key.
+	 */
+	if (!in_valgrind)
+		assert(!quark_queue_file_access_name_reset(&qq));
+
+	while (nflood-- > 0) {
+		snprintf(other, sizeof(other), "%s/quark-test-anchor/a/%d", dir,
+		    nflood);
+		(void)unlink(other);
+	}
+	(void)unlink(flood);
 	(void)unlink(leaf);
 	(void)unlink(parent_file);
 	(void)unlink(noexec);
