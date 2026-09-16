@@ -268,10 +268,20 @@ func TestBoottime(t *testing.T) {
 		// Consecutive boottimes should be bit-identical without jitter.
 		// Due to the internal hysteresis, sampling noise is never adopted.
 		// Sleep past the resample interval so at least one fresh sample is taken.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(15 * time.Millisecond)
 		for i := 0; i < 1000; i++ {
 			require.Equal(t, boottime, Boottime())
 		}
+	})
+
+	t.Run("StableInterspersed", func(t *testing.T) {
+        // Every iteration sleeps past the resample interval so each call takes
+        // a fresh sample. Hysteresis must reject all of them: the value stays
+        // bit-identical to the one read at the start of the test.
+        for i := 0; i < 20; i++ {
+            time.Sleep(15 * time.Millisecond)
+            require.Equal(t, boottime, Boottime())
+        }
 	})
 
 	t.Run("Concurrent", func(t *testing.T) {
