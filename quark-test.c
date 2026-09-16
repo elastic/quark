@@ -2015,7 +2015,7 @@ t_process_vm_access_concurrent(const struct test *t, struct quark_queue_attr *qa
 	struct quark_queue qq;
 	const struct quark_event *event;
 	pid_t children[8];
-	int seen[8][64] = { 0 };
+	int seen[8][64] = {{ 0 }};
 	int i, j, n = 0, status;
 	struct timespec before, after;
 	u64 lower, upper;
