@@ -297,6 +297,8 @@ func TestBoottime(t *testing.T) {
 			wg.Add(1)
 			go func(m map[uint64]struct{}) {
 				defer wg.Done()
+				// Ensure at least one value is produced regardless of scheduling
+				m[Boottime()] = struct{}{}
 				deadline := time.Now().Add(50 * time.Millisecond)
 				for time.Now().Before(deadline) {
 					m[Boottime()] = struct{}{}
