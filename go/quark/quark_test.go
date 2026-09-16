@@ -275,13 +275,13 @@ func TestBoottime(t *testing.T) {
 	})
 
 	t.Run("StableInterspersed", func(t *testing.T) {
-        // Every iteration sleeps past the resample interval so each call takes
-        // a fresh sample. Hysteresis must reject all of them: the value stays
-        // bit-identical to the one read at the start of the test.
-        for i := 0; i < 20; i++ {
-            time.Sleep(15 * time.Millisecond)
-            require.Equal(t, boottime, Boottime())
-        }
+		// Every iteration sleeps past the resample interval so each call takes
+		// a fresh sample. Hysteresis must reject all of them: the value stays
+		// bit-identical to the one read at the start of the test.
+		for i := 0; i < 20; i++ {
+			time.Sleep(15 * time.Millisecond)
+			require.Equal(t, boottime, Boottime())
+		}
 	})
 
 	t.Run("Concurrent", func(t *testing.T) {
@@ -310,8 +310,8 @@ func TestBoottime(t *testing.T) {
 		seenAny := false
 		for _, m := range seen {
 			for v := range m {
-                seenAny = true
-                require.Equal(t, boottime, v)
+				seenAny = true
+				require.Equal(t, boottime, v)
 			}
 		}
 		require.True(t, seenAny, "no boottime value returned from any worker")
