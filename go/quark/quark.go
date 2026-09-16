@@ -918,7 +918,9 @@ func optCString(s string) *C.char {
 }
 
 // CreatePod inserts a new pod into the queue's pod tree. Returns syscall.EEXIST
-// if a pod with the same uid is already present. The result is a data copy.
+// if a pod with the same uid is already present. A pod passed to RemovePod
+// stays present until the cache grace time ends, so creating the same uid
+// within that window also returns syscall.EEXIST. The result is a data copy.
 func (queue *Queue) CreatePod(uid, name, ns, phase string) (PodInfo, error) {
 	cUID := C.CString(uid)
 	defer C.free(unsafe.Pointer(cUID))
@@ -954,10 +956,16 @@ func (queue *Queue) LookupPod(uid string) (PodInfo, bool) {
 	return podInfoFromC(pod), true
 }
 
-// CreateContainer inserts a new container into the queue's container tree. If
+// CreateContainer inserts a new container into the queue's container tree.
+// The containerID must be in the form the cgroup parser produces,
+// "<runtime>://<id>" as in "containerd://<id>" or "docker://<id>", otherwise
+// processes never link to it and lookups and removals by the bare id miss. If
 // podUID is non-empty the container is linked to that pod, which must already
 // exist. Returns syscall.EEXIST if a container with the same containerID is
-// already present. The result is a data copy.
+// already present. A container passed to RemoveContainer, or whose pod was
+// passed to RemovePod, stays present until the cache grace time ends, so
+// creating the same containerID within that window also returns
+// syscall.EEXIST. The result is a data copy.
 func (queue *Queue) CreateContainer(containerID, podUID, name, image string) (ContainerInfo, error) {
 	cContainerID := C.CString(containerID)
 	defer C.free(unsafe.Pointer(cContainerID))
@@ -982,21 +990,35 @@ func (queue *Queue) CreateContainer(containerID, podUID, name, image string) (Co
 }
 
 // RemovePod schedules the current pod with this UID for removal after the
-// cache grace time. Its child containers are also removed. An absent UID is ignored.
-// Repeated calls do not extend the grace time.
-func (queue *Queue) RemovePod(uid string) {
+// cache grace time. Its child containers are also removed. Lookups keep
+// succeeding until then. Removal is final and cannot be cancelled. Repeated
+// calls do not extend the grace time and still succeed. Returns syscall.ESRCH
+// if the UID is absent.
+func (queue *Queue) RemovePod(uid string) error {
 	cUID := C.CString(uid)
 	defer C.free(unsafe.Pointer(cUID))
-	C.quark_pod_remove(queue.quarkQueue, cUID)
+
+	ret, err := C.quark_pod_remove(queue.quarkQueue, cUID)
+	if ret == -1 {
+		return wrapErrno(err)
+	}
+	return nil
 }
 
 // RemoveContainer schedules the current container with this ID for removal
-// after the cache grace time. An absent ID is ignored.
-// Repeated calls do not extend the grace time.
-func (queue *Queue) RemoveContainer(containerID string) {
+// after the cache grace time, independently of its pod. Lookups keep
+// succeeding until then. Removal is final and cannot be cancelled. Repeated
+// calls do not extend the grace time and still succeed. Returns syscall.ESRCH
+// if the ID is absent.
+func (queue *Queue) RemoveContainer(containerID string) error {
 	cID := C.CString(containerID)
 	defer C.free(unsafe.Pointer(cID))
-	C.quark_container_remove(queue.quarkQueue, cID)
+
+	ret, err := C.quark_container_remove(queue.quarkQueue, cID)
+	if ret == -1 {
+		return wrapErrno(err)
+	}
+	return nil
 }
 
 // LookupContainer returns a copy of the container data. The boolean is false if absent.
