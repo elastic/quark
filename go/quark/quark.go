@@ -1048,17 +1048,16 @@ func ttyFromC(cTty *C.struct_quark_tty) Tty {
 }
 
 // newTestQueue returns a backend-less queue for tests that only exercise
-// the process and container caches. Without queue_ops, populate, stats and
-// close are NOPs in libquark. cgo is not available in _test.go files, so this
-// lives here, mirroring the "exported for testing only" section of quark.h.
+// the process and container caches. cgo is not available in _test.go files,
+// so this lives here, mirroring the "exported for testing only" section of
+// quark.h.
 func newTestQueue() *Queue {
 	p := C.calloc(C.size_t(1), C.sizeof_struct_quark_queue)
 	if p == nil {
 		panic("cannot allocate test queue")
 	}
 	qq := (*C.struct_quark_queue)(p)
-	C.quark_queue_init_trees(qq)
-	qq.epollfd = -1
+	C.quark_queue_init_bare(qq)
 	qq.cache_grace_time = C.u64(math.MaxUint64)
 	return &Queue{quarkQueue: qq, epollFd: -1}
 }
