@@ -43,6 +43,14 @@
 
 #define NANOSECONDS_IN_SECOND 1000000000
 
+// include/uapi/asm-generic/errno-base.h
+#define EPERM 1
+#define ENOENT 2
+#define EACCES 13
+
+// include/uapi/linux/fcntl.h
+#define AT_FDCWD -100
+
 static struct path *path_from_file(struct file *f)
 {
     size_t off = bpf_core_field_offset(struct file, f_path);
