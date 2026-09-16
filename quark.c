@@ -2492,6 +2492,13 @@ quark_container_lookup(struct quark_queue *qq, const char *container_id)
 	return (container_lookup(qq, (char *)container_id));
 }
 
+/*
+ * Create a pod by uid. Fails with EEXIST if the uid is already present. A pod
+ * scheduled for removal by quark_pod_remove() stays present until the grace
+ * time ends, so creating the same uid within that window also fails with
+ * EEXIST. Pod uids are unique per pod instance, so this only happens on
+ * out-of-order or duplicated input.
+ */
 struct quark_pod *
 quark_pod_create(struct quark_queue *qq, const char *uid,
     const char *name, const char *ns, const char *phase)
@@ -2528,6 +2535,18 @@ fail:
 	return (NULL);
 }
 
+/*
+ * Create a container by container_id. The id must be in the form the cgroup
+ * parser produces, "<runtime>://<id>" as in "containerd://<id>" or
+ * "docker://<id>", otherwise processes never link to it and lookups and
+ * removals by the bare id miss. If pod_uid is non-NULL the container is
+ * linked to that pod, which must already exist. Fails with EEXIST if the
+ * container_id is already present. A container scheduled for removal by
+ * quark_container_remove() or by its pod's removal stays present until the
+ * grace time ends, so creating the same container_id within that window also
+ * fails with EEXIST. Container ids are unique per container instance, so this
+ * only happens on out-of-order or duplicated input.
+ */
 struct quark_container *
 quark_container_create(struct quark_queue *qq, const char *container_id,
     const char *pod_uid, const char *name, const char *image)
@@ -2586,24 +2605,42 @@ fail:
 	return (NULL);
 }
 
-void
+/*
+ * Schedule a pod and all its containers for removal after the grace time.
+ * Lookups keep succeeding until then. Removal is final: no later call unmarks
+ * the pod, and a repeated call does not extend the grace time. Returns 0 if
+ * the pod exists, -1 with errno set to ESRCH otherwise.
+ */
+int
 quark_pod_remove(struct quark_queue *qq, const char *uid)
 {
 	struct quark_pod *pod;
 
 	pod = pod_lookup_by_uid(qq, (char *)uid);
-	if (pod != NULL)
-		gc_mark(qq, &pod->gc, GC_POD);
+	if (pod == NULL)
+		return (-1);
+	gc_mark(qq, &pod->gc, GC_POD);
+
+	return (0);
 }
 
-void
+/*
+ * Schedule a container for removal after the grace time, independently of its
+ * pod. Lookups keep succeeding until then. Removal is final: no later call
+ * unmarks the container, and a repeated call does not extend the grace time.
+ * Returns 0 if the container exists, -1 with errno set to ESRCH otherwise.
+ */
+int
 quark_container_remove(struct quark_queue *qq, const char *container_id)
 {
 	struct quark_container *container;
 
 	container = container_lookup(qq, (char *)container_id);
-	if (container != NULL)
-		gc_mark(qq, &container->gc, GC_CONTAINER);
+	if (container == NULL)
+		return (-1);
+	gc_mark(qq, &container->gc, GC_CONTAINER);
+
+	return (0);
 }
 
 void
