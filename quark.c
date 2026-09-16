@@ -2469,6 +2469,8 @@ quark_pod_lookup(struct quark_queue *qq, const char *uid)
  * Get or create a container by container_id. If pod_uid is non-NULL the
  * container is linked to that pod (which must already exist). Returns the
  * existing container if already present, otherwise allocates and inserts one.
+ * An existing container without a pod is attached to the requested pod;
+ * requesting a different pod for an attached container fails with EEXIST.
  * Caller fills in remaining fields (name, image, etc.).
  */
 struct quark_container *
@@ -2485,8 +2487,18 @@ quark_container_get(struct quark_queue *qq, const char *container_id,
 	}
 
 	container = container_lookup(qq, (char *)container_id);
-	if (container != NULL)
+	if (container != NULL) {
+		if (pod != NULL && container->pod != pod) {
+			if (container->pod != NULL)
+				return (errno = EEXIST, NULL);
+			col = pod_containers_RB_INSERT(&pod->containers, container);
+			if (unlikely(col != NULL))
+				return (errno = EEXIST, NULL);
+			container->pod = pod;
+			container->linked_by_pod = 1;
+		}
 		return (container);
+	}
 
 	container = calloc(1, sizeof(*container));
 	if (container == NULL)
