@@ -15,6 +15,7 @@
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 
 #include <bpf/bpf.h>
@@ -1568,6 +1569,478 @@ t_shmget(const struct test *t, struct quark_queue_attr *qa)
 
 	quark_queue_close(&qq);
 
+	return (0);
+}
+
+#if defined(__x86_64__)
+/* Exercise ia32 dispatch from a 64-bit task: CS alone cannot identify this ABI. */
+static long
+process_vm_readv_ia32(u32 pid, u32 local, u32 remote)
+{
+	long result;
+
+	__asm__ volatile("sub $128, %%rsp; push %%rbp; xor %%ebp, %%ebp; "
+	    "int $0x80; pop %%rbp; add $128, %%rsp"
+	    : "=a"(result)
+	    : "a"(347), "b"(pid), "c"(local), "d"(1), "S"(remote), "D"(1)
+	    : "memory", "cc", "r8", "r9", "r10", "r11");
+	return ((s32)result);
+}
+#endif
+
+/* A live nonleader target proves that requested TID is not host TGID. */
+static int
+process_vm_target_thread(void *unused)
+{
+	for (;;)
+		pause();
+	return (0);
+}
+
+static u64
+process_monotonic_ns(void)
+{
+	struct timespec now;
+	assert(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+	return ((u64)now.tv_sec * 1000000000ULL + now.tv_nsec);
+}
+
+static int
+t_process_vm_access(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue qq;
+	const struct quark_event *qev;
+	const struct quark_process_vm_access *pva;
+	struct iovec local[9], remote[9];
+	char *page, *buffer;
+	int ready[2], done[2];
+	pid_t child;
+	ssize_t result;
+	s64 expected;
+	int i, scenario;
+	int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+	int scenarios = 16;
+	pid_t target_tid;
+	u64 target_lower, target_upper, target_start = 0;
+	struct stat pidns;
+	long pagesize = sysconf(_SC_PAGESIZE);
+
+#if defined(__x86_64__)
+	mmap_flags |= MAP_32BIT;
+	scenarios += 2;
+#endif
+	qa->flags |= QQ_PROCESS_VM_ACCESS;
+	if (pipe(ready) == -1 || pipe(done) == -1)
+		err(1, "pipe");
+	page = mmap(NULL, pagesize * 2, PROT_READ | PROT_WRITE,
+	    mmap_flags, -1, 0);
+	buffer = mmap(NULL, pagesize * 2, PROT_READ | PROT_WRITE,
+	    mmap_flags, -1, 0);
+	if (page == MAP_FAILED || buffer == MAP_FAILED)
+		err(1, "mmap");
+	memset(page, 'q', pagesize * 2);
+	target_lower = process_monotonic_ns();
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0) {
+		assert(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0);
+		char c;
+		void *stack = mmap(NULL, 65536, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+		assert(stack != MAP_FAILED);
+		target_tid = clone(process_vm_target_thread, (char *)stack + 65536,
+			CLONE_VM | CLONE_SIGHAND | CLONE_THREAD, NULL);
+		assert(target_tid > 0 && target_tid != getpid());
+
+		close(ready[0]);
+		close(done[1]);
+		if (mprotect(page + pagesize, pagesize, PROT_NONE) == -1)
+			err(1, "mprotect");
+		if (write(ready[1], &target_tid, sizeof(target_tid)) != sizeof(target_tid) || read(done[0], &c, 1) != 1)
+			err(1, "child synchronization");
+		_exit(0);
+	}
+	close(ready[1]);
+	close(done[0]);
+	if (read(ready[0], &target_tid, sizeof(target_tid)) != sizeof(target_tid))
+		err(1, "child ready");
+	target_upper = process_monotonic_ns();
+	assert(stat("/proc/self/ns/pid", &pidns) == 0);
+	if (quark_queue_open(&qq, qa) == -1)
+		err(1, "quark_queue_open");
+
+	/* A leaked same-group event must fail the following sentinel checks. */
+	local[0] = (struct iovec){ buffer, 8 };
+	remote[0] = (struct iovec){ page, 8 };
+	assert(process_vm_writev(getpid(), local, 1, remote, 1, 0) == 8);
+	assert(process_vm_readv(getpid(), local, 1, remote, 1, 0) == 8);
+
+	for (scenario = 0; scenario < scenarios; scenario++) {
+		pid_t target = child;
+		unsigned long lc = 1, rc = 1, flags = 0;
+		struct iovec *lp = local;
+		int write_op = scenario == 0;
+
+		for (i = 0; i < 9; i++) {
+			local[i] = (struct iovec){ buffer + i * 8, 8 };
+			remote[i] = (struct iovec){ page + i * 8, 8 };
+		}
+		switch (scenario) {
+		case 2: flags = 1; break;
+		case 3: target = -1; break;
+		case 4: lp = (void *)1; break;
+		case 5: lc = rc = 0; break;
+		case 6:
+			remote[0] = (struct iovec){ (void *)1, 0 };
+			rc = 2;
+			break;
+		case 7: lc = rc = 8; break;
+		case 8: lc = rc = 9; break;
+		case 9: local[0].iov_len = 4; break;
+		case 10:
+			local[0].iov_len = remote[0].iov_len = pagesize * 2;
+			break;
+		case 11: remote[0].iov_base = page + pagesize; break;
+		case 12: target = target_tid; break;
+		case 13: lc = 1025; break;
+		case 14: local[0].iov_len = ~(size_t)0; break;
+		case 15: remote[0].iov_len = ~(size_t)0; break;
+		}
+		errno = 0;
+		result = write_op ? process_vm_writev(target, lp, lc, remote, rc, flags) :
+		    process_vm_readv(target, lp, lc, remote, rc, flags);
+		expected = result < 0 ? -errno : result;
+#if defined(__x86_64__)
+		if (scenario == 16 || scenario == 17) {
+			struct { u32 base, len; } *vectors;
+
+			/* The native call above is a sentinel before the compat call. */
+			do {
+				qev = drain_for_pid(&qq, getpid());
+			} while (!(qev->events & QUARK_EV_PROCESS_VM_ACCESS));
+			assert(qev->process_vm_access.ret == 8);
+			vectors = (void *)(buffer + pagesize);
+			vectors[0].base = (u32)(uintptr_t)buffer;
+			vectors[0].len = 8;
+			vectors[1].base = (u32)(uintptr_t)page;
+			vectors[1].len = 8;
+			if (scenario == 16) {
+				expected = process_vm_readv_ia32(child,
+					(u32)(uintptr_t)&vectors[0], (u32)(uintptr_t)&vectors[1]);
+			} else {
+				result = syscall(0x40000000U | 539, child, &vectors[0], 1,
+					&vectors[1], 1, 0);
+				expected = result < 0 ? -errno : result;
+			}
+			if (expected == -ENOSYS) {
+				fprintf(stderr, "%s syscall ABI unavailable; compat case skipped\n",
+					scenario == 16 ? "ia32" : "x32");
+				continue;
+			}
+		}
+#endif
+		if (scenario == 2 || (scenario >= 13 && scenario <= 15)) assert(expected == -EINVAL);
+		else if (scenario == 3) assert(expected == -ESRCH);
+		else if (scenario == 4 || scenario == 11) assert(expected == -EFAULT);
+		else if (scenario == 5) assert(expected == 0);
+		else if (scenario == 7) assert(expected == 64);
+		else if (scenario == 8) assert(expected == 72);
+		else if (scenario == 9) assert(expected == 4);
+		else if (scenario == 10) assert(expected == pagesize);
+		else assert(expected == 8);
+		do {
+			qev = drain_for_pid(&qq, getpid());
+		} while (!(qev->events & QUARK_EV_PROCESS_VM_ACCESS));
+		pva = &qev->process_vm_access;
+		assert(pva->operation == (u32)(write_op ?
+		    QUARK_PROCESS_VM_ACCESS_WRITE : QUARK_PROCESS_VM_ACCESS_READ));
+		assert(pva->requested_pid == target);
+		assert(pva->flags == flags);
+		assert(pva->local_iovcnt == lc && pva->remote_iovcnt == rc);
+		assert(pva->ret == expected);
+		assert(pva->caller_pidns == pidns.st_ino);
+		assert(pva->target_resolved == (u32)(scenario != 2 && scenario != 3 &&
+		    scenario != 4 && scenario != 5 && !(scenario >= 13 && scenario <= 15)));
+		if (pva->target_resolved) {
+			assert(pva->target_pid == (u32)child);
+			assert(pva->target_start_time_ns >= target_lower &&
+				pva->target_start_time_ns <= target_upper);
+			if (!target_start)
+				target_start = pva->target_start_time_ns;
+			assert(pva->target_start_time_ns == target_start);
+		} else {
+			assert(pva->target_pid == 0 && pva->target_start_time_ns == 0);
+		}
+		assert(pva->local_snapshot_status == (u32)(scenario == 4 ? 1 :
+		    scenario == 8 ? 2 : scenario == 13 ? 4 : scenario == 14 ? 3 : 0));
+		assert(pva->remote_snapshot_status == (u32)(scenario == 8 ? 2 : scenario == 15 ? 3 : 0));
+		assert(pva->first_remote_valid == (u32)(rc != 0));
+		if (rc != 0) {
+			assert(pva->first_remote_addr == (u64)(uintptr_t)remote[0].iov_base);
+			assert(pva->first_remote_len == remote[0].iov_len);
+		}
+		if (scenario == 6) assert(pva->remote_capacity == 8);
+		if (scenario == 8) assert(!pva->local_capacity && !pva->remote_capacity);
+		if (scenario == 9) assert(pva->local_capacity == 4 && pva->remote_capacity == 8);
+	}
+	quark_queue_close(&qq);
+	assert(write(done[1], "x", 1) == 1);
+	assert(waitpid(child, NULL, 0) == child);
+	close(ready[0]);
+	close(done[1]);
+	munmap(page, pagesize * 2);
+	munmap(buffer, pagesize * 2);
+	return (0);
+}
+
+/* /proc is mounted in the observer's PID namespace, independently of getpid(). */
+static pid_t
+process_host_pid(void)
+{
+	int pid;
+	FILE *fp = fopen("/proc/self/stat", "r");
+
+	assert(fp != NULL && fscanf(fp, "%d", &pid) == 1);
+	fclose(fp);
+	return (pid);
+}
+
+static int
+t_process_vm_access_identity(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue qq;
+	const struct quark_event *event;
+	struct {
+		pid_t source, target, requested;
+		u64 lower, upper, pidns;
+	} expected;
+	struct stat ns;
+	int report[2], ready[2], finish[2], status, i;
+	pid_t worker, init, target;
+	char memory[8] = "target", buffer[8], token;
+	struct iovec local = { buffer, sizeof(buffer) };
+	struct iovec remote = { memory, sizeof(memory) };
+
+	qa->flags |= QQ_PROCESS_VM_ACCESS;
+	assert(pipe(report) == 0 && pipe(ready) == 0 && pipe(finish) == 0);
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert((worker = fork()) >= 0);
+	if (worker == 0) {
+		assert(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0);
+		/* Only the child changes namespaces or credentials. */
+		assert(unshare(CLONE_NEWPID) == 0);
+		assert((init = fork()) >= 0);
+		if (init != 0) {
+			assert(waitpid(init, &status, 0) == init);
+			_exit(WIFEXITED(status) ? WEXITSTATUS(status) : 1);
+		}
+		assert(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0);
+		assert(getpid() == 1);
+		expected.source = process_host_pid();
+		assert(stat("/proc/self/ns/pid", &ns) == 0);
+		expected.pidns = ns.st_ino;
+		expected.lower = process_monotonic_ns();
+		assert((target = fork()) >= 0);
+		if (target == 0) {
+			assert(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0);
+			pid_t host = process_host_pid();
+			assert(write(ready[1], &host, sizeof(host)) == sizeof(host));
+			assert(read(finish[0], &token, 1) == 1);
+			_exit(0);
+		}
+		assert(target == 2);
+		expected.requested = target;
+		assert(read(ready[0], &expected.target, sizeof(expected.target)) == sizeof(expected.target));
+		expected.upper = process_monotonic_ns();
+		assert(write(report[1], &expected, sizeof(expected)) == sizeof(expected));
+		assert(process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == sizeof(buffer));
+		assert(process_vm_readv(target, &local, 1, &remote, 1, 0) == sizeof(buffer));
+		assert(memcmp(buffer, memory, sizeof(buffer)) == 0);
+		/* Root target, unprivileged caller: CAP_SYS_PTRACE cannot bypass denial. */
+		assert(setgid(65534) == 0 && setuid(65534) == 0);
+		errno = 0;
+		assert(process_vm_readv(target, &local, 1, &remote, 1, 0) == -1 && errno == EPERM);
+		assert(write(finish[1], "x", 1) == 1);
+		assert(waitpid(target, &status, 0) == target && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+		_exit(0);
+	}
+	assert(read(report[0], &expected, sizeof(expected)) == sizeof(expected));
+	assert(stat("/proc/self/ns/pid", &ns) == 0 && expected.pidns != ns.st_ino);
+	assert(expected.target != expected.requested);
+	for (i = 0; i < 2; i++) {
+		const struct quark_process_vm_access *pva;
+		do {
+			event = drain_for_pid(&qq, expected.source);
+		} while (!(event->events & QUARK_EV_PROCESS_VM_ACCESS));
+		pva = &event->process_vm_access;
+		assert(pva->ret == (i == 0 ? (s64)sizeof(buffer) : -EPERM));
+		assert(pva->operation == QUARK_PROCESS_VM_ACCESS_READ);
+		assert(pva->target_resolved && pva->target_pid == (u32)expected.target);
+		assert(pva->requested_pid == expected.requested && pva->caller_pidns == expected.pidns);
+		assert(pva->target_start_time_ns >= expected.lower &&
+			pva->target_start_time_ns <= expected.upper);
+	}
+	assert(waitpid(worker, &status, 0) == worker && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	quark_queue_close(&qq);
+	for (i = 0; i < 2; i++) {
+		close(report[i]);
+		close(ready[i]);
+		close(finish[i]);
+	}
+	return (0);
+}
+
+static u32
+process_vm_last_map_id(void)
+{
+	u32 id = 0, next;
+	while (bpf_map_get_next_id(id, &next) == 0)
+		id = next;
+	return (id);
+}
+
+static int
+process_vm_state_fd(u32 after, struct bpf_map_info *info)
+{
+	u32 id = after, next;
+	int fd;
+	while (bpf_map_get_next_id(id, &next) == 0) {
+		u32 len = sizeof(*info);
+		id = next;
+		if ((fd = bpf_map_get_fd_by_id(id)) < 0)
+			continue;
+		memset(info, 0, sizeof(*info));
+		assert(bpf_obj_get_info_by_fd(fd, info, &len) == 0);
+		if (info->type == BPF_MAP_TYPE_HASH &&
+			!strncmp(info->name, "process_vm_acce", 15))
+			return (fd);
+		close(fd);
+	}
+	return (-1);
+}
+
+static int
+t_process_vm_access_state(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue qq;
+	struct quark_queue_stats before, after;
+	struct bpf_map_info info;
+	const struct quark_event *event;
+	struct iovec vec = { 0 };
+	u32 last;
+	u64 key;
+	void *value;
+	int fd, syncfd[2], status;
+	pid_t child;
+	char token;
+
+	last = process_vm_last_map_id();
+	qa->flags &= ~QQ_PROCESS_VM_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(process_vm_state_fd(last, &info) == -1);
+	quark_queue_close(&qq);
+	last = process_vm_last_map_id();
+	qa->flags |= QQ_PROCESS_VM_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert((fd = process_vm_state_fd(last, &info)) >= 0);
+	assert(info.max_entries == 4096 && info.key_size == sizeof(key));
+	assert((value = calloc(1, info.value_size)) != NULL);
+	/* Synthetic occupants isolate map pressure from unrelated ring pressure. */
+	for (u32 i = 0; i < info.max_entries; i++) {
+		key = (1ULL << 63) | i;
+		assert(bpf_map_update_elem(fd, &key, value, BPF_NOEXIST) == 0);
+	}
+	quark_queue_get_stats(&qq, &before);
+	assert(process_vm_readv(-1, &vec, 1, &vec, 1, 1) == -1 && errno == EINVAL);
+	quark_queue_get_stats(&qq, &after);
+	assert(after.process_vm_state_failures == before.process_vm_state_failures + 1);
+	for (u32 i = 0; i < info.max_entries; i++) {
+		key = (1ULL << 63) | i;
+		assert(bpf_map_delete_elem(fd, &key) == 0);
+	}
+	assert(process_vm_readv(-1, &vec, 1, &vec, 1, 1) == -1 && errno == EINVAL);
+	do {
+		event = drain_for_pid(&qq, getpid());
+	} while (!(event->events & QUARK_EV_PROCESS_VM_ACCESS));
+	assert(event->process_vm_access.ret == -EINVAL);
+	assert(!event->process_vm_access.target_resolved);
+	key = ((u64)getpid() << 32) | getpid();
+	assert(bpf_map_lookup_elem(fd, &key, value) < 0 && errno == ENOENT);
+	/* A task killed before syscall exit must not leave a correlation occupant. */
+	assert(pipe(syncfd) == 0 && (child = fork()) >= 0);
+	if (child == 0) {
+		assert(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0);
+		assert(write(syncfd[1], "x", 1) == 1);
+		for (;;)
+			pause();
+	}
+	assert(read(syncfd[0], &token, 1) == 1);
+	key = ((u64)child << 32) | child;
+	assert(bpf_map_update_elem(fd, &key, value, BPF_NOEXIST) == 0);
+	assert(kill(child, SIGKILL) == 0 && waitpid(child, &status, 0) == child);
+	assert(bpf_map_lookup_elem(fd, &key, value) < 0 && errno == ENOENT);
+	close(syncfd[0]);
+	close(syncfd[1]);
+	free(value);
+	close(fd);
+	quark_queue_close(&qq);
+	return (0);
+}
+
+static int
+t_process_vm_access_concurrent(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue qq;
+	const struct quark_event *event;
+	pid_t children[8];
+	int seen[8][64] = { 0 };
+	int i, j, n = 0, status;
+	struct timespec before, after;
+	u64 lower, upper;
+
+	qa->flags |= QQ_PROCESS_VM_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(clock_gettime(CLOCK_BOOTTIME, &before) == 0);
+	for (i = 0; i < 8; i++) {
+		assert((children[i] = fork()) >= 0);
+		if (children[i] == 0) {
+			struct iovec vec = { 0 };
+			for (j = 0; j < 64; j++) {
+				ssize_t result = j & 1 ?
+				    process_vm_writev(-i - 1, &vec, 1, &vec, 1, j + 1) :
+				    process_vm_readv(-i - 1, &vec, 1, &vec, 1, j + 1);
+				assert(result == -1 && errno == EINVAL);
+			}
+			_exit(0);
+		}
+	}
+	for (i = 0; i < 8; i++)
+		assert(waitpid(children[i], &status, 0) == children[i] &&
+		    WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	assert(clock_gettime(CLOCK_BOOTTIME, &after) == 0);
+	lower = (u64)before.tv_sec * 1000000000ULL + before.tv_nsec;
+	upper = (u64)after.tv_sec * 1000000000ULL + after.tv_nsec;
+	while (n < 8 * 64) {
+		const struct quark_process_vm_access *pva;
+		event = drain_any(&qq);
+		if (!(event->events & QUARK_EV_PROCESS_VM_ACCESS))
+			continue;
+		assert(event->process != NULL);
+		for (i = 0; i < 8 && event->process->pid != (u32)children[i]; i++)
+			;
+		assert(i < 8);
+		pva = &event->process_vm_access;
+		assert(pva->flags >= 1 && pva->flags <= 64);
+		j = pva->flags - 1;
+		assert(!seen[i][j]++);
+		assert(pva->requested_pid == -i - 1 && pva->ret == -EINVAL);
+		assert(pva->operation == (u32)(j & 1 ?
+		    QUARK_PROCESS_VM_ACCESS_WRITE : QUARK_PROCESS_VM_ACCESS_READ));
+		assert(!pva->target_resolved && !pva->target_pid && !pva->target_start_time_ns);
+		assert(event->time >= lower && event->time <= upper);
+		n++;
+	}
+	quark_queue_close(&qq);
 	return (0);
 }
 
@@ -3154,6 +3627,10 @@ struct test all_tests[] = {
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_shmget),
 	T_EBPF(t_mprotect),
+	T_EBPF(t_process_vm_access),
+	T_EBPF(t_process_vm_access_identity),
+	T_EBPF(t_process_vm_access_state),
+	T_EBPF(t_process_vm_access_concurrent),
 	T_EBPF(t_shm_open),
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),

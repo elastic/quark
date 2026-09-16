@@ -31,6 +31,15 @@ runs until a SIGINT is received.
 .Pp
 The options are as follows:
 .Bl -tag -width Dtb
+.It Fl A
+Enable optional eBPF process_vm_readv(2) / process_vm_writev(2) attempt tracing.
+Includes failed and unresolved attempts; resolved same-thread-group calls are
+suppressed, while parent/child calls are retained.
+The signed return reports the syscall result. Vector fields are bounded
+entry snapshots, not authoritative accessed ranges. Capacity fields are valid
+only when the corresponding snapshot status is complete.
+Target identity is valid only when target_resolved is true; its start time uses
+CLOCK_MONOTONIC nanoseconds. requested_pid is interpreted in caller_pidns.
 .It Fl B
 Test bypass mode, where EBPF events are passed up directly without any
 processing.

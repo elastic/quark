@@ -197,6 +197,7 @@ raw_event_alloc(int type)
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
+	case RAW_PROCESS_VM_ACCESS: /* nada */
 		break;
 	default:
 		qwarnx("unhandled raw_type %d", raw->type);
@@ -233,6 +234,7 @@ raw_event_free(struct raw_event *raw)
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
 	case RAW_PTRACE:	/* nada */
+	case RAW_PROCESS_VM_ACCESS: /* nada */
 		break;
 	case RAW_MPROTECT:
 		free(raw->mprotect.quark_mprotect.path);
@@ -454,6 +456,7 @@ event_storage_clear(struct quark_queue *qq)
 	free(qq->event_storage.file);
 	qq->event_storage.file = NULL;
 	bzero(&qq->event_storage.ptrace, sizeof(qq->event_storage.ptrace));
+	bzero(&qq->event_storage.process_vm_access, sizeof(qq->event_storage.process_vm_access));
 	free(qq->event_storage.mprotect.path);
 	bzero(&qq->event_storage.mprotect, sizeof(qq->event_storage.mprotect));
 	if (qq->event_storage.module_load != NULL) {
@@ -1795,6 +1798,8 @@ event_type_str(u64 event)
 		return "TTY";
 	case QUARK_EV_GETPID:
 		return "GETPID";
+	case QUARK_EV_PROCESS_VM_ACCESS:
+		return "PROCESS_VM_ACCESS";
 	case QUARK_EV_MPROTECT:
 		return "MPROTECT";
 	default:
@@ -2184,6 +2189,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_container	*container;
 	const struct quark_ptrace	*ptrace;
 	const struct quark_module_load	*qml;
+	const struct quark_process_vm_access *process_vm_access;
 	const struct quark_mprotect	*mprotect;
 	char				 prev_prot[4], req_prot[4];
 	char				 effective_prot[4];
@@ -2283,6 +2289,37 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		PF(fl, "name=%s version=%s srcversion=%s taints=0x%llx (%s)\n",
 		    qml->name, qml->version, qml->src_version,
 		    qml->taints, buf);
+	}
+
+	if (qev->events & QUARK_EV_PROCESS_VM_ACCESS) {
+		fl = "PROCVM";
+
+		process_vm_access = &qev->process_vm_access;
+
+		PF(fl, "target_pid=%d target_start_time=%llu op=%s "
+		    "local_iovcnt=%llu remote_iovcnt=%llu "
+		    "first_remote_addr=0x%llx first_remote_len=%llu ret=%lld\n",
+		    process_vm_access->target_pid,
+		    process_vm_access->target_start_time_ns,
+		    process_vm_access->operation == QUARK_PROCESS_VM_ACCESS_WRITE ?
+		    "write" : "read",
+		    process_vm_access->local_iovcnt,
+		    process_vm_access->remote_iovcnt,
+		    process_vm_access->first_remote_addr,
+		    process_vm_access->first_remote_len,
+		    process_vm_access->ret);
+		PF(fl, "target_resolved=%u requested_pid=%d caller_pidns=%u "
+		    "flags=0x%llx first_remote_valid=%u "
+		    "local_snapshot_status=%u remote_snapshot_status=%u "
+		    "local_capacity=%llu remote_capacity=%llu\n",
+		    process_vm_access->target_resolved,
+		    process_vm_access->requested_pid,
+		    process_vm_access->caller_pidns, process_vm_access->flags,
+		    process_vm_access->first_remote_valid,
+		    process_vm_access->local_snapshot_status,
+		    process_vm_access->remote_snapshot_status,
+		    process_vm_access->local_capacity,
+		    process_vm_access->remote_capacity);
 	}
 
 	if (qev->events & QUARK_EV_MPROTECT) {
@@ -4884,6 +4921,20 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static struct quark_event *
+raw_event_process_vm_access(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_PROCESS_VM_ACCESS;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process_vm_access = raw->process_vm_access.quark_process_vm_access;
+
+	return (qev);
+}
+
+static struct quark_event *
 raw_event_mprotect(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -5314,6 +5365,9 @@ quark_queue_get_event1(struct quark_queue *qq)
 			break;
 		case RAW_PTRACE:
 			qev = raw_event_ptrace(qq, raw);
+			break;
+		case RAW_PROCESS_VM_ACCESS:
+			qev = raw_event_process_vm_access(qq, raw);
 			break;
 		case RAW_MPROTECT:
 			qev = raw_event_mprotect(qq, raw);
