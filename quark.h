@@ -426,7 +426,7 @@ struct raw_file {
 
 #define QUARK_FILE_ACCESS_F_FAILED	(1 << 0)	/* error set, inode data absent */
 #define QUARK_FILE_ACCESS_F_RELATIVE	(1 << 1)	/* requested is relative to base_dir */
-#define QUARK_FILE_ACCESS_F_PROCFS	(1 << 2)	/* a task's /proc/<pid>/ entry, own included, target_* set */
+#define QUARK_FILE_ACCESS_F_PROCFS	(1 << 2)	/* a task's /proc/<pid>/ entry, own included, target_* set; not the target of a followed magic link */
 
 struct quark_file_access {
 	const char	*path;		/* resolved path, NULL if unknown */
