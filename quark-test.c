@@ -2411,24 +2411,11 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
-static void
-test_queue_close(struct quark_queue *qq)
-{
-	(void)qq;
-}
-
-static int
-test_queue_populate(struct quark_queue *qq)
-{
-	(void)qq;
-	return (0);
-}
-
-static struct quark_queue_ops test_queue_ops = {
-	.close = test_queue_close,
-	.populate = test_queue_populate,
-};
-
+/*
+ * Initialize a backend-less queue for tests that only exercise the
+ * process and container caches. No queue_ops means populate and close
+ * are NOPs.
+ */
 static void
 test_queue_init(struct quark_queue *qq)
 {
@@ -2436,7 +2423,6 @@ test_queue_init(struct quark_queue *qq)
 	quark_queue_init_trees(qq);
 	qq->epollfd = -1;
 	qq->max_length = 1;
-	qq->queue_ops = &test_queue_ops;
 }
 
 static struct quark_process *
@@ -3649,31 +3635,15 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
-t_gc_populate(struct quark_queue *qq)
-{
-	return (0);
-}
-
-static void
-t_gc_close(struct quark_queue *qq)
-{
-}
-
-static struct quark_queue_ops t_gc_ops = {
-	.populate = t_gc_populate,
-	.close = t_gc_close,
-};
-
-static int
 t_container_remove(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	 qq = { .epollfd = -1, .queue_ops = &t_gc_ops };
+	struct quark_queue	 qq;
 	struct quark_process	 process;
 	struct quark_pod		*pod;
 	struct quark_container	*container, *orphan;
 	u64			 marked;
 
-	TAILQ_INIT(&qq.event_gc);
+	test_queue_init(&qq);
 	bzero(&process, sizeof(process));
 	qq.cache_grace_time = UINT64_MAX;
 	pod = quark_pod_get(&qq, "pod");
@@ -3736,13 +3706,13 @@ t_pod_remove(const struct test *t, struct quark_queue_attr *qa)
 
 	/* Both queue orders must remove each child only once. */
 	for (child_first = 0; child_first < 2; child_first++) {
-		struct quark_queue	 qq = { .epollfd = -1, .queue_ops = &t_gc_ops };
+		struct quark_queue	 qq;
 		struct quark_process	 process;
 		struct quark_pod		*pod;
 		struct quark_container	*child, *queued, *orphan;
 		u64			 marked;
 
-		TAILQ_INIT(&qq.event_gc);
+		test_queue_init(&qq);
 		bzero(&process, sizeof(process));
 		qq.cache_grace_time = UINT64_MAX;
 		pod = quark_pod_get(&qq, "pod");
