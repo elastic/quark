@@ -5334,7 +5334,7 @@ quark_ruleset_clear(struct quark_ruleset *ruleset)
 			case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
 			case QUARK_RF_EXE:		/* FALLTHROUGH */
 			case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
-			case QUARK_RF_CONTAINER_IMAGE_NAME:
+			case QUARK_RF_CONTAINER_IMAGE:
 				free(rule->fields[j].wild.pre);
 				break;
 			default:
@@ -5455,12 +5455,10 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 		    qp->container->pod->name != NULL)
 			return (path_match(field, qp->container->pod->name));
 		break;
-	case QUARK_RF_CONTAINER_IMAGE_NAME:
-		/* Exact match, wild_init() rejected any wildcard at load time */
+	case QUARK_RF_CONTAINER_IMAGE:
 		if (qp != NULL && qp->container != NULL &&
-		    qp->container->image_name != NULL)
-			return (!strcmp(field->wild.pre,
-			    qp->container->image_name));
+		    qp->container->image != NULL)
+			return (path_match(field, qp->container->image));
 		break;
 	case QUARK_RF_EVENT_SCOPE:
 		if (qp == NULL || qp->cgroup == NULL)
@@ -5555,12 +5553,12 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 
 /*
  * Initialize a wildcard from the user string in w->pre, which is copied.
- * As in foo*bar: pre = foo, post = bar. Only one * is allowed, none if
- * allow_star is 0. On error w->pre is left untouched and nothing is
- * allocated. Returns -1 with errno set.
+ * As in foo*bar: pre = foo, post = bar. Only one * is allowed. On error
+ * w->pre is left untouched and nothing is allocated. Returns -1 with
+ * errno set.
  */
 static int
-wild_init(struct quark_wild *w, int allow_star)
+wild_init(struct quark_wild *w)
 {
 	char	*copy, *star;
 	size_t	 len;
@@ -5571,10 +5569,8 @@ wild_init(struct quark_wild *w, int allow_star)
 	if (w->pre == NULL || (len = strlen(w->pre)) == 0 || len >= PATH_MAX)
 		return (errno = EINVAL, -1);
 	star = strchr(w->pre, '*');
-	if (star != NULL) {
-		if (!allow_star || strchr(star + 1, '*') != NULL)
-			return (errno = EINVAL, -1);
-	}
+	if (star != NULL && strchr(star + 1, '*') != NULL)
+		return (errno = EINVAL, -1);
 	if ((copy = strdup(w->pre)) == NULL)
 		return (-1);
 	/* Rebase star into the copy */
@@ -5622,14 +5618,9 @@ quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
 		break;
 	case QUARK_RF_EXE:		/* FALLTHROUGH */
 	case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
-	case QUARK_RF_POD_NAME:
-		if (wild_init(&rf.wild, 1) == -1)
-			goto bad;
-		path = rf.wild.pre;
-		break;
-	case QUARK_RF_CONTAINER_IMAGE_NAME:
-		/* Exact match only, no wildcard */
-		if (wild_init(&rf.wild, 0) == -1)
+	case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
+	case QUARK_RF_CONTAINER_IMAGE:
+		if (wild_init(&rf.wild) == -1)
 			goto bad;
 		path = rf.wild.pre;
 		break;
