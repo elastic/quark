@@ -5466,9 +5466,9 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 			break;
 		container_id = process_container_id((struct quark_process *)qp);
 		if (field->id == QUARK_RULE_SCOPE_CONTAINER)
-			return (container_id != NULL && container_id[0] != 0);
+			return (container_id != NULL);
 		if (field->id == QUARK_RULE_SCOPE_HOST)
-			return (container_id == NULL || container_id[0] == 0);
+			return (container_id == NULL);
 		break;
 	case QUARK_RF_POISON:
 		if (qp != NULL)

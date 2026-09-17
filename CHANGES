@@ -126,9 +126,6 @@ Changes from 0.6 to 0.7
 
 Changes from 0.7 to 0.8
 ~~~~~~~~~~~~~~~~~~~~~~~
-  o The rule DSL learned the event.scope field. Its values are container
-    and host. The field is not supported by the nova backend, where it
-    fails with ENOTSUP.
   o BREAKING, SILENTLY: quark_process.proc_time_boot,
     quark_process.exit_time_event, quark_event.time,
     quark_socket.established_time and quark_socket.close_time are now
@@ -210,3 +207,9 @@ Changes from 0.8 to 0.9
     and friends are unaffected. Every other eBPF map except the ring buffer
     is frozen after load (BPF_MAP_FREEZE, also 5.2+), so no process can
     change quark's internal state through bpf(2).
+  o The rule DSL learned the event.scope field. Its values are container
+    and host. A container event comes from a process with a container ID
+    in its cgroup, a host event from a process without one. The kprobe
+    backend does not report the cgroup, so only processes seen at
+    start-up can match container. The nova backend rejects the field
+    with ENOTSUP.
