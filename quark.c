@@ -55,7 +55,7 @@ static int	quark_group_cmp(struct quark_group *, struct quark_group *);
 
 static void	process_cache_delete(struct quark_queue *, struct quark_process *);
 static void	socket_cache_delete(struct quark_queue *, struct quark_socket *);
-static void	pod_delete(struct quark_queue *, struct quark_pod *);
+static int	pod_delete(struct quark_queue *, struct quark_pod *);
 static void	container_delete(struct quark_queue *, struct quark_container *);
 
 /* For debugging */
@@ -524,7 +524,11 @@ gc_collect(struct quark_queue *qq)
 			socket_cache_delete(qq, (struct quark_socket *)gc);
 			break;
 		case GC_POD:
-			pod_delete(qq, (struct quark_pod *)gc);
+			/* Containers freed with the pod count as collected too */
+			n += pod_delete(qq, (struct quark_pod *)gc);
+			break;
+		case GC_CONTAINER:
+			container_delete(qq, (struct quark_container *)gc);
 			break;
 		default:
 			qwarnx("invalid gc_type %d, will leak", gc->gc_type);
@@ -834,6 +838,7 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 		pod_containers_RB_REMOVE(&pod->containers, container);
 		container->linked_by_pod = 0;
 	}
+	gc_unlink(qq, &container->gc);
 	while ((qp = TAILQ_FIRST(&container->processes)) != NULL) {
 		TAILQ_REMOVE(&container->processes, qp, entry_container);
 		qp->container = NULL;
@@ -900,11 +905,16 @@ pod_insert(struct quark_queue *qq, struct quark_pod *pod)
 	return (0);
 }
 
-static void
+/*
+ * Free a pod and every container still attached to it. Returns the number of
+ * containers freed.
+ */
+static int
 pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 {
 	struct quark_container	*container;
 	struct label_node	*node;
+	int			 n;
 
 	if (pod->linked) {
 		RB_REMOVE(pod_by_uid, &qq->pod_by_uid, pod);
@@ -920,12 +930,14 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	 * that case we will "steal" it and delete ourselves here with
 	 * everything else.
 	 */
+	n = 0;
 	while ((container = RB_ROOT(&pod->containers)) != NULL) {
 		if (container->pod != pod) {
 			qwarnx("BUG: corrupted pod<>container, leaking data");
-			return;
+			return (n);
 		}
 		container_delete(qq, container);
+		n++;
 	}
 
 	free(pod->name);
@@ -933,6 +945,8 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	free(pod->uid);
 	free(pod->phase);
 	free(pod);
+
+	return (n);
 }
 
 static struct quark_container *
@@ -1135,10 +1149,9 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 		if (strcmp(phase->valuestring, "Succeeded"))
 			return (0);
 		/*
-		 * gc_mark is idempotent
+		 * Idempotent, an already removed or unknown pod is fine.
 		 */
-		if (pod != NULL)
-			gc_mark(qq, &pod->gc, GC_POD);
+		(void)quark_pod_remove(qq, uid->valuestring);
 
 		return (0);
 	}
@@ -2476,6 +2489,13 @@ quark_container_lookup(struct quark_queue *qq, const char *container_id)
 	return (container_lookup(qq, (char *)container_id));
 }
 
+/*
+ * Create a pod by uid. Fails with EEXIST if the uid is already present. A pod
+ * scheduled for removal by quark_pod_remove() stays present until the grace
+ * time ends, so creating the same uid within that window also fails with
+ * EEXIST. Pod uids are unique per pod instance, so this only happens on
+ * out-of-order or duplicated input.
+ */
 struct quark_pod *
 quark_pod_create(struct quark_queue *qq, const char *uid,
     const char *name, const char *ns, const char *phase)
@@ -2512,6 +2532,18 @@ fail:
 	return (NULL);
 }
 
+/*
+ * Create a container by container_id. The id must be in the form the cgroup
+ * parser produces, "<runtime>://<id>" as in "containerd://<id>" or
+ * "docker://<id>", otherwise processes never link to it and lookups and
+ * removals by the bare id miss. If pod_uid is non-NULL the container is
+ * linked to that pod, which must already exist. Fails with EEXIST if the
+ * container_id is already present. A container scheduled for removal by
+ * quark_container_remove() or by its pod's removal stays present until the
+ * grace time ends, so creating the same container_id within that window also
+ * fails with EEXIST. Container ids are unique per container instance, so this
+ * only happens on out-of-order or duplicated input.
+ */
 struct quark_container *
 quark_container_create(struct quark_queue *qq, const char *container_id,
     const char *pod_uid, const char *name, const char *image)
@@ -2568,6 +2600,44 @@ fail:
 		free(container);
 	}
 	return (NULL);
+}
+
+/*
+ * Schedule a pod and all its containers for removal after the grace time.
+ * Lookups keep succeeding until then. Removal is final: no later call unmarks
+ * the pod, and a repeated call does not extend the grace time. Returns 0 if
+ * the pod exists, -1 with errno set to ESRCH otherwise.
+ */
+int
+quark_pod_remove(struct quark_queue *qq, const char *uid)
+{
+	struct quark_pod *pod;
+
+	pod = pod_lookup_by_uid(qq, (char *)uid);
+	if (pod == NULL)
+		return (-1);
+	gc_mark(qq, &pod->gc, GC_POD);
+
+	return (0);
+}
+
+/*
+ * Schedule a container for removal after the grace time, independently of its
+ * pod. Lookups keep succeeding until then. Removal is final: no later call
+ * unmarks the container, and a repeated call does not extend the grace time.
+ * Returns 0 if the container exists, -1 with errno set to ESRCH otherwise.
+ */
+int
+quark_container_remove(struct quark_queue *qq, const char *container_id)
+{
+	struct quark_container *container;
+
+	container = container_lookup(qq, (char *)container_id);
+	if (container == NULL)
+		return (-1);
+	gc_mark(qq, &container->gc, GC_CONTAINER);
+
+	return (0);
 }
 
 void
