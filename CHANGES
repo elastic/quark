@@ -192,3 +192,11 @@ Changes from 0.8 to 0.9
     instead of hard-coded record offsets. On RHEL 9.3 (5.14.0-362) this fixes
     quark_shm memfd_create_flags and shmget_{key,size,shmflg}, which were
     read from the wrong offsets on that kernel.
+  o The rule DSL learned the event.scope field. Its values are container
+    and host. A container event comes from a process whose cgroup names
+    a container, a host event from a process whose cgroup does not. A
+    process with an unknown cgroup matches neither scope. The kprobe
+    backend does not report the cgroup of new processes, so on kprobe
+    only processes seen at start-up can match a scope. Only the last
+    cgroup component is parsed, nested cgroups match host. The nova
+    backend rejects the field with ENOTSUP.
