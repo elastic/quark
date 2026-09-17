@@ -479,7 +479,9 @@ ecs_container(struct hanson *h, struct quark_container *container, int *first)
 	pod = container->pod;
 
 	hanson_add_key_value(h, "id", container->container_id, first);
-	hanson_add_key_value(h, "name", container->name, first);
+	/* Might be missing on a container from quark_container_get() */
+	if (container->name != NULL)
+		hanson_add_key_value(h, "name", container->name, first);
 	hanson_add_key_value(h, "runtime", container_runtime(container), first);
 
 	/* container.label.* */
@@ -538,9 +540,10 @@ ecs_orchestrator(struct quark_kube *qkube, struct hanson *h, struct quark_pod *p
 	struct label_node	*label;
 	char			*cluster_name, *cluster_uid, *cluster_version;
 
-	cluster_name = qkube->node.cluster_name;
-	cluster_uid = qkube->node.cluster_uid;
-	cluster_version = qkube->node.cluster_version;
+	/* Pods might exist without a kubernetes feed, see quark_pod_get() */
+	cluster_name = qkube != NULL ? qkube->node.cluster_name : NULL;
+	cluster_uid = qkube != NULL ? qkube->node.cluster_uid : NULL;
+	cluster_version = qkube != NULL ? qkube->node.cluster_version : NULL;
 
 	if (cluster_name != NULL ||
 	    cluster_uid != NULL ||
@@ -562,14 +565,18 @@ ecs_orchestrator(struct quark_kube *qkube, struct hanson *h, struct quark_pod *p
 		hanson_close_object(h);
 	}
 
-	hanson_add_key_value(h, "namespace", pod->ns, first);
+	/* Might be missing on a pod from quark_pod_get() */
+	if (pod->ns != NULL)
+		hanson_add_key_value(h, "namespace", pod->ns, first);
 
 	hanson_add_object(h, "resource", first);
 	{
 		int	resource_first = 1;
 
 		hanson_add_key_value(h, "type", "pod", &resource_first);
-		hanson_add_key_value(h, "name", pod->name, &resource_first);
+		if (pod->name != NULL)
+			hanson_add_key_value(h, "name", pod->name,
+			    &resource_first);
 
 		hanson_add_array(h, "ip", &resource_first);
 		{
@@ -1000,7 +1007,7 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 			}
 			hanson_close_object(&h);
 
-			if (qq->qkube != NULL && qev->process->container->pod != NULL) {
+			if (qev->process->container->pod != NULL) {
 				hanson_add_object(&h, "orchestrator", &top_first);
 				{
 					int	orchestrator_first = 1;

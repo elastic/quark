@@ -719,28 +719,43 @@ RB_HEAD(label_tree, label_node);
 RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
 
 /*
- * A container's lifecycle is tied to its parent quark_pod.
+ * A container is owned by the quark_queue and indexed by container_id in
+ * quark_queue.container_by_id. It may or may not belong to a quark_pod (pod is
+ * NULL for containers created without one through quark_container_get()).
+ *
+ * Containers that belong to a pod are freed together with the pod. Containers
+ * without a pod are freed at quark_queue_close(); there is no removal API yet.
+ *
+ * Only container_id is guaranteed to be set, everything else may be NULL, as
+ * a container created through quark_container_get() is filled by the caller.
  */
 struct quark_container {
-	RB_ENTRY(quark_container)	 entry_qkube;	/* our ""global"" linkage */
-	RB_ENTRY(quark_container)	 entry_pod;	/* our linkage inside a quark_pod */
+	RB_ENTRY(quark_container)	 entry_by_id;	/* linkage in quark_queue.container_by_id */
+	RB_ENTRY(quark_container)	 entry_pod;	/* linkage in quark_pod.containers */
 	TAILQ_HEAD(, quark_process)	 processes;	/* processes in this container */
-	int				 linked_by_id;	/* linked in container_id tree */
-	int				 linked_by_pod;	/* linked in pod tree */
+	int				 linked_by_id;	/* linked in container_by_id */
+	int				 linked_by_pod;	/* linked in pod->containers */
 	char				*container_id;	/* unique id */
-	struct quark_pod		*pod;		/* backpointer to owner */
-	char				*name;
-	char				*image;
-	char				*image_id;
-	char				*image_name;
-	char				*image_tag;
-	char				*image_hash;
+	struct quark_pod		*pod;		/* parent pod, might be NULL */
+	char				*name;		/* might be NULL */
+	char				*image;		/* might be NULL */
+	char				*image_id;	/* might be NULL */
+	char				*image_name;	/* might be NULL */
+	char				*image_tag;	/* might be NULL */
+	char				*image_hash;	/* might be NULL */
 };
 
 /*
  * A quark_pod holds its containers in pod_containers.
  * All containers are indexed by container_id in quark_queue, including those
  * without a pod. A container's pod backpointer identifies its parent, if any.
+ *
+ * A pod is owned by the quark_queue. It is freed after cache_grace_time once
+ * kubernetes reports it deleted, or at quark_queue_close(); there is no
+ * removal API yet. A non-zero gc.gc_time means the pod is pending deletion.
+ *
+ * Only uid is guaranteed to be set, name and ns may be NULL for a pod created
+ * through quark_pod_get() until the caller or the kubernetes feed fills them.
  */
 RB_HEAD(pod_containers, quark_container);
 RB_HEAD(container_by_id, quark_container);
@@ -749,8 +764,8 @@ struct quark_pod {
 	struct gc_link		 gc;		/* must be first */
 	RB_ENTRY(quark_pod)	 entry_by_uid;
 	int			 linked;	/* true if entry_by_uid is linked */
-	char			*name;
-	char			*ns;
+	char			*name;		/* might be NULL */
+	char			*ns;		/* might be NULL */
 	char			*uid;
 	struct quark_sockaddr	 addr4;
 	char			 addr4_a[INET6_ADDRSTRLEN];
@@ -780,7 +795,8 @@ struct quark_kube_node {
 };
 
 /*
- * The state for all kubernetes metadata.
+ * The state of the kubernetes feed (kubefd) and the node we're running on.
+ * Pods and containers live in quark_queue, not here.
  */
 struct quark_kube {
 	int			 fd;			/* input pipe for json data */

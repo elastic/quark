@@ -3122,13 +3122,34 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * A queue without a backend, enough for exercising the caches. Mirrors the
+ * initialization in quark_queue_open().
+ */
+static void
+bare_queue_init(struct quark_queue *qq)
+{
+	bzero(qq, sizeof(*qq));
+	qq->epollfd = -1;
+	RB_INIT(&qq->raw_event_by_time);
+	RB_INIT(&qq->raw_event_by_pidtime);
+	RB_INIT(&qq->process_by_pid);
+	RB_INIT(&qq->socket_by_src_dst);
+	RB_INIT(&qq->passwd_by_uid);
+	RB_INIT(&qq->group_by_gid);
+	RB_INIT(&qq->container_by_id);
+	RB_INIT(&qq->pod_by_uid);
+	TAILQ_INIT(&qq->event_gc);
+}
+
 static int
 t_pod_get(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	 qq = { .epollfd = -1 };
+	struct quark_queue	 qq;
 	struct quark_pod		*pod, *other;
 	char			 uid[] = "pod";
 
+	bare_queue_init(&qq);
 	errno = 0;
 	assert(quark_pod_lookup(&qq, uid) == NULL);
 	assert(errno == ESRCH);
@@ -3169,11 +3190,12 @@ t_pod_get(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_container_get(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	 qq = { .epollfd = -1 };
+	struct quark_queue	 qq;
 	struct quark_pod		*pod, *other;
 	struct quark_container	*container, *direct;
 
 	/* These cache operations do not require a kernel backend. */
+	bare_queue_init(&qq);
 	pod = quark_pod_get(&qq, "pod");
 	other = quark_pod_get(&qq, "other");
 	assert(pod != NULL && other != NULL);
@@ -3220,6 +3242,76 @@ t_container_get(const struct test *t, struct quark_queue_attr *qa)
 	quark_queue_close(&qq);
 	assert(RB_EMPTY(&qq.pod_by_uid));
 	assert(RB_EMPTY(&qq.container_by_id));
+
+	return (0);
+}
+
+/*
+ * Pods and containers from quark_pod_get()/quark_container_get() carry no
+ * metadata besides their ids until someone fills it, an event on a process in
+ * such a container must still be emittable, with or without a kubernetes feed.
+ */
+static int
+t_container_ecs(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_pod	*pod;
+	struct quark_container	*container;
+	struct quark_process	 qp;
+	struct quark_event	 qev;
+	char			*buf;
+	size_t			 buf_len;
+	FILE			*f;
+
+	bare_queue_init(&qq);
+	pod = quark_pod_get(&qq, "pod-uid");
+	assert(pod != NULL);
+	container = quark_container_get(&qq, "containerd://abc", "pod-uid");
+	assert(container != NULL);
+
+	bzero(&qp, sizeof(qp));
+	qp.pid = 1234;
+	qp.flags = QUARK_F_PROC;
+	qp.container = container;
+	bzero(&qev, sizeof(qev));
+	qev.events = QUARK_EV_FORK;
+	qev.process = &qp;
+
+	f = fopen("/dev/null", "w");
+	assert(f != NULL);
+
+	/* No names anywhere and no qkube */
+	assert(quark_event_to_ecs(&qq, &qev, &buf, &buf_len) == 0);
+	assert(strstr(buf, "\"id\":\"containerd://abc\"") != NULL);
+	assert(strstr(buf, "\"orchestrator\":") != NULL);
+	assert(strstr(buf, "\"namespace\"") == NULL);
+	free(buf);
+	assert(quark_event_dump(&qev, f) == 0);
+
+	/* Now with the metadata a caller would fill */
+	pod->name = strdup("pod-name");
+	pod->ns = strdup("pod-ns");
+	container->name = strdup("container-name");
+	assert(pod->name != NULL && pod->ns != NULL && container->name != NULL);
+	assert(quark_event_to_ecs(&qq, &qev, &buf, &buf_len) == 0);
+	assert(strstr(buf, "\"name\":\"container-name\"") != NULL);
+	assert(strstr(buf, "\"namespace\":\"pod-ns\"") != NULL);
+	assert(strstr(buf, "\"name\":\"pod-name\"") != NULL);
+	free(buf);
+	assert(quark_event_dump(&qev, f) == 0);
+
+	/* A container without a pod */
+	container = quark_container_get(&qq, "docker://def", NULL);
+	assert(container != NULL);
+	qp.container = container;
+	assert(quark_event_to_ecs(&qq, &qev, &buf, &buf_len) == 0);
+	assert(strstr(buf, "\"id\":\"docker://def\"") != NULL);
+	assert(strstr(buf, "\"orchestrator\":") == NULL);
+	free(buf);
+	assert(quark_event_dump(&qev, f) == 0);
+
+	fclose(f);
+	quark_queue_close(&qq);
 
 	return (0);
 }
@@ -3274,6 +3366,7 @@ struct test all_tests[] = {
 	T(t_backend_flags),
 	T(t_pod_get),
 	T(t_container_get),
+	T(t_container_ecs),
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),

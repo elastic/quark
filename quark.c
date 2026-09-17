@@ -82,9 +82,9 @@ RB_GENERATE(raw_event_by_pidtime, raw_event,
     entry_by_pidtime, raw_event_by_pidtime_cmp);
 
 RB_PROTOTYPE(container_by_id, quark_container,
-    entry_qkube, container_by_id_cmp);
+    entry_by_id, container_by_id_cmp);
 RB_GENERATE(container_by_id, quark_container,
-    entry_qkube, container_by_id_cmp);
+    entry_by_id, container_by_id_cmp);
 RB_PROTOTYPE(pod_containers, quark_container,
     entry_pod, container_by_id_cmp);
 RB_GENERATE(pod_containers, quark_container,
@@ -935,17 +935,108 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	free(pod);
 }
 
-static struct quark_container *
-pod_lookup_container(struct quark_pod *pod, char *container_id)
+/*
+ * Allocate a pod with only uid set and link it in pod_by_uid.
+ */
+static struct quark_pod *
+pod_create(struct quark_queue *qq, const char *uid)
 {
-	struct quark_container key, *k;
+	struct quark_pod	*pod;
 
-	key.container_id = container_id;
-	k = pod_containers_RB_FIND(&pod->containers, &key);
-	if (k == NULL)
-		errno = ESRCH;
+	pod = calloc(1, sizeof(*pod));
+	if (pod == NULL)
+		return (NULL);
+	RB_INIT(&pod->containers);
+	RB_INIT(&pod->labels);
+	pod->uid = strdup(uid);
+	if (pod->uid == NULL || pod_insert(qq, pod) == -1) {
+		pod_delete(qq, pod);
+		return (NULL);
+	}
 
-	return (k);
+	return (pod);
+}
+
+/*
+ * Allocate a container with only container_id set and link it in
+ * container_by_id. The container belongs to no pod, see container_link_pod().
+ */
+static struct quark_container *
+container_create(struct quark_queue *qq, const char *container_id)
+{
+	struct quark_container	*container, *col;
+
+	container = calloc(1, sizeof(*container));
+	if (container == NULL)
+		return (NULL);
+	TAILQ_INIT(&container->processes);
+	container->container_id = strdup(container_id);
+	if (container->container_id == NULL) {
+		container_delete(qq, container);
+		return (NULL);
+	}
+	col = container_by_id_RB_INSERT(&qq->container_by_id, container);
+	if (unlikely(col != NULL)) {
+		container_delete(qq, container);
+		return (errno = EEXIST, NULL);
+	}
+	container->linked_by_id = 1;
+
+	return (container);
+}
+
+/*
+ * Link a container to a pod. A container belongs to at most one pod: linking
+ * it again to the same pod is a no-op, linking it to a different pod fails
+ * with EEXIST.
+ */
+static int
+container_link_pod(struct quark_container *container, struct quark_pod *pod)
+{
+	struct quark_container	*col;
+
+	if (container->pod == pod)
+		return (0);
+	if (container->pod != NULL)
+		return (errno = EEXIST, -1);
+	col = pod_containers_RB_INSERT(&pod->containers, container);
+	/* Impossible, container_id is unique in container_by_id */
+	if (unlikely(col != NULL))
+		return (errno = EEXIST, -1);
+	container->pod = pod;
+	container->linked_by_pod = 1;
+
+	return (0);
+}
+
+/*
+ * Get or create a container by container_id, linking it to pod if pod is not
+ * NULL. If newp is not NULL, *newp is set to 1 if the container was created.
+ */
+static struct quark_container *
+container_get(struct quark_queue *qq, const char *container_id,
+    struct quark_pod *pod, int *newp)
+{
+	struct quark_container	*container;
+	int			 new_container;
+
+	new_container = 0;
+	container = container_lookup(qq, (char *)container_id);
+	if (container == NULL) {
+		container = container_create(qq, container_id);
+		if (container == NULL)
+			return (NULL);
+		new_container = 1;
+	}
+	if (pod != NULL && container_link_pod(container, pod) == -1) {
+		if (new_container)
+			container_delete(qq, container);
+		return (NULL);
+	}
+	if (newp != NULL)
+		*newp = new_container;
+
+	return (container);
 }
 
 static void
@@ -967,7 +1058,8 @@ demux_image(struct quark_container *container)
 	 *                                 image_name^       ^tag
 	 * "imageID": "docker-pullable://registry.k8s.io/e2e-test-images/agnhost@sha256:7e8bdd271312fd25fc5ff5a8f04727be84044eb3d7d8d03611972a6752e2e11e",
 	 */
-	if ((tag_base = safe_basename(container->image)) != NULL &&
+	if (container->image_name == NULL &&
+	    (tag_base = safe_basename(container->image)) != NULL &&
 	    (tag = strchr(tag_base, ':')) != NULL &&
 	    tag[1] != 0) {
 		container->image_name = strndup(tag_base, tag - tag_base);
@@ -979,7 +1071,8 @@ demux_image(struct quark_container *container)
 			return (-1);
 	}
 
-	if ((hash = safe_basename(container->image_id)) != NULL &&
+	if (container->image_hash == NULL &&
+	    (hash = safe_basename(container->image_id)) != NULL &&
 	    (hash = strchr(hash, '@')) != NULL &&
 	    hash[1] != 0) {
 		hash++;		/* skip @ */
@@ -991,6 +1084,28 @@ demux_image(struct quark_container *container)
 	return (0);
 }
 
+/*
+ * Fill in the container metadata we don't have yet. A container created
+ * through quark_container_get() might have been filled by the caller already,
+ * in which case we keep what's there.
+ */
+static int
+container_fill(struct quark_container *container, const char *name,
+    const char *image, const char *image_id)
+{
+	if (container->name == NULL &&
+	    (container->name = strdup(name)) == NULL)
+		return (-1);
+	if (container->image == NULL &&
+	    (container->image = strdup(image)) == NULL)
+		return (-1);
+	if (container->image_id == NULL &&
+	    (container->image_id = strdup(image_id)) == NULL)
+		return (-1);
+
+	return (demux_image(container));
+}
+
 static int
 kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *container_json)
 {
@@ -998,7 +1113,8 @@ kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *cont
 	cJSON			*name, *image, *imageID, *state;
 	cJSON			*waiting, *running, *terminated;
 	cJSON			*containerID;
-	struct quark_container	*container, *col;
+	struct quark_container	*container;
+	int			 new_container;
 
 	name	    = GET(container_json, "name");
 	image	    = GET(container_json, "image");
@@ -1038,61 +1154,23 @@ kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *cont
 		qwarnx("unknown container state, ignoring");
 		return (-1);
 	}
-	container = pod_lookup_container(pod, containerID->valuestring);
+	/*
+	 * The container might already exist through quark_container_get(),
+	 * possibly without a pod, in which case we adopt it into this pod.
+	 */
+	container = container_get(qq, containerID->valuestring, pod,
+	    &new_container);
 	if (container == NULL) {
-		container = calloc(1, sizeof(*container));
-		if (container == NULL)
-			return (-1);
-		TAILQ_INIT(&container->processes);
-		container->container_id = strdup(containerID->valuestring);
-		if (container->container_id == NULL) {
-			container_delete(qq, container);
-			return (-1);
-		}
-		container->name = strdup(name->valuestring);
-		if (container->name == NULL) {
-			container_delete(qq, container);
-			return (-1);
-		}
-		container->image = strdup(image->valuestring);
-		if (container->image == NULL) {
-			container_delete(qq, container);
-			return (-1);
-		}
-		container->image_id = strdup(imageID->valuestring);
-		if (container->image_id == NULL) {
-			container_delete(qq, container);
-			return (-1);
-		}
-		if (demux_image(container) == -1) {
-			container_delete(qq, container);
-			return (-1);
-		}
-		/* XXX fill moar stuff */
-
-		/*
-		 * Finally try to link it
-		 */
-		col = container_by_id_RB_INSERT(&qq->container_by_id,
-		    container);
-		if (col != NULL) {
-			qwarnx("unexpected container collision 1");
-			container_delete(qq, container);
-			return (-1);
-		}
-		container->linked_by_id = 1;
-		if (pod != NULL) {
-			container->pod = pod;
-			col = pod_containers_RB_INSERT(&pod->containers,
-			    container);
-			if (col != NULL) {
-				qwarnx("unexpected container collision 2");
-				container_delete(qq, container);
-				return (-1);
-			}
-			container->linked_by_pod = 1;
-		}
+		qwarn("can't get container %s", containerID->valuestring);
+		return (-1);
 	}
+	if (container_fill(container, name->valuestring, image->valuestring,
+	    imageID->valuestring) == -1) {
+		if (new_container)
+			container_delete(qq, container);
+		return (-1);
+	}
+	/* XXX fill moar stuff */
 
 	return (0);
 #undef GET
@@ -1196,26 +1274,24 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 		new_pod = 1;
 		if (0)
 			debug_json(json);
-		pod = calloc(1, sizeof(*pod));
-		if (pod == NULL)
-			return (-1);
-		/*
-		 * Only fill immutable data, the rest is filled and/or
-		 * replaced below, so we have the same code for new pods and
-		 * updates.
-		 */
-		RB_INIT(&pod->containers);
-		RB_INIT(&pod->labels);
-		pod->name = strdup(name->valuestring);
-		pod->ns = strdup(namespace->valuestring);
-		pod->uid = strdup(uid->valuestring);
-		if (pod->name == NULL ||
-		    pod->ns == NULL ||
-		    pod->uid == NULL) {
-			pod_delete(qq, pod);
+		pod = pod_create(qq, uid->valuestring);
+		if (pod == NULL) {
+			qwarn("can't create pod %s", uid->valuestring);
 			return (-1);
 		}
 	}
+
+	/*
+	 * Immutable data, normally filled only once, but a pod created through
+	 * quark_pod_get() might still be missing it. The rest is filled and/or
+	 * replaced below, so we have the same code for new pods and updates.
+	 */
+	if (pod->name == NULL &&
+	    (pod->name = strdup(name->valuestring)) == NULL)
+		goto fail;
+	if (pod->ns == NULL &&
+	    (pod->ns = strdup(namespace->valuestring)) == NULL)
+		goto fail;
 
 	/* Mutable data */
 	if ((tmp = strdup(phase->valuestring)) != NULL) {
@@ -1316,16 +1392,13 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 			qwarnx("kube_handle_containers failed");
 	}
 
-	/*
-	 * Link pod
-	 */
-	if (new_pod && pod_insert(qq, pod) == -1) {
-		qwarn("can't insert pod %s", pod->uid);
-		pod_delete(qq, pod);
-		return (-1);
-	}
-
 	return (0);
+
+fail:
+	if (new_pod)
+		pod_delete(qq, pod);
+
+	return (-1);
 #undef GET
 }
 
@@ -1675,6 +1748,11 @@ parse_container_cgroup(const char *cgroup, char *container_id, size_t container_
 	return (0);
 }
 
+/*
+ * Link a process to its container, if any. Containers may come from the
+ * kubernetes feed or from quark_container_get(), so this doesn't depend on
+ * qkube.
+ */
 static void
 link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 {
@@ -1684,6 +1762,8 @@ link_kube_data(struct quark_queue *qq, struct quark_process *qp)
 	if (qp == NULL)
 		return;
 	if (qp->container != NULL)
+		return;
+	if (RB_EMPTY(&qq->container_by_id))
 		return;
 	if (qp->cgroup == NULL)
 		return;
@@ -2168,6 +2248,9 @@ mprotect_prot_str(u64 prot, char *buf, size_t len)
 		P(__VA_ARGS__);					\
 	} while(0)						\
 
+/* Pod and container metadata might be missing */
+#define S(_s)	((_s) != NULL ? (_s) : "(null)")
+
 int
 quark_event_dump(const struct quark_event *qev, FILE *f)
 {
@@ -2389,9 +2472,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 
 			fl = "POD";
 			PF(fl, "name=%s namespace=%s\n",
-			    pod->name, pod->ns);
+			    S(pod->name), S(pod->ns));
 			PF(fl, "uid=%s phase=%s\n",
-			    pod->uid, pod->phase);
+			    pod->uid, S(pod->phase));
 			PF(fl, "labels=");
 			P("[ ");
 
@@ -2407,7 +2490,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		}
 		if (container != NULL) {
 			fl = "CONT";
-			PF(fl, "name=%s image=%s\n", container->name, container->image);
+			PF(fl, "name=%s image=%s\n", S(container->name),
+			    S(container->image));
 			PF(fl, "container_id=%s\n", container->container_id);
 		}
 	}
@@ -2418,6 +2502,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 }
 #undef PF
 #undef P
+#undef S
 
 /* User facing version of process_cache_lookup() */
 const struct quark_process *
@@ -2429,7 +2514,11 @@ quark_process_lookup(struct quark_queue *qq, int pid)
 /*
  * Get or create a pod by uid. Returns the existing pod if already present,
  * otherwise allocates and inserts a minimal pod (uid set, containers/labels
- * initialized). Caller fills in remaining fields (name, ns, phase, etc.).
+ * initialized). Caller fills in remaining fields (name, ns, phase, etc.), the
+ * kubernetes feed, if any, fills whatever is still missing.
+ *
+ * An existing pod that was scheduled for deletion by the kubernetes feed is
+ * revived, so the returned pointer stays valid until quark_queue_close().
  */
 struct quark_pod *
 quark_pod_get(struct quark_queue *qq, const char *uid)
@@ -2437,26 +2526,12 @@ quark_pod_get(struct quark_queue *qq, const char *uid)
 	struct quark_pod	*pod;
 
 	pod = pod_lookup_by_uid(qq, (char *)uid);
-	if (pod != NULL)
+	if (pod != NULL) {
+		gc_unlink(qq, &pod->gc);
 		return (pod);
-
-	pod = calloc(1, sizeof(*pod));
-	if (pod == NULL)
-		return (NULL);
-	RB_INIT(&pod->containers);
-	RB_INIT(&pod->labels);
-	pod->uid = strdup(uid);
-	if (pod->uid == NULL) {
-		free(pod);
-		return (NULL);
-	}
-	if (pod_insert(qq, pod) == -1) {
-		free(pod->uid);
-		free(pod);
-		return (NULL);
 	}
 
-	return (pod);
+	return (pod_create(qq, uid));
 }
 
 const struct quark_pod *
@@ -2471,13 +2546,16 @@ quark_pod_lookup(struct quark_queue *qq, const char *uid)
  * existing container if already present, otherwise allocates and inserts one.
  * An existing container without a pod is attached to the requested pod;
  * requesting a different pod for an attached container fails with EEXIST.
- * Caller fills in remaining fields (name, image, etc.).
+ * Caller fills in remaining fields (name, image, etc.), the kubernetes feed,
+ * if any, fills whatever is still missing.
+ *
+ * A container attached to a pod lives as long as the pod, a container without
+ * a pod lives until quark_queue_close().
  */
 struct quark_container *
 quark_container_get(struct quark_queue *qq, const char *container_id,
     const char *pod_uid)
 {
-	struct quark_container	*container, *col;
 	struct quark_pod	*pod = NULL;
 
 	if (pod_uid != NULL) {
@@ -2486,48 +2564,7 @@ quark_container_get(struct quark_queue *qq, const char *container_id,
 			return (NULL);
 	}
 
-	container = container_lookup(qq, (char *)container_id);
-	if (container != NULL) {
-		if (pod != NULL && container->pod != pod) {
-			if (container->pod != NULL)
-				return (errno = EEXIST, NULL);
-			col = pod_containers_RB_INSERT(&pod->containers, container);
-			if (unlikely(col != NULL))
-				return (errno = EEXIST, NULL);
-			container->pod = pod;
-			container->linked_by_pod = 1;
-		}
-		return (container);
-	}
-
-	container = calloc(1, sizeof(*container));
-	if (container == NULL)
-		return (NULL);
-	TAILQ_INIT(&container->processes);
-	container->container_id = strdup(container_id);
-	if (container->container_id == NULL) {
-		free(container);
-		return (NULL);
-	}
-
-	col = container_by_id_RB_INSERT(&qq->container_by_id, container);
-	if (unlikely(col != NULL)) {
-		container_delete(qq, container);
-		return (errno = EEXIST, NULL);
-	}
-	container->linked_by_id = 1;
-
-	if (pod != NULL) {
-		container->pod = pod;
-		col = pod_containers_RB_INSERT(&pod->containers, container);
-		if (unlikely(col != NULL)) {
-			container_delete(qq, container);
-			return (errno = EEXIST, NULL);
-		}
-		container->linked_by_pod = 1;
-	}
-
-	return (container);
+	return (container_get(qq, container_id, pod, NULL));
 }
 
 const struct quark_container *
@@ -4524,7 +4561,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	 * At this point, existing processes have been loaded and kubernetes
 	 * metada has been primed. Now it's the time to correlate both.
 	 */
-	if (qq->qkube != NULL) {
+	if (!RB_EMPTY(&qq->container_by_id)) {
 		struct quark_process	*qp;
 
 		RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
@@ -5452,10 +5489,8 @@ quark_queue_get_event1(struct quark_queue *qq)
 	if (qev == NULL)
 		return (NULL);
 
-	/* Try to correlate kubernetes metadata */
-	if (qq->qkube != NULL)
-		link_kube_data(qq,
-		    (struct quark_process *)qev->process);
+	/* Try to correlate container/pod metadata */
+	link_kube_data(qq, (struct quark_process *)qev->process);
 
 	return (qev);
 }
