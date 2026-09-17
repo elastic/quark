@@ -140,6 +140,34 @@ Only a cgroup whose last component is a container scope, like
 names a container.
 Nested cgroups and the cgroupfs driver layout match the host scope.
 This field is not supported by the NOVA backend.
+The
+.Dq pod.name
+field matches events from a process in a container that belongs to the
+named Kubernetes pod.
+A single
+.Sq *
+wildcard is accepted, as in
+.Dq pod.name nginx-* .
+The
+.Dq container.image
+field matches events from a process in a container whose image reference
+matches the given string.
+The image reference is compared as reported by the container runtime,
+registry and tag included, as in
+.Dq container.image docker.io/library/nginx:1.25 .
+A single
+.Sq *
+wildcard is accepted, so
+.Dq container.image */nginx:1.25
+matches that image from any registry, and
+.Dq container.image quay.io/*
+matches every image from that registry.
+Both fields require container metadata, from quark-kube-talker, see
+.Fl K ,
+or from the container API of the library.
+An event without a process, or from a process whose container is unknown,
+matches neither field.
+These fields are not supported by the NOVA backend.
 .It Fl T
 Enable ptrace event tracing.
 .It Fl t
