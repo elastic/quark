@@ -5333,6 +5333,8 @@ quark_ruleset_clear(struct quark_ruleset *ruleset)
 			switch (rule->fields[j].code) {
 			case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
 			case QUARK_RF_EXE:		/* FALLTHROUGH */
+			case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
+			case QUARK_RF_CONTAINER_IMAGE_NAME:
 				free(rule->fields[j].wild.pre);
 				break;
 			default:
@@ -5447,6 +5449,17 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 			    (qev->file->change_mask & QUARK_FILE_CH_PERMS)) &&
 			    (qev->file->mode & (S_IXUSR | S_IXGRP | S_IXOTH)));
 		break;
+	case QUARK_RF_POD_NAME:
+		if (qp != NULL && qp->container != NULL &&
+		    qp->container->pod != NULL &&
+		    qp->container->pod->name != NULL)
+			return (path_match(field, qp->container->pod->name));
+		break;
+	case QUARK_RF_CONTAINER_IMAGE_NAME:
+		if (qp != NULL && qp->container != NULL &&
+		    qp->container->image_name != NULL)
+			return (path_match(field, qp->container->image_name));
+		break;
 	case QUARK_RF_EVENT_SCOPE:
 		if (qp == NULL || qp->cgroup == NULL)
 			break;
@@ -5538,12 +5551,56 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 	return (rule);
 }
 
+/*
+ * Initialize a wildcard from the user string in w->pre, which is copied.
+ * As in foo*bar: pre = foo, post = bar. Only one * is allowed, none if
+ * allow_star is 0. On error w->pre is left untouched and nothing is
+ * allocated. Returns -1 with errno set.
+ */
+static int
+wild_init(struct quark_wild *w, int allow_star)
+{
+	char	*copy, *star;
+	size_t	 len;
+
+	w->post = NULL;
+	w->pre_len = w->post_len = 0;
+
+	if (w->pre == NULL || (len = strlen(w->pre)) == 0 || len >= PATH_MAX)
+		return (errno = EINVAL, -1);
+	star = strchr(w->pre, '*');
+	if (star != NULL) {
+		if (!allow_star || strchr(star + 1, '*') != NULL)
+			return (errno = EINVAL, -1);
+	}
+	if ((copy = strdup(w->pre)) == NULL)
+		return (-1);
+	/* Rebase star into the copy */
+	if (star != NULL)
+		star = copy + (star - w->pre);
+	w->pre = copy;
+	w->post = w->pre + len;
+	if (star != NULL) {
+		*star = 0;
+		w->post = star + 1;
+	}
+	/* Don't move this up, as the block above might shorten "pre" */
+	w->pre_len = strlen(w->pre);
+	w->post_len = strlen(w->post);
+	if (star == NULL)
+		w->pre_len++; /* Include NUL in the comparison */
+	if (w->post_len > 0)
+		w->post_len++; /* Include NUL in the comparison */
+
+	return (0);
+}
+
 int
 quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
 {
 	struct quark_rule_field	*new_fields;
 	size_t			 new_n_fields;
-	char			*path, *star;
+	char			*path;
 
 	path = NULL;
 
@@ -5562,36 +5619,17 @@ quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
 			goto inval;
 		break;
 	case QUARK_RF_EXE:		/* FALLTHROUGH */
-	case QUARK_RF_FILEPATH:
-		rf.wild.post = NULL;
-		rf.wild.pre_len = rf.wild.post_len = 0;
-
-		if (rf.wild.pre == NULL || strlen(rf.wild.pre) == 0 ||
-		    strlen(rf.wild.pre) >= PATH_MAX)
-			goto inval;
-		/* Save path in case we error out and need to free */
-		path = rf.wild.pre = strdup(rf.wild.pre);
-		if (path == NULL)
+	case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
+	case QUARK_RF_POD_NAME:
+		if (wild_init(&rf.wild, 1) == -1)
 			goto bad;
-		/*
-		 * Split rf.wild.pre and rf.wild.post
-		 * as in foo*bar: pre = foo, post = bar
-		 */
-		rf.wild.post = rf.wild.pre + strlen(rf.wild.pre);
-		if ((star = strchr(rf.wild.pre, '*')) != NULL) {
-			*star = 0;
-			/* Only one * is allowed */
-			rf.wild.post = star + 1;
-			if (strchr(rf.wild.post, '*') != NULL)
-				goto bad;
-		}
-		/* Don't move this up, as the block above might shorten "pre" */
-		rf.wild.pre_len = strlen(rf.wild.pre);
-		rf.wild.post_len = strlen(rf.wild.post);
-		if (star == NULL)
-			rf.wild.pre_len++; /* Include NUL in the comparison */
-		if (rf.wild.post_len > 0)
-			rf.wild.post_len++; /* Include NUL in the comparison */
+		path = rf.wild.pre;
+		break;
+	case QUARK_RF_CONTAINER_IMAGE_NAME:
+		/* Exact match only, no wildcard */
+		if (wild_init(&rf.wild, 0) == -1)
+			goto bad;
+		path = rf.wild.pre;
 		break;
 	case QUARK_RF_FILE_EXEC_CHANGE:
 		break;

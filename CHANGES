@@ -200,3 +200,12 @@ Changes from 0.8 to 0.9
     only processes seen at start-up can match a scope. Only the last
     cgroup component is parsed, nested cgroups match host. The nova
     backend rejects the field with ENOTSUP.
+  o The rule DSL learned the pod.name and container.image.name fields.
+    pod.name matches the Kubernetes pod name of the process container
+    and accepts a single * wildcard, as in pod.name nginx-*.
+    container.image.name matches the image name of the process
+    container exactly, the image name being the last path component
+    without registry and tag, so agnhost for
+    registry.k8s.io/e2e-test-images/agnhost:2.39. Both need metadata
+    from quark-kube-talker, a process without a known container matches
+    neither. The nova backend rejects both fields with ENOTSUP.
