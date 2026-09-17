@@ -148,6 +148,29 @@ The kprobe backend only learns the cgroup of processes that existed when
 started, so events from processes created afterwards never match either
 value.
 This field is not supported by the NOVA backend.
+The
+.Dq pod.name
+field matches events from a process in a container that belongs to the
+named Kubernetes pod.
+A single
+.Sq *
+wildcard is accepted, as in
+.Dq pod.name nginx-* .
+The
+.Dq container.image.name
+field matches events from a process in a container whose image name is
+exactly the given string.
+The image name is the last path component of the image without the
+registry and tag, so
+.Pa registry.k8s.io/e2e-test-images/agnhost:2.39
+has the image name
+.Dq agnhost .
+No wildcard is accepted.
+Both fields require Kubernetes metadata from quark-kube-talker, see
+.Fl K .
+An event without a process, or from a process whose container is unknown,
+matches neither field.
+These fields are not supported by the NOVA backend.
 .It Fl T
 Enable ptrace event tracing.
 .It Fl t

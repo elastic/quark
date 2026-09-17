@@ -173,6 +173,16 @@ nova_rule_from_quark(struct nova_queue *nqq,
 			qwarn("event.scope is not supported in nova backend");
 			return (-1);
 			break;
+		case QUARK_RF_POD_NAME:
+			errno = ENOTSUP;
+			qwarn("pod.name is not supported in nova backend");
+			return (-1);
+			break;
+		case QUARK_RF_CONTAINER_IMAGE_NAME:
+			errno = ENOTSUP;
+			qwarn("container.image.name is not supported in nova backend");
+			return (-1);
+			break;
 		default:
 			errno = EINVAL;
 			qwarn("bad field->code %llu", field->code);
