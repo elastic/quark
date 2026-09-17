@@ -5462,9 +5462,12 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 			    (qev->file->mode & (S_IXUSR | S_IXGRP | S_IXOTH)));
 		break;
 	case QUARK_RF_EVENT_SCOPE:
-		if (qp == NULL)
+		if (qp == NULL || qp->cgroup == NULL)
 			break;
 		container_id = process_container_id((struct quark_process *)qp);
+		/* An unparsed cgroup (allocation failure) has no scope. */
+		if (!qp->container_id_parsed)
+			break;
 		if (field->id == QUARK_RULE_SCOPE_CONTAINER)
 			return (container_id != NULL);
 		if (field->id == QUARK_RULE_SCOPE_HOST)

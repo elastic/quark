@@ -3412,11 +3412,10 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	    "pass on event.scope container\n"
 	    "drop on event.scope host\n");
 
+	/* A process with an unknown cgroup matches neither scope. */
 	qev.process = &qp;
-	rule = quark_ruleset_match(&ruleset, &qev);
-	assert(rule != NULL);
-	assert(rule->number == 1);
-	assert(rule->action == QUARK_RA_DROP);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(!qp.container_id_parsed);
 
 	/* Scope must use the process cgroup without container metadata. */
 	cgroup = strdup("/system.slice/docker-abc123.scope");
@@ -3454,6 +3453,20 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
 	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(rule->action == QUARK_RA_DROP);
+	assert(qp.container_id_parsed);
+	assert(qp.container_id == NULL);
+
+	/* Only the last cgroup component is parsed, nested cgroups are host. */
+	free(qp.cgroup);
+	bzero(&qp, sizeof(qp));
+	cgroup = strdup("/system.slice/docker-abc123.scope/init.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL);
 	assert(rule->number == 1);

@@ -208,8 +208,10 @@ Changes from 0.8 to 0.9
     is frozen after load (BPF_MAP_FREEZE, also 5.2+), so no process can
     change quark's internal state through bpf(2).
   o The rule DSL learned the event.scope field. Its values are container
-    and host. A container event comes from a process with a container ID
-    in its cgroup, a host event from a process without one. The kprobe
-    backend does not report the cgroup, so only processes seen at
-    start-up can match container. The nova backend rejects the field
-    with ENOTSUP.
+    and host. A container event comes from a process whose cgroup names
+    a container, a host event from a process whose cgroup does not. A
+    process with an unknown cgroup matches neither scope. The kprobe
+    backend does not report the cgroup of new processes, so on kprobe
+    only processes seen at start-up can match a scope. Only the last
+    cgroup component is parsed, nested cgroups match host. The nova
+    backend rejects the field with ENOTSUP.
