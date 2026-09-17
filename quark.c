@@ -5470,9 +5470,11 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 			return (path_match(field, qp->container->pod->name));
 		break;
 	case QUARK_RF_CONTAINER_IMAGE_NAME:
+		/* Exact match, wild_init() rejected any wildcard at load time */
 		if (qp != NULL && qp->container != NULL &&
 		    qp->container->image_name != NULL)
-			return (path_match(field, qp->container->image_name));
+			return (!strcmp(field->wild.pre,
+			    qp->container->image_name));
 		break;
 	case QUARK_RF_EVENT_SCOPE:
 		if (qp == NULL || qp->cgroup == NULL)
