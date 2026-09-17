@@ -157,17 +157,22 @@ A single
 wildcard is accepted, as in
 .Dq pod.name nginx-* .
 The
-.Dq container.image.name
-field matches events from a process in a container whose image name is
-exactly the given string.
-The image name is the last path component of the image without the
-registry and tag, so
-.Pa registry.k8s.io/e2e-test-images/agnhost:2.39
-has the image name
-.Dq agnhost .
-No wildcard is accepted.
-Both fields require Kubernetes metadata from quark-kube-talker, see
-.Fl K .
+.Dq container.image
+field matches events from a process in a container whose image reference
+matches the given string.
+The image reference is compared as reported by the container runtime,
+registry and tag included, as in
+.Dq container.image docker.io/library/nginx:1.25 .
+A single
+.Sq *
+wildcard is accepted, so
+.Dq container.image */nginx:1.25
+matches that image from any registry, and
+.Dq container.image quay.io/*
+matches every image from that registry.
+Both fields require container metadata, from quark-kube-talker, see
+.Fl K ,
+or from the container API of the library.
 An event without a process, or from a process whose container is unknown,
 matches neither field.
 These fields are not supported by the NOVA backend.

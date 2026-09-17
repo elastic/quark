@@ -219,12 +219,12 @@ Changes from 0.8 to 0.9
     learns the cgroup of processes that existed when quark started, so events
     from processes created afterwards never match either value. The NOVA
     backend rejects the field with ENOTSUP.
-  o The rule DSL learned the pod.name and container.image.name fields.
-    pod.name matches the Kubernetes pod name of the process container
-    and accepts a single * wildcard, as in pod.name nginx-*.
-    container.image.name matches the image name of the process
-    container exactly, the image name being the last path component
-    without registry and tag, so agnhost for
-    registry.k8s.io/e2e-test-images/agnhost:2.39. Both need metadata
-    from quark-kube-talker, a process without a known container matches
-    neither. The nova backend rejects both fields with ENOTSUP.
+  o The rule DSL learned the pod.name and container.image fields.
+    pod.name matches the Kubernetes pod name of the process container.
+    container.image matches the full image reference of the process
+    container as reported by the runtime, registry and tag included, so
+    docker.io/library/nginx:1.25. Both accept a single * wildcard, as in
+    pod.name nginx-* or container.image quay.io/*. Both need container
+    metadata, from quark-kube-talker or the container API, a process
+    without a known container matches neither. The nova backend rejects
+    both fields with ENOTSUP.
