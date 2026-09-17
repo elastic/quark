@@ -14,6 +14,14 @@
 .Sh DESCRIPTION
 Initialize and iterate over the internal cache of processes, it can be used on
 boot up to get a list of all learned processes, or else.
+.Pp
+Before
+.Fn quark_process_iter_next
+returns a process, it tries to link the process to matching container metadata
+in the queue.
+This includes container metadata that was added after
+.Xr quark_queue_open 3
+returned.
 .Sh EXAMPLES
 .Bd -literal
 

@@ -71,6 +71,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"strings"
 	"syscall"
@@ -546,7 +547,8 @@ func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
 	return b, true, nil
 }
 
-// Lookup looks up for the Process associated with PID in quark's internal cache.
+// Lookup returns the Process associated with PID in quark's internal cache. It
+// refreshes the process link to container metadata before it returns.
 func (queue *Queue) Lookup(pid int) (Process, bool) {
 	process, _ := C.quark_process_lookup(queue.quarkQueue, C.int(pid))
 
@@ -599,7 +601,8 @@ func (queue *Queue) Block() error {
 	return err
 }
 
-// Snapshot returns a snapshot of all processes in the cache.
+// Snapshot returns all processes in the cache. It refreshes each process link
+// to container metadata before it copies the process into the snapshot.
 func (queue *Queue) Snapshot() []Process {
 	var processes []Process
 	var iter C.struct_quark_process_iter
@@ -1041,4 +1044,25 @@ func ttyFromC(cTty *C.struct_quark_tty) Tty {
 	}
 
 	return tty
+}
+
+// newTestQueue returns a backend-less queue for tests that only exercise
+// the process and container caches. cgo is not available in _test.go files,
+// so this lives here, mirroring the "exported for testing only" section of
+// quark.h.
+func newTestQueue() *Queue {
+	p := C.calloc(C.size_t(1), C.sizeof_struct_quark_queue)
+	if p == nil {
+		panic("cannot allocate test queue")
+	}
+	qq := (*C.struct_quark_queue)(p)
+	C.quark_queue_init_bare(qq)
+	qq.cache_grace_time = C.u64(math.MaxUint64)
+	return &Queue{quarkQueue: qq, epollFd: -1}
+}
+
+// expireTestGrace makes removed pods and containers collectable on the
+// next GetEvent.
+func expireTestGrace(queue *Queue) {
+	queue.quarkQueue.cache_grace_time = 0
 }
