@@ -127,13 +127,18 @@ use
 for stdin.
 The
 .Dq event.scope container
-field matches events from a process with a container ID.
+field matches events from a process whose cgroup names a container.
 The
 .Dq event.scope host
-field matches events from a process without a container ID.
-An event without a process matches neither scope.
-The kprobe backend does not report the cgroup of new processes, so only
-processes that existed at start-up can match the container scope.
+field matches events from a process whose cgroup does not name a container.
+An event without a process, or from a process with an unknown cgroup,
+matches neither scope.
+The kprobe backend does not report the cgroup of new processes, so on
+kprobe only processes that existed at start-up can match a scope.
+Only a cgroup whose last component is a container scope, like
+.Pa docker-<id>.scope ,
+names a container.
+Nested cgroups and the cgroupfs driver layout match the host scope.
 This field is not supported by the NOVA backend.
 .It Fl T
 Enable ptrace event tracing.
