@@ -132,6 +132,8 @@ The
 .Dq event.scope host
 field matches events from a process without a container ID.
 An event without a process matches neither scope.
+The kprobe backend does not report the cgroup of new processes, so only
+processes that existed at start-up can match the container scope.
 This field is not supported by the NOVA backend.
 .It Fl T
 Enable ptrace event tracing.

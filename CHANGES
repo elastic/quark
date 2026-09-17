@@ -126,9 +126,6 @@ Changes from 0.6 to 0.7
 
 Changes from 0.7 to 0.8
 ~~~~~~~~~~~~~~~~~~~~~~~
-  o The rule DSL learned the event.scope field. Its values are container
-    and host. The field is not supported by the nova backend, where it
-    fails with ENOTSUP.
   o BREAKING, SILENTLY: quark_process.proc_time_boot,
     quark_process.exit_time_event, quark_event.time,
     quark_socket.established_time and quark_socket.close_time are now
@@ -226,3 +223,14 @@ Changes from 0.9 to 0.10
     namespace, as d_path() reports them, instead of "./" relative with
     possibly stale bytes appended. The "./" prefix is still produced for
     genuinely truncated paths with more components than the resolver holds.
+
+Changes from 0.10 to 0.11
+~~~~~~~~~~~~~~~~~~~~~~~~~
+  o The rule DSL learned the event.scope field. Its values are container
+    and host. A container event comes from a process whose cgroup names
+    a container, a host event from a process whose cgroup does not. A
+    process with an unknown cgroup matches neither scope. The kprobe
+    backend does not report the cgroup of new processes, so on kprobe
+    only processes seen at start-up can match a scope. Only the last
+    cgroup component is parsed, nested cgroups match host. The nova
+    backend rejects the field with ENOTSUP.
