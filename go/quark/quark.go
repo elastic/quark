@@ -6,9 +6,6 @@
 package quark
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../
-#cgo LDFLAGS: -Wl,--wrap=fmemopen ${SRCDIR}/../../libquark_big.a
-
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
