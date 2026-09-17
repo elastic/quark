@@ -178,9 +178,9 @@ nova_rule_from_quark(struct nova_queue *nqq,
 			qwarn("pod.name is not supported in nova backend");
 			return (-1);
 			break;
-		case QUARK_RF_CONTAINER_IMAGE_NAME:
+		case QUARK_RF_CONTAINER_IMAGE:
 			errno = ENOTSUP;
-			qwarn("container.image.name is not supported in nova backend");
+			qwarn("container.image is not supported in nova backend");
 			return (-1);
 			break;
 		default:
