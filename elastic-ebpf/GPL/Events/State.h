@@ -188,7 +188,15 @@ struct {
     __uint(max_entries, 512);
 } elastic_ebpf_events_trusted_pids SEC(".maps");
 
-/* Trusted Apps - check if current pid is trusted for given event type */
+/*
+ * Trusted Apps - check if the current tgid is trusted.
+ *
+ * Trust is a volume knob, not a blind spot: it suppresses the high rate event
+ * classes (file, network, mprotect) a benign but chatty application produces.
+ * Rare, security relevant events (module load, ptrace, shmget, memfd_create)
+ * are never suppressed, they cost nothing to keep and a process that can
+ * write this map could otherwise hide exactly those.
+ */
 static bool ebpf_events_is_trusted_pid()
 {
     u32 pid  = bpf_get_current_pid_tgid() >> 32;
