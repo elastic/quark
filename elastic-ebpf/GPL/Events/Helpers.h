@@ -63,11 +63,15 @@ const volatile int consumer_pid = 0;
 // instead of once per call site and per path leading to it, which is what
 // keeps a hook with several emit paths under BPF_COMPLEXITY_LIMIT_INSNS: one
 // walk of the path resolvers costs ~200k instructions on RHEL 8's 4.18. The
-// price is the argument contract. That verifier only accepts scalar arguments
-// and scalar returns, and rejects a pointer the caller got from its context or
-// through BTF ("Caller passes invalid args"). Every access to such a pointer
-// already goes through bpf_probe_read_kernel() via BPF_CORE_READ, which takes
-// any value, so the pointer can travel as a u64.
+// price is the argument contract: the function is checked without knowing its
+// callers, so what a parameter may hold is fixed by its type. A scalar
+// parameter is accepted by every verifier. Passing a kernel pointer as a
+// pointer needs per-verifier support for typed pointer arguments (BTF-typed
+// args, later __arg_trusted), which the oldest verifier we load on, RHEL 8's
+// 4.18, rejects outright ("Caller passes invalid args"). Every access to such
+// a pointer already goes through bpf_probe_read_kernel() via BPF_CORE_READ,
+// which takes any value, so it travels as a u64 and the code is the same on
+// every kernel.
 //
 // A cast alone does not change what the verifier knows about a register, hence
 // the read of the pointer's own stack slot: a helper wrote it, so what comes
