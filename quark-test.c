@@ -1438,6 +1438,62 @@ t_file_bad_unlink_rename(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * A rename is the one file event where the probe resolves two paths, the old
+ * and the new name; check that both come out right and on the same file.
+ */
+static int
+t_file_rename(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_file		*qf;
+	struct stat			 st;
+	char				 old_path[] = "/tmp/quark-test.XXXXXX";
+	char				 new_path[sizeof(old_path) + 6];
+	int				 fd;
+
+	qa->flags |= QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd = mkstemp(old_path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+	if (snprintf(new_path, sizeof(new_path), "%s.moved", old_path) >=
+	    (int)sizeof(new_path))
+		errx(1, "new_path too long");
+	if (rename(old_path, new_path) == -1)
+		err(1, "rename");
+
+	/*
+	 * A move never aggregates into an earlier operation on the file
+	 * (quark_can_aggregate_file()), so the create comes first on its
+	 * own; skip to the move.
+	 */
+	do {
+		qev = drain_for_pid(&qq, getpid());
+		assert(qev->events == QUARK_EV_FILE);
+		qf = qev->file;
+		assert(qf != NULL);
+		assert(qf->inode == st.st_ino);
+	} while (!(qf->op_mask & QUARK_FILE_OP_MOVE));
+	assert(qf->path != NULL);
+	assert(!strcmp(qf->path, new_path));
+	assert(qf->old_path != NULL);
+	assert(!strcmp(qf->old_path, old_path));
+
+	if (unlink(new_path) == -1)
+		err(1, "unlink");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -3206,6 +3262,7 @@ struct test all_tests[] = {
 	T_KPROBE(t_exit_tgid),
 	T_EBPF(t_file),
 	T_EBPF(t_file_bad_unlink_rename),
+	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
