@@ -404,13 +404,9 @@ __noinline int prepare_and_send_file_event(u64 file, enum ebpf_event_type type, 
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // skip event if only /dev/shm files are wanted and the path does not start with it
-    if (devshm_only) {
-        if (size >= (long)sizeof(DEVSHM_STRING) - 1 &&
-            is_equal_prefix(field->data, DEVSHM_STRING, sizeof(DEVSHM_STRING) - 1))
-            ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
-    } else {
+    if (!devshm_only || (size >= (long)sizeof(DEVSHM_STRING) - 1 &&
+                         is_equal_prefix(field->data, DEVSHM_STRING, sizeof(DEVSHM_STRING) - 1)))
         ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
-    }
 
 out:
     preempt_enable();
