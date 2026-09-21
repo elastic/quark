@@ -1381,6 +1381,63 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * A failed unlink(2) must not leave stale probe state behind that hides a
+ * subsequent rename(2) on the same thread.
+ */
+static int
+t_file_bad_unlink_rename(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_file		*qf;
+	char				 gone[] = "/tmp/quark-test-gone.XXXXXX";
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	char				 newpath[PATH_MAX];
+	int				 fd;
+
+	qa->flags |= QQ_FILE;
+
+	/* Both files exist before we start watching */
+	if ((fd = mkstemp(gone)) == -1)
+		err(1, "mkstemp");
+	close(fd);
+	if (unlink(gone) == -1)
+		err(1, "unlink");
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	close(fd);
+	if (snprintf(newpath, sizeof(newpath), "%s.renamed", path) >=
+	    (int)sizeof(newpath))
+		errx(1, "snprintf");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Fails with ENOENT before ever reaching vfs_unlink() */
+	if (unlink(gone) != -1 || errno != ENOENT)
+		err(1, "unlink %s", gone);
+
+	if (rename(path, newpath) == -1)
+		err(1, "rename");
+
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->op_mask & QUARK_FILE_OP_MOVE);
+	assert(!strcmp(qf->path, newpath));
+	assert(qf->old_path != NULL);
+	assert(!strcmp(qf->old_path, path));
+
+	quark_queue_close(&qq);
+
+	if (unlink(newpath) == -1)
+		err(1, "unlink");
+
+	return (0);
+}
+
 static int
 t_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -3148,6 +3205,7 @@ struct test all_tests[] = {
 	T_EBPF(t_exit_tgid),
 	T_KPROBE(t_exit_tgid),
 	T_EBPF(t_file),
+	T_EBPF(t_file_bad_unlink_rename),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),

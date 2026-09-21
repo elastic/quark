@@ -90,6 +90,67 @@ int BPF_KPROBE(kprobe__filename_unlinkat)
     return r;
 }
 
+/*
+ * The unlink state is normally deleted by vfs_unlink__exit() once the event
+ * is emitted, but that never runs when the unlink fails, be it in path lookup
+ * or in vfs_unlink() itself. A stale entry would then shadow the rename state
+ * in mnt_want_write__enter() and every later rename on this thread would be
+ * lost, so always reap it when the syscall returns.
+ */
+static int do_unlinkat__exit()
+{
+    ebpf_events_state__del(EBPF_EVENTS_STATE_UNLINK);
+    return 0;
+}
+
+SEC("fexit/do_unlinkat")
+int BPF_PROG(fexit__do_unlinkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/do_unlinkat")
+int BPF_KRETPROBE(kretprobe__do_unlinkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("fexit/filename_unlinkat")
+int BPF_PROG(fexit__filename_unlinkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/filename_unlinkat")
+int BPF_KRETPROBE(kretprobe__filename_unlinkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
 static int mnt_want_write__enter(struct vfsmount *mnt)
 {
     struct ebpf_events_state *state = NULL;
@@ -573,6 +634,61 @@ int BPF_KPROBE(kprobe__filename_renameat2)
 
     preempt_disable();
     r = do_renameat2__enter();
+    preempt_enable();
+
+    return r;
+}
+
+/* Same as do_unlinkat__exit(), see comment there. */
+static int do_renameat2__exit()
+{
+    ebpf_events_state__del(EBPF_EVENTS_STATE_RENAME);
+    return 0;
+}
+
+SEC("fexit/do_renameat2")
+int BPF_PROG(fexit__do_renameat2)
+{
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/do_renameat2")
+int BPF_KRETPROBE(kretprobe__do_renameat2)
+{
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("fexit/filename_renameat2")
+int BPF_PROG(fexit__filename_renameat2)
+{
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/filename_renameat2")
+int BPF_KRETPROBE(kretprobe__filename_renameat2)
+{
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__exit();
     preempt_enable();
 
     return r;
