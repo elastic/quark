@@ -1258,14 +1258,20 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		    (btf_number_of_params(btf, "do_renameat2") == -1);
 
 		if (use_fentry) {
-			if (renameat2_renamed)
+			if (renameat2_renamed) {
 				bpf_program__set_autoload(p->progs.fentry__filename_renameat2, 1);
-			else
+				bpf_program__set_autoload(p->progs.fexit__filename_renameat2, 1);
+			} else {
 				bpf_program__set_autoload(p->progs.fentry__do_renameat2, 1);
-			if (unlink_renamed)
+				bpf_program__set_autoload(p->progs.fexit__do_renameat2, 1);
+			}
+			if (unlink_renamed) {
 				bpf_program__set_autoload(p->progs.fentry__filename_unlinkat, 1);
-			else
+				bpf_program__set_autoload(p->progs.fexit__filename_unlinkat, 1);
+			} else {
 				bpf_program__set_autoload(p->progs.fentry__do_unlinkat, 1);
+				bpf_program__set_autoload(p->progs.fexit__do_unlinkat, 1);
+			}
 			if (use_fsnotify)
 				bpf_program__set_autoload(p->progs.fentry__fsnotify, 1);
 			bpf_program__set_autoload(p->progs.fentry__mnt_want_write, 1);
@@ -1299,14 +1305,20 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_unlink, 1);
 			bpf_program__set_autoload(p->progs.kprobe__vfs_write, 1);
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_write, 1);
-			if (renameat2_renamed)
+			if (renameat2_renamed) {
 				bpf_program__set_autoload(p->progs.kprobe__filename_renameat2, 1);
-			else
+				bpf_program__set_autoload(p->progs.kretprobe__filename_renameat2, 1);
+			} else {
 				bpf_program__set_autoload(p->progs.kprobe__do_renameat2, 1);
-			if (unlink_renamed)
+				bpf_program__set_autoload(p->progs.kretprobe__do_renameat2, 1);
+			}
+			if (unlink_renamed) {
 				bpf_program__set_autoload(p->progs.kprobe__filename_unlinkat, 1);
-			else
+				bpf_program__set_autoload(p->progs.kretprobe__filename_unlinkat, 1);
+			} else {
 				bpf_program__set_autoload(p->progs.kprobe__do_unlinkat, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__do_unlinkat, 1);
+			}
 			bpf_program__set_autoload(p->progs.kprobe__mnt_want_write, 1);
 			if (filp_open_renamed)
 				bpf_program__set_autoload(p->progs.kretprobe__do_file_open, 1);
