@@ -349,15 +349,17 @@ out:
 }
 
 // prepare a file event and send it to ringbuf.
-// if devshm_only is set the event is only sent if the file path starts with /dev/shm
+// if devshm_only the event is only sent if the file path starts with /dev/shm
 //
 // Global function, see ebpf_ptr_to_scalar(): do_filp_open__exit() reaches
 // this from three places (create, memfd, shmem) and the verifier would walk
 // the path resolvers once per place otherwise. `file` is the struct file *
-// as a scalar. Disables preemption itself for the per-cpu event buffer and
-// resolver scratch: the caller must not, a global function may not be called
-// with preemption disabled on 6.10-6.14 verifiers.
-__noinline int prepare_and_send_file_event(u64 file, u32 type, u32 devshm_only)
+// as a scalar: 4.18's verifier only accepts scalar arguments for a global
+// function and rejects a struct file * or void * taken from the probe context
+// ("Caller passes invalid args"). Disables preemption itself for the per-cpu
+// event buffer and resolver scratch: the caller must not, as a global function
+// may not be called with preemption disabled on 6.10-6.14 verifiers.
+__noinline int prepare_and_send_file_event(u64 file, enum ebpf_event_type type, bool devshm_only)
 {
     struct file *f = (struct file *)file;
     struct ebpf_file_create_event *event;
@@ -435,7 +437,7 @@ static int do_filp_open__exit(struct file *f)
     if ((fmode & (fmode_t)0x100000) ||                                 // FMODE_CREATED
         (ebpf_events_state__get(EBPF_EVENTS_STATE_FS_CREATE) != NULL)) { // 4.18.x
         // generate a file creation event
-        prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_CREATE, 0);
+        prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_CREATE, false);
     } else {
         // check if memfd file is being opened
         struct path p              = BPF_CORE_READ(f, f_path);
@@ -452,7 +454,7 @@ static int do_filp_open__exit(struct file *f)
         int is_memfd = is_equal_prefix(MEMFD_STRING, buf_filename, sizeof(MEMFD_STRING) - 1);
         if (is_memfd) {
             // generate a memfd file open event
-            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_MEMFD_OPEN, 0);
+            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_MEMFD_OPEN, false);
             goto out;
         }
 
@@ -471,7 +473,7 @@ static int do_filp_open__exit(struct file *f)
         int is_tmpfs = is_equal_prefix(buf_fsname, TMPFS_STRING, sizeof(TMPFS_STRING) - 1);
         if (is_tmpfs) {
             // now filter for /dev/shm prefix, if there is match - send an SHMEM file open event
-            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_SHMEM_OPEN, 1);
+            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_SHMEM_OPEN, true);
         }
     }
 
@@ -733,9 +735,11 @@ static int vfs_rename__enter(struct dentry *old_dentry, struct dentry *new_dentr
     // mnt was read back from the state map, so the verifier already sees a
     // scalar; the dentries come from the probe context and need the detour.
     u64 mnt = (u64)state->rename.mnt;
-    vfs_rename__resolve_path(mnt, ebpf_ptr_to_scalar(old_dentry));
+    if (vfs_rename__resolve_path(mnt, ebpf_ptr_to_scalar(old_dentry)))
+        goto out;
     bpf_probe_read_kernel(ss->rename.old_path, PATH_MAX, ss->rename.new_path);
-    vfs_rename__resolve_path(mnt, ebpf_ptr_to_scalar(new_dentry));
+    if (vfs_rename__resolve_path(mnt, ebpf_ptr_to_scalar(new_dentry)))
+        goto out;
 
     state->rename.step = RENAME_STATE_PATHS_SET;
     state->rename.de   = old_dentry;
