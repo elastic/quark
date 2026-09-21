@@ -718,6 +718,7 @@ out:
 
 static int vfs_rename__enter(struct dentry *old_dentry, struct dentry *new_dentry)
 {
+    struct ebpf_events_scratch_space *ss;
     struct ebpf_events_state *state;
 
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_RENAME);
@@ -726,23 +727,38 @@ static int vfs_rename__enter(struct dentry *old_dentry, struct dentry *new_dentr
         goto out;
     }
 
-    struct ebpf_events_scratch_space *ss = ebpf_events_scratch_space__get(EBPF_EVENTS_STATE_RENAME);
-    if (!ss) {
-        bpf_printk("vfs_rename__enter: scratch space missing\n");
-        goto out;
-    }
-
     // mnt was read back from the state map, so the verifier already sees a
     // scalar; the dentries come from the probe context and need the detour.
     u64 mnt = (u64)state->rename.mnt;
     if (vfs_rename__resolve_path(mnt, ebpf_ptr_to_scalar(old_dentry)))
         goto out;
-    bpf_probe_read_kernel(ss->rename.old_path, PATH_MAX, ss->rename.new_path);
+
+    // The resolver runs with preemption enabled, so this task may have been
+    // scheduled out and the LRU maps may have recycled its entries for
+    // another task, which the verifier can't see: a map value pointer taken
+    // before the call would then write into that task's entry. Look the
+    // entries up again after each call and write through them with
+    // preemption disabled, the window the code had before the resolver
+    // became a global function. A missing entry means the state is gone and
+    // the exit hook will find nothing either.
+    preempt_disable();
+    ss = ebpf_events_scratch_space__get(EBPF_EVENTS_STATE_RENAME);
+    if (ss)
+        bpf_probe_read_kernel(ss->rename.old_path, PATH_MAX, ss->rename.new_path);
+    preempt_enable();
+    if (!ss)
+        goto out;
+
     if (vfs_rename__resolve_path(mnt, ebpf_ptr_to_scalar(new_dentry)))
         goto out;
 
-    state->rename.step = RENAME_STATE_PATHS_SET;
-    state->rename.de   = old_dentry;
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_RENAME);
+    if (state) {
+        state->rename.step = RENAME_STATE_PATHS_SET;
+        state->rename.de   = old_dentry;
+    }
+    preempt_enable();
 
 out:
     return 0;
