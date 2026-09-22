@@ -679,6 +679,7 @@ int BPF_KRETPROBE(kretprobe__filename_renameat2)
 
     return r;
 }
+
 // Resolve (mnt, dentry) into the rename scratch space's new_path.
 //
 // Global function, see ebpf_ptr_to_scalar(): vfs_rename__enter() resolves two
@@ -711,7 +712,6 @@ out:
 
 // Runs with preemption enabled, see vfs_rename__resolve_path(); the state and
 // scratch maps are keyed by task, only the resolver's scratch is per-cpu.
-
 static int vfs_rename__enter(struct dentry *old_dentry, struct dentry *new_dentry)
 {
     struct ebpf_events_scratch_space *ss;
