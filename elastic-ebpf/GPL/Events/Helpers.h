@@ -57,6 +57,39 @@ const volatile int consumer_pid = 0;
 // Compiler barrier, used to prevent compile-time insns reordering and optimizations.
 #define barrier() asm volatile("" ::: "memory")
 
+// Pass a kernel pointer to a global BPF function as a scalar.
+//
+// A global function (non-static, __noinline) is verified once, on its own,
+// instead of once per call site and per path leading to it, which is what
+// keeps a hook with several emit paths under BPF_COMPLEXITY_LIMIT_INSNS: one
+// walk of the path resolvers costs ~200k instructions on RHEL 8's 4.18. The
+// price is the argument contract: the function is checked without knowing its
+// callers, so what a parameter may hold is fixed by its type. A scalar
+// parameter is accepted by every verifier. Passing a kernel pointer as a
+// pointer needs per-verifier support for typed pointer arguments (BTF-typed
+// args, later __arg_trusted), which the oldest verifier we load on, RHEL 8's
+// 4.18, rejects outright ("Caller passes invalid args"). Every access to such
+// a pointer already goes through bpf_probe_read_kernel() via BPF_CORE_READ,
+// which takes any value, so it travels as a u64 and the code is the same on
+// every kernel.
+//
+// A cast alone does not change what the verifier knows about a register, hence
+// the read of the pointer's own stack slot: a helper wrote it, so what comes
+// back is an unknown scalar.
+//
+// Two more rules for the global function itself: it must return a scalar, and
+// it may not be called with preemption disabled on verifiers from 6.10 (where
+// bpf_preempt_disable() appeared) to 6.14 (before the sleepability analysis
+// that allows it), so it disables preemption for its own per-cpu state and
+// the caller keeps it enabled.
+static __always_inline u64 ebpf_ptr_to_scalar(const void *ptr)
+{
+    u64 v = 0;
+
+    bpf_probe_read_kernel(&v, sizeof(v), &ptr);
+    return v;
+}
+
 #define DECL_FUNC_ARG(func, arg) const volatile int arg__##func##__##arg##__ = 0;
 #define FUNC_ARG_READ(type, func, arg)                                                             \
     ({                                                                                             \
