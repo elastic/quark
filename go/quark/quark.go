@@ -451,7 +451,12 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 }
 
 // Close closes the queue.
+// It is safe to call Close on a previously closed queue.
 func (queue *Queue) Close() {
+	if queue.quarkQueue == nil {
+		// previously closed
+		return
+	}
 	C.quark_queue_close(queue.quarkQueue)
 	C.free(unsafe.Pointer(queue.quarkQueue))
 	queue.quarkQueue = nil
