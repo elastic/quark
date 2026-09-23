@@ -25,6 +25,167 @@ DECL_FIELD_OFFSET(iov_iter, __iov);
 #define S_ISUID 0004000
 #define S_ISGID 0002000
 
+#define MPROTECT_PROT_READ  0x1
+#define MPROTECT_PROT_WRITE 0x2
+#define MPROTECT_PROT_EXEC  0x4
+
+#define MPROTECT_VM_READ  (1UL << 0)
+#define MPROTECT_VM_WRITE (1UL << 1)
+#define MPROTECT_VM_EXEC  (1UL << 2)
+
+#define MPROTECT_MINORBITS 20
+#define MPROTECT_MINORMASK ((1U << MPROTECT_MINORBITS) - 1)
+
+// Set from userspace when QQ_MPROTECT is enabled. Everything that touches
+// mprotect_seen from the always loaded exec and exit probes is behind this
+// flag, so with the feature off the verifier prunes it and the map is not
+// even created.
+const volatile bool mprotect_enabled = false;
+
+/*
+ * Executable mprotect transitions already reported for a process life, one
+ * entry per tgid. A transition id packs the previous protection (3 bits), the
+ * read/write bits of the effective new protection (2 bits, execute is always
+ * set by the time we get here) and whether the mapping is file backed (1 bit),
+ * so all 64 fit one word. The entry is dropped when the process execs or dies
+ * (each program image starts fresh); LRU eviction is a safe backstop since an
+ * evicted entry only causes a duplicate event, never a lost one. Sized from
+ * userspace, see bpf_queue_open1().
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, u32);
+    __type(value, u64);
+    __uint(max_entries, 0);
+} mprotect_seen SEC(".maps");
+
+static u32 mprotect_transition_id(u64 prev_prot, u64 effective_prot, u64 file_backed)
+{
+    return ((prev_prot & 0x7) << 3) | ((effective_prot & 0x3) << 1) | (file_backed & 0x1);
+}
+
+// Returns true if the transition was already reported for this process life.
+// Best effort: the bit is claimed with a plain read-test-write since an atomic
+// or needs Linux 5.12 and -mcpu=v3, and the entry is created with BPF_NOEXIST
+// so a racing thread can't clobber bits already set. Two threads of one
+// process racing on the same transition can both report, and any map failure
+// reports, so the failure mode is a duplicate event, never a lost one.
+static bool mprotect_seen__test_and_set(u32 tgid, u32 id)
+{
+    u64  bit  = 1ULL << (id & 63);
+    u64 *seen = bpf_map_lookup_elem(&mprotect_seen, &tgid);
+
+    if (seen == NULL) {
+        u64 zero = 0;
+
+        bpf_map_update_elem(&mprotect_seen, &tgid, &zero, BPF_NOEXIST);
+        seen = bpf_map_lookup_elem(&mprotect_seen, &tgid);
+        if (seen == NULL)
+            return false;
+    }
+    if (*seen & bit)
+        return true;
+    *seen |= bit;
+
+    return false;
+}
+
+static void mprotect_seen__clear(u32 tgid)
+{
+    if (!mprotect_enabled)
+        return;
+
+    bpf_map_delete_elem(&mprotect_seen, &tgid);
+}
+
+/*
+ * File-backed transitions are deduplicated per file instead: one entry per
+ * (tgid, device, inode) with the transitions already reported for that file,
+ * so making a second file executable the same way is reported again. The
+ * value carries the process start time and self_exec_id, which the kernel
+ * bumps on every exec and never reuses within a process life; an entry left
+ * behind by a dead process (recycled tgid) or by a previous program image no
+ * longer matches and is simply claimed anew, so a stale entry never suppresses
+ * and this map needs no exec or exit clearing. (The mm pointer would not do:
+ * it is freed at exec and can come straight back from the slab two images
+ * later.) LRU eviction takes care of the leftovers and at worst costs a
+ * duplicate. Only referenced from the mprotect probes, sized from userspace,
+ * see bpf_queue_open1().
+ */
+struct mprotect_file_key {
+    u32 tgid;
+    u32 dev;
+    u64 inode;
+};
+
+struct mprotect_file_seen {
+    u64 start_time_ns;
+    u64 exec_id;
+    u64 bits;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, struct mprotect_file_key);
+    __type(value, struct mprotect_file_seen);
+    __uint(max_entries, 0);
+} mprotect_file_seen SEC(".maps");
+
+// The exec generation of the process. self_exec_id is u64 since Linux 5.7 and
+// u32 before, so read it by its relocated size; the targets are little endian
+// so a narrower field lands in the low bytes. RHEL 8 (4.18) backported the
+// widening under kABI and the live field only exists in the task_struct_rh
+// extension there, see vmlinux_extra.h; a kernel with neither yields zero and
+// falls back to start_time alone.
+static u64 mprotect_exec_id(const struct task_struct *task)
+{
+    const struct task_struct *leader = BPF_CORE_READ(task, group_leader);
+    u64                       exec_id = 0;
+
+    if (bpf_core_field_exists(leader->self_exec_id)) {
+        bpf_core_read(&exec_id, bpf_core_field_size(leader->self_exec_id),
+                      &leader->self_exec_id);
+    } else if (bpf_core_field_exists(struct task_struct___el8, task_struct_rh)) {
+        exec_id = BPF_CORE_READ((const struct task_struct___el8 *)leader, task_struct_rh,
+                                self_exec_id);
+    }
+
+    return exec_id;
+}
+
+// Same contract as mprotect_seen__test_and_set(), per file. Best effort with
+// the same plain read-test-write, and a lost race on a fresh or stale entry
+// overwrites it, so the failure mode is a duplicate event, never a lost one.
+static bool mprotect_file_seen__test_and_set(const struct task_struct *task, u32 tgid, u32 dev,
+                                             u64 inode, u32 id)
+{
+    struct mprotect_file_key key = {
+        .tgid  = tgid,
+        .dev   = dev,
+        .inode = inode,
+    };
+    u64 start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
+    u64 exec_id       = mprotect_exec_id(task);
+    u64 bit           = 1ULL << (id & 63);
+
+    struct mprotect_file_seen *seen = bpf_map_lookup_elem(&mprotect_file_seen, &key);
+    if (seen == NULL || seen->start_time_ns != start_time_ns || seen->exec_id != exec_id) {
+        struct mprotect_file_seen fresh = {
+            .start_time_ns = start_time_ns,
+            .exec_id       = exec_id,
+            .bits          = bit,
+        };
+
+        bpf_map_update_elem(&mprotect_file_seen, &key, &fresh, BPF_ANY);
+        return false;
+    }
+    if (seen->bits & bit)
+        return true;
+    seen->bits |= bit;
+
+    return false;
+}
+
 SEC("tp_btf/sched_process_fork")
 int BPF_PROG(sched_process_fork, const struct task_struct *parent, const struct task_struct *child)
 {
@@ -92,6 +253,10 @@ int BPF_PROG(sched_process_exec,
     // exec is valid and something we want to capture
     if (is_kernel_thread(task))
         goto out;
+
+    // The address space is replaced on exec; reported mprotect transitions
+    // belong to the previous program image, so start fresh.
+    mprotect_seen__clear(BPF_CORE_READ(task, tgid));
 
     struct ebpf_process_exec_event *event = get_event_buffer();
     if (!event)
@@ -204,6 +369,11 @@ static int disassociate_ctty__enter(int on_exit)
     if (!on_exit || is_kernel_thread(task))
         return 0;
 
+    // do_exit calls disassociate_ctty(1) only when the whole thread group is
+    // dead, so this runs exactly once per process; drop its dedup state so a
+    // recycled tgid does not inherit (and suppress) old transitions.
+    mprotect_seen__clear(BPF_CORE_READ(task, tgid));
+
     event = get_event_buffer();
     if (event == NULL)
         return 0;
@@ -286,7 +456,10 @@ out:
 }
 
 // tracepoint/syscalls/sys_[enter/exit]_[name] tracepoints are not available
-// with BTF type information, so we must use a non-BTF tracepoint
+// with BTF type information, so we must use a non-BTF tracepoint. Arguments
+// and return values are read through SYSCALL_ENTER_ARG/SYSCALL_EXIT_RET, the
+// context layout is not the one the tracepoint format describes on every
+// kernel, see vmlinux_extra.h.
 SEC("tracepoint/syscalls/sys_exit_setsid")
 int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
 {
@@ -294,7 +467,7 @@ int tracepoint_syscalls_sys_exit_setsid(struct syscall_trace_exit *args)
 
     r = 0;
     preempt_disable();
-    if (BPF_CORE_READ(args, ret) < 0)
+    if (SYSCALL_EXIT_RET(args) < 0)
         goto out;
 
     r = setsid__exit(EBPF_EVENT_PROCESS_SETSID);
@@ -450,6 +623,135 @@ int BPF_KPROBE(kprobe__arch_ptrace,
     return r;
 }
 
+static u64 mprotect_vm_flags_to_prot(unsigned long vm_flags)
+{
+    u64 prot = 0;
+
+    if (vm_flags & MPROTECT_VM_READ)
+        prot |= MPROTECT_PROT_READ;
+    if (vm_flags & MPROTECT_VM_WRITE)
+        prot |= MPROTECT_PROT_WRITE;
+    if (vm_flags & MPROTECT_VM_EXEC)
+        prot |= MPROTECT_PROT_EXEC;
+
+    return prot;
+}
+
+/*
+ * security_file_mprotect() is called once for every VMA considered by
+ * mprotect(2) and pkey_mprotect(2), after personality handling has produced
+ * the effective protection and before the protection change is committed.
+ * Consequently this event describes an executable-memory attempt, not a
+ * successful syscall or an exact modified subrange.
+ */
+static int security_file_mprotect__enter(struct vm_area_struct *vma,
+                                         unsigned long req_prot,
+                                         unsigned long effective_prot)
+{
+    if (ebpf_events_is_trusted_pid() || !vma)
+        goto out;
+
+    const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (is_kernel_thread(task))
+        goto out;
+
+    // Filter on the kernel-adjusted protection so READ_IMPLIES_EXEC is seen.
+    if (!(effective_prot & MPROTECT_PROT_EXEC))
+        goto out;
+
+    unsigned long vm_flags = BPF_CORE_READ(vma, vm_flags);
+    u64 prev_prot          = mprotect_vm_flags_to_prot(vm_flags);
+    struct file *file      = BPF_CORE_READ(vma, vm_file);
+
+    u64 inode = 0;
+    u32 dev   = 0;
+    if (file) {
+        struct inode *ino = BPF_CORE_READ(file, f_inode);
+        if (ino) {
+            inode = BPF_CORE_READ(ino, i_ino);
+
+            struct super_block *sb = BPF_CORE_READ(ino, i_sb);
+            if (sb)
+                dev = BPF_CORE_READ(sb, s_dev);
+        }
+    }
+
+    // One event per transition per program image for anonymous mappings, per
+    // transition per file for file-backed ones.
+    u32 tgid = bpf_get_current_pid_tgid() >> 32;
+    u32 id   = mprotect_transition_id(prev_prot, effective_prot, file != NULL);
+    if (file ? mprotect_file_seen__test_and_set(task, tgid, dev, inode, id)
+             : mprotect_seen__test_and_set(tgid, id))
+        goto out;
+
+    struct ebpf_process_mprotect_event *event = get_zeroed_event_buffer(sizeof(*event));
+    if (!event)
+        goto out;
+
+    event->hdr.type = EBPF_EVENT_PROCESS_MPROTECT;
+    event->hdr.ts   = bpf_ktime_get_boot_ns();
+    ebpf_pid_info__fill(&event->pids, task);
+
+    event->vma_start       = BPF_CORE_READ(vma, vm_start);
+    event->vma_end         = BPF_CORE_READ(vma, vm_end);
+    event->prev_prot       = prev_prot;
+    event->req_prot        = req_prot;
+    event->effective_prot  = effective_prot;
+
+    ebpf_vl_fields__init(&event->vl_fields);
+
+    if (file) {
+        event->file_backed = 1;
+        event->inode       = inode;
+        event->dev_major   = dev >> MPROTECT_MINORBITS;
+        event->dev_minor   = dev & MPROTECT_MINORMASK;
+
+        // File-backed executable transitions are rare and high signal
+        // (library tampering, packers, memfd JITs); annotate them with the
+        // mount-namespace-relative path. Anonymous memory has no path.
+        struct ebpf_varlen_field *field =
+            ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
+        struct path p = BPF_CORE_READ(file, f_path);
+        long size     = ebpf_resolve_path_to_string(field->data, &p, task);
+        ebpf_vl_field__set_size(&event->vl_fields, field, size);
+    }
+
+    ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+
+out:
+    return 0;
+}
+
+SEC("fentry/security_file_mprotect")
+int BPF_PROG(fentry__security_file_mprotect,
+             struct vm_area_struct *vma,
+             unsigned long req_prot,
+             unsigned long effective_prot)
+{
+    int r;
+
+    preempt_disable();
+    r = security_file_mprotect__enter(vma, req_prot, effective_prot);
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kprobe/security_file_mprotect")
+int BPF_KPROBE(kprobe__security_file_mprotect,
+               struct vm_area_struct *vma,
+               unsigned long req_prot,
+               unsigned long effective_prot)
+{
+    int r;
+
+    preempt_disable();
+    r = security_file_mprotect__enter(vma, req_prot, effective_prot);
+    preempt_enable();
+
+    return r;
+}
+
 SEC("tracepoint/syscalls/sys_enter_shmget")
 int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
 {
@@ -457,17 +759,6 @@ int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    struct shmget_args {
-        short common_type;
-        char common_flags;
-        char common_preempt_count;
-        int common_pid;
-        int __syscall_nr;
-        long key;
-        size_t size;
-        long shmflg;
-    };
-    struct shmget_args *ex_args    = (struct shmget_args *)ctx;
     const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
     if (is_kernel_thread(task))
@@ -481,9 +772,10 @@ int tracepoint_syscalls_sys_enter_shmget(struct syscall_trace_enter *ctx)
     event->hdr.ts   = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->pids, task);
 
-    event->key    = ex_args->key;
-    event->size   = ex_args->size;
-    event->shmflg = ex_args->shmflg;
+    // shmget(key_t key, size_t size, int shmflg)
+    event->key    = (long)SYSCALL_ENTER_ARG(ctx, 0);
+    event->size   = SYSCALL_ENTER_ARG(ctx, 1);
+    event->shmflg = (long)SYSCALL_ENTER_ARG(ctx, 2);
 
     ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
 out:
@@ -495,20 +787,10 @@ SEC("tracepoint/syscalls/sys_enter_memfd_create")
 int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
 {
     preempt_disable();
-    // from: /sys/kernel/debug/tracing/events/syscalls/sys_enter_memfd_create/format
-    struct memfd_create_args {
-        short common_type;
-        char common_flags;
-        char common_preempt_count;
-        int common_pid;
-        int __syscall_nr;
-        const char *uname;
-        unsigned long flags;
-    };
-    struct memfd_create_args *ex_args = (struct memfd_create_args *)ctx;
 
+    // memfd_create(const char *uname, unsigned int flags)
     struct ebpf_events_state state = {};
-    state.memfd.flags = ex_args->flags;
+    state.memfd.flags = SYSCALL_ENTER_ARG(ctx, 1);
     ebpf_events_state__set(EBPF_EVENTS_STATE_MEMFD_CREATE, &state);
     preempt_enable();
     return 0;

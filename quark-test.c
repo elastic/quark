@@ -13,8 +13,11 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+
+#include <bpf/bpf.h>
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -841,6 +844,31 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * CI boxes are small, so quark_queue_open() only allocates the 4 MiB
+ * floor. Create a 64 MiB ringbuf so RLIMIT_MEMLOCK / memcg accounting
+ * is exercised on every kernel we test.
+ */
+static int
+t_ringbuf_max(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	int			 fd;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+
+	fd = bpf_map_create(BPF_MAP_TYPE_RINGBUF, "quark_test_ringbuf",
+	    0, 0, 1U << 26, NULL);
+	if (fd < 0)
+		err(1, "%s: bpf_map_create 64MiB ringbuf", t->name);
+	close(fd);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
  * Return 1 if perf can stamp samples with a selectable clock,
  * kernels >= 4.1 and RHEL >= 7.4.
  */
@@ -1353,6 +1381,119 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * A failed unlink(2) must not leave stale probe state behind that hides a
+ * subsequent rename(2) on the same thread.
+ */
+static int
+t_file_bad_unlink_rename(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_file		*qf;
+	char				 gone[] = "/tmp/quark-test-gone.XXXXXX";
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	char				 newpath[PATH_MAX];
+	int				 fd;
+
+	qa->flags |= QQ_FILE;
+
+	/* Both files exist before we start watching */
+	if ((fd = mkstemp(gone)) == -1)
+		err(1, "mkstemp");
+	close(fd);
+	if (unlink(gone) == -1)
+		err(1, "unlink");
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	close(fd);
+	if (snprintf(newpath, sizeof(newpath), "%s.renamed", path) >=
+	    (int)sizeof(newpath))
+		errx(1, "snprintf");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Fails with ENOENT before ever reaching vfs_unlink() */
+	if (unlink(gone) != -1 || errno != ENOENT)
+		err(1, "unlink %s", gone);
+
+	if (rename(path, newpath) == -1)
+		err(1, "rename");
+
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->op_mask & QUARK_FILE_OP_MOVE);
+	assert(!strcmp(qf->path, newpath));
+	assert(qf->old_path != NULL);
+	assert(!strcmp(qf->old_path, path));
+
+	quark_queue_close(&qq);
+
+	if (unlink(newpath) == -1)
+		err(1, "unlink");
+
+	return (0);
+}
+
+/*
+ * A rename is the one file event where the probe resolves two paths, the old
+ * and the new name; check that both come out right and on the same file.
+ */
+static int
+t_file_rename(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_file		*qf;
+	struct stat			 st;
+	char				 old_path[] = "/tmp/quark-test.XXXXXX";
+	char				 new_path[sizeof(old_path) + 6];
+	int				 fd;
+
+	qa->flags |= QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd = mkstemp(old_path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+	if (snprintf(new_path, sizeof(new_path), "%s.moved", old_path) >=
+	    (int)sizeof(new_path))
+		errx(1, "new_path too long");
+	if (rename(old_path, new_path) == -1)
+		err(1, "rename");
+
+	/*
+	 * A move never aggregates into an earlier operation on the file
+	 * (quark_can_aggregate_file()), so the create comes first on its
+	 * own; skip to the move.
+	 */
+	do {
+		qev = drain_for_pid(&qq, getpid());
+		assert(qev->events == QUARK_EV_FILE);
+		qf = qev->file;
+		assert(qf != NULL);
+		assert(qf->inode == st.st_ino);
+	} while (!(qf->op_mask & QUARK_FILE_OP_MOVE));
+	assert(qf->path != NULL);
+	assert(!strcmp(qf->path, new_path));
+	assert(qf->old_path != NULL);
+	assert(!strcmp(qf->old_path, old_path));
+
+	if (unlink(new_path) == -1)
+		err(1, "unlink");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -1537,6 +1678,235 @@ t_shmget(const struct test *t, struct quark_queue_attr *qa)
 
 	if (shmctl(id, IPC_RMID, NULL) == -1)
 		err(1, "shmctl");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_mprotect(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_mprotect	*qmprotect;
+	void				*addr[4];
+	void				*file_addr;
+	void				*file2_addr;
+	void				*suppressed_addr;
+	const size_t			 len = 4096;
+	struct stat			 st, st2;
+	const char			*true_path;
+	int				 fd2;
+	const int			 expected[] = {
+		PROT_EXEC,
+		PROT_READ | PROT_EXEC,
+		PROT_WRITE | PROT_EXEC,
+		PROT_READ | PROT_WRITE | PROT_EXEC,
+	};
+	const int			 suppressed[] = {
+		PROT_NONE,
+		PROT_READ,
+		PROT_WRITE,
+		PROT_READ | PROT_WRITE,
+	};
+	int				 fd;
+	int				 saw[nitems(expected)] = { 0 };
+	size_t				 i, j;
+	int				 seen = 0;
+
+	qa->flags |= QQ_MPROTECT;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	suppressed_addr = mmap(NULL, len, PROT_READ | PROT_WRITE,
+	    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (suppressed_addr == MAP_FAILED)
+		err(1, "mmap");
+
+	/* Non-executable effective protections must not enter the ring buffer. */
+	for (i = 0; i < nitems(suppressed); i++) {
+		if (mprotect(suppressed_addr, len, suppressed[i]) == -1)
+			err(1, "mprotect");
+	}
+
+	/* Requests rejected before the LSM hook must not enter the ring buffer. */
+	if (mprotect((void *)(uintptr_t)1, len, PROT_EXEC) != -1)
+		errx(1, "unaligned mprotect unexpectedly succeeded");
+
+	for (i = 0; i < nitems(expected); i++) {
+		addr[i] = mmap(NULL, len, PROT_READ | PROT_WRITE,
+		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (addr[i] == MAP_FAILED)
+			err(1, "mmap");
+		if (mprotect(addr[i], len, expected[i]) == -1)
+			err(1, "mprotect");
+	}
+
+	while (seen < (int)nitems(expected)) {
+		qev = drain_for_pid(&qq, getpid());
+		if (!(qev->events & QUARK_EV_MPROTECT))
+			continue;
+		qmprotect = &qev->mprotect;
+		for (i = 0; i < nitems(expected); i++) {
+			if (qmprotect->req_prot == (u64)expected[i] &&
+			    qmprotect->vma_start <= (u64)(uintptr_t)addr[i] &&
+			    qmprotect->vma_end >=
+			    (u64)(uintptr_t)addr[i] + len)
+				break;
+		}
+		if (i == nitems(expected)) {
+			errx(1, "unexpected mprotect attempt req_prot 0x%llx",
+			    (unsigned long long)qmprotect->req_prot);
+		}
+		assert(qmprotect->prev_prot == (PROT_READ | PROT_WRITE));
+		assert(qmprotect->effective_prot == (u64)expected[i]);
+		assert(!qmprotect->file_backed);
+		assert(qmprotect->inode == 0);
+		assert(!saw[i]);
+		saw[i] = 1;
+		seen++;
+	}
+
+	for (i = 0; i < nitems(saw); i++)
+		assert(saw[i]);
+
+	/*
+	 * A repeated transition must not produce a second event for the same
+	 * process life: flip addr[0] back and redo the identical RW->X change.
+	 * The file-backed event drained below doubles as the sentinel; if the
+	 * duplicate were wrongly emitted it would be drained first and the
+	 * file_backed asserts would trip.
+	 */
+	if (mprotect(addr[0], len, PROT_READ | PROT_WRITE) == -1)
+		err(1, "mprotect");
+	if (mprotect(addr[0], len, expected[0]) == -1)
+		err(1, "mprotect");
+
+	/* File-backed attempts carry identity and a mount-ns relative path. */
+	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
+		err(1, "open");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	file_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+	if (file_addr == MAP_FAILED)
+		err(1, "mmap");
+	if (mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	do {
+		qev = drain_for_pid(&qq, getpid());
+	} while (!(qev->events & QUARK_EV_MPROTECT));
+	qmprotect = &qev->mprotect;
+	assert(qmprotect->vma_start <= (u64)(uintptr_t)file_addr);
+	assert(qmprotect->vma_end >= (u64)(uintptr_t)file_addr + len);
+	assert(qmprotect->prev_prot == PROT_READ);
+	assert(qmprotect->req_prot == (PROT_READ | PROT_EXEC));
+	assert(qmprotect->effective_prot == (PROT_READ | PROT_EXEC));
+	assert(qmprotect->file_backed);
+	assert(qmprotect->inode == (u64)st.st_ino);
+	assert(qmprotect->dev_major == (u32)major(st.st_dev));
+	assert(qmprotect->dev_minor == (u32)minor(st.st_dev));
+	{
+		char	self[PATH_MAX];
+		ssize_t	n;
+
+		n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+		if (n == -1)
+			err(1, "readlink");
+		self[n] = '\0';
+		assert(qmprotect->path != NULL);
+		assert(strcmp(qmprotect->path, self) == 0);
+	}
+
+	/*
+	 * File-backed transitions are deduplicated per file. Redo the same
+	 * R->RX on the first file, which must not be reported, then do it on
+	 * a second file, which must. The second file's event doubles as the
+	 * sentinel: if the repeat were wrongly emitted it would be drained
+	 * first and the identity asserts would trip.
+	 */
+	if (mprotect(file_addr, len, PROT_READ) == -1)
+		err(1, "mprotect");
+	if (mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	if (stat("/usr/bin/true", &st2) == 0)
+		true_path = "/usr/bin/true";
+	else if (stat("/bin/true", &st2) == 0)
+		true_path = "/bin/true";
+	else
+		err(1, "no true binary");
+	assert(st2.st_ino != st.st_ino || st2.st_dev != st.st_dev);
+	if ((fd2 = open(true_path, O_RDONLY)) == -1)
+		err(1, "open");
+	file2_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd2, 0);
+	if (file2_addr == MAP_FAILED)
+		err(1, "mmap");
+	if (mprotect(file2_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	do {
+		qev = drain_for_pid(&qq, getpid());
+	} while (!(qev->events & QUARK_EV_MPROTECT));
+	qmprotect = &qev->mprotect;
+	assert(qmprotect->vma_start <= (u64)(uintptr_t)file2_addr);
+	assert(qmprotect->vma_end >= (u64)(uintptr_t)file2_addr + len);
+	assert(qmprotect->prev_prot == PROT_READ);
+	assert(qmprotect->effective_prot == (PROT_READ | PROT_EXEC));
+	assert(qmprotect->file_backed);
+	assert(qmprotect->inode == (u64)st2.st_ino);
+	assert(qmprotect->dev_major == (u32)major(st2.st_dev));
+	assert(qmprotect->dev_minor == (u32)minor(st2.st_dev));
+	assert(qmprotect->path != NULL);
+	assert(strcmp(qmprotect->path, true_path) == 0);
+
+#ifdef SYS_pkey_mprotect
+	/* The common LSM hook also observes pkey_mprotect without another probe. */
+	{
+		void *pkey_addr;
+
+		/*
+		 * Map read-only so this is an R->X transition: the RW->X id
+		 * was consumed by expected[0] above and would be deduplicated.
+		 */
+		pkey_addr = mmap(NULL, len, PROT_READ,
+		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (pkey_addr == MAP_FAILED)
+			err(1, "mmap");
+		if (syscall(SYS_pkey_mprotect, pkey_addr, len, PROT_EXEC, -1) == -1) {
+			if (errno != ENOSYS && errno != EINVAL)
+				err(1, "pkey_mprotect");
+		} else {
+			do {
+				qev = drain_for_pid(&qq, getpid());
+			} while (!(qev->events & QUARK_EV_MPROTECT));
+			qmprotect = &qev->mprotect;
+			assert(qmprotect->vma_start <= (u64)(uintptr_t)pkey_addr);
+			assert(qmprotect->vma_end >=
+			    (u64)(uintptr_t)pkey_addr + len);
+			assert(qmprotect->prev_prot == PROT_READ);
+			assert(qmprotect->req_prot == PROT_EXEC);
+			assert(qmprotect->effective_prot == PROT_EXEC);
+			assert(!qmprotect->file_backed);
+		}
+		if (munmap(pkey_addr, len) == -1)
+			err(1, "munmap");
+	}
+#endif
+
+	if (munmap(suppressed_addr, len) == -1)
+		err(1, "munmap");
+	for (j = 0; j < nitems(addr); j++) {
+		if (munmap(addr[j], len) == -1)
+			err(1, "munmap");
+	}
+	if (munmap(file_addr, len) == -1)
+		err(1, "munmap");
+	if (close(fd) == -1)
+		err(1, "close");
+	if (munmap(file2_addr, len) == -1)
+		err(1, "munmap");
+	if (close(fd2) == -1)
+		err(1, "close");
 
 	quark_queue_close(&qq);
 
@@ -2877,6 +3247,7 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 #define S(_x)		#_x
 struct test all_tests[] = {
 	T_EBPF(t_probe),
+	T_EBPF(t_ringbuf_max),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
 	T_KPROBE(t_kprobe_clockid),
@@ -2890,11 +3261,14 @@ struct test all_tests[] = {
 	T_EBPF(t_exit_tgid),
 	T_KPROBE(t_exit_tgid),
 	T_EBPF(t_file),
+	T_EBPF(t_file_bad_unlink_rename),
+	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_shmget),
+	T_EBPF(t_mprotect),
 	T_EBPF(t_shm_open),
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),

@@ -90,6 +90,67 @@ int BPF_KPROBE(kprobe__filename_unlinkat)
     return r;
 }
 
+/*
+ * The unlink state is normally deleted by vfs_unlink__exit() once the event
+ * is emitted, but that never runs when the unlink fails, be it in path lookup
+ * or in vfs_unlink() itself. A stale entry would then shadow the rename state
+ * in mnt_want_write__enter() and every later rename on this thread would be
+ * lost, so always reap it when the syscall returns.
+ */
+static int do_unlinkat__exit()
+{
+    ebpf_events_state__del(EBPF_EVENTS_STATE_UNLINK);
+    return 0;
+}
+
+SEC("fexit/do_unlinkat")
+int BPF_PROG(fexit__do_unlinkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/do_unlinkat")
+int BPF_KRETPROBE(kretprobe__do_unlinkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("fexit/filename_unlinkat")
+int BPF_PROG(fexit__filename_unlinkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/filename_unlinkat")
+int BPF_KRETPROBE(kretprobe__filename_unlinkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_unlinkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
 static int mnt_want_write__enter(struct vfsmount *mnt)
 {
     struct ebpf_events_state *state = NULL;
@@ -288,15 +349,25 @@ out:
 }
 
 // prepare a file event and send it to ringbuf.
-// if path_prefix is non-NULL then event will only be sent to ringbuf if file path has that prefix
-static void prepare_and_send_file_event(struct file *f,
-                                        enum ebpf_event_type type,
-                                        const char *path_prefix,
-                                        int path_prefix_len)
+// if devshm_only the event is only sent if the file path starts with /dev/shm
+//
+// Global function, see ebpf_ptr_to_scalar(): do_filp_open__exit() reaches
+// this from three places (create, memfd, shmem) and the verifier would walk
+// the path resolvers once per place otherwise. `file` is the struct file *
+// as a scalar: 4.18's verifier only accepts scalar arguments for a global
+// function and rejects a struct file * or void * taken from the probe context
+// ("Caller passes invalid args"). Disables preemption itself for the per-cpu
+// event buffer and resolver scratch: the caller must not, as a global function
+// may not be called with preemption disabled on 6.10-6.14 verifiers.
+__noinline int prepare_and_send_file_event(u64 file, enum ebpf_event_type type, bool devshm_only)
 {
-    struct ebpf_file_create_event *event = get_event_buffer();
+    struct file *f = (struct file *)file;
+    struct ebpf_file_create_event *event;
+
+    preempt_disable();
+    event = get_event_buffer();
     if (!event)
-        return;
+        goto out;
 
     event->hdr.type    = type;
     event->hdr.ts      = bpf_ktime_get_boot_ns();
@@ -332,17 +403,18 @@ static void prepare_and_send_file_event(struct file *f,
     size  = ebpf_resolve_path_to_string(field->data, &p, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
-    // skip event if prefix is specified and file path does not start with it
-    if (path_prefix) {
-        if ((path_prefix_len > 0) && (size >= path_prefix_len)) {
-            if (is_equal_prefix(field->data, path_prefix, path_prefix_len))
-                ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
-        }
-    } else {
+    // skip event if only /dev/shm files are wanted and the path does not start with it
+    if (!devshm_only || (size >= (long)sizeof(DEVSHM_STRING) - 1 &&
+                         is_equal_prefix(field->data, DEVSHM_STRING, sizeof(DEVSHM_STRING) - 1)))
         ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
-    }
+
+out:
+    preempt_enable();
+    return 0;
 }
 
+// Runs with preemption enabled, see prepare_and_send_file_event(); nothing
+// here but that call touches per-cpu state.
 static int do_filp_open__exit(struct file *f)
 {
     /*
@@ -361,7 +433,7 @@ static int do_filp_open__exit(struct file *f)
     if ((fmode & (fmode_t)0x100000) ||                                 // FMODE_CREATED
         (ebpf_events_state__get(EBPF_EVENTS_STATE_FS_CREATE) != NULL)) { // 4.18.x
         // generate a file creation event
-        prepare_and_send_file_event(f, EBPF_EVENT_FILE_CREATE, NULL, 0);
+        prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_CREATE, false);
     } else {
         // check if memfd file is being opened
         struct path p              = BPF_CORE_READ(f, f_path);
@@ -378,7 +450,7 @@ static int do_filp_open__exit(struct file *f)
         int is_memfd = is_equal_prefix(MEMFD_STRING, buf_filename, sizeof(MEMFD_STRING) - 1);
         if (is_memfd) {
             // generate a memfd file open event
-            prepare_and_send_file_event(f, EBPF_EVENT_FILE_MEMFD_OPEN, NULL, 0);
+            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_MEMFD_OPEN, false);
             goto out;
         }
 
@@ -397,8 +469,7 @@ static int do_filp_open__exit(struct file *f)
         int is_tmpfs = is_equal_prefix(buf_fsname, TMPFS_STRING, sizeof(TMPFS_STRING) - 1);
         if (is_tmpfs) {
             // now filter for /dev/shm prefix, if there is match - send an SHMEM file open event
-            prepare_and_send_file_event(f, EBPF_EVENT_FILE_SHMEM_OPEN, DEVSHM_STRING,
-                                        sizeof(DEVSHM_STRING) - 1);
+            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_SHMEM_OPEN, true);
         }
     }
 
@@ -461,25 +532,13 @@ int BPF_PROG(fexit__do_filp_open,
              const struct open_flags *op,
              struct file *ret)
 {
-    int r;
-
-    preempt_disable();
-    r = do_filp_open__exit(ret);
-    preempt_enable();
-
-    return r;
+    return do_filp_open__exit(ret);
 }
 
 SEC("kretprobe/do_filp_open")
 int BPF_KRETPROBE(kretprobe__do_filp_open, struct file *ret)
 {
-    int r;
-
-    preempt_disable();
-    r = do_filp_open__exit(ret);
-    preempt_enable();
-
-    return r;
+    return do_filp_open__exit(ret);
 }
 
 SEC("fexit/do_file_open")
@@ -489,25 +548,13 @@ int BPF_PROG(fexit__do_file_open,
              const struct open_flags *op,
              struct file *ret)
 {
-    int r;
-
-    preempt_disable();
-    r = do_filp_open__exit(ret);
-    preempt_enable();
-
-    return r;
+    return do_filp_open__exit(ret);
 }
 
 SEC("kretprobe/do_file_open")
 int BPF_KRETPROBE(kretprobe__do_file_open, struct file *ret)
 {
-    int r;
-
-    preempt_disable();
-    r = do_filp_open__exit(ret);
-    preempt_enable();
-
-    return r;
+    return do_filp_open__exit(ret);
 }
 
 static int do_renameat2__enter()
@@ -578,8 +625,96 @@ int BPF_KPROBE(kprobe__filename_renameat2)
     return r;
 }
 
+/* Same as do_unlinkat__exit(), see comment there. */
+static int do_renameat2__exit()
+{
+    ebpf_events_state__del(EBPF_EVENTS_STATE_RENAME);
+    return 0;
+}
+
+SEC("fexit/do_renameat2")
+int BPF_PROG(fexit__do_renameat2)
+{
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/do_renameat2")
+int BPF_KRETPROBE(kretprobe__do_renameat2)
+{
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("fexit/filename_renameat2")
+int BPF_PROG(fexit__filename_renameat2)
+{
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/filename_renameat2")
+int BPF_KRETPROBE(kretprobe__filename_renameat2)
+{
+    int r;
+
+    preempt_disable();
+    r = do_renameat2__exit();
+    preempt_enable();
+
+    return r;
+}
+
+// Resolve (mnt, dentry) into the rename scratch space's new_path.
+//
+// Global function, see ebpf_ptr_to_scalar(): vfs_rename__enter() resolves two
+// paths and the verifier would walk the resolver once per call otherwise. It
+// always writes new_path, a buffer picked by argument would be two verifier
+// states again; the caller moves the first result to old_path.
+__noinline int vfs_rename__resolve_path(u64 mnt, u64 dentry)
+{
+    struct ebpf_events_scratch_space *ss;
+    struct task_struct *task;
+    struct path p;
+    int r = -1;
+
+    // For the resolver's per-cpu scratch, see prepare_and_send_file_event().
+    preempt_disable();
+    ss = ebpf_events_scratch_space__get(EBPF_EVENTS_STATE_RENAME);
+    if (!ss)
+        goto out;
+
+    task     = (struct task_struct *)bpf_get_current_task();
+    p.mnt    = (struct vfsmount *)mnt;
+    p.dentry = (struct dentry *)dentry;
+    ebpf_resolve_path_to_string(ss->rename.new_path, &p, task);
+    r = 0;
+
+out:
+    preempt_enable();
+    return r;
+}
+
+// Runs with preemption enabled, see vfs_rename__resolve_path(); the state and
+// scratch maps are keyed by task, only the resolver's scratch is per-cpu.
 static int vfs_rename__enter(struct dentry *old_dentry, struct dentry *new_dentry)
 {
+    struct ebpf_events_scratch_space *ss;
     struct ebpf_events_state *state;
 
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_RENAME);
@@ -588,23 +723,38 @@ static int vfs_rename__enter(struct dentry *old_dentry, struct dentry *new_dentr
         goto out;
     }
 
-    struct ebpf_events_scratch_space *ss = ebpf_events_scratch_space__get(EBPF_EVENTS_STATE_RENAME);
-    if (!ss) {
-        bpf_printk("vfs_rename__enter: scratch space missing\n");
+    // mnt was read back from the state map, so the verifier already sees a
+    // scalar; the dentries come from the probe context and need the detour.
+    u64 mnt = (u64)state->rename.mnt;
+    if (vfs_rename__resolve_path(mnt, ebpf_ptr_to_scalar(old_dentry)))
         goto out;
+
+    // The resolver runs with preemption enabled, so this task may have been
+    // scheduled out and the LRU maps may have recycled its entries for
+    // another task, which the verifier can't see: a map value pointer taken
+    // before the call would then write into that task's entry. Look the
+    // entries up again after each call and write through them with
+    // preemption disabled, the window the code had before the resolver
+    // became a global function. A missing entry means the state is gone and
+    // the exit hook will find nothing either.
+    preempt_disable();
+    ss = ebpf_events_scratch_space__get(EBPF_EVENTS_STATE_RENAME);
+    if (ss)
+        bpf_probe_read_kernel(ss->rename.old_path, PATH_MAX, ss->rename.new_path);
+    preempt_enable();
+    if (!ss)
+        goto out;
+
+    if (vfs_rename__resolve_path(mnt, ebpf_ptr_to_scalar(new_dentry)))
+        goto out;
+
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_RENAME);
+    if (state) {
+        state->rename.step = RENAME_STATE_PATHS_SET;
+        state->rename.de   = old_dentry;
     }
-
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-
-    struct path p;
-    p.mnt    = state->rename.mnt;
-    p.dentry = old_dentry;
-    ebpf_resolve_path_to_string(ss->rename.old_path, &p, task);
-    p.dentry = new_dentry;
-    ebpf_resolve_path_to_string(ss->rename.new_path, &p, task);
-
-    state->rename.step = RENAME_STATE_PATHS_SET;
-    state->rename.de   = old_dentry;
+    preempt_enable();
 
 out:
     return 0;
@@ -614,9 +764,6 @@ SEC("fentry/vfs_rename")
 int BPF_PROG(fentry__vfs_rename)
 {
     struct dentry *old_dentry, *new_dentry;
-    int r;
-
-    preempt_disable();
 
     if (FUNC_ARG_EXISTS(vfs_rename, rd)) {
         /* Function arguments have been refactored into struct renamedata */
@@ -629,19 +776,15 @@ int BPF_PROG(fentry__vfs_rename)
         new_dentry = FUNC_ARG_READ(___type(new_dentry), vfs_rename, new_dentry);
     }
 
-    r = vfs_rename__enter(old_dentry, new_dentry);
-    preempt_enable();
-    return r;
+    return vfs_rename__enter(old_dentry, new_dentry);
 }
 
 SEC("kprobe/vfs_rename")
 int BPF_KPROBE(kprobe__vfs_rename)
 {
     struct dentry *old_dentry, *new_dentry;
-    int r;
+    int r = 0;
 
-    preempt_disable();
-    r = 0;
     if (FUNC_ARG_EXISTS(vfs_rename, rd)) {
         /* Function arguments have been refactored into struct renamedata */
         struct renamedata rd;
@@ -662,7 +805,6 @@ int BPF_KPROBE(kprobe__vfs_rename)
 
     r = vfs_rename__enter(old_dentry, new_dentry);
 out:
-    preempt_enable();
     return r;
 }
 

@@ -54,6 +54,31 @@ func TestQuark(t *testing.T) {
 		_, _ = queue.GetEvent()
 	})
 
+	t.Run("DoubleClose", func(t *testing.T) {
+		// Close must be idempotent and not crash if a queue has
+		// previously been closed. Exercise both the plain queue
+		// and one carrying a ruleset, so the ruleset free path
+		// is covered as well.
+		for name, attr := range map[string]QueueAttr{
+			"plain": DefaultQueueAttr(),
+			"ruleset": func() QueueAttr {
+				attr := DefaultQueueAttr()
+				attr.RuleText = "pass on any"
+				return attr
+			}(),
+		} {
+			t.Run(name, func(t *testing.T) {
+				queue, err := OpenQueue(attr)
+				require.NoError(t, err)
+
+				queue.Close()
+				require.NotPanics(t, queue.Close)
+				require.Nil(t, queue.quarkQueue)
+				require.Nil(t, queue.ruleset)
+			})
+		}
+	})
+
 	t.Run("StatsEbpf", func(t *testing.T) {
 		attr := DefaultQueueAttr()
 		attr.HoldTime = 100
