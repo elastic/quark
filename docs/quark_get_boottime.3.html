@@ -18,8 +18,7 @@
 <section class="Sh">
 <h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
 <p class="Pp"><code class="Nm">quark_get_boottime</code> &#x2014;
-    <span class="Nd">get the boottime epoch used for wallclock
-    translation</span></p>
+    <span class="Nd">get the boottime epoch for wallclock translation</span></p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
@@ -30,22 +29,42 @@
   <code class="Fn">quark_get_boottime</code>(<var class="Fa" style="white-space: nowrap;">void</var>);</p>
 </section>
 <h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
-<code class="Nm">quark_get_boottime</code> returns the internal boottime epoch:
-  the wallclock time of boot in nanoseconds since the Unix epoch, as fetched
-  from the btime field of <span class="Pa">/proc/stat</span>. btime has a
-  resolution of one second.
-<p class="Pp">The epoch is fetched when the first queue is opened and refetched
-    only by
-    <a class="Xr" href="quark_update_boottime.3.html">quark_update_boottime(3)</a>.
-    It is what
-    <a class="Xr" href="quark_time_to_wallclock.3.html">quark_time_to_wallclock(3)</a>
-    adds to a time since boot, exposed for users that prefer to do the
-    translation themselves.</p>
+<code class="Nm">quark_get_boottime</code> returns the boottime epoch: the
+  wallclock time of boot in nanoseconds since the Unix epoch, computed as the
+  difference of <code class="Dv">CLOCK_REALTIME</code> and
+  <code class="Dv">CLOCK_BOOTTIME</code>. This is the same value the kernel
+  exposes as the btime field of <span class="Pa">/proc/stat</span>, but in
+  nanosecond instead of one second resolution.
+<p class="Pp">Adding the epoch to a nanoseconds-since-boot timestamp yields
+    nanoseconds since the Unix epoch:</p>
+<div class="Bd Pp Bd-indent Li">
+<pre>u64 epoch = quark_get_boottime();
+
+for each event
+	wallclock = event_time + epoch;</pre>
+</div>
+<p class="Pp">Times since boot are immune to system clock changes, wallclock
+    times are not: translate at the last moment, when a time leaves the system
+    for display or storage. Gradual clock corrections (slewing) adjust the
+    wallclock and the boot clock at the same rate, leaving the epoch untouched,
+    only a step moves it, as when NTP corrects a clock that was wrong at
+  boot.</p>
+<p class="Pp">The epoch is sampled at most every 10ms, regardless of how
+    frequently this function gets called, and a new sample is only adopted when
+    it strays more than 10ms from the previously adopted one: only an actual
+    clock step moves the epoch that much, anything below is sampling noise that
+    would jitter conversions from call to call. Successive calls return the same
+    value absent a clock step. A call costs little more than a clock read,
+    fetching it once per batch of events is the recommended pattern, and the Go
+    bindings depend on it to avoid a cgo call per event.</p>
+<p class="Pp"><code class="Nm">quark_get_boottime</code> may be called from any
+    thread without synchronization.</p>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
   VALUES</a></h1>
-<p class="Pp">The boottime epoch in nanoseconds since the Unix epoch, zero if a
-    queue was never opened.</p>
+<p class="Pp">The boottime epoch in nanoseconds since the Unix epoch. Zero is
+    returned if the epoch could not be sampled, which should not happen on a
+    functioning system.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
@@ -60,8 +79,6 @@
     <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
     <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
     <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
-    <a class="Xr" href="quark_time_to_wallclock.3.html">quark_time_to_wallclock(3)</a>,
-    <a class="Xr" href="quark_update_boottime.3.html">quark_update_boottime(3)</a>,
     <a class="Xr" href="quark.7.html">quark(7)</a>,
     <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
     <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>,
@@ -70,13 +87,16 @@
 <section class="Sh">
 <h1 class="Sh" id="HISTORY"><a class="permalink" href="#HISTORY">HISTORY</a></h1>
 <p class="Pp"><code class="Nm">quark_get_boottime</code> appeared in quark 0.8,
-    when all times handed out by quark switched from nanoseconds since the Unix
-    epoch to nanoseconds since boot.</p>
+    when times handed out by quark switched from nanoseconds since the Unix
+    epoch to nanoseconds since boot. In quark 0.9 it became self-maintaining and
+    gained nanosecond resolution, replacing
+    <code class="Fn">quark_update_boottime</code>() and
+    <code class="Fn">quark_time_to_wallclock</code>().</p>
 </section>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">August 5, 2026</td>
+    <td class="foot-date">September 3, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

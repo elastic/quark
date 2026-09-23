@@ -380,10 +380,7 @@ Access to a
 .Vt quark_queue
 must be synchronized by the user in the case of multithreading.
 The boottime epoch is the exception:
-.Xr quark_update_boottime 3 ,
 .Xr quark_get_boottime 3
-and
-.Xr quark_time_to_wallclock 3
 may be called from any thread without synchronization.
 .El
 .Sh BASIC USAGE
@@ -460,12 +457,8 @@ get a descriptor suitable for blocking.
 block for an unspecified amount of time.
 .It Xr quark_queue_get_stats 3
 basic queue statistics.
-.It Xr quark_time_to_wallclock 3
-translate a time since boot to wallclock.
-.It Xr quark_update_boottime 3
-refetch the boottime epoch after a system clock change.
 .It Xr quark_get_boottime 3
-get the boottime epoch.
+get the boottime epoch for wallclock translation.
 .It Xr quark_queue_close 3
 close a queue.
 .El
@@ -490,8 +483,6 @@ describes initialization options that can be useful.
 .Xr quark_queue_get_event 3 ,
 .Xr quark_queue_get_stats 3 ,
 .Xr quark_queue_open 3 ,
-.Xr quark_time_to_wallclock 3 ,
-.Xr quark_update_boottime 3 ,
 .Xr quark-btf 8 ,
 .Xr quark-mon 8 ,
 .Xr quark-test 8

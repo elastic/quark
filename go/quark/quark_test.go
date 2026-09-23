@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -257,10 +260,85 @@ func drainFor(qq *Queue, d time.Duration) ([]Event, error) {
 	return allQevs, nil
 }
 
-func TestBoottime(t *testing.T) {
-	require.NoError(t, UpdateBoottime())
+// procStatBtime returns the btime field of /proc/stat: the boottime
+// epoch in seconds, truncated.
+func procStatBtime(t *testing.T) uint64 {
+	data, err := os.ReadFile("/proc/stat")
+	require.NoError(t, err)
+	for _, line := range strings.Split(string(data), "\n") {
+		if btime, ok := strings.CutPrefix(line, "btime "); ok {
+			v, err := strconv.ParseUint(strings.TrimSpace(btime), 10, 64)
+			require.NoError(t, err)
+			return v
+		}
+	}
+	t.Fatal("no btime in /proc/stat")
+	return 0
+}
 
+func TestBoottime(t *testing.T) {
 	boottime := Boottime()
 	require.NotZero(t, boottime)
-	require.Equal(t, boottime+12345, TimeToWallclock(12345))
+
+	t.Run("Resolution", func(t *testing.T) {
+		// Same quantity the kernel truncates to seconds (btime in /proc/stat).
+		// We must match the seconds exactly and additionally provide a non-zero
+		// sub-second part.
+		require.Equal(t, procStatBtime(t), boottime/uint64(time.Second))
+		require.NotZero(t, boottime%uint64(time.Second),
+			"epoch has no sub-second part")
+	})
+
+	t.Run("Stable", func(t *testing.T) {
+		// Consecutive boottimes should be bit-identical without jitter.
+		// Due to the internal hysteresis, sampling noise is never adopted.
+		// Sleep past the resample interval so at least one fresh sample is taken.
+		time.Sleep(15 * time.Millisecond)
+		for i := 0; i < 1000; i++ {
+			require.Equal(t, boottime, Boottime())
+		}
+	})
+
+	t.Run("StableInterspersed", func(t *testing.T) {
+		// Every iteration sleeps past the resample interval so each call takes
+		// a fresh sample. Hysteresis must reject all of them: the value stays
+		// bit-identical to the one read at the start of the test.
+		for i := 0; i < 20; i++ {
+			time.Sleep(15 * time.Millisecond)
+			require.Equal(t, boottime, Boottime())
+		}
+	})
+
+	t.Run("Concurrent", func(t *testing.T) {
+		const workers = 8
+		var wg sync.WaitGroup
+		seen := make([]map[uint64]struct{}, workers)
+		for w := 0; w < workers; w++ {
+			// Spawn eight goroutines that call Boottime for 50 ms and record
+			// every distinct value they see. Exactly one value must appear
+			// across all of them, and it must be the one read at the start of
+			// the test.
+			seen[w] = make(map[uint64]struct{})
+			wg.Add(1)
+			go func(m map[uint64]struct{}) {
+				defer wg.Done()
+				// Ensure at least one value is produced regardless of scheduling
+				m[Boottime()] = struct{}{}
+				deadline := time.Now().Add(50 * time.Millisecond)
+				for time.Now().Before(deadline) {
+					m[Boottime()] = struct{}{}
+				}
+			}(seen[w])
+		}
+		wg.Wait()
+
+		seenAny := false
+		for _, m := range seen {
+			for v := range m {
+				seenAny = true
+				require.Equal(t, boottime, v)
+			}
+		}
+		require.True(t, seenAny, "no boottime value returned from any worker")
+	})
 }

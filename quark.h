@@ -62,9 +62,7 @@ int			 quark_queue_get_epollfd(struct quark_queue *);
 void			 quark_queue_get_stats(struct quark_queue *,
 			     struct quark_queue_stats *);
 int			 quark_start_kube_talker(const char *, pid_t *);
-int			 quark_update_boottime(void);
 u64			 quark_get_boottime(void);
-u64			 quark_time_to_wallclock(u64);
 int			 quark_dump_process_cache_graph(struct quark_queue *,
 			     FILE *);
 int			 quark_dump_raw_event_graph(struct quark_queue *,
@@ -164,7 +162,7 @@ char		*load_file_nostat(int, size_t *);
 char		*load_file_path_nostat(const char *, size_t *);
 int		 ipv6_supported(void);
 const char	*safe_basename(const char *);
-u64		 fetch_boottime(void);
+u64		 clock_diff(clockid_t, clockid_t);
 void		 setup_libbpf_logs(void);
 
 enum quark_verbosity_levels {

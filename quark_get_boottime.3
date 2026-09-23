@@ -3,28 +3,54 @@
 .Os
 .Sh NAME
 .Nm quark_get_boottime
-.Nd get the boottime epoch used for wallclock translation
+.Nd get the boottime epoch for wallclock translation
 .Sh SYNOPSIS
 .In quark.h
 .Ft u64
 .Fn quark_get_boottime "void"
 .Sh DESCRIPTION
 .Nm
-returns the internal boottime epoch: the wallclock time of boot in
-nanoseconds since the Unix epoch, as fetched from the btime field of
-.Pa /proc/stat .
-btime has a resolution of one second.
+returns the boottime epoch: the wallclock time of boot in nanoseconds
+since the Unix epoch, computed as the difference of
+.Dv CLOCK_REALTIME
+and
+.Dv CLOCK_BOOTTIME .
+This is the same value the kernel exposes as the btime field of
+.Pa /proc/stat ,
+but in nanosecond instead of one second resolution.
 .Pp
-The epoch is fetched when the first queue is opened and refetched only
-by
-.Xr quark_update_boottime 3 .
-It is what
-.Xr quark_time_to_wallclock 3
-adds to a time since boot, exposed for users that prefer to do the
-translation themselves.
+Adding the epoch to a nanoseconds-since-boot timestamp yields
+nanoseconds since the Unix epoch:
+.Bd -literal -offset indent
+u64 epoch = quark_get_boottime();
+
+for each event
+	wallclock = event_time + epoch;
+.Ed
+.Pp
+Times since boot are immune to system clock changes, wallclock times
+are not: translate at the last moment, when a time leaves the system
+for display or storage.
+Gradual clock corrections (slewing) adjust the wallclock and the boot
+clock at the same rate, leaving the epoch untouched, only a step moves
+it, as when NTP corrects a clock that was wrong at boot.
+.Pp
+The epoch is sampled at most every 10ms, regardless of how frequently
+this function gets called, and a new sample is only adopted when it
+strays more than 10ms from the previously adopted one: only an actual
+clock step moves the epoch that much, anything below is sampling noise
+that would jitter conversions from call to call.
+Successive calls return the same value absent a clock step.
+A call costs little more than a clock read, fetching it once per batch
+of events is the recommended pattern, and the Go bindings depend on
+it to avoid a cgo call per event.
+.Pp
+.Nm
+may be called from any thread without synchronization.
 .Sh RETURN VALUES
-The boottime epoch in nanoseconds since the Unix epoch, zero if a
-queue was never opened.
+The boottime epoch in nanoseconds since the Unix epoch.
+Zero is returned if the epoch could not be sampled, which should not
+happen on a functioning system.
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
 .Xr quark_process_iter 3 ,
@@ -36,13 +62,16 @@ queue was never opened.
 .Xr quark_queue_get_event 3 ,
 .Xr quark_queue_get_stats 3 ,
 .Xr quark_queue_open 3 ,
-.Xr quark_time_to_wallclock 3 ,
-.Xr quark_update_boottime 3 ,
 .Xr quark 7 ,
 .Xr quark-btf 8 ,
 .Xr quark-mon 8 ,
 .Xr quark-test 8
 .Sh HISTORY
 .Nm
-appeared in quark 0.8, when all times handed out by quark switched
+appeared in quark 0.8, when times handed out by quark switched
 from nanoseconds since the Unix epoch to nanoseconds since boot.
+In quark 0.9 it became self-maintaining and gained nanosecond
+resolution, replacing
+.Fn quark_update_boottime
+and
+.Fn quark_time_to_wallclock .
