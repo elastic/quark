@@ -9,6 +9,8 @@
 #include <sys/types.h>
 #include <sys/utsname.h>
 
+#include <linux/bpf.h>
+
 #include <netpacket/packet.h>
 
 #include <netinet/ether.h>
@@ -194,6 +196,7 @@ raw_event_alloc(int type)
 	case RAW_FILE:		/* caller allocates */
 	case RAW_PTRACE:	/* nada */
 	case RAW_MPROTECT:	/* nada */
+	case RAW_TAMPER:	/* nada */
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
@@ -233,6 +236,7 @@ raw_event_free(struct raw_event *raw)
 	case RAW_COMM:		/* nada */
 	case RAW_SOCK_CONN:	/* nada */
 	case RAW_PTRACE:	/* nada */
+	case RAW_TAMPER:	/* nada */
 		break;
 	case RAW_MPROTECT:
 		free(raw->mprotect.quark_mprotect.path);
@@ -456,6 +460,7 @@ event_storage_clear(struct quark_queue *qq)
 	bzero(&qq->event_storage.ptrace, sizeof(qq->event_storage.ptrace));
 	free(qq->event_storage.mprotect.path);
 	bzero(&qq->event_storage.mprotect, sizeof(qq->event_storage.mprotect));
+	bzero(&qq->event_storage.tamper, sizeof(qq->event_storage.tamper));
 	if (qq->event_storage.module_load != NULL) {
 		free(qq->event_storage.module_load->name);
 		free(qq->event_storage.module_load->version);
@@ -1797,6 +1802,8 @@ event_type_str(u64 event)
 		return "GETPID";
 	case QUARK_EV_MPROTECT:
 		return "MPROTECT";
+	case QUARK_EV_TAMPER:
+		return "TAMPER";
 	default:
 		return "?";
 	}
@@ -2158,6 +2165,39 @@ mprotect_prot_str(u64 prot, char *buf, size_t len)
 	buf[n] = 0;
 }
 
+static const char *
+bpf_cmd_str(u32 cmd)
+{
+	switch (cmd) {
+	case BPF_MAP_LOOKUP_ELEM:
+		return "MAP_LOOKUP_ELEM";
+	case BPF_MAP_UPDATE_ELEM:
+		return "MAP_UPDATE_ELEM";
+	case BPF_MAP_DELETE_ELEM:
+		return "MAP_DELETE_ELEM";
+	case BPF_MAP_GET_NEXT_KEY:
+		return "MAP_GET_NEXT_KEY";
+	case BPF_MAP_GET_FD_BY_ID:
+		return "MAP_GET_FD_BY_ID";
+	case BPF_OBJ_GET_INFO_BY_FD:
+		return "OBJ_GET_INFO_BY_FD";
+	case BPF_MAP_LOOKUP_AND_DELETE_ELEM:
+		return "MAP_LOOKUP_AND_DELETE_ELEM";
+	case BPF_MAP_FREEZE:
+		return "MAP_FREEZE";
+	case BPF_MAP_LOOKUP_BATCH:
+		return "MAP_LOOKUP_BATCH";
+	case BPF_MAP_LOOKUP_AND_DELETE_BATCH:
+		return "MAP_LOOKUP_AND_DELETE_BATCH";
+	case BPF_MAP_UPDATE_BATCH:
+		return "MAP_UPDATE_BATCH";
+	case BPF_MAP_DELETE_BATCH:
+		return "MAP_DELETE_BATCH";
+	default:
+		return "?";
+	}
+}
+
 #define P(...)						\
 	do {						\
 		if (fprintf(f, __VA_ARGS__) < 0)	\
@@ -2185,6 +2225,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_ptrace	*ptrace;
 	const struct quark_module_load	*qml;
 	const struct quark_mprotect	*mprotect;
+	const struct quark_tamper	*tamper;
 	char				 prev_prot[4], req_prot[4];
 	char				 effective_prot[4];
 	int				 pid;
@@ -2306,6 +2347,19 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    mprotect->dev_major, mprotect->dev_minor);
 		if (mprotect->path != NULL)
 			PF(fl, "path=%s\n", mprotect->path);
+	}
+
+	if (qev->events & QUARK_EV_TAMPER) {
+		fl = "TAMPER";
+
+		tamper = &qev->tamper;
+		PF(fl, "map=%s(%u) cmd=%s(%u) ret=%lld",
+		    tamper->map_name != NULL ? tamper->map_name : "?",
+		    tamper->map_id,
+		    bpf_cmd_str(tamper->cmd), tamper->cmd, tamper->ret);
+		if (tamper->flags & QUARK_TAMPER_F_KEY)
+			P(" key=%u", tamper->key);
+		P("\n");
 	}
 
 	if (qp == NULL)
@@ -4900,6 +4954,20 @@ raw_event_mprotect(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static struct quark_event *
+raw_event_tamper(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_TAMPER;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->tamper = raw->tamper.quark_tamper;
+
+	return (qev);
+}
+
+static struct quark_event *
 raw_event_module_load(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -5317,6 +5385,9 @@ quark_queue_get_event1(struct quark_queue *qq)
 			break;
 		case RAW_MPROTECT:
 			qev = raw_event_mprotect(qq, raw);
+			break;
+		case RAW_TAMPER:
+			qev = raw_event_tamper(qq, raw);
 			break;
 		case RAW_MODULE_LOAD:
 			qev = raw_event_module_load(qq, raw);
