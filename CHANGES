@@ -201,3 +201,9 @@ Changes from 0.8 to 0.9
     instead of hard-coded record offsets. On RHEL 9.3 (5.14.0-362) this fixes
     quark_shm memfd_create_flags and shmget_{key,size,shmflg}, which were
     read from the wrong offsets on that kernel.
+  o The trusted pids map is now created with BPF_F_RDONLY_PROG on kernels
+    that support it (5.2+), so the verifier refuses any BPF program that
+    writes to it. Userspace updates through quark_queue_trusted_pid_add()
+    and friends are unaffected. Every other eBPF map except the ring buffer
+    is frozen after load (BPF_MAP_FREEZE, also 5.2+), so no process can
+    change quark's internal state through bpf(2).

@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <bpf/bpf.h>
 #include <bpf/btf.h>
 
 #include "quark.h"
@@ -1152,9 +1153,78 @@ open_probes(void)
 	return (bpf_probes__open_opts(op));
 }
 
+/*
+ * Two ways to take a map out of a stranger's hands, both since Linux 5.2:
+ * BPF_F_RDONLY_PROG makes the verifier reject any program that writes to it,
+ * BPF_MAP_FREEZE rejects any further write from userspace, through any fd.
+ * Older kernels reject the flag and the command themselves, so probe with a
+ * throwaway map and report what the kernel takes.
+ */
+#define BPF_HARDEN_RDONLY_PROG	(1 << 0)
+#define BPF_HARDEN_FREEZE	(1 << 1)
+
+static int
+bpf_map_harden_supported(void)
+{
+	LIBBPF_OPTS(bpf_map_create_opts, opts, .map_flags = BPF_F_RDONLY_PROG);
+	int	fd, r;
+
+	r = 0;
+	fd = bpf_map_create(BPF_MAP_TYPE_HASH, NULL, sizeof(u32), sizeof(u32),
+	    1, &opts);
+	if (fd < 0) {
+		/* Only EINVAL means the kernel doesn't know the flag */
+		if (errno != EINVAL)
+			qwarn("bpf_map_create BPF_F_RDONLY_PROG probe");
+		return (0);
+	}
+	r |= BPF_HARDEN_RDONLY_PROG;
+	if (bpf_map_freeze(fd) == 0)
+		r |= BPF_HARDEN_FREEZE;
+	else if (errno != EINVAL)
+		qwarn("bpf_map_freeze probe");
+	close(fd);
+
+	return (r);
+}
+
+/*
+ * Everything but the trusted map and the ring buffer is written only by the
+ * probes: state, scratch space, dedup and attribution tables. Freeze them so
+ * no process can plant or erase our state through bpf(2); a stranger could
+ * otherwise pre-mark its own mprotect transitions as seen, or poison socket
+ * attribution. libbpf freezes its own .rodata already, skip the internal
+ * maps. Maps that were not created (autocreate off) still have a placeholder
+ * fd from libbpf, so skip them by autocreate, not by fd.
+ *
+ * Best effort: the probe above only proves the kernel freezes a plain hash
+ * map, a backport could still refuse another type. A map left unfrozen is
+ * the state we had before hardening, not a reason to refuse to open, so
+ * warn and carry on.
+ */
+static void
+bpf_maps_freeze(struct bpf_probes *p)
+{
+	struct bpf_map	*m;
+	int		 fd;
+
+	bpf_object__for_each_map(m, p->obj) {
+		if (m == p->maps.elastic_ebpf_events_trusted_pids ||
+		    m == p->maps.ringbuf || bpf_map__is_internal(m) ||
+		    !bpf_map__autocreate(m))
+			continue;
+		if ((fd = bpf_map__fd(m)) < 0)
+			continue;
+		if (bpf_map_freeze(fd) != 0)
+			qwarn("bpf_map_freeze %s, map stays writable "
+			    "from userspace", bpf_map__name(m));
+	}
+}
+
 static int
 bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
+	int				 harden;
 	struct bpf_queue		*bqq;
 	struct bpf_probes		*p;
 	struct bpf_program		*prog;
@@ -1443,9 +1513,34 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	/*
 	 * Older kernels account BPF maps against RLIMIT_MEMLOCK. libbpf
 	 * tries to bump this itself but skips it when it (sometimes
-	 * wrongly) thinks the kernel uses memcg accounting.
+	 * wrongly) thinks the kernel uses memcg accounting. Do it before the
+	 * hardening probe below creates its throwaway map.
 	 */
 	bump_memlock();
+
+	/*
+	 * The trusted map is written from userspace and only ever read by the
+	 * probes. Mark it read-only for programs so the verifier refuses any
+	 * BPF writer, ours or a stranger's; a root process can still update it
+	 * through bpf(2), but can't smuggle a writer in as BPF code. The init
+	 * buffer is only ever copied from, by anyone, so it gets the flag too
+	 * and is frozen below.
+	 */
+	harden = bpf_map_harden_supported();
+	if (harden & BPF_HARDEN_RDONLY_PROG) {
+		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_events_trusted_pids,
+		    BPF_F_RDONLY_PROG) != 0) {
+			qwarn("bpf_map__set_map_flags trusted_pids");
+			goto fail;
+		}
+		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_events_init_buffer,
+		    BPF_F_RDONLY_PROG) != 0) {
+			qwarn("bpf_map__set_map_flags init_buffer");
+			goto fail;
+		}
+	} else
+		qdebugx("kernel lacks BPF_F_RDONLY_PROG, "
+		    "trusted map stays writable by BPF programs");
 
 	ncpu = libbpf_num_possible_cpus();
 	if (ncpu <= 0) {
@@ -1468,6 +1563,12 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		qwarn("bpf_probes__load");
 		goto fail;
 	}
+
+	if (harden & BPF_HARDEN_FREEZE)
+		bpf_maps_freeze(p);
+	else
+		qdebugx("kernel lacks BPF_MAP_FREEZE, "
+		    "state maps stay writable from userspace");
 
 	if (cgroup_fd != -1) {
 		for (i = 0; i < p->skeleton->prog_cnt; i++) {
