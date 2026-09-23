@@ -81,14 +81,18 @@ life.
 It describes an attempt and does not assert that the protection change was
 committed.
 .It Dv QUARK_EV_TAMPER
-A process other than the consumer reached one of quark's eBPF maps through
+A process other than the consumer reached one of quark's eBPF maps, programs
+or links through
 .Xr bpf 2 .
 The
 .Em tamper
-member carries the map's kernel
-.Em map_id
+member carries the object's
+.Em kind
+.Pq Dv QUARK_TAMPER_MAP , Dv QUARK_TAMPER_PROG , Dv QUARK_TAMPER_LINK ,
+its kernel
+.Em id
 and its
-.Em map_name
+.Em name
 .Pq owned by the queue, valid until Fn quark_queue_close ,
 the
 .Em cmd
@@ -108,6 +112,7 @@ on
 .Em elastic_ebpf_events_trusted_pids
 with its own tgid as key and a zero
 .Em ret .
+A link is named after the program it attaches.
 The consumer's own updates are never reported.
 .El
 .Pp

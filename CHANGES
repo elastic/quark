@@ -198,7 +198,8 @@ Changes from 0.8 to 0.9
     and friends are unaffected. Every other eBPF map except the ring buffer
     is frozen after load (BPF_MAP_FREEZE, also 5.2+), so no process can
     change quark's internal state through bpf(2).
-  o Added map tamper events (QUARK_EV_TAMPER, QQ_TAMPER, -a on quark-mon).
-    A process other than the consumer that reaches any of quark's eBPF maps
-    through bpf(2) is reported with the map, the command, the key when there
-    is one, and the kernel's return value. quark_event{} got a tamper member.
+  o Added tamper events (QUARK_EV_TAMPER, QQ_TAMPER, -a on quark-mon). A
+    process other than the consumer that reaches any of quark's eBPF maps,
+    programs or links through bpf(2) is reported with the object's kind, id
+    and name, the command, the key when there is one, and the kernel's
+    return value. quark_event{} got a tamper member.

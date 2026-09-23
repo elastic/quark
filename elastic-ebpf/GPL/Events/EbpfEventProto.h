@@ -401,14 +401,22 @@ struct ebpf_process_mprotect_event {
 
 #define EBPF_TAMPER_F_KEY (1 << 0) // key is valid
 
+enum ebpf_tamper_kind {
+    EBPF_TAMPER_MAP         = 1,
+    EBPF_TAMPER_PROG        = 2,
+    EBPF_TAMPER_LINK        = 3,
+};
+
 /*
- * A process other than the consumer reached one of our maps through bpf(2).
- * Reported at syscall exit, so ret is what the kernel answered.
+ * A process other than the consumer reached one of our maps, programs or
+ * links through bpf(2). Reported at syscall exit, so ret is what the kernel
+ * answered.
  */
 struct ebpf_process_tamper_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
-    uint32_t map_id; // kernel id of the map reached
+    uint32_t kind; // enum ebpf_tamper_kind
+    uint32_t id;   // kernel id of the object
     uint32_t cmd;    // enum bpf_cmd
     uint32_t flags;  // EBPF_TAMPER_F_*
     uint32_t key;    // map key, a tgid, when EBPF_TAMPER_F_KEY
