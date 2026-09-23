@@ -23,6 +23,7 @@ enum ebpf_events_state_op {
     EBPF_EVENTS_STATE_CHOWN          = 9,
     EBPF_EVENTS_STATE_FS_CREATE      = 10,
     EBPF_EVENTS_STATE_MEMFD_CREATE   = 11,
+    EBPF_EVENTS_STATE_BPF            = 12,
 };
 
 struct ebpf_events_key {
@@ -86,6 +87,26 @@ struct ebpf_events_memfd_create_state {
     unsigned int flags;
 };
 
+/*
+ * What the bpf(2) entry hook learned, for the exit hook to report. target is
+ * the caller's pointer to a pin path or tracepoint name, read at exit.
+ */
+struct ebpf_events_bpf_state {
+    u64 target;
+    u32 cmd;
+    u32 kind;
+    u32 id;
+    u32 prog_id;
+    u32 type;
+    u32 attach_type;
+    u32 flags;
+    u32 insn_cnt;
+    u32 key_size;
+    u32 value_size;
+    u32 max_entries;
+    char name[EBPF_BPF_NAME_LEN];
+};
+
 struct ebpf_events_state {
     union {
         struct ebpf_events_unlink_state unlink;
@@ -98,6 +119,7 @@ struct ebpf_events_state {
         struct ebpf_events_writev_state writev;
         struct ebpf_events_chown_state chown;
         struct ebpf_events_memfd_create_state memfd;
+        struct ebpf_events_bpf_state bpf;
         /* struct ebpf_events_fs_create fs_create; nada */
     };
 };

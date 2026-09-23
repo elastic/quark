@@ -207,3 +207,11 @@ Changes from 0.8 to 0.9
     and friends are unaffected. Every other eBPF map except the ring buffer
     is frozen after load (BPF_MAP_FREEZE, also 5.2+), so no process can
     change quark's internal state through bpf(2).
+  o Added bpf(2) lifecycle events (QUARK_EV_BPF, QQ_BPF, -a on quark-mon),
+    EBPF only. A call that creates, attaches, detaches, pins, fetches from
+    a pin or freezes a bpf object is reported with its command, return
+    value, the object it created or acted on (kind and kernel id) and that
+    object's type, name and geometry, read from the kernel object when
+    there is one. Element lookups and updates, key walks and the id, info
+    and query commands are not reported. Neither are the consumer's own
+    calls, nor those of trusted processes.
