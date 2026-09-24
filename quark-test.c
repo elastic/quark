@@ -52,6 +52,7 @@
 
 #include "quark.h"
 #include "quark-test.h"
+#include "bpf_probes_skel.h"
 
 /* For bypass tests */
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
@@ -3484,6 +3485,92 @@ t_dns6_existing_connect(const struct test *t, struct quark_queue_attr *qa)
 	return (t_dns_existing_af(t, qa, AF_INET6, 1));
 }
 
+/*
+ * Kernel side of UDP flow accounting, read straight out of the active map
+ * before any drain: one datagram over loopback shows up twice, on the
+ * sender's socket as sent and on the listener's as received, both owned by
+ * the child. Anything else on the host is ignored.
+ */
+static int
+t_udp_flow_map(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct bpf_probes		*p;
+	struct ebpf_udp_flow_key	 key, *prev;
+	struct ebpf_udp_flow_val	 val;
+	pid_t				 child;
+	u16				 bound_port;
+	u32				 loopback;
+	u64				 sent_cookie, recv_cookie;
+	int				 nsent, nrecv;
+
+	assert_localhost();
+
+	qa->flags |= QQ_UDP_FLOW;
+	qa->udp_agg_time = 600000;	/* keep the drain out of the way */
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	child = fork_sock_write(12345, SOCK_DGRAM, &bound_port);
+
+	p = quark_get_bpf_probes(&qq);
+	assert(p != NULL);
+
+	loopback = htonl(INADDR_LOOPBACK);
+	nsent = nrecv = 0;
+	sent_cookie = recv_cookie = 0;
+	prev = NULL;
+	while (bpf_map__get_next_key(p->maps.udp_flows0, prev, &key,
+	    sizeof(key)) == 0) {
+		prev = &key;
+		if (key.family != EBPF_NETWORK_EVENT_AF_INET)
+			continue;
+		if (memcmp(key.laddr, &loopback, 4) ||
+		    memcmp(key.raddr, &loopback, 4))
+			continue;
+		assert(bpf_map__lookup_elem(p->maps.udp_flows0, &key,
+		    sizeof(key), &val, sizeof(val), 0) == 0);
+		assert(key.pad == 0);
+		assert(key.cookie != 0);
+		assert(val.tgid == (u32)child);
+		assert(val.first_ns != 0);
+		assert(val.first_ns == val.last_ns);
+
+		if (key.lport == bound_port && key.rport == htons(12345)) {
+			/* sender socket */
+			assert(val.packets_sent == 1);
+			assert(val.bytes_sent == strlen(PATTERN));
+			assert(val.packets_received == 0);
+			assert(val.bytes_received == 0);
+			sent_cookie = key.cookie;
+			nsent++;
+		} else if (key.lport == htons(12345) &&
+		    key.rport == bound_port) {
+			/* listener socket */
+			assert(val.packets_received == 1);
+			assert(val.bytes_received == strlen(PATTERN));
+			assert(val.packets_sent == 0);
+			assert(val.bytes_sent == 0);
+			recv_cookie = key.cookie;
+			nrecv++;
+		}
+	}
+	assert(errno == ENOENT);
+	assert(nsent == 1);
+	assert(nrecv == 1);
+	/* two sockets, two flows */
+	assert(sent_cookie != recv_cookie);
+
+	/* generation zero, the other map is untouched */
+	assert(bpf_map__get_next_key(p->maps.udp_flows1, NULL, &key,
+	    sizeof(key)) == -ENOENT);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -6478,6 +6565,7 @@ struct test all_tests[] = {
 	T_EBPF(t_dns6_existing),
 	T_EBPF(t_dns_existing_connect),
 	T_EBPF(t_dns6_existing_connect),
+	T_EBPF(t_udp_flow_map),
 	T_EBPF(t_cgroup_parse),
 	T(t_process_container_cache),
 	T(t_link_container_data),

@@ -4567,6 +4567,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->max_length = 10000;
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
+	qa->udp_agg_time = 5000;	/* five seconds */
 	qa->max_env = 4096;		/* one page per process */
 	qa->kubefd = -1;		/* disabled */
 	qa->ruleset = NULL;		/* no rules */
@@ -4681,6 +4682,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	    qa->hold_time < 10)
 		return (errno = EINVAL, -1);
 
+	if ((qa->flags & QQ_UDP_FLOW) && qa->udp_agg_time <= 0)
+		return (errno = EINVAL, -1);
+
 	if (quark_init() == -1)
 		return (-1);
 
@@ -4690,6 +4694,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->max_length = qa->max_length;
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
 	qq->hold_time = qa->hold_time;
+	qq->udp_agg_time = MS_TO_NS(qa->udp_agg_time);
 	qq->max_env = qa->max_env;
 	qq->ruleset = qa->ruleset;
 	qq->length = 0;
@@ -5206,6 +5211,11 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 		qev->events = QUARK_EV_SOCK_CONN_CLOSED;
 
 		break;
+	case SOCK_CONN_FLOW:
+		/*
+		 * Drained UDP flows, no consumer yet.
+		 */
+		return (NULL);
 	default:
 		qwarnx("invalid conn->conn %d\n", conn->conn);
 		return (NULL);

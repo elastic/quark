@@ -46,6 +46,46 @@ struct {
     __uint(max_entries, 3);
 } dns_ctx_map SEC(".maps");
 
+/*
+ * Set from userspace before load.
+ */
+const volatile int dns_enabled      = 0;
+const volatile int udp_flow_enabled = 0;
+
+/*
+ * UDP flow accounting lives in two identical hash maps. Programs update the
+ * one selected by the low bit of udp_flow_gen, userspace bumps the generation
+ * every aggregation period, waits for in-flight programs to finish and then
+ * drains the map nobody writes to anymore. That is what makes the drain
+ * lossless: a lookup, copy and delete of a live entry would drop whatever
+ * a program adds in between.
+ *
+ * max_entries is set from userspace, to the real size when flows are enabled,
+ * '1' otherwise since the programs still reference the maps.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1);
+    __type(key, struct ebpf_udp_flow_key);
+    __type(value, struct ebpf_udp_flow_val);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} udp_flows0 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1);
+    __type(key, struct ebpf_udp_flow_key);
+    __type(value, struct ebpf_udp_flow_val);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} udp_flows1 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u32);
+} udp_flow_gen SEC(".maps");
+
 struct dns_ctx *
 get_dns_ctx(void)
 {
@@ -361,11 +401,31 @@ static int skb_ipv6_udp_offset(struct __sk_buff *skb)
 }
 
 /*
- * Find the UDP header of the datagram.
- * Returns the offset of the UDP header, -1 if this isn't UDP.
+ * What the flow and DNS paths need out of the datagram headers.
  */
-static int skb_udp_offset(struct __sk_buff *skb)
+struct udp_hdrs {
+    struct udphdr udp;
+    u8 saddr[16];
+    u8 daddr[16];
+    u32 l4off;
+    u16 family; /* enum ebpf_net_info_af */
+};
+
+/*
+ * Parse the IP and UDP headers of the datagram, if it is one.
+ * Returns 0 and fills h, returns -1 if this isn't UDP.
+ */
+static int skb_parse_udp(struct __sk_buff *skb, struct udp_hdrs *h)
 {
+    int l4off;
+
+    /*
+     * IPv4 fills only the first four bytes of each address and verifiers
+     * before 6.4 reject reading stack that was never written, so the flow
+     * key copy below needs the whole thing initialized.
+     */
+    __builtin_memset(h, 0, sizeof(*h));
+
     if (skb->protocol == bpf_htons(ETH_P_IP)) {
         struct iphdr ip;
 
@@ -373,12 +433,127 @@ static int skb_udp_offset(struct __sk_buff *skb)
             return (-1);
         if (ip.protocol != IPPROTO_UDP)
             return (-1);
+        __builtin_memcpy(h->saddr, &ip.saddr, 4);
+        __builtin_memcpy(h->daddr, &ip.daddr, 4);
+        h->family = EBPF_NETWORK_EVENT_AF_INET;
+        l4off = ip.ihl << 2;
+    } else if (skb->protocol == bpf_htons(ETH_P_IPV6)) {
+        if ((l4off = skb_ipv6_udp_offset(skb)) < 0)
+            return (-1);
+        if (bpf_skb_load_bytes(skb, offsetof(struct ipv6hdr, saddr),
+            h->saddr, sizeof(h->saddr)))
+            return (-1);
+        if (bpf_skb_load_bytes(skb, offsetof(struct ipv6hdr, daddr),
+            h->daddr, sizeof(h->daddr)))
+            return (-1);
+        h->family = EBPF_NETWORK_EVENT_AF_INET6;
+    } else
+        return (-1);
 
-        return (ip.ihl << 2);
-    } else if (skb->protocol == bpf_htons(ETH_P_IPV6))
-        return (skb_ipv6_udp_offset(skb));
+    if (bpf_skb_load_bytes(skb, l4off, &h->udp, sizeof(h->udp)))
+        return (-1);
+    h->l4off = l4off;
 
-    return (-1);
+    return (0);
+}
+
+/*
+ * Add one datagram to its flow in map. Counters are added atomically since
+ * the same flow can be worked on by several cpus at once, unconnected sockets
+ * in particular are shared across threads. The timestamps are plain stores:
+ * first_ns is written once by whoever inserts, last_ns is sampled only after
+ * a lookup returned a live entry, so it never predates first_ns. Concurrent
+ * writers can still leave it a few ns short of the true last datagram, which
+ * costs nothing.
+ */
+static __always_inline void udp_flow_account1(void *map,
+    struct ebpf_udp_flow_key *key, u64 bytes, int direction, u32 tgid)
+{
+    struct ebpf_udp_flow_val *v, nv;
+
+    v = bpf_map_lookup_elem(map, key);
+    if (v == NULL) {
+        __builtin_memset(&nv, 0, sizeof(nv));
+        nv.first_ns = bpf_ktime_get_boot_ns();
+        nv.last_ns  = nv.first_ns;
+        nv.tgid     = tgid;
+        if (direction == EBPF_NETWORK_DIR_EGRESS) {
+            nv.packets_sent = 1;
+            nv.bytes_sent   = bytes;
+        } else {
+            nv.packets_received = 1;
+            nv.bytes_received   = bytes;
+        }
+        if (bpf_map_update_elem(map, key, &nv, BPF_NOEXIST) == 0)
+            return;
+        /*
+         * Another cpu inserted first, fall through to atomic adds.
+	 * If the map is full, the datagram is lost.
+         */
+        v = bpf_map_lookup_elem(map, key);
+        if (v == NULL)
+            return;
+    }
+
+    if (direction == EBPF_NETWORK_DIR_EGRESS) {
+        __sync_fetch_and_add(&v->packets_sent, 1);
+        __sync_fetch_and_add(&v->bytes_sent, bytes);
+    } else {
+        __sync_fetch_and_add(&v->packets_received, 1);
+        __sync_fetch_and_add(&v->bytes_received, bytes);
+    }
+    v->last_ns = bpf_ktime_get_boot_ns();
+    /*
+     * The descriptor may have moved to another process since the flow
+     * started, keep the last owner we know of.
+     */
+    if (tgid != 0)
+        v->tgid = tgid;
+}
+
+/*
+ * Account the datagram to the (socket, 5-tuple) flow it belongs to, in the
+ * map of the current generation. The key is always local first then remote
+ * so both directions land on the same entry.
+ */
+static void udp_flow_account(struct __sk_buff *skb, struct udp_hdrs *h,
+    int direction, u32 tgid)
+{
+    struct ebpf_udp_flow_key key;
+    u32 *gen, hlen;
+    u64 bytes;
+
+    gen = bpf_map_lookup_elem(&udp_flow_gen, &(u32){0});
+    if (gen == NULL)
+        return;
+
+    __builtin_memset(&key, 0, sizeof(key));
+    key.cookie = bpf_get_socket_cookie(skb);
+    key.family = h->family;
+    if (direction == EBPF_NETWORK_DIR_EGRESS) {
+        __builtin_memcpy(key.laddr, h->saddr, sizeof(key.laddr));
+        __builtin_memcpy(key.raddr, h->daddr, sizeof(key.raddr));
+        key.lport = h->udp.source;
+        key.rport = h->udp.dest;
+    } else {
+        __builtin_memcpy(key.laddr, h->daddr, sizeof(key.laddr));
+        __builtin_memcpy(key.raddr, h->saddr, sizeof(key.raddr));
+        key.lport = h->udp.dest;
+        key.rport = h->udp.source;
+    }
+
+    /*
+     * skb->len starts at the network header in both directions, payload is
+     * what's left after the IP and UDP headers. Matches what tcp_sock's
+     * bytes_sent/bytes_received count for TCP.
+     */
+    hlen = h->l4off + sizeof(struct udphdr);
+    bytes = skb->len > hlen ? skb->len - hlen : 0;
+
+    if (*gen & 1)
+        udp_flow_account1(&udp_flows1, &key, bytes, direction, tgid);
+    else
+        udp_flow_account1(&udp_flows0, &key, bytes, direction, tgid);
 }
 
 /*
@@ -387,10 +562,10 @@ static int skb_udp_offset(struct __sk_buff *skb)
 static int skb_in_or_egress(struct __sk_buff *skb, int direction,
     struct dns_ctx *ctx)
 {
-    struct udphdr udp;
+    struct udp_hdrs h;
     struct bpf_sock *sk;
     u32 *tgid, cap_len;
-    int l4off;
+    int is_dns;
     struct ebpf_dns_event *event;
 
     if (skb->family != AF_INET && skb->family != AF_INET6)
@@ -402,12 +577,12 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
     if (sk->protocol != IPPROTO_UDP)
         goto ignore;
 
-    if ((l4off = skb_udp_offset(skb)) < 0)
-        goto ignore;
-    if (bpf_skb_load_bytes(skb, l4off, &udp, sizeof(udp)))
+    if (skb_parse_udp(skb, &h))
         goto ignore;
 
-    if (bpf_ntohs(udp.dest) != 53 && bpf_ntohs(udp.source) != 53)
+    is_dns = dns_enabled &&
+        (bpf_ntohs(h.udp.dest) == 53 || bpf_ntohs(h.udp.source) == 53);
+    if (!udp_flow_enabled && !is_dns)
         goto ignore;
 
     /*
@@ -416,7 +591,21 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
      */
     ctx->scratch64 = (u64)sk;
     tgid = bpf_map_lookup_elem(&sk_to_tgid, &ctx->scratch64);
-    if (tgid == NULL)
+
+    /*
+     * Flows are accounted even when we don't know the owner: a socket we
+     * never saw created or used (tgid:0) is still traffic that's
+     * worth reporting as an event.
+     */
+    if (udp_flow_enabled)
+        udp_flow_account(skb, &h, direction, tgid != NULL ? *tgid : 0);
+
+    if (!is_dns || tgid == NULL)
+	/*
+	 * A DNS event is a captured packet and a tgid, thus without a
+	 * tgid the event is unattributable as userspace does the
+	 * attribution by looking it up in the process cache.
+	 */
         goto ignore;
 
     cap_len = skb->len;
@@ -433,7 +622,7 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
      * comparison, see the verifier notes that follow.
      */
     if (skb->protocol == bpf_htons(ETH_P_IPV6) &&
-        cap_len < (sizeof(struct ipv6hdr) + sizeof(udp) + 12))
+        cap_len < (sizeof(struct ipv6hdr) + sizeof(struct udphdr) + 12))
         goto ignore;
 
     /*
@@ -442,12 +631,12 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
      * should be iphlen + udphlen + 12(dns header size). Old verifiers
      * (5.10) are very sensitive here and a non constant right expression
      * (since iphlen is not constant due to options) fails. Do what we can
-     * and filter the remaining bad packets in userland, same applies to
+     * and filter the remaining bad packets in userspace, same applies to
      * ipv6 extension headers. Also be careful with `if cap_len > 0`, as
      * clang will compile it to a JNZ, which doesn't adjust umin, causing
      * the bpf_skb_load_bytes() down below to think cap_len can be zero.
      */
-    if (cap_len >= (sizeof(struct iphdr) + sizeof(udp) + 12)) {
+    if (cap_len >= (sizeof(struct iphdr) + sizeof(struct udphdr) + 12)) {
         event = &ctx->event;
 
         event->hdr.type    = EBPF_EVENT_NETWORK_DNS_PKT;
@@ -464,7 +653,7 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
          */
         barrier_var(cap_len);
         if (cap_len > MAX_DNS_PACKET ||
-            cap_len < (__u32)(sizeof(struct iphdr) + sizeof(udp) + 12))
+            cap_len < (__u32)(sizeof(struct iphdr) + sizeof(struct udphdr) + 12))
                 goto ignore;
         if (bpf_skb_load_bytes(skb, 0, event->packet, cap_len))
             goto ignore;

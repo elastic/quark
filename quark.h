@@ -354,14 +354,29 @@ enum sock_conn {
 	SOCK_CONN_ACCEPT,
 	SOCK_CONN_CONNECT,
 	SOCK_CONN_SCRAPE,
+	SOCK_CONN_FLOW,		/* one aggregation period of a UDP flow */
+};
+
+enum quark_transport {
+	QUARK_TRANSPORT_INVALID,
+	QUARK_TRANSPORT_TCP,
+	QUARK_TRANSPORT_UDP,
 };
 
 struct raw_sock_conn {
 	struct quark_sockaddr	local;
 	struct quark_sockaddr	remote;
+	enum quark_transport	transport;
 	enum sock_conn		conn;
 	u64	bytes_received;
 	u64	bytes_sent;
+	/* SOCK_CONN_FLOW only, the period's traffic in both directions
+	 *  and its CLOCK_BOOTTIME bounds.
+	 */
+	u64	packets_received;
+	u64	packets_sent;
+	u64	first_time;
+	u64	last_time;
 };
 
 enum quark_packet_direction {
@@ -954,10 +969,12 @@ struct quark_queue_attr {
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
 #define QQ_MPROTECT		(1 << 15)
+#define QQ_UDP_FLOW		(1 << 16)
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */
 	int			 hold_time;		/* in ms */
+	int			 udp_agg_time;		/* in ms, QQ_UDP_FLOW period */
 	size_t			 max_env;		/* max process environment in bytes */
 	int			 kubefd;		/* quark-kube-talker pipe, -1 disables */
 	struct quark_ruleset	*ruleset;		/* active ruleset */
@@ -987,6 +1004,7 @@ struct quark_queue {
 	int				 max_length;
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
+	u64				 udp_agg_time;		/* in ns */
 	size_t				 max_env;		/* max process environment in bytes */
 	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
