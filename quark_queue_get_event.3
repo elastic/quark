@@ -47,6 +47,9 @@ is defined as:
 struct quark_event {
 	u64				 events;
 	const struct quark_process	*process;
+	const struct quark_socket	*socket;
+	struct quark_flow		 flow;
+	...
 };
 .Ed
 .Bl -tag -width "events"
@@ -85,6 +88,26 @@ starts a new program image and resets this tracking, so the same process
 can report a transition again.
 The event describes an attempt and does not assert that the protection
 change was committed.
+.It Dv QUARK_EV_SOCK_CONN_ESTABLISHED
+A TCP connection was accepted or connected, or a UDP flow was seen for the
+first time.
+.Em socket
+is valid.
+.It Dv QUARK_EV_SOCK_CONN_CLOSED
+A TCP connection was closed, or a UDP socket went
+.Em udp_idle_time
+without traffic.
+.Em socket
+is valid and carries the totals.
+.It Dv QUARK_EV_SOCK_FLOW
+One aggregation period of a UDP flow, see
+.Dv QQ_UDP_FLOW
+in
+.Xr quark_queue_open 3 .
+.Em socket
+is valid with the running totals,
+.Em flow
+holds this period's traffic.
 .El
 .Pp
 It's important to note that
@@ -177,6 +200,53 @@ is valid.
 .Em cgroup
 is valid.
 .El
+.It Em socket
+The socket behind a
+.Dv QUARK_EV_SOCK_CONN_ESTABLISHED ,
+.Dv QUARK_EV_SOCK_CONN_CLOSED
+or
+.Dv QUARK_EV_SOCK_FLOW ,
+.Dv NULL
+otherwise.
+.Vt struct quark_socket
+is defined as:
+.Bd -literal
+struct quark_socket {
+	struct quark_sockaddr	local;
+	struct quark_sockaddr	remote;
+	enum quark_transport	transport;	/* QUARK_TRANSPORT_{TCP,UDP} */
+	u32			pid_origin;
+	u32			pid_last_use;
+	u64			established_time;
+	u64			close_time;
+	u64			last_time;		/* last datagram, UDP only */
+	enum sock_conn		conn_origin;
+	u64			bytes_received;
+	u64			bytes_sent;
+	u64			packets_received;	/* UDP only */
+	u64			packets_sent;		/* UDP only */
+	...
+};
+.Ed
+.Pp
+The byte counts are payload, without IP and UDP headers, and are the totals
+since
+.Em established_time .
+Addresses and ports are in network byte order.
+.It Em flow
+Valid with
+.Dv QUARK_EV_SOCK_FLOW ,
+the traffic of one aggregation period:
+.Bd -literal
+struct quark_flow {
+	u64	first_time;
+	u64	last_time;
+	u64	bytes_received;
+	u64	bytes_sent;
+	u64	packets_received;
+	u64	packets_sent;
+};
+.Ed
 .El
 .Sh MEMORY PROTOCOL
 The returned

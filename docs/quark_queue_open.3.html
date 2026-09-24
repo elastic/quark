@@ -76,6 +76,8 @@
 	int	 max_length;
 	int	 cache_grace_time;	/* in milliseconds */
 	int	 hold_time;		/* in milliseconds */
+	int	 udp_agg_time;		/* in milliseconds */
+	int	 udp_idle_time;		/* in milliseconds */
 	...
 };</pre>
 </div>
@@ -120,6 +122,19 @@
           <a class="permalink" href="#security_file_mprotect"><code class="Fn" id="security_file_mprotect">security_file_mprotect</code></a>()
           check and does not imply that the protection change was
         committed.</dd>
+      <dt id="QQ_UDP_FLOW"><a class="permalink" href="#QQ_UDP_FLOW"><code class="Dv">QQ_UDP_FLOW</code></a></dt>
+      <dd>Enable EBPF-only UDP flow events. Every UDP datagram is accounted in
+          the kernel to a flow, one socket talking to one peer, and flows are
+          reported once per <i class="Em">udp_agg_time</i> as
+          <code class="Dv">QUARK_EV_SOCK_FLOW</code> with the bytes and packets
+          of that period, see
+          <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>.
+          Unconnected sockets get one flow per peer. A socket's first flow
+          doubles as its <code class="Dv">QUARK_EV_SOCK_CONN_ESTABLISHED</code>,
+          a socket that goes <i class="Em">udp_idle_time</i> without traffic is
+          reported as <code class="Dv">QUARK_EV_SOCK_CONN_CLOSED</code> with its
+          totals. Datagrams are counted whether or not the owning process is
+          known, the process is the last one seen using the socket.</dd>
     </dl>
   </dd>
   <dt id="max_length"><a class="permalink" href="#max_length"><i class="Em">max_length</i></a></dt>
@@ -146,6 +161,22 @@
         is.</p>
     <p class="Pp">Details are described in
         <a class="Xr" href="quark.7.html">quark(7)</a>.</p>
+  </dd>
+  <dt id="udp_agg_time"><a class="permalink" href="#udp_agg_time"><i class="Em">udp_agg_time</i></a></dt>
+  <dd>The UDP flow aggregation period, only meaningful with
+      <code class="Dv">QQ_UDP_FLOW</code>.
+    <p class="Pp">Traffic accumulates in the kernel and is collected once per
+        period, a busy flow produces one event per period. Defaults to five
+        seconds.</p>
+  </dd>
+  <dt id="udp_idle_time"><a class="permalink" href="#udp_idle_time"><i class="Em">udp_idle_time</i></a></dt>
+  <dd>How long a UDP socket must go without traffic before it is considered
+      closed and reported with
+      <code class="Dv">QUARK_EV_SOCK_CONN_CLOSED</code>.
+    <p class="Pp">Must be at least <i class="Em">udp_agg_time</i> and should be
+        a few periods, since a flow reaches quark up to a period plus
+        <i class="Em">hold_time</i> after its last datagram. Defaults to thirty
+        seconds.</p>
   </dd>
 </dl>
 <section class="Sh">
@@ -185,7 +216,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 5, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

@@ -110,7 +110,7 @@ bad:
 static int
 ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 {
-	int	fork, exec, exit, conn_est, conn_closed;
+	int	fork, exec, exit, conn_est, conn_closed, conn_flow;
 	int	packet, file;
 	char	buf[64];
 	int	r;
@@ -123,6 +123,7 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 	exit = !!(qev->events & QUARK_EV_EXIT);
 	conn_est = !!(qev->events & QUARK_EV_SOCK_CONN_ESTABLISHED);
 	conn_closed = !!(qev->events & QUARK_EV_SOCK_CONN_CLOSED);
+	conn_flow = !!(qev->events & QUARK_EV_SOCK_FLOW);
 	packet = !!(qev->events & QUARK_EV_PACKET);
 	file = !!(qev->events & QUARK_EV_FILE);
 
@@ -135,12 +136,14 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 		if (exit)
 			strlcat(buf, "-exited", sizeof(buf));
 
-	} else if (conn_est || conn_closed) {
+	} else if (conn_est || conn_closed || conn_flow) {
 		strlcat(buf, "connection", sizeof(buf));
 		if (conn_est)
 			strlcat(buf, "-established", sizeof(buf));
 		if (conn_closed)
 			strlcat(buf, "-closed", sizeof(buf));
+		if (conn_flow)
+			strlcat(buf, "-flow", sizeof(buf));
 
 	} else if (packet) {
 		strlcat(buf, "packet", sizeof(buf));
@@ -784,8 +787,29 @@ ecs_socket(struct hanson *h, const struct quark_event *qev, int *first)
 {
 	const struct quark_socket	*qsk;
 	char				 buf[INET6_ADDRSTRLEN];
+	u64				 bytes_sent, bytes_received;
+	u64				 packets_sent, packets_received;
+	int				 udp, flow;
 
 	qsk = qev->socket;
+	udp = qsk->transport == QUARK_TRANSPORT_UDP;
+	flow = !!(qev->events & QUARK_EV_SOCK_FLOW);
+
+	/*
+	 * A flow event carries the period's traffic, everything else the
+	 * socket's totals. Packet counts exist for UDP only.
+	 */
+	if (flow) {
+		bytes_sent = qev->flow.bytes_sent;
+		bytes_received = qev->flow.bytes_received;
+		packets_sent = qev->flow.packets_sent;
+		packets_received = qev->flow.packets_received;
+	} else {
+		bytes_sent = qsk->bytes_sent;
+		bytes_received = qsk->bytes_received;
+		packets_sent = qsk->packets_sent;
+		packets_received = qsk->packets_received;
+	}
 
 	/* source.* */
 	hanson_add_object(h, "source", first);
@@ -798,6 +822,9 @@ ecs_socket(struct hanson *h, const struct quark_event *qev, int *first)
 			hanson_add_key_value(h, "ip", buf, &source_first);
 			hanson_add_key_value_int(h, "port", ntohs(qsk->local.port), &source_first);
 		}
+		hanson_add_key_value_int(h, "bytes", bytes_sent, &source_first);
+		if (udp)
+			hanson_add_key_value_int(h, "packets", packets_sent, &source_first);
 	}
 	hanson_close_object(h);
 
@@ -812,6 +839,9 @@ ecs_socket(struct hanson *h, const struct quark_event *qev, int *first)
 			hanson_add_key_value(h, "ip", buf, &destination_first);
 			hanson_add_key_value_int(h, "port", ntohs(qsk->remote.port), &destination_first);
 		}
+		hanson_add_key_value_int(h, "bytes", bytes_received, &destination_first);
+		if (udp)
+			hanson_add_key_value_int(h, "packets", packets_received, &destination_first);
 	}
 	hanson_close_object(h);
 
@@ -821,8 +851,13 @@ ecs_socket(struct hanson *h, const struct quark_event *qev, int *first)
 		int	 network_first = 1;
 		char	*afs;
 
-		/* we only have tcp for now */
-		hanson_add_key_value(h, "transport", "tcp", &network_first);
+		hanson_add_key_value(h, "transport",
+		    quark_transport_str(qsk->transport), &network_first);
+		hanson_add_key_value_int(h, "bytes", bytes_sent + bytes_received,
+		    &network_first);
+		if (udp)
+			hanson_add_key_value_int(h, "packets",
+			    packets_sent + packets_received, &network_first);
 
 		switch(qsk->local.af) {
 		case AF_INET:

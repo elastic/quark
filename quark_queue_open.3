@@ -80,6 +80,8 @@ struct quark_queue_attr {
 	int	 max_length;
 	int	 cache_grace_time;	/* in milliseconds */
 	int	 hold_time;		/* in milliseconds */
+	int	 udp_agg_time;		/* in milliseconds */
+	int	 udp_idle_time;		/* in milliseconds */
 	...
 };
 .Ed
@@ -123,6 +125,25 @@ Enable EBPF-only executable mprotect attempt events.
 Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
+.It Dv QQ_UDP_FLOW
+Enable EBPF-only UDP flow events.
+Every UDP datagram is accounted in the kernel to a flow, one socket talking to
+one peer, and flows are reported once per
+.Em udp_agg_time
+as
+.Dv QUARK_EV_SOCK_FLOW
+with the bytes and packets of that period, see
+.Xr quark_queue_get_event 3 .
+Unconnected sockets get one flow per peer.
+A socket's first flow doubles as its
+.Dv QUARK_EV_SOCK_CONN_ESTABLISHED ,
+a socket that goes
+.Em udp_idle_time
+without traffic is reported as
+.Dv QUARK_EV_SOCK_CONN_CLOSED
+with its totals.
+Datagrams are counted whether or not the owning process is known, the process
+is the last one seen using the socket.
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.
@@ -151,6 +172,24 @@ decreases the more loaded it is.
 .Pp
 Details are described in
 .Xr quark 7 .
+.It Em udp_agg_time
+The UDP flow aggregation period, only meaningful with
+.Dv QQ_UDP_FLOW .
+.Pp
+Traffic accumulates in the kernel and is collected once per period, a busy
+flow produces one event per period.
+Defaults to five seconds.
+.It Em udp_idle_time
+How long a UDP socket must go without traffic before it is considered closed
+and reported with
+.Dv QUARK_EV_SOCK_CONN_CLOSED .
+.Pp
+Must be at least
+.Em udp_agg_time
+and should be a few periods, since a flow reaches quark up to a period plus
+.Em hold_time
+after its last datagram.
+Defaults to thirty seconds.
 .El
 .Sh RETURN VALUES
 Zero on success, -1 otherwise and
