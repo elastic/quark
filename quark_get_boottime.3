@@ -18,6 +18,9 @@ and
 This is the same value the kernel exposes as the btime field of
 .Pa /proc/stat ,
 but in nanosecond instead of one second resolution.
+Truncating it to whole seconds yields btime exactly, for users that
+must agree with tools deriving wallclock from btime, as the procps
+utilities do.
 .Pp
 Adding the epoch to a nanoseconds-since-boot timestamp yields
 nanoseconds since the Unix epoch:

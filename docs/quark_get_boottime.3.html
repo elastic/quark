@@ -34,7 +34,9 @@
   difference of <code class="Dv">CLOCK_REALTIME</code> and
   <code class="Dv">CLOCK_BOOTTIME</code>. This is the same value the kernel
   exposes as the btime field of <span class="Pa">/proc/stat</span>, but in
-  nanosecond instead of one second resolution.
+  nanosecond instead of one second resolution. Truncating it to whole seconds
+  yields btime exactly, for users that must agree with tools deriving wallclock
+  from btime, as the procps utilities do.
 <p class="Pp">Adding the epoch to a nanoseconds-since-boot timestamp yields
     nanoseconds since the Unix epoch:</p>
 <div class="Bd Pp Bd-indent Li">
@@ -96,7 +98,7 @@ for each event
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">September 3, 2026</td>
+    <td class="foot-date">September 24, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
