@@ -1447,6 +1447,9 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.sendmsg4, 1);
 		bpf_program__set_autoload(p->progs.connect4, 1);
 		bpf_program__set_autoload(p->progs.recvmsg4, 1);
+		bpf_program__set_autoload(p->progs.sendmsg6, 1);
+		bpf_program__set_autoload(p->progs.connect6, 1);
+		bpf_program__set_autoload(p->progs.recvmsg6, 1);
 	}
 
 	if (qq->flags & QQ_SHM) {
