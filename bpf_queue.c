@@ -22,6 +22,15 @@
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
+#ifdef HAVE_STATIC_ASSERT
+/* bpf object kinds and names are copied straight from the probe */
+static_assert(QUARK_BPF_MAP == EBPF_BPF_KIND_MAP, "bpf kinds drifted");
+static_assert(QUARK_BPF_PROG == EBPF_BPF_KIND_PROG, "bpf kinds drifted");
+static_assert(QUARK_BPF_LINK == EBPF_BPF_KIND_LINK, "bpf kinds drifted");
+static_assert(QUARK_BPF_BTF == EBPF_BPF_KIND_BTF, "bpf kinds drifted");
+static_assert(QUARK_BPF_NAME_LEN == EBPF_BPF_NAME_LEN, "bpf names drifted");
+#endif
+
 struct bpf_queue {
 	struct bpf_probes	*probes;
 	struct ring_buffer	*ringbuf;
@@ -707,6 +716,53 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			case EBPF_VL_FIELD_PATH:
 				if (field->size > 0)
 					qmprotect->path =
+					    strndup(field->data, field->size);
+				break;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				break;
+			}
+		}
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_BPF: {
+		struct ebpf_process_bpf_event	*bpf;
+		struct quark_bpf		*qbpf;
+
+		bpf = (struct ebpf_process_bpf_event *)ev;
+		if ((raw = raw_event_alloc(RAW_BPF)) == NULL)
+			goto bad;
+
+		raw->pid = bpf->pids.tgid;
+		raw->time = ev->ts;
+
+		qbpf = &raw->bpf.quark_bpf;
+		qbpf->ret = bpf->ret;
+		qbpf->cmd = bpf->cmd;
+		qbpf->kind = bpf->kind;
+		qbpf->id = bpf->id;
+		qbpf->prog_id = bpf->prog_id;
+		qbpf->type = bpf->type;
+		qbpf->attach_type = bpf->attach_type;
+		qbpf->flags = bpf->flags;
+		qbpf->insn_cnt = bpf->insn_cnt;
+		qbpf->key_size = bpf->key_size;
+		qbpf->value_size = bpf->value_size;
+		qbpf->max_entries = bpf->max_entries;
+		/*
+		 * The kernel keeps names terminated, but a failed load reports
+		 * the caller's raw attr bytes: copy one short to terminate.
+		 */
+		memcpy(qbpf->name, bpf->name, sizeof(qbpf->name) - 1);
+		qbpf->target = NULL;
+
+		FOR_EACH_VARLEN_FIELD(bpf->vl_fields, field) {
+			switch (field->type) {
+			case EBPF_VL_FIELD_PATH:	/* FALLTHROUGH */
+			case EBPF_VL_FIELD_TRACEPOINT:
+				if (field->size > 0 && qbpf->target == NULL)
+					qbpf->target =
 					    strndup(field->data, field->size);
 				break;
 			default:
@@ -1472,6 +1528,13 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
+
+	if (qq->flags & QQ_BPF) {
+		bpf_program__set_autoload(
+		    p->progs.tracepoint_syscalls_sys_enter_bpf, 1);
+		bpf_program__set_autoload(
+		    p->progs.tracepoint_syscalls_sys_exit_bpf, 1);
+	}
 
 	if (qq->flags & QQ_MPROTECT) {
 		if (use_fentry)

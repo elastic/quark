@@ -120,7 +120,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDeFGgHhkLMNnSsTtuv]\n",
+	fprintf(stderr, "usage: %s [-aBbDeFGgHhkLMNnSsTtuv]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
 	    "[-l maxlength] [-m maxnodes]\n", ' ');
@@ -188,7 +188,7 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
+	while ((ch = getopt(argc, argv, "aBbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -311,6 +311,9 @@ main(int argc, char *argv[])
 		}
 		case 'T':
 			qa.flags |= QQ_PTRACE;
+			break;
+		case 'a':
+			qa.flags |= QQ_BPF;
 			break;
 		case 'u':
 			qa.flags |= QQ_MPROTECT;
