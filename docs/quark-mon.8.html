@@ -26,7 +26,9 @@
   <tr>
     <td><code class="Nm">quark-mon</code></td>
     <td>[<code class="Fl">-BbDEeFGgHhkLMNnSsTtUuv</code>]
+      [<code class="Fl">-A</code> <var class="Ar">udp_agg_ms</var>]
       [<code class="Fl">-C</code> <var class="Ar">filename</var>]
+      [<code class="Fl">-I</code> <var class="Ar">udp_idle_ms</var>]
       [<code class="Fl">-K</code> <var class="Ar">kubeconfig</var>]
       [<code class="Fl">-l</code> <var class="Ar">maxlength</var>]
       [<code class="Fl">-m</code> <var class="Ar">maxnodes</var>]
@@ -69,6 +71,13 @@
     until a SIGINT is received.</p>
 <p class="Pp">The options are as follows:</p>
 <dl class="Bl-tag">
+  <dt id="A"><a class="permalink" href="#A"><code class="Fl">-A</code></a>
+    <var class="Ar">udp_agg_ms</var></dt>
+  <dd>UDP flow aggregation period in milliseconds, implies
+      <code class="Fl">-U</code>. Traffic of each flow is summarized once per
+      period as a <code class="Dv">QUARK_EV_SOCK_FLOW</code>, defaults to 5000,
+      refer to
+      <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</dd>
   <dt id="B"><a class="permalink" href="#B"><code class="Fl">-B</code></a></dt>
   <dd>Test bypass mode, where EBPF events are passed up directly without any
       processing. A
@@ -115,6 +124,12 @@
   <dd>Enable SHMGET events.</dd>
   <dt id="h"><a class="permalink" href="#h"><code class="Fl">-h</code></a></dt>
   <dd>Display this manpage.</dd>
+  <dt id="I"><a class="permalink" href="#I"><code class="Fl">-I</code></a>
+    <var class="Ar">udp_idle_ms</var></dt>
+  <dd>How long a UDP socket may go without traffic before it is reported as
+      <code class="Dv">QUARK_EV_SOCK_CONN_CLOSED</code>, in milliseconds,
+      implies <code class="Fl">-U</code>. Must be at least
+      <var class="Ar">udp_agg_ms</var>, defaults to 30000.</dd>
   <dt id="K"><a class="permalink" href="#K"><code class="Fl">-K</code></a>
     <var class="Ar">kubeconfig</var></dt>
   <dd>Enrich events with kubernetes metadata, requires quark-kube-talker.

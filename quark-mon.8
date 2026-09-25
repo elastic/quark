@@ -7,7 +7,9 @@
 .Sh SYNOPSIS
 .Nm quark-mon
 .Op Fl BbDEeFGgHhkLMNnSsTtUuv
+.Op Fl A Ar udp_agg_ms
 .Op Fl C Ar filename
+.Op Fl I Ar udp_idle_ms
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
@@ -31,6 +33,13 @@ runs until a SIGINT is received.
 .Pp
 The options are as follows:
 .Bl -tag -width Dtb
+.It Fl A Ar udp_agg_ms
+UDP flow aggregation period in milliseconds, implies
+.Fl U .
+Traffic of each flow is summarized once per period as a
+.Dv QUARK_EV_SOCK_FLOW ,
+defaults to 5000, refer to
+.Xr quark_queue_open 3 .
 .It Fl B
 Test bypass mode, where EBPF events are passed up directly without any
 processing.
@@ -79,6 +88,14 @@ be aggregated.
 Enable SHMGET events.
 .It Fl h
 Display this manpage.
+.It Fl I Ar udp_idle_ms
+How long a UDP socket may go without traffic before it is reported as
+.Dv QUARK_EV_SOCK_CONN_CLOSED ,
+in milliseconds, implies
+.Fl U .
+Must be at least
+.Ar udp_agg_ms ,
+defaults to 30000.
 .It Fl K Ar kubeconfig
 Enrich events with kubernetes metadata, requires quark-kube-talker.
 .Ar kubeconfig
