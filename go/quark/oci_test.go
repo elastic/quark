@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Elastic NV
 
-//go:build linux && (amd64 || arm64) && quarktest
+//go:build linux && (amd64 || arm64)
 
 package quark
 
@@ -13,7 +13,7 @@ import (
 )
 
 func TestOCISnapshots(t *testing.T) {
-	queue := newOCITestQueue()
+	queue := newTestQueue()
 	t.Cleanup(func() {
 		if queue.quarkQueue != nil {
 			queue.Close()
@@ -49,7 +49,7 @@ func TestOCISnapshots(t *testing.T) {
 	_, ok = queue.LookupPod("pod")
 	require.True(t, ok, "pod must remain during the grace period")
 
-	expireOCITestGrace(queue)
+	expireTestGrace(queue)
 	_, ok = queue.GetEvent()
 	require.False(t, ok)
 	_, ok = queue.LookupPod("pod")
@@ -78,7 +78,7 @@ func TestOCISnapshots(t *testing.T) {
 }
 
 func TestOCIRemoveByID(t *testing.T) {
-	queue := newOCITestQueue()
+	queue := newTestQueue()
 	defer queue.Close()
 
 	container, err := queue.CreateContainer("container", "", "", "")
@@ -98,7 +98,7 @@ func TestOCIRemoveByID(t *testing.T) {
 	queue.GetEvent()
 	_, ok := queue.LookupContainer("container")
 	require.True(t, ok, "container must remain during the grace period")
-	expireOCITestGrace(queue)
+	expireTestGrace(queue)
 	queue.GetEvent()
 	_, ok = queue.LookupContainer("container")
 	require.False(t, ok)

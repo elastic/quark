@@ -124,7 +124,12 @@ int			 quark_can_aggregate_tty(struct quark_queue *,
 			     struct raw_event *, struct raw_event *);
 
 /* quark.c: These are exported for testing only */
-int	 parse_container_cgroup(const char *, char *, size_t);
+void		 quark_queue_init_bare(struct quark_queue *);
+int		 parse_container_cgroup(const char *, char *, size_t);
+const char	*process_container_id(struct quark_process *);
+void		 process_set_cgroup(struct quark_process *, char **);
+void		 link_container_data(struct quark_queue *,
+		     struct quark_process *);
 
 /* btf.c */
 struct quark_btf_target {
@@ -636,6 +641,7 @@ struct quark_process {
 	TAILQ_ENTRY(quark_process)	entry_container;
 	/* Always present */
 	u32	 pid;
+	u32	 container_id_parsed;	/* cgroup was parsed into container_id */
 
 #define QUARK_F_PROC		(1 << 0)
 #define QUARK_F_EXIT		(1 << 1)
@@ -677,6 +683,7 @@ struct quark_process {
 	char	*cmdline;
 	char	*cwd;
 	char	*cgroup;
+	char	*container_id;
 	struct quark_container *container;
 	char	*env;
 	size_t	 env_len;
