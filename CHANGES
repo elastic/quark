@@ -207,11 +207,24 @@ Changes from 0.8 to 0.9
     and friends are unaffected. Every other eBPF map except the ring buffer
     is frozen after load (BPF_MAP_FREEZE, also 5.2+), so no process can
     change quark's internal state through bpf(2).
-  o The rule DSL learned the event.scope field. Its values are container
-    and host. A container event comes from a process whose cgroup names
-    a container, a host event from a process whose cgroup does not. A
-    process with an unknown cgroup matches neither scope. The kprobe
-    backend does not report the cgroup of new processes, so on kprobe
-    only processes seen at start-up can match a scope. Only the last
-    cgroup component is parsed, nested cgroups match host. The nova
+  o The rule DSL learned the event.scope field, which selects events by
+    where the originating process runs: "container" matches processes
+    running inside a container, "host" matches processes running directly
+    on the host. A process is inside a container when the last component
+    of its cgroup path is a systemd scope unit created by a container
+    runtime, like docker-<id>.scope. Any other cgroup path is treated as
+    host, including nested cgroups inside a container and the flat layout
+    of the cgroupfs driver. Events without a process, or from a process
+    whose cgroup is unknown, match neither value. The KPROBE backend only
+    learns the cgroup of processes that existed when quark started, so events
+    from processes created afterwards never match either value. The NOVA
     backend rejects the field with ENOTSUP.
+  o The rule DSL learned the pod.name and container.image fields.
+    pod.name matches the Kubernetes pod name of the process container.
+    container.image matches the full image reference of the process
+    container as reported by the runtime, registry and tag included, so
+    docker.io/library/nginx:1.25. Both accept a single * wildcard, as in
+    pod.name nginx-* or container.image quay.io/*. Both need container
+    metadata, from quark-kube-talker or the container API, a process
+    without a known container matches neither. The nova backend rejects
+    both fields with ENOTSUP.

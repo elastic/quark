@@ -126,20 +126,56 @@ use
 .Em -
 for stdin.
 The
+.Dq event.scope
+field matches events by where the originating process runs.
 .Dq event.scope container
-field matches events from a process whose cgroup names a container.
-The
+matches events from processes running inside a container and
 .Dq event.scope host
-field matches events from a process whose cgroup does not name a container.
-An event without a process, or from a process with an unknown cgroup,
-matches neither scope.
-The kprobe backend does not report the cgroup of new processes, so on
-kprobe only processes that existed at start-up can match a scope.
-Only a cgroup whose last component is a container scope, like
-.Pa docker-<id>.scope ,
-names a container.
-Nested cgroups and the cgroupfs driver layout match the host scope.
+matches events from processes running directly on the host.
+A process is considered to be inside a container when the last component
+of its cgroup path is a systemd scope unit created by a container runtime,
+like
+.Pa docker-<id>.scope .
+Any other cgroup path is treated as host.
+This includes a nested cgroup inside a container, like
+.Pa docker-<id>.scope/init.scope ,
+and the flat layout of the cgroupfs driver, like
+.Pa /docker/<id> .
+Events without a process, and events from a process whose cgroup is
+unknown, match neither value.
+The kprobe backend only learns the cgroup of processes that existed when
+.Nm
+started, so events from processes created afterwards never match either
+value.
 This field is not supported by the NOVA backend.
+The
+.Dq pod.name
+field matches events from a process in a container that belongs to the
+named Kubernetes pod.
+A single
+.Sq *
+wildcard is accepted, as in
+.Dq pod.name nginx-* .
+The
+.Dq container.image
+field matches events from a process in a container whose image reference
+matches the given string.
+The image reference is compared as reported by the container runtime,
+registry and tag included, as in
+.Dq container.image docker.io/library/nginx:1.25 .
+A single
+.Sq *
+wildcard is accepted, so
+.Dq container.image */nginx:1.25
+matches that image from any registry, and
+.Dq container.image quay.io/*
+matches every image from that registry.
+Both fields require container metadata, from quark-kube-talker, see
+.Fl K ,
+or from the container API of the library.
+An event without a process, or from a process whose container is unknown,
+matches neither field.
+These fields are not supported by the NOVA backend.
 .It Fl T
 Enable ptrace event tracing.
 .It Fl t
