@@ -1548,19 +1548,24 @@ kprobe_queue_populate(struct quark_queue *qq)
 	 * Refresh the suspend time so records stamped after a resume
 	 * translate correctly. Records stamped before a suspend but read
 	 * after, are shifted late by that last suspend as we can't do better.
-	 * Only a suspend moves the offset and only forward as we ignore
-	 * anything below a 10ms threshold: it's call noise from the two
-	 * clock reads in clock_diff() and adopting it would jitter the
-	 * translation from batch to batch. Reading CLOCK_BOOTTIME is a
-	 * syscall on kernels before 5.3, so the refresh is throttled.
-	 * A CLOCK_MONOTONIC_COARSE read is cheap everywhere (VDSO).
+	 * A sample within 10ms of the adopted offset is ignored as noise,
+	 * as adopting it would jitter the translation from batch to batch.
+	 * A sample further away is adopted in either direction: forward is a
+	 * suspend, backward means the adopted offset itself was an inflated
+	 * sample and moving back is what corrects it.
+	 * Reading CLOCK_BOOTTIME is a syscall on kernels before 5.3, so the
+	 * refresh is throttled. A CLOCK_MONOTONIC_COARSE read is cheap
+	 * everywhere (VDSO).
 	 */
 	if (clock_gettime(CLOCK_MONOTONIC_COARSE, &ts) == 0) {
 		now = TS_TO_NS(ts);
 		if (now - kqq->boot_offset_sampled >= BOOT_OFFSET_RESAMPLE_NS) {
 			kqq->boot_offset_sampled = now;
+			/* Zero is clock_diff() failing, never adopt it */
 			off = clock_diff(CLOCK_BOOTTIME, CLOCK_MONOTONIC);
-			if (off > kqq->boot_offset + BOOT_OFFSET_HYSTERESIS_NS)
+			if (off != 0 &&
+			    llabs((s64)(off - kqq->boot_offset)) >
+			    (s64)BOOT_OFFSET_HYSTERESIS_NS)
 				kqq->boot_offset = off;
 		}
 	}
