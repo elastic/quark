@@ -113,6 +113,27 @@ type Exit struct {
 	Valid           bool
 }
 
+// PodInfo is a copy of the pod data. It remains valid after collection or queue close.
+type PodInfo struct {
+	UID   string
+	Name  string
+	NS    string
+	Phase string
+}
+
+// ContainerInfo is a copy of the container data and its optional parent pod.
+// It remains valid after collection or queue close.
+type ContainerInfo struct {
+	ContainerID string
+	Name        string
+	Image       string
+	ImageID     string
+	ImageName   string
+	ImageTag    string
+	ImageHash   string
+	Pod         *PodInfo // nil if the container has no pod link
+}
+
 // Process represents a single process.
 type Process struct {
 	Pid       uint32 // Always present
@@ -123,7 +144,8 @@ type Process struct {
 	Cmdline   []string
 	Cwd       string
 	Cgroup    string
-	PoisonTag uint64 // Set by matching poison rules, zero if none matched
+	PoisonTag uint64         // Set by matching poison rules, zero if none matched
+	Container *ContainerInfo // nil if the process is not in a container
 }
 
 // Passwd is a cached passwd(5) entry, see PasswdLookup.
@@ -657,6 +679,32 @@ func (queue *Queue) DisableAggregation() error {
 	return nil
 }
 
+func podInfoFromC(cp *C.struct_quark_pod) PodInfo {
+	return PodInfo{
+		UID:   C.GoString(cp.uid),
+		Name:  C.GoString(cp.name),
+		NS:    C.GoString(cp.ns),
+		Phase: C.GoString(cp.phase),
+	}
+}
+
+func containerInfoFromC(cc *C.struct_quark_container) ContainerInfo {
+	ci := ContainerInfo{
+		ContainerID: C.GoString(cc.container_id),
+		Name:        C.GoString(cc.name),
+		Image:       C.GoString(cc.image),
+		ImageID:     C.GoString(cc.image_id),
+		ImageName:   C.GoString(cc.image_name),
+		ImageTag:    C.GoString(cc.image_tag),
+		ImageHash:   C.GoString(cc.image_hash),
+	}
+	if cc.pod != nil {
+		pi := podInfoFromC(cc.pod)
+		ci.Pod = &pi
+	}
+	return ci
+}
+
 // processFromC converts the C process structure to a go process.
 func processFromC(cProcess *C.struct_quark_process) Process {
 	var process Process
@@ -718,6 +766,10 @@ func processFromC(cProcess *C.struct_quark_process) Process {
 		process.Cgroup = C.GoString(cProcess.cgroup)
 	}
 	process.PoisonTag = uint64(cProcess.poison_tag)
+	if cProcess.container != nil {
+		ci := containerInfoFromC(cProcess.container)
+		process.Container = &ci
+	}
 
 	return process
 }
@@ -854,6 +906,119 @@ func shmFromC(cShm *C.struct_quark_shm) (any, error) {
 	}
 
 	return nil, fmt.Errorf("invalid shm kind")
+}
+
+// optCString returns a C string allocated with C.CString, or nil when s is
+// empty. The result may always be passed to C.free, which ignores nil.
+func optCString(s string) *C.char {
+	if s == "" {
+		return nil
+	}
+	return C.CString(s)
+}
+
+// CreatePod inserts a new pod into the queue's pod tree. Returns syscall.EEXIST
+// if a pod with the same uid is already present. A pod passed to RemovePod
+// stays present until the cache grace time ends, so creating the same uid
+// within that window also returns syscall.EEXIST. The result is a data copy.
+func (queue *Queue) CreatePod(uid, name, ns, phase string) (PodInfo, error) {
+	cUID := C.CString(uid)
+	defer C.free(unsafe.Pointer(cUID))
+	cName := optCString(name)
+	defer C.free(unsafe.Pointer(cName))
+	cNS := optCString(ns)
+	defer C.free(unsafe.Pointer(cNS))
+	cPhase := optCString(phase)
+	defer C.free(unsafe.Pointer(cPhase))
+
+	pod, err := C.quark_pod_create(queue.quarkQueue, cUID, cName, cNS, cPhase)
+	if pod == nil {
+		return PodInfo{}, wrapErrno(err)
+	}
+	return podInfoFromC(pod), nil
+}
+
+// LookupPod returns a copy of the pod data. The boolean is false if absent.
+func (queue *Queue) LookupPod(uid string) (PodInfo, bool) {
+	cUID := C.CString(uid)
+	defer C.free(unsafe.Pointer(cUID))
+
+	pod := C.quark_pod_lookup(queue.quarkQueue, cUID)
+	if pod == nil {
+		return PodInfo{}, false
+	}
+	return podInfoFromC(pod), true
+}
+
+// CreateContainer inserts a new container into the queue's container tree.
+// The containerID must be in the form the cgroup parser produces,
+// "<runtime>://<id>" as in "containerd://<id>" or "docker://<id>", otherwise
+// processes never link to it and lookups and removals by the bare id miss. If
+// podUID is non-empty the container is linked to that pod, which must already
+// exist. Returns syscall.EEXIST if a container with the same containerID is
+// already present. A container passed to RemoveContainer, or whose pod was
+// passed to RemovePod, stays present until the cache grace time ends, so
+// creating the same containerID within that window also returns
+// syscall.EEXIST. The result is a data copy.
+func (queue *Queue) CreateContainer(containerID, podUID, name, image string) (ContainerInfo, error) {
+	cContainerID := C.CString(containerID)
+	defer C.free(unsafe.Pointer(cContainerID))
+	cPodUID := optCString(podUID)
+	defer C.free(unsafe.Pointer(cPodUID))
+	cName := optCString(name)
+	defer C.free(unsafe.Pointer(cName))
+	cImage := optCString(image)
+	defer C.free(unsafe.Pointer(cImage))
+
+	container, err := C.quark_container_create(queue.quarkQueue, cContainerID, cPodUID, cName, cImage)
+	if container == nil {
+		return ContainerInfo{}, wrapErrno(err)
+	}
+	return containerInfoFromC(container), nil
+}
+
+// RemovePod schedules the current pod with this UID for removal after the
+// cache grace time. Its child containers are also removed. Lookups keep
+// succeeding until then. Removal is final and cannot be cancelled. Repeated
+// calls do not extend the grace time and still succeed. Returns syscall.ESRCH
+// if the UID is absent.
+func (queue *Queue) RemovePod(uid string) error {
+	cUID := C.CString(uid)
+	defer C.free(unsafe.Pointer(cUID))
+
+	ret, err := C.quark_pod_remove(queue.quarkQueue, cUID)
+	if ret == -1 {
+		return wrapErrno(err)
+	}
+	return nil
+}
+
+// RemoveContainer schedules the current container with this ID for removal
+// after the cache grace time, independently of its pod. Lookups keep
+// succeeding until then. Removal is final and cannot be cancelled. Repeated
+// calls do not extend the grace time and still succeed. Returns syscall.ESRCH
+// if the ID is absent.
+func (queue *Queue) RemoveContainer(containerID string) error {
+	cID := C.CString(containerID)
+	defer C.free(unsafe.Pointer(cID))
+
+	ret, err := C.quark_container_remove(queue.quarkQueue, cID)
+	if ret == -1 {
+		return wrapErrno(err)
+	}
+	return nil
+}
+
+// LookupContainer returns a copy of the container data. The boolean is false if absent.
+func (queue *Queue) LookupContainer(containerID string) (ContainerInfo, bool) {
+	cContainerID := C.CString(containerID)
+	defer C.free(unsafe.Pointer(cContainerID))
+
+	container := C.quark_container_lookup(queue.quarkQueue, cContainerID)
+	if container == nil {
+		return ContainerInfo{}, false
+	}
+	return containerInfoFromC(container), true
 }
 
 func ttyFromC(cTty *C.struct_quark_tty) Tty {
