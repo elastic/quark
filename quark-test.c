@@ -18,6 +18,7 @@
 #include <sys/wait.h>
 
 #include <bpf/bpf.h>
+#include <cjson/cJSON.h>
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -2634,6 +2635,102 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * A container created through the API before the kube talker reports its
+ * pod must be attached to that pod and completed, not rejected as a
+ * duplicate. Processes already linked to it must survive, a repeated pod
+ * update must be a NOP and a second pod claiming the same container must
+ * be refused without touching the first link.
+ */
+static int
+t_kube_container_attach(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_container	*container;
+	struct quark_process	*qp;
+	const struct quark_pod	*pod, *other;
+	cJSON			*json, *other_json;
+	const char		*pod_json =
+	    "{\"kind\":\"Pod\","
+	    "\"metadata\":{\"name\":\"web\",\"namespace\":\"default\","
+	    "\"uid\":\"pod-1\",\"labels\":{\"app\":\"web\"}},"
+	    "\"spec\":{\"containers\":[{\"name\":\"nginx\"}]},"
+	    "\"status\":{\"phase\":\"Running\","
+	    "\"podIPs\":[{\"ip\":\"10.0.0.7\"}],"
+	    "\"containerStatuses\":[{\"name\":\"nginx\","
+	    "\"image\":\"registry.k8s.io/nginx:1.25\","
+	    "\"imageID\":\"docker-pullable://registry.k8s.io/nginx@sha256:abc\","
+	    "\"containerID\":\"docker://abc\","
+	    "\"state\":{\"running\":{}}}]}}";
+	const char		*other_pod_json =
+	    "{\"kind\":\"Pod\","
+	    "\"metadata\":{\"name\":\"web2\",\"namespace\":\"default\","
+	    "\"uid\":\"pod-2\"},"
+	    "\"spec\":{\"containers\":[{\"name\":\"nginx\"}]},"
+	    "\"status\":{\"phase\":\"Running\","
+	    "\"containerStatuses\":[{\"name\":\"nginx\","
+	    "\"image\":\"registry.k8s.io/nginx:1.25\","
+	    "\"imageID\":\"docker-pullable://registry.k8s.io/nginx@sha256:abc\","
+	    "\"containerID\":\"docker://abc\","
+	    "\"state\":{\"running\":{}}}]}}";
+
+	quark_queue_init_bare(&qq);
+
+	/* The library user registers the container first, pod unknown. */
+	container = quark_container_create(&qq, "docker://abc", NULL, NULL,
+	    NULL);
+	assert(container != NULL);
+	assert(container->pod == NULL);
+	qp = test_process_event(&qq, 100, "/system.slice/docker-abc.scope");
+	assert(qp->container == container);
+
+	/* The talker reports the pod that owns it. */
+	json = cJSON_Parse(pod_json);
+	assert(json != NULL);
+	assert(kube_handle_pod(&qq, json) == 0);
+
+	/* Same object, now attached to the pod and completed. */
+	assert(quark_container_lookup(&qq, "docker://abc") == container);
+	pod = quark_pod_lookup(&qq, "pod-1");
+	assert(pod != NULL);
+	assert(container->pod == pod);
+	assert(!RB_EMPTY(&pod->containers));
+	assert(!strcmp(container->name, "nginx"));
+	assert(!strcmp(container->image, "registry.k8s.io/nginx:1.25"));
+	assert(!strcmp(container->image_id,
+	    "docker-pullable://registry.k8s.io/nginx@sha256:abc"));
+	assert(!strcmp(container->image_name, "nginx"));
+	assert(!strcmp(container->image_tag, "1.25"));
+	assert(!strcmp(container->image_hash, "sha256:abc"));
+	assert(qp->container == container);
+	assert(TAILQ_FIRST(&container->processes) == qp);
+
+	/* A repeated update of the same pod changes nothing. */
+	assert(kube_handle_pod(&qq, json) == 0);
+	assert(quark_container_lookup(&qq, "docker://abc") == container);
+	assert(container->pod == pod);
+	assert(qp->container == container);
+	cJSON_Delete(json);
+
+	/*
+	 * Another pod claiming the same container is refused per container,
+	 * the pod itself is still created, and the first link is untouched.
+	 */
+	other_json = cJSON_Parse(other_pod_json);
+	assert(other_json != NULL);
+	assert(kube_handle_pod(&qq, other_json) == 0);
+	other = quark_pod_lookup(&qq, "pod-2");
+	assert(other != NULL);
+	assert(RB_EMPTY(&other->containers));
+	assert(container->pod == pod);
+	assert(qp->container == container);
+	cJSON_Delete(other_json);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
  * quark_queue_open() must refuse anything but exactly one backend
  * with EINVAL, and the default attr must select only EBPF.
  */
@@ -4139,6 +4236,7 @@ struct test all_tests[] = {
 	T_EBPF(t_cgroup_parse),
 	T(t_process_container_cache),
 	T(t_link_container_data),
+	T(t_kube_container_attach),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),
 	T_EBPF(t_cache_grace),
