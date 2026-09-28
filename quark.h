@@ -124,12 +124,14 @@ int			 quark_can_aggregate_tty(struct quark_queue *,
 			     struct raw_event *, struct raw_event *);
 
 /* quark.c: These are exported for testing only */
+struct cJSON;
 void		 quark_queue_init_bare(struct quark_queue *);
 int		 parse_container_cgroup(const char *, char *, size_t);
 const char	*process_container_id(struct quark_process *);
 void		 process_set_cgroup(struct quark_process *, char **);
 void		 link_container_data(struct quark_queue *,
 		     struct quark_process *);
+int		 kube_handle_pod(struct quark_queue *, struct cJSON *);
 
 /* btf.c */
 struct quark_btf_target {
