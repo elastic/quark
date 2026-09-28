@@ -966,19 +966,6 @@ pod_delete(struct quark_queue *qq, struct quark_pod *pod)
 	return (n);
 }
 
-static struct quark_container *
-pod_lookup_container(struct quark_pod *pod, char *container_id)
-{
-	struct quark_container key, *k;
-
-	key.container_id = container_id;
-	k = pod_containers_RB_FIND(&pod->containers, &key);
-	if (k == NULL)
-		errno = ESRCH;
-
-	return (k);
-}
-
 static void
 debug_json(cJSON *json)
 {
@@ -1069,21 +1056,47 @@ kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *cont
 		qwarnx("unknown container state, ignoring");
 		return (-1);
 	}
-	container = pod_lookup_container(pod, containerID->valuestring);
+	/*
+	 * The container may already exist: from an earlier update of this
+	 * pod, or created by a library user through quark_container_create(3)
+	 * before any pod is seen. We call quark_container_get() to return
+	 * the existing object and attach it to the pod, if it has none.
+	 * This means that both potential write paths (kube-talker and API user)
+	 * end up sharing one container. We only update what the earlier writer
+	 * left unset (first writer wins for set fields), and never delete
+	 * an object that another writer may already have processes linked to.
+	 */
+	container = quark_container_get(qq, containerID->valuestring,
+	    pod != NULL ? pod->uid : NULL);
 	if (container == NULL) {
-		container = quark_container_create(qq,
-		    containerID->valuestring,
-		    pod != NULL ? pod->uid : NULL,
-		    name->valuestring, image->valuestring);
-		if (container == NULL)
-			return (-1);
+		if (errno == EEXIST)
+			qwarnx("container %s already belongs to another pod",
+			    containerID->valuestring);
+		return (-1);
+	}
+	if (container->name == NULL &&
+	    (container->name = strdup(name->valuestring)) == NULL)
+		return (-1);
+	if (container->image == NULL &&
+	    (container->image = strdup(image->valuestring)) == NULL)
+		return (-1);
+	if (container->image_id == NULL) {
 		container->image_id = strdup(imageID->valuestring);
-		if (container->image_id == NULL) {
-			container_delete(qq, container);
+		if (container->image_id == NULL)
 			return (-1);
-		}
+		/*
+		 * Roll back on failure so that the next pod update can retry
+		 * the full image demux instead of leaving it half done.
+		 */
 		if (demux_image(container) == -1) {
-			container_delete(qq, container);
+			free(container->image_name);
+			free(container->image_tag);
+			free(container->image_hash);
+			free(container->image_id);
+			container->image_name = NULL;
+			container->image_tag = NULL;
+			container->image_hash = NULL;
+			container->image_id = NULL;
 			return (-1);
 		}
 	}
@@ -1092,7 +1105,7 @@ kube_handle_container(struct quark_queue *qq, struct quark_pod *pod, cJSON *cont
 #undef GET
 }
 
-static int
+int
 kube_handle_pod(struct quark_queue *qq, cJSON *json)
 {
 #define GET cJSON_GetObjectItemCaseSensitive
