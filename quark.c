@@ -39,6 +39,21 @@
 
 #include <cjson/cJSON.h>
 
+#include <bpf/libbpf.h>
+
+/* libbpf names types from 1.0 on, an older SYSLIB one gets numbers */
+#if LIBBPF_MAJOR_VERSION >= 1
+#define bpf_prog_type_name(_t)		libbpf_bpf_prog_type_str(_t)
+#define bpf_map_type_name(_t)		libbpf_bpf_map_type_str(_t)
+#define bpf_link_type_name(_t)		libbpf_bpf_link_type_str(_t)
+#define bpf_attach_type_name(_t)	libbpf_bpf_attach_type_str(_t)
+#else
+#define bpf_prog_type_name(_t)		((const char *)NULL)
+#define bpf_map_type_name(_t)		((const char *)NULL)
+#define bpf_link_type_name(_t)		((const char *)NULL)
+#define bpf_attach_type_name(_t)	((const char *)NULL)
+#endif
+
 #include "quark.h"
 
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
@@ -206,6 +221,7 @@ raw_event_alloc(int type)
 	case RAW_FILE:		/* caller allocates */
 	case RAW_PTRACE:	/* nada */
 	case RAW_MPROTECT:	/* nada */
+	case RAW_BPF:		/* nada */
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
@@ -248,6 +264,9 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_MPROTECT:
 		free(raw->mprotect.quark_mprotect.path);
+		break;
+	case RAW_BPF:
+		free(raw->bpf.quark_bpf.target);
 		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
@@ -468,6 +487,8 @@ event_storage_clear(struct quark_queue *qq)
 	bzero(&qq->event_storage.ptrace, sizeof(qq->event_storage.ptrace));
 	free(qq->event_storage.mprotect.path);
 	bzero(&qq->event_storage.mprotect, sizeof(qq->event_storage.mprotect));
+	free(qq->event_storage.bpf.target);
+	bzero(&qq->event_storage.bpf, sizeof(qq->event_storage.bpf));
 	if (qq->event_storage.module_load != NULL) {
 		free(qq->event_storage.module_load->name);
 		free(qq->event_storage.module_load->version);
@@ -1809,6 +1830,8 @@ event_type_str(u64 event)
 		return "GETPID";
 	case QUARK_EV_MPROTECT:
 		return "MPROTECT";
+	case QUARK_EV_BPF:
+		return "BPF";
 	default:
 		return "?";
 	}
@@ -2170,6 +2193,157 @@ mprotect_prot_str(u64 prot, char *buf, size_t len)
 	buf[n] = 0;
 }
 
+/*
+ * bpf(2) commands by number. The numbers are kernel ABI and only ever grow,
+ * so they are spelled out here rather than taken from enum bpf_cmd: a SYSLIB
+ * build gets linux/bpf.h from the system, which may predate the newest ones.
+ * The flags say what a command's type and attach type mean.
+ */
+#define BPFC_PROG_TYPE		(1 << 0)	/* type is a program type */
+#define BPFC_MAP_TYPE		(1 << 1)	/* type is a map type */
+#define BPFC_STATS_TYPE		(1 << 2)	/* type is a stats type */
+#define BPFC_ATTACH		(1 << 3)	/* attach type is always set */
+#define BPFC_ATTACH_SET		(1 << 4)	/* attach type set if not 0 */
+static const struct {
+	const char	*name;
+	u32		 flags;
+} bpf_cmds[] = {
+	[0]	= { "MAP_CREATE",			BPFC_MAP_TYPE },
+	[1]	= { "MAP_LOOKUP_ELEM",			0 },
+	[2]	= { "MAP_UPDATE_ELEM",			0 },
+	[3]	= { "MAP_DELETE_ELEM",			0 },
+	[4]	= { "MAP_GET_NEXT_KEY",			0 },
+	[5]	= { "PROG_LOAD",
+		    BPFC_PROG_TYPE | BPFC_ATTACH_SET },
+	[6]	= { "OBJ_PIN",				0 },
+	[7]	= { "OBJ_GET",				0 },
+	[8]	= { "PROG_ATTACH",			BPFC_ATTACH },
+	[9]	= { "PROG_DETACH",			BPFC_ATTACH },
+	[10]	= { "PROG_TEST_RUN",			0 },
+	[11]	= { "PROG_GET_NEXT_ID",			0 },
+	[12]	= { "MAP_GET_NEXT_ID",			0 },
+	[13]	= { "PROG_GET_FD_BY_ID",		0 },
+	[14]	= { "MAP_GET_FD_BY_ID",			0 },
+	[15]	= { "OBJ_GET_INFO_BY_FD",		0 },
+	[16]	= { "PROG_QUERY",			0 },
+	[17]	= { "RAW_TRACEPOINT_OPEN",		0 },
+	[18]	= { "BTF_LOAD",				0 },
+	[19]	= { "BTF_GET_FD_BY_ID",			0 },
+	[20]	= { "TASK_FD_QUERY",			0 },
+	[21]	= { "MAP_LOOKUP_AND_DELETE_ELEM",	0 },
+	[22]	= { "MAP_FREEZE",			0 },
+	[23]	= { "BTF_GET_NEXT_ID",			0 },
+	[24]	= { "MAP_LOOKUP_BATCH",			0 },
+	[25]	= { "MAP_LOOKUP_AND_DELETE_BATCH",	0 },
+	[26]	= { "MAP_UPDATE_BATCH",			0 },
+	[27]	= { "MAP_DELETE_BATCH",			0 },
+	[28]	= { "LINK_CREATE",			BPFC_ATTACH },
+	[29]	= { "LINK_UPDATE",			0 },
+	[30]	= { "LINK_GET_FD_BY_ID",		0 },
+	[31]	= { "LINK_GET_NEXT_ID",			0 },
+	[32]	= { "ENABLE_STATS",			BPFC_STATS_TYPE },
+	[33]	= { "ITER_CREATE",			0 },
+	[34]	= { "LINK_DETACH",			0 },
+	[35]	= { "PROG_BIND_MAP",			0 },
+	[36]	= { "TOKEN_CREATE",			0 },
+	[37]	= { "PROG_STREAM_READ_BY_FD",		0 },
+	[38]	= { "PROG_ASSOC_STRUCT_OPS",		0 },
+};
+
+#if defined(HAVE_STATIC_ASSERT) && !defined(SYSLIB)
+/* The bundled uapi grew a command, name it above */
+static_assert(nitems(bpf_cmds) == __MAX_BPF_CMD, "bpf_cmds is out of date");
+#endif
+
+static u32
+bpf_cmd_flags(u32 cmd)
+{
+	return (cmd < nitems(bpf_cmds) ? bpf_cmds[cmd].flags : 0);
+}
+
+static const char *
+bpf_cmd_str(u32 cmd)
+{
+	if (cmd >= nitems(bpf_cmds) || bpf_cmds[cmd].name == NULL)
+		return ("?");
+
+	return (bpf_cmds[cmd].name);
+}
+
+static const char *
+bpf_kind_str(u32 kind)
+{
+	switch (kind) {
+	case QUARK_BPF_MAP:
+		return "map";
+	case QUARK_BPF_PROG:
+		return "prog";
+	case QUARK_BPF_LINK:
+		return "link";
+	case QUARK_BPF_BTF:
+		return "btf";
+	default:
+		return "?";
+	}
+}
+
+/*
+ * The type is a program, map or link type depending on the object, or on the
+ * command when there is none, as for a program that failed to load.
+ */
+static const char *
+bpf_type_str(const struct quark_bpf *bpf, char *buf, size_t len)
+{
+	const char	*s;
+	u32		 kind;
+
+	kind = bpf->kind;
+	if (kind == 0 && bpf_cmd_flags(bpf->cmd) & BPFC_PROG_TYPE)
+		kind = QUARK_BPF_PROG;
+	else if (kind == 0 && bpf_cmd_flags(bpf->cmd) & BPFC_MAP_TYPE)
+		kind = QUARK_BPF_MAP;
+
+	switch (kind) {
+	case QUARK_BPF_PROG:
+		s = bpf_prog_type_name(bpf->type);
+		break;
+	case QUARK_BPF_MAP:
+		s = bpf_map_type_name(bpf->type);
+		break;
+	case QUARK_BPF_LINK:
+		s = bpf_link_type_name(bpf->type);
+		break;
+	case QUARK_BPF_BTF:
+		return (NULL);
+	default:
+		if ((bpf_cmd_flags(bpf->cmd) & BPFC_STATS_TYPE) == 0)
+			return (NULL);
+		s = NULL;
+		break;
+	}
+	if (s == NULL) {
+		(void)snprintf(buf, len, "%u", bpf->type);
+		s = buf;
+	}
+
+	return (s);
+}
+
+/*
+ * Attach type 0 is BPF_CGROUP_INET_INGRESS, a real one for the attach
+ * commands, but for a load it mostly means the program didn't set one.
+ */
+static int
+bpf_has_attach_type(const struct quark_bpf *bpf)
+{
+	u32	flags;
+
+	flags = bpf_cmd_flags(bpf->cmd);
+
+	return ((flags & BPFC_ATTACH) ||
+	    ((flags & BPFC_ATTACH_SET) && bpf->attach_type != 0));
+}
+
 #define P(...)						\
 	do {						\
 		if (fprintf(f, __VA_ARGS__) < 0)	\
@@ -2197,6 +2371,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_ptrace	*ptrace;
 	const struct quark_module_load	*qml;
 	const struct quark_mprotect	*mprotect;
+	const struct quark_bpf		*bpf;
+	const char			*bs;
+	char				 bbuf[16];
 	char				 prev_prot[4], req_prot[4];
 	char				 effective_prot[4];
 	int				 pid;
@@ -2318,6 +2495,39 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    mprotect->dev_major, mprotect->dev_minor);
 		if (mprotect->path != NULL)
 			PF(fl, "path=%s\n", mprotect->path);
+	}
+
+	if (qev->events & QUARK_EV_BPF) {
+		fl = "BPF";
+
+		bpf = &qev->bpf;
+		PF(fl, "cmd=%s(%u) ret=%lld", bpf_cmd_str(bpf->cmd), bpf->cmd,
+		    (long long)bpf->ret);
+		if (bpf->kind)
+			P(" %s=%u", bpf_kind_str(bpf->kind), bpf->id);
+		if ((bs = bpf_type_str(bpf, bbuf, sizeof(bbuf))) != NULL)
+			P(" type=%s", bs);
+		if (bpf->name[0])
+			P(" name=%s", bpf->name);
+		if (bpf->insn_cnt)
+			P(" insns=%u", bpf->insn_cnt);
+		if (bpf->key_size || bpf->value_size || bpf->max_entries)
+			P(" key_size=%u value_size=%u max_entries=%u",
+			    bpf->key_size, bpf->value_size, bpf->max_entries);
+		if (bpf->prog_id)
+			P(" prog_id=%u", bpf->prog_id);
+		if (bpf_has_attach_type(bpf)) {
+			bs = bpf_attach_type_name(bpf->attach_type);
+			if (bs != NULL)
+				P(" attach_type=%s", bs);
+			else
+				P(" attach_type=%u", bpf->attach_type);
+		}
+		if (bpf->flags)
+			P(" flags=0x%x", bpf->flags);
+		P("\n");
+		if (bpf->target != NULL)
+			PF(fl, "target=%s\n", bpf->target);
 	}
 
 	if (qp == NULL)
@@ -4898,6 +5108,22 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static struct quark_event *
+raw_event_bpf(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_BPF;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->bpf = raw->bpf.quark_bpf;
+	/* Steal the target; event_storage_clear() frees it */
+	raw->bpf.quark_bpf.target = NULL;
+
+	return (qev);
+}
+
+static struct quark_event *
 raw_event_mprotect(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -5331,6 +5557,9 @@ quark_queue_get_event1(struct quark_queue *qq)
 			break;
 		case RAW_MPROTECT:
 			qev = raw_event_mprotect(qq, raw);
+			break;
+		case RAW_BPF:
+			qev = raw_event_bpf(qq, raw);
 			break;
 		case RAW_MODULE_LOAD:
 			qev = raw_event_module_load(qq, raw);

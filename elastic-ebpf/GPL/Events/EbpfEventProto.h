@@ -47,6 +47,7 @@ enum ebpf_event_type {
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
     EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
     EBPF_EVENT_PROCESS_MPROTECT             = (1 << 22),
+    EBPF_EVENT_PROCESS_BPF                  = (1 << 23),
 };
 
 struct ebpf_event_header {
@@ -74,6 +75,7 @@ enum ebpf_varlen_field_type {
     EBPF_VL_FIELD_MOD_VERSION,
     EBPF_VL_FIELD_MOD_SRCVERSION,
     EBPF_VL_FIELD_DNS_BODY,
+    EBPF_VL_FIELD_TRACEPOINT,
 };
 
 // Convenience macro to iterate all the variable length fields in an event
@@ -395,6 +397,40 @@ struct ebpf_process_mprotect_event {
     uint32_t file_backed;
 
     // Variable length fields: path (only present when file_backed)
+    struct ebpf_varlen_fields_start vl_fields;
+} __attribute__((packed));
+
+#define EBPF_BPF_NAME_LEN 16 // BPF_OBJ_NAME_LEN
+
+enum ebpf_bpf_kind {
+    EBPF_BPF_KIND_MAP  = 1,
+    EBPF_BPF_KIND_PROG = 2,
+    EBPF_BPF_KIND_LINK = 3,
+    EBPF_BPF_KIND_BTF  = 4,
+};
+
+// A bpf(2) call that creates, attaches, detaches, pins or fetches a bpf
+// object, reported at syscall exit. The object is the one the call created,
+// or failing that the one it acted on; kind is 0 when there is none.
+struct ebpf_process_bpf_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    int64_t ret;          // bpf(2) return value
+    uint32_t cmd;         // enum bpf_cmd
+    uint32_t kind;        // enum ebpf_bpf_kind
+    uint32_t id;          // kernel id of the object
+    uint32_t prog_id;     // program involved when the object is not one
+    uint32_t type;        // program, map or link type of the object
+    uint32_t attach_type; // enum bpf_attach_type
+    uint32_t flags;       // the command's own flags
+    uint32_t insn_cnt;    // program length in instructions
+    uint32_t key_size;    // map geometry
+    uint32_t value_size;
+    uint32_t max_entries;
+    char name[EBPF_BPF_NAME_LEN]; // program or map name
+
+    // Variable length fields: path (OBJ_PIN, OBJ_GET) or tracepoint
+    // (RAW_TRACEPOINT_OPEN)
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 

@@ -7,6 +7,7 @@
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/select.h>
 #include <sys/shm.h>
@@ -18,6 +19,7 @@
 #include <sys/wait.h>
 
 #include <bpf/bpf.h>
+#include <linux/btf.h>
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -3399,6 +3401,563 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+load_ret_prog(u32 type, const char *name, int r0, size_t ninsns)
+{
+	struct bpf_insn	insns[] = {
+		/* r0 = r0; return r0 */
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 0, .imm = r0 },
+		{ .code = BPF_JMP | BPF_EXIT },
+	};
+	int		fd;
+
+	/* With ninsns 1 only the exit is left, which the verifier refuses */
+	assert(ninsns == 1 || ninsns == 2);
+	fd = bpf_prog_load(type, name, "GPL", &insns[2 - ninsns], ninsns, NULL);
+
+	return (fd);
+}
+
+/*
+ * Private mounts for the t_bpf child: a bpffs to pin into and a cgroup2 to
+ * attach to, in a mount namespace of its own on a tmpfs over /tmp, so nothing
+ * outlives the child. The cgroup namespace matters too: a cgroup2 mount from
+ * the initial one rewrites the host's root flags (nsdelegate and friends) to
+ * the new mount's options. Returns TB_HAVE_PIN and TB_HAVE_CGROUP for what
+ * worked, the cgroup made in *cgroup.
+ */
+/* Linux 4.6, missing from the headers of glibc before 2.24 (CentOS 7) */
+#ifndef CLONE_NEWCGROUP
+#define CLONE_NEWCGROUP	0x02000000
+#endif
+#define TB_BPFFS	"/tmp/bpffs"
+#define TB_PIN		TB_BPFFS "/map"
+#define TB_CGMNT	"/tmp/cgroup"
+#define TB_ATTR		"/tmp/attr"
+#define TB_HAVE_PIN	(1 << 0)
+#define TB_HAVE_CGROUP	(1 << 1)
+static int
+t_bpf_mounts(char *cgroup, size_t cgroup_len)
+{
+	int	have;
+
+	if (unshare(CLONE_NEWNS | CLONE_NEWCGROUP) == -1 ||
+	    mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1 ||
+	    mount("tmpfs", "/tmp", "tmpfs", 0, NULL) == -1)
+		return (0);
+
+	have = 0;
+	if (mkdir(TB_BPFFS, 0755) == 0 &&
+	    mount("bpf", TB_BPFFS, "bpf", 0, NULL) == 0)
+		have |= TB_HAVE_PIN;
+	(void)snprintf(cgroup, cgroup_len, "%s/quark-test.%d", TB_CGMNT,
+	    getpid());
+	if (mkdir(TB_CGMNT, 0755) == 0 &&
+	    mount("cgroup2", TB_CGMNT, "cgroup2", 0, NULL) == 0 &&
+	    mkdir(cgroup, 0755) == 0)
+		have |= TB_HAVE_CGROUP;
+
+	return (have);
+}
+
+/*
+ * The bpf(2) sequence of t_bpf, run by an untrusted child. Returns non-zero
+ * on the first step that did not do what the parent expects to see.
+ */
+static int
+t_bpf_child(const char *pin, const char *cgroup)
+{
+	/* The kernel wants at least one type: a 32 bit "int" */
+	struct {
+		struct btf_header	hdr;
+		struct btf_type		type;
+		u32			encoding;
+		char			str[5];
+	} __attribute__((packed)) btf = {
+		.hdr = {
+			.magic = BTF_MAGIC,
+			.version = BTF_VERSION,
+			.hdr_len = sizeof(struct btf_header),
+			.type_off = 0,
+			.type_len = sizeof(struct btf_type) + sizeof(u32),
+			.str_off = sizeof(struct btf_type) + sizeof(u32),
+			.str_len = sizeof("\0int"),
+		},
+		.type = {
+			.name_off = 1,
+			.info = BTF_KIND_INT << 24,
+			.size = sizeof(int),
+		},
+		.encoding = 32,		/* BTF_INT_ENC(0, 0, 32) */
+		.str = "\0int",
+	};
+	struct bpf_insn	bad3[] = {
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 1 },
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 2 },
+		{ .code = BPF_JMP | BPF_EXIT },
+	};
+	union bpf_attr	attr;
+	void		*uattr;
+	int		 afd;
+	u32	k, v;
+	int	mfd, gfd, pfd, rfd, tfd, dfd, d2fd, cfd, lfd, bfd;
+	struct bpf_map_info	info;
+	u32	len;
+
+	mfd = bpf_map_create(BPF_MAP_TYPE_HASH, "quark_t_map", sizeof(u32),
+	    sizeof(u32), 4, NULL);
+	if (mfd < 0)
+		return (1);
+	/* Data plane and introspection, never reported */
+	k = v = 1;
+	if (bpf_map_update_elem(mfd, &k, &v, BPF_ANY) != 0 ||
+	    bpf_map_lookup_elem(mfd, &k, &v) != 0)
+		return (2);
+	bzero(&info, sizeof(info));
+	len = sizeof(info);
+	if (bpf_map_get_info_by_fd(mfd, &info, &len) != 0)
+		return (3);
+
+	if ((pfd = load_ret_prog(BPF_PROG_TYPE_SOCKET_FILTER, "quark_t_prog",
+	    0, 2)) < 0)
+		return (4);
+	if (load_ret_prog(BPF_PROG_TYPE_SOCKET_FILTER, "quark_t_bad", 0, 1) >= 0)
+		return (5);
+	/* 5.10+, the parent accepts a refusal */
+	(void)bpf_prog_bind_map(pfd, mfd, NULL);
+
+	/*
+	 * A short attr: the name lies past the size passed, so the kernel sees
+	 * none and neither may we. The program lacks r0 and is refused.
+	 */
+	bzero(&attr, sizeof(attr));
+	attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+	attr.insn_cnt = nitems(bad3);
+	attr.insns = (u64)(uintptr_t)bad3;
+	attr.license = (u64)(uintptr_t)"GPL";
+	strlcpy(attr.prog_name, "quark_t_trunc", sizeof(attr.prog_name));
+	if (syscall(SYS_bpf, BPF_PROG_LOAD, &attr,
+	    offsetof(union bpf_attr, log_level)) >= 0)
+		return (17);
+
+	if (pin != NULL) {
+		if (bpf_obj_pin(mfd, pin) != 0)
+			return (6);
+		if ((gfd = bpf_obj_get(pin)) < 0)
+			return (7);
+		close(gfd);
+		unlink(pin);
+	}
+	/* 5.2+, the parent accepts a refusal */
+	(void)bpf_map_freeze(mfd);
+
+	/*
+	 * Freeze again through an attr on a page this process never touched:
+	 * the probe's fault-less read at entry fails while the kernel's own
+	 * copy faults the page in. The program sits on fd 0, so a zero-filled
+	 * attr would name it; the parent expects a freeze with no object.
+	 */
+	if (dup2(pfd, 0) == -1)
+		return (21);
+	if ((afd = open(TB_ATTR, O_RDWR | O_CREAT | O_TRUNC, 0600)) == -1)
+		return (22);
+	(void)unlink(TB_ATTR);
+	bzero(&attr, sizeof(attr));
+	attr.map_fd = mfd;
+	if (write(afd, &attr, sizeof(attr)) != (ssize_t)sizeof(attr))
+		return (23);
+	uattr = mmap(NULL, sizeof(attr), PROT_READ, MAP_PRIVATE, afd, 0);
+	if (uattr == MAP_FAILED)
+		return (24);
+	(void)syscall(SYS_bpf, BPF_MAP_FREEZE, uattr, sizeof(attr.map_fd));
+	(void)munmap(uattr, sizeof(attr));
+	close(afd);
+
+	if ((bfd = bpf_btf_load(&btf, sizeof(btf), NULL)) < 0)
+		return (14);
+	close(bfd);
+
+	if ((rfd = load_ret_prog(BPF_PROG_TYPE_RAW_TRACEPOINT, "quark_t_rawtp",
+	    0, 2)) < 0)
+		return (8);
+	if ((tfd = bpf_raw_tracepoint_open("sched_process_exit", rfd)) < 0)
+		return (9);
+	close(tfd);
+
+	if (cgroup != NULL) {
+		/* Allow every device, and the cgroup is empty anyway */
+		if ((dfd = load_ret_prog(BPF_PROG_TYPE_CGROUP_DEVICE,
+		    "quark_t_dev", 1, 2)) < 0)
+			return (10);
+		if ((d2fd = load_ret_prog(BPF_PROG_TYPE_CGROUP_DEVICE,
+		    "quark_t_dev2", 1, 2)) < 0)
+			return (15);
+		if ((cfd = open(cgroup, O_RDONLY | O_DIRECTORY)) == -1)
+			return (11);
+		if (bpf_prog_attach(dfd, cfd, BPF_CGROUP_DEVICE, 0) != 0)
+			return (12);
+		if (bpf_prog_detach2(dfd, cfd, BPF_CGROUP_DEVICE) != 0)
+			return (13);
+		/*
+		 * A detach without a program fd, with the map on fd 0: the map
+		 * is not what got detached and must not be reported as such.
+		 */
+		if (dup2(mfd, 0) == -1)
+			return (18);
+		if (bpf_prog_attach(dfd, cfd, BPF_CGROUP_DEVICE, 0) != 0)
+			return (19);
+		if (bpf_prog_detach(cfd, BPF_CGROUP_DEVICE) != 0)
+			return (20);
+		/* 5.7+ for cgroup links, 5.9+ for detach; the parent copes */
+		if ((lfd = bpf_link_create(dfd, cfd, BPF_CGROUP_DEVICE,
+		    NULL)) >= 0) {
+			/* The link now runs quark_t_dev2 */
+			if (bpf_link_update(lfd, d2fd, NULL) != 0)
+				return (16);
+			(void)bpf_link_detach(lfd);
+			close(lfd);
+		}
+		close(cfd);
+		close(d2fd);
+		close(dfd);
+	}
+
+	close(rfd);
+	close(pfd);
+	close(mfd);
+
+	return (0);
+}
+
+/*
+ * bpf(2) lifecycle events. The consumer's own calls and a trusted child's are
+ * not reported. An untrusted child creates a map, touches it through the data
+ * plane and introspection (not reported), loads a program, fails to load a
+ * second, fails to load a third through an attr too short to hold its name
+ * (reported without the name), binds the map to the program, pins the map to
+ * a private bpffs (see t_bpf_mounts()) and fetches it back, freezes it,
+ * freezes it again through an attr on a page it never touched (reported with
+ * no object), loads a btf and opens a raw tracepoint. Then it attaches and
+ * detaches a device program on an empty private cgroup, attaches it again and
+ * detaches it without naming it while the map sits on fd 0 (which must not be
+ * reported as detached), links it, swaps a second program into the link and
+ * detaches the link. Each report must name the right object, and ids must
+ * line up across reports: the pin, the get and the freeze are of the map
+ * created, the tracepoint runs the program loaded for it, and so on.
+ */
+#define TB_MAP_CREATE	(1 << 0)
+#define TB_PROG_LOAD	(1 << 1)
+#define TB_PROG_BAD	(1 << 2)
+#define TB_OBJ_PIN	(1 << 3)
+#define TB_OBJ_GET	(1 << 4)
+#define TB_MAP_FREEZE	(1 << 5)
+#define TB_RAWTP_LOAD	(1 << 6)
+#define TB_RAWTP_OPEN	(1 << 7)
+#define TB_DEV_LOAD	(1 << 8)
+#define TB_PROG_ATTACH	(1 << 9)
+#define TB_PROG_DETACH	(1 << 10)
+#define TB_LINK_CREATE	(1 << 11)
+#define TB_LINK_DETACH	(1 << 12)
+#define TB_BIND_MAP	(1 << 13)
+#define TB_BTF_LOAD	(1 << 14)
+#define TB_DEV2_LOAD	(1 << 15)
+#define TB_LINK_UPDATE	(1 << 16)
+#define TB_PROG_SHORT	(1 << 17)
+#define TB_PROG_DETACH0	(1 << 18)
+#define TB_FREEZE_NOFAULT	(1 << 19)
+static int
+t_bpf(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_bpf		*bpf;
+	char				 cgroup[PATH_MAX];
+	int				 have, fds[2], sfds[2];
+	int				 status, fd;
+	u32				 want, seen, map_id, prog_id, rawtp_id;
+	u32				 dev_id, dev2_id, link_id, link_prog_id, pid;
+	pid_t				 trusted, child;
+	struct timespec			 start, now;
+	char				 c;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	qa->flags |= QQ_BPF;
+	qa->hold_time = 10;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* The consumer's own calls are not reported */
+	if ((fd = bpf_map_create(BPF_MAP_TYPE_HASH, "quark_t_consume",
+	    sizeof(u32), sizeof(u32), 1, NULL)) < 0)
+		errx(1, "bpf_map_create: %d", fd);
+	close(fd);
+
+	/* Nor a trusted process' */
+	if (pipe(fds) == -1)
+		err(1, "pipe");
+	if ((trusted = fork()) == -1)
+		err(1, "fork");
+	if (trusted == 0) {
+		close(fds[1]);
+		if (read(fds[0], &c, 1) != 1)
+			_exit(1);
+		fd = bpf_map_create(BPF_MAP_TYPE_HASH, "quark_t_trusted",
+		    sizeof(u32), sizeof(u32), 1, NULL);
+		_exit(fd < 0);
+	}
+	close(fds[0]);
+	assert(!quark_queue_trusted_pid_add(&qq, trusted));
+	if (write(fds[1], "x", 1) != 1)
+		err(1, "write");
+	close(fds[1]);
+	if (waitpid(trusted, &status, 0) == -1)
+		err(1, "waitpid");
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+	/* The child tells what its private mounts gave it, then runs */
+	if (pipe(sfds) == -1)
+		err(1, "pipe");
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0) {
+		close(sfds[0]);
+		have = t_bpf_mounts(cgroup, sizeof(cgroup));
+		c = have;
+		if (write(sfds[1], &c, 1) != 1)
+			_exit(1);
+		close(sfds[1]);
+		status = t_bpf_child(have & TB_HAVE_PIN ? TB_PIN : NULL,
+		    have & TB_HAVE_CGROUP ? cgroup : NULL);
+		/* A cgroup outlives the mount it was made through */
+		if (have & TB_HAVE_CGROUP)
+			(void)rmdir(cgroup);
+		_exit(status);
+	}
+	close(sfds[1]);
+	if (read(sfds[0], &c, 1) != 1)
+		errx(1, "t_bpf_child died before reporting its mounts");
+	close(sfds[0]);
+	have = c;
+	if ((have & TB_HAVE_PIN) == 0)
+		warnx("%s: no bpffs, skipping pins", __func__);
+	if ((have & TB_HAVE_CGROUP) == 0)
+		warnx("%s: no cgroup2, skipping attach", __func__);
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "t_bpf_child failed at step %d", WEXITSTATUS(status));
+
+	want = TB_MAP_CREATE | TB_PROG_LOAD | TB_PROG_BAD | TB_PROG_SHORT |
+	    TB_BIND_MAP | TB_MAP_FREEZE | TB_FREEZE_NOFAULT | TB_BTF_LOAD |
+	    TB_RAWTP_LOAD | TB_RAWTP_OPEN;
+	if (have & TB_HAVE_PIN)
+		want |= TB_OBJ_PIN | TB_OBJ_GET;
+	if (have & TB_HAVE_CGROUP)
+		want |= TB_DEV_LOAD | TB_DEV2_LOAD | TB_PROG_ATTACH |
+		    TB_PROG_DETACH | TB_PROG_DETACH0 | TB_LINK_CREATE |
+		    TB_LINK_UPDATE | TB_LINK_DETACH;
+	seen = map_id = prog_id = rawtp_id = dev_id = dev2_id = 0;
+	link_id = link_prog_id = 0;
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	while (seen != want) {
+		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
+			err(1, "clock_gettime");
+		if (now.tv_sec - start.tv_sec >= 10)
+			errx(1, "timed out, want 0x%x seen 0x%x", want, seen);
+		qev = drain_for_pid(&qq, -1);
+		if ((qev->events & QUARK_EV_BPF) == 0 || qev->process == NULL)
+			continue;
+		pid = qev->process->pid;
+		bpf = &qev->bpf;
+		if (pid == (u32)getpid() || pid == (u32)trusted)
+			errx(1, "%s pid %u: cmd %u reported", pid == (u32)trusted ?
+			    "trusted" : "consumer", pid, bpf->cmd);
+		if (pid != (u32)child)
+			continue;
+		switch (bpf->cmd) {
+		case BPF_MAP_CREATE:
+			/* libbpf may probe features with maps of its own */
+			if (strcmp(bpf->name, "quark_t_map"))
+				break;
+			assert(bpf->ret > 0);
+			assert(bpf->kind == QUARK_BPF_MAP && bpf->id != 0);
+			assert(bpf->type == BPF_MAP_TYPE_HASH);
+			assert(bpf->key_size == sizeof(u32));
+			assert(bpf->value_size == sizeof(u32));
+			assert(bpf->max_entries == 4);
+			map_id = bpf->id;
+			seen |= TB_MAP_CREATE;
+			break;
+		case BPF_PROG_LOAD:
+			if (!strcmp(bpf->name, "quark_t_prog")) {
+				assert(bpf->ret > 0);
+				assert(bpf->kind == QUARK_BPF_PROG);
+				assert(bpf->id != 0);
+				assert(bpf->type ==
+				    BPF_PROG_TYPE_SOCKET_FILTER);
+				assert(bpf->insn_cnt >= 2);
+				prog_id = bpf->id;
+				seen |= TB_PROG_LOAD;
+			} else if (!strcmp(bpf->name, "quark_t_bad")) {
+				/* No program, the caller's attr speaks */
+				assert(bpf->ret < 0);
+				assert(bpf->kind == 0 && bpf->id == 0);
+				assert(bpf->type ==
+				    BPF_PROG_TYPE_SOCKET_FILTER);
+				assert(bpf->insn_cnt == 1);
+				seen |= TB_PROG_BAD;
+			} else if (!strcmp(bpf->name, "quark_t_trunc")) {
+				errx(1, "read past the attr size");
+			} else if (bpf->name[0] == 0 && bpf->insn_cnt == 3 &&
+			    bpf->ret < 0) {
+				/* The short attr, known by its length */
+				assert(bpf->kind == 0);
+				assert(bpf->type ==
+				    BPF_PROG_TYPE_SOCKET_FILTER);
+				seen |= TB_PROG_SHORT;
+			} else if (!strcmp(bpf->name, "quark_t_rawtp")) {
+				assert(bpf->ret > 0);
+				assert(bpf->kind == QUARK_BPF_PROG);
+				assert(bpf->type ==
+				    BPF_PROG_TYPE_RAW_TRACEPOINT);
+				rawtp_id = bpf->id;
+				seen |= TB_RAWTP_LOAD;
+			} else if (!strcmp(bpf->name, "quark_t_dev")) {
+				assert(bpf->ret > 0);
+				assert(bpf->kind == QUARK_BPF_PROG);
+				assert(bpf->type ==
+				    BPF_PROG_TYPE_CGROUP_DEVICE);
+				dev_id = bpf->id;
+				seen |= TB_DEV_LOAD;
+			} else if (!strcmp(bpf->name, "quark_t_dev2")) {
+				assert(bpf->ret > 0);
+				assert(bpf->kind == QUARK_BPF_PROG);
+				dev2_id = bpf->id;
+				seen |= TB_DEV2_LOAD;
+			}
+			break;
+		case BPF_PROG_BIND_MAP:
+			assert(seen & TB_PROG_LOAD);
+			/* 5.10+, reported either way */
+			assert(bpf->kind == QUARK_BPF_MAP && bpf->id == map_id);
+			assert(bpf->prog_id == prog_id);
+			seen |= TB_BIND_MAP;
+			break;
+		case BPF_BTF_LOAD:
+			assert(bpf->ret > 0);
+			assert(bpf->kind == QUARK_BPF_BTF && bpf->id != 0);
+			seen |= TB_BTF_LOAD;
+			break;
+		case BPF_OBJ_PIN:
+			assert(seen & TB_MAP_CREATE);
+			assert(bpf->ret == 0);
+			assert(bpf->kind == QUARK_BPF_MAP && bpf->id == map_id);
+			assert(!strcmp(bpf->name, "quark_t_map"));
+			assert(bpf->target != NULL &&
+			    !strcmp(bpf->target, TB_PIN));
+			seen |= TB_OBJ_PIN;
+			break;
+		case BPF_OBJ_GET:
+			assert(seen & TB_OBJ_PIN);
+			assert(bpf->ret > 0);
+			assert(bpf->kind == QUARK_BPF_MAP && bpf->id == map_id);
+			assert(bpf->target != NULL &&
+			    !strcmp(bpf->target, TB_PIN));
+			seen |= TB_OBJ_GET;
+			break;
+		case BPF_MAP_FREEZE:
+			assert(seen & TB_MAP_CREATE);
+			if (seen & TB_MAP_FREEZE) {
+				/* Unreadable attr, and fd 0 held a program */
+				assert(bpf->kind == 0 && bpf->id == 0);
+				assert(bpf->ret < 0);
+				seen |= TB_FREEZE_NOFAULT;
+				break;
+			}
+			assert(bpf->kind == QUARK_BPF_MAP && bpf->id == map_id);
+			seen |= TB_MAP_FREEZE;
+			break;
+		case BPF_RAW_TRACEPOINT_OPEN:
+			assert(seen & TB_RAWTP_LOAD);
+			assert(bpf->ret > 0);
+			assert(bpf->prog_id == rawtp_id);
+			assert(bpf->target != NULL &&
+			    !strcmp(bpf->target, "sched_process_exit"));
+			/* A link since 5.8, a bare fd before */
+			assert(bpf->kind == 0 || (bpf->kind == QUARK_BPF_LINK &&
+			    bpf->type == BPF_LINK_TYPE_RAW_TRACEPOINT));
+			seen |= TB_RAWTP_OPEN;
+			break;
+		case BPF_PROG_ATTACH:
+		case BPF_PROG_DETACH:
+			assert(seen & TB_DEV_LOAD);
+			assert(bpf->ret == 0);
+			assert(bpf->attach_type == BPF_CGROUP_DEVICE);
+			if (bpf->cmd == BPF_PROG_DETACH &&
+			    seen & TB_PROG_DETACH) {
+				/* No program fd, fd 0 held the map */
+				assert(bpf->kind == 0 && bpf->id == 0);
+				seen |= TB_PROG_DETACH0;
+				break;
+			}
+			assert(bpf->kind == QUARK_BPF_PROG);
+			assert(bpf->id == dev_id);
+			seen |= bpf->cmd == BPF_PROG_ATTACH ?
+			    TB_PROG_ATTACH : TB_PROG_DETACH;
+			break;
+		case BPF_LINK_CREATE:
+			assert(seen & TB_PROG_DETACH0);
+			assert(bpf->prog_id == dev_id);
+			assert(bpf->attach_type == BPF_CGROUP_DEVICE);
+			if (bpf->ret < 0) {
+				/* No cgroup links, so no detach either */
+				warnx("%s: LINK_CREATE: %lld", __func__,
+				    (long long)bpf->ret);
+				seen |= TB_LINK_CREATE | TB_LINK_UPDATE |
+				    TB_LINK_DETACH;
+				break;
+			}
+			assert(bpf->kind == QUARK_BPF_LINK && bpf->id != 0);
+			assert(bpf->type == BPF_LINK_TYPE_CGROUP);
+			link_id = bpf->id;
+			link_prog_id = dev_id;
+			seen |= TB_LINK_CREATE;
+			break;
+		case BPF_LINK_UPDATE:
+			assert(seen & TB_LINK_CREATE && seen & TB_DEV2_LOAD);
+			assert(bpf->ret == 0);
+			/* The link, and the program swapped in */
+			assert(bpf->kind == QUARK_BPF_LINK &&
+			    bpf->id == link_id);
+			assert(bpf->prog_id == dev2_id);
+			link_prog_id = dev2_id;
+			seen |= TB_LINK_UPDATE;
+			break;
+		case BPF_LINK_DETACH:
+			assert(seen & TB_LINK_UPDATE);
+			/* 5.9+, reported either way */
+			assert(bpf->ret == 0 || bpf->ret == -EINVAL);
+			assert(bpf->kind == QUARK_BPF_LINK &&
+			    bpf->id == link_id);
+			assert(bpf->prog_id == link_prog_id);
+			seen |= TB_LINK_DETACH;
+			break;
+		default:
+			errx(1, "unexpected cmd %u", bpf->cmd);
+		}
+	}
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
 t_nova(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
@@ -3506,6 +4065,7 @@ struct test all_tests[] = {
 	T_EBPF(t_trusted_pid),
 	T_EBPF(t_trusted_map_rdonly),
 	T_EBPF(t_map_freeze),
+	T_EBPF(t_bpf),
 	T_NOVA(t_nova),		/* XXX temporary XXX */
 	{ NULL,	NULL, 0, 0 }
 };

@@ -80,6 +80,77 @@ life, file-backed attempts once per protection transition per file per process
 life.
 It describes an attempt and does not assert that the protection change was
 committed.
+.It Dv QUARK_EV_BPF
+A
+.Xr bpf 2
+call created, attached, detached, pinned, fetched from a pin or froze a bpf
+object: the commands
+.Dv BPF_MAP_CREATE ,
+.Dv BPF_PROG_LOAD ,
+.Dv BPF_BTF_LOAD ,
+.Dv BPF_OBJ_PIN ,
+.Dv BPF_OBJ_GET ,
+.Dv BPF_PROG_ATTACH ,
+.Dv BPF_PROG_DETACH ,
+.Dv BPF_RAW_TRACEPOINT_OPEN ,
+.Dv BPF_LINK_CREATE ,
+.Dv BPF_LINK_UPDATE ,
+.Dv BPF_LINK_DETACH ,
+.Dv BPF_MAP_FREEZE ,
+.Dv BPF_PROG_BIND_MAP ,
+.Dv BPF_ITER_CREATE ,
+.Dv BPF_ENABLE_STATS
+and
+.Dv BPF_TOKEN_CREATE .
+Element lookups and updates, key walks and the id, info and query commands
+are not reported.
+The
+.Em bpf
+member carries the command in
+.Em cmd ,
+the return value in
+.Em ret ,
+and the object the call created or, failing that, the one it acted on, as
+.Em kind
+.Po
+.Dv QUARK_BPF_MAP ,
+.Dv QUARK_BPF_PROG ,
+.Dv QUARK_BPF_LINK ,
+.Dv QUARK_BPF_BTF ,
+or 0 for none
+.Pc
+and kernel
+.Em id .
+.Em type ,
+.Em name ,
+.Em insn_cnt
+and the map geometry describe the object as the kernel holds it, or what the
+caller asked for when there is no object, as for a program that failed to
+load.
+.Em prog_id
+is the program involved when the object is not one, such as the program a
+link runs.
+.Em attach_type
+and
+.Em flags
+are the caller's.
+.Em target
+is the path of
+.Dv BPF_OBJ_PIN
+and
+.Dv BPF_OBJ_GET
+or the tracepoint of
+.Dv BPF_RAW_TRACEPOINT_OPEN ,
+otherwise
+.Dv NULL .
+It is read from the caller's memory at syscall exit and may not be what the
+kernel used; unlike
+.Em kind
+and
+.Em id ,
+which come from the kernel, it is not authoritative.
+The consumer's own calls are not reported, nor are those of trusted
+processes.
 .El
 .Pp
 It's important to note that

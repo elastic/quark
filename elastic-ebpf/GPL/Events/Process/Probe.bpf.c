@@ -1215,3 +1215,437 @@ int BPF_KPROBE(kprobe__tty_write_old_sig, struct file *file, const char *buf, si
 
     return r;
 }
+
+/*
+ * bpf(2) lifecycle calls: objects being created, attached, detached, pinned,
+ * fetched from a pin or frozen. The data plane (element lookups and updates,
+ * key walks) and introspection (id walks, info and query commands) are left
+ * out on purpose: agents poll their own maps through them all day, and they
+ * say nothing about what runs in the kernel.
+ *
+ * The entry hook reads the caller's attr, only as many bytes as the caller
+ * passed since the kernel zeroes the rest, and resolves the fds it names. The
+ * exit hook resolves the fd a creating command returned and emits the event
+ * with the return value. Whatever the kernel object can tell us is read from
+ * it rather than from the attr, which is caller memory.
+ */
+
+// Not in every vmlinux.h we build against, the uapi value is fixed
+#define EBPF_BPF_TOKEN_CREATE 36
+
+#define BPF_DNAME_LEN 9      // "bpf-prog", "bpf-link" and "bpf_link" + NUL
+#define BPF_TARGET_MAX 4096  // PATH_MAX
+
+// Prefixes of union bpf_attr, one per command we read
+struct ebpf_attr_prog_load {
+    u32 prog_type;
+    u32 insn_cnt;
+    u64 insns;
+    u64 license;
+    u32 log_level;
+    u32 log_size;
+    u64 log_buf;
+    u32 kern_version;
+    u32 prog_flags;
+    char prog_name[EBPF_BPF_NAME_LEN];
+    u32 prog_ifindex;
+    u32 expected_attach_type;
+};
+
+struct ebpf_attr_map_create {
+    u32 map_type;
+    u32 key_size;
+    u32 value_size;
+    u32 max_entries;
+    u32 map_flags;
+    u32 inner_map_fd;
+    u32 numa_node;
+    char map_name[EBPF_BPF_NAME_LEN];
+};
+
+struct ebpf_attr_prog_attach {
+    u32 target_fd;
+    u32 attach_bpf_fd;
+    u32 attach_type;
+    u32 attach_flags;
+};
+
+struct ebpf_attr_link_create {
+    u32 prog_fd;
+    u32 target_fd;
+    u32 attach_type;
+    u32 flags;
+};
+
+struct ebpf_attr_link_update {
+    u32 link_fd;
+    u32 new_prog_fd;
+    u32 flags;
+};
+
+struct ebpf_attr_raw_tp {
+    u64 name;
+    u32 prog_fd;
+};
+
+struct ebpf_attr_obj {
+    u64 pathname;
+    u32 bpf_fd;
+    u32 file_flags;
+};
+
+struct ebpf_attr_bind_map {
+    u32 prog_fd;
+    u32 map_fd;
+    u32 flags;
+};
+
+// MAP_FREEZE, LINK_DETACH, ITER_CREATE (link_fd, flags), ENABLE_STATS (type)
+// and TOKEN_CREATE (flags first)
+struct ebpf_attr_pair {
+    u32 first;
+    u32 second;
+};
+
+union ebpf_attr_prefix {
+    struct ebpf_attr_prog_load load;
+    struct ebpf_attr_map_create create;
+    struct ebpf_attr_prog_attach attach;
+    struct ebpf_attr_link_create link_create;
+    struct ebpf_attr_link_update link_update;
+    struct ebpf_attr_raw_tp raw_tp;
+    struct ebpf_attr_obj obj;
+    struct ebpf_attr_bind_map bind_map;
+    struct ebpf_attr_pair pair;
+};
+
+static bool bpf_cmd_is_lifecycle(u32 cmd)
+{
+    switch (cmd) {
+    case BPF_MAP_CREATE:
+    case BPF_PROG_LOAD:
+    case BPF_BTF_LOAD:
+    case BPF_OBJ_PIN:
+    case BPF_OBJ_GET:
+    case BPF_PROG_ATTACH:
+    case BPF_PROG_DETACH:
+    case BPF_RAW_TRACEPOINT_OPEN:
+    case BPF_LINK_CREATE:
+    case BPF_LINK_UPDATE:
+    case BPF_LINK_DETACH:
+    case BPF_MAP_FREEZE:
+    case BPF_PROG_BIND_MAP:
+    case BPF_ITER_CREATE:
+    case BPF_ENABLE_STATS:
+    case EBPF_BPF_TOKEN_CREATE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Commands whose non-negative return is an fd to a bpf object
+static bool bpf_cmd_returns_obj(u32 cmd)
+{
+    switch (cmd) {
+    case BPF_MAP_CREATE:
+    case BPF_PROG_LOAD:
+    case BPF_BTF_LOAD:
+    case BPF_OBJ_GET:
+    case BPF_RAW_TRACEPOINT_OPEN:
+    case BPF_LINK_CREATE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// The struct file behind an fd of the current task, NULL if it can't be resolved
+static struct file *bpf_file_from_fd(u32 fd)
+{
+    const struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    struct files_struct *files     = BPF_CORE_READ(task, files);
+    struct fdtable *fdt            = BPF_CORE_READ(files, fdt);
+    struct file **fdarr;
+    struct file *file = NULL;
+
+    if (!fdt || fd >= BPF_CORE_READ(fdt, max_fds))
+        return NULL;
+    fdarr = BPF_CORE_READ(fdt, fd);
+    if (!fdarr)
+        return NULL;
+    if (bpf_probe_read_kernel(&file, sizeof(file), &fdarr[fd]))
+        return NULL;
+
+    return file;
+}
+
+static bool bpf_dname_eq(const char *have, const char *want)
+{
+    int i;
+
+#pragma unroll
+    for (i = 0; i < BPF_DNAME_LEN; i++) {
+        if (have[i] != want[i])
+            return false;
+        if (have[i] == 0)
+            return true;
+    }
+
+    return true;
+}
+
+static void bpf_obj__fill_prog(struct ebpf_events_bpf_state *bs, const struct bpf_prog *prog)
+{
+    bs->kind     = EBPF_BPF_KIND_PROG;
+    bs->id       = BPF_CORE_READ(prog, aux, id);
+    bs->type     = BPF_CORE_READ(prog, type);
+    bs->insn_cnt = BPF_CORE_READ(prog, len);
+    BPF_CORE_READ_INTO(&bs->name, prog, aux, name);
+}
+
+static void bpf_obj__fill_map(struct ebpf_events_bpf_state *bs, const struct bpf_map *map)
+{
+    bs->kind        = EBPF_BPF_KIND_MAP;
+    bs->id          = BPF_CORE_READ(map, id);
+    bs->type        = BPF_CORE_READ(map, map_type);
+    bs->key_size    = BPF_CORE_READ(map, key_size);
+    bs->value_size  = BPF_CORE_READ(map, value_size);
+    bs->max_entries = BPF_CORE_READ(map, max_entries);
+    BPF_CORE_READ_INTO(&bs->name, map, name);
+}
+
+static void bpf_obj__fill_link(struct ebpf_events_bpf_state *bs, const struct bpf_link *link)
+{
+    const struct bpf_prog *prog;
+
+    // struct bpf_link is 5.7, its id and type 5.8
+    if (!bpf_core_field_exists(link->id))
+        return;
+    bs->kind = EBPF_BPF_KIND_LINK;
+    bs->id   = BPF_CORE_READ(link, id);
+    bs->type = BPF_CORE_READ(link, type);
+    prog     = BPF_CORE_READ(link, prog);
+    if (prog)
+        bs->prog_id = BPF_CORE_READ(prog, aux, id);
+}
+
+/*
+ * Describe the bpf object behind an fd. Every bpf object is an anonymous inode
+ * whose dentry name gives the kind: "bpf-map", "bpf-prog", "btf", and for
+ * links "bpf_link" as created or "bpf-link" as fetched by id or from a pin.
+ * Anything else, or an fd that isn't open, leaves bs alone.
+ */
+static void bpf_obj__from_fd(struct ebpf_events_bpf_state *bs, u32 fd)
+{
+    struct file *file = bpf_file_from_fd(fd);
+    const unsigned char *dname;
+    char buf[BPF_DNAME_LEN];
+    void *obj;
+
+    if (!file)
+        return;
+    obj   = BPF_CORE_READ(file, private_data);
+    dname = BPF_CORE_READ(file, f_path.dentry, d_name.name);
+    if (!obj || !dname || bpf_probe_read_kernel_str(buf, sizeof(buf), dname) < 0)
+        return;
+    if (bpf_dname_eq(buf, "bpf-prog"))
+        bpf_obj__fill_prog(bs, obj);
+    else if (bpf_dname_eq(buf, "bpf-map"))
+        bpf_obj__fill_map(bs, obj);
+    else if (bpf_dname_eq(buf, "bpf_link") || bpf_dname_eq(buf, "bpf-link"))
+        bpf_obj__fill_link(bs, obj);
+    else if (bpf_dname_eq(buf, "btf")) {
+        bs->kind = EBPF_BPF_KIND_BTF;
+        bs->id   = BPF_CORE_READ((struct btf *)obj, id);
+    }
+}
+
+// The id of the program behind an fd, 0 if it is not one
+static u32 bpf_prog_id__from_fd(u32 fd)
+{
+    struct ebpf_events_bpf_state tmp = {};
+
+    bpf_obj__from_fd(&tmp, fd);
+
+    return tmp.kind == EBPF_BPF_KIND_PROG ? tmp.id : 0;
+}
+
+static int bpf__enter(u32 cmd, const void *uattr, u32 size)
+{
+    struct ebpf_events_state state = {};
+    struct ebpf_events_bpf_state *bs = &state.bpf;
+    union ebpf_attr_prefix a         = {};
+
+    if (!bpf_cmd_is_lifecycle(cmd) || is_consumer() || ebpf_events_is_trusted_pid())
+        return 0;
+
+    // The kernel reads size bytes of attr and zeroes the rest, so do we
+    if (size > sizeof(a))
+        size = sizeof(a);
+    bs->cmd = cmd;
+    // Unreadable: report the command alone rather than guess at fd 0
+    if (size > 0 && bpf_probe_read_user(&a, size, uattr))
+        goto set;
+
+    switch (cmd) {
+    case BPF_PROG_LOAD:
+        // Overwritten from the program at exit if the load succeeds
+        bs->type        = a.load.prog_type;
+        bs->insn_cnt    = a.load.insn_cnt;
+        bs->flags       = a.load.prog_flags;
+        bs->attach_type = a.load.expected_attach_type;
+        __builtin_memcpy(bs->name, a.load.prog_name, sizeof(bs->name));
+        break;
+    case BPF_MAP_CREATE:
+        // Overwritten from the map at exit if the create succeeds
+        bs->type        = a.create.map_type;
+        bs->key_size    = a.create.key_size;
+        bs->value_size  = a.create.value_size;
+        bs->max_entries = a.create.max_entries;
+        bs->flags       = a.create.map_flags;
+        __builtin_memcpy(bs->name, a.create.map_name, sizeof(bs->name));
+        break;
+    case BPF_PROG_ATTACH:
+    case BPF_PROG_DETACH:
+        // A detach without a program fd detaches whatever is attached
+        if (cmd == BPF_PROG_ATTACH || a.attach.attach_bpf_fd != 0)
+            bpf_obj__from_fd(bs, a.attach.attach_bpf_fd);
+        bs->attach_type = a.attach.attach_type;
+        bs->flags       = a.attach.attach_flags;
+        break;
+    case BPF_LINK_CREATE:
+        // The link itself is resolved at exit
+        bs->prog_id     = bpf_prog_id__from_fd(a.link_create.prog_fd);
+        bs->attach_type = a.link_create.attach_type;
+        bs->flags       = a.link_create.flags;
+        break;
+    case BPF_LINK_UPDATE:
+        // The link names its old program, report the new one
+        bpf_obj__from_fd(bs, a.link_update.link_fd);
+        bs->prog_id = bpf_prog_id__from_fd(a.link_update.new_prog_fd);
+        bs->flags   = a.link_update.flags;
+        break;
+    case BPF_RAW_TRACEPOINT_OPEN:
+        bs->prog_id = bpf_prog_id__from_fd(a.raw_tp.prog_fd);
+        bs->target  = a.raw_tp.name;
+        break;
+    case BPF_OBJ_PIN:
+        bpf_obj__from_fd(bs, a.obj.bpf_fd);
+        bs->target = a.obj.pathname;
+        bs->flags  = a.obj.file_flags;
+        break;
+    case BPF_OBJ_GET:
+        bs->target = a.obj.pathname;
+        bs->flags  = a.obj.file_flags;
+        break;
+    case BPF_PROG_BIND_MAP:
+        bpf_obj__from_fd(bs, a.bind_map.map_fd);
+        bs->prog_id = bpf_prog_id__from_fd(a.bind_map.prog_fd);
+        bs->flags   = a.bind_map.flags;
+        break;
+    case BPF_MAP_FREEZE:
+    case BPF_LINK_DETACH:
+        bpf_obj__from_fd(bs, a.pair.first);
+        break;
+    case BPF_ITER_CREATE:
+        bpf_obj__from_fd(bs, a.pair.first);
+        bs->flags = a.pair.second;
+        break;
+    case BPF_ENABLE_STATS:
+        bs->type = a.pair.first;
+        break;
+    case EBPF_BPF_TOKEN_CREATE:
+        bs->flags = a.pair.first;
+        break;
+    default:
+        // BPF_BTF_LOAD: nothing to read, the btf is resolved at exit
+        break;
+    }
+set:
+    ebpf_events_state__set(EBPF_EVENTS_STATE_BPF, &state);
+
+    return 0;
+}
+
+static int bpf__exit(long ret)
+{
+    struct ebpf_events_state *state;
+    struct ebpf_events_bpf_state *bs;
+    struct ebpf_process_bpf_event *event;
+    struct ebpf_varlen_field *field;
+    const struct task_struct *task;
+    long size;
+
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_BPF);
+    if (!state)
+        return 0;
+    bs = &state->bpf;
+
+    // A creating command's fd names what it made, describe that instead
+    if (ret >= 0 && bpf_cmd_returns_obj(bs->cmd))
+        bpf_obj__from_fd(bs, ret);
+
+    event = get_zeroed_event_buffer(sizeof(*event));
+    if (!event)
+        goto del;
+    task            = (struct task_struct *)bpf_get_current_task();
+    event->hdr.type = EBPF_EVENT_PROCESS_BPF;
+    event->hdr.ts   = bpf_ktime_get_boot_ns();
+    ebpf_pid_info__fill(&event->pids, task);
+    event->ret         = ret;
+    event->cmd         = bs->cmd;
+    event->kind        = bs->kind;
+    event->id          = bs->id;
+    event->prog_id     = bs->prog_id;
+    event->type        = bs->type;
+    event->attach_type = bs->attach_type;
+    event->flags       = bs->flags;
+    event->insn_cnt    = bs->insn_cnt;
+    event->key_size    = bs->key_size;
+    event->value_size  = bs->value_size;
+    event->max_entries = bs->max_entries;
+    __builtin_memcpy(event->name, bs->name, sizeof(event->name));
+
+    ebpf_vl_fields__init(&event->vl_fields);
+    if (bs->target) {
+        field = ebpf_vl_field__add(&event->vl_fields, bs->cmd == BPF_RAW_TRACEPOINT_OPEN
+                                                          ? EBPF_VL_FIELD_TRACEPOINT
+                                                          : EBPF_VL_FIELD_PATH);
+        size  = bpf_probe_read_user_str(field->data, BPF_TARGET_MAX, (void *)bs->target);
+        if (size < 0)
+            size = 0;
+        ebpf_vl_field__set_size(&event->vl_fields, field, size);
+    }
+    ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+
+del:
+    ebpf_events_state__del(EBPF_EVENTS_STATE_BPF);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_bpf")
+int tracepoint_syscalls_sys_enter_bpf(struct syscall_trace_enter *args)
+{
+    int r;
+
+    preempt_disable();
+    // bpf(int cmd, union bpf_attr *attr, unsigned int size)
+    r = bpf__enter(SYSCALL_ENTER_ARG(args, 0), (const void *)SYSCALL_ENTER_ARG(args, 1),
+                   SYSCALL_ENTER_ARG(args, 2));
+    preempt_enable();
+
+    return r;
+}
+
+SEC("tracepoint/syscalls/sys_exit_bpf")
+int tracepoint_syscalls_sys_exit_bpf(struct syscall_trace_exit *args)
+{
+    int r;
+
+    preempt_disable();
+    r = bpf__exit(SYSCALL_EXIT_RET(args));
+    preempt_enable();
+
+    return r;
+}

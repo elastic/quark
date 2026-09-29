@@ -123,6 +123,13 @@ Enable EBPF-only executable mprotect attempt events.
 Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
+.It Dv QQ_BPF
+Enable EBPF-only
+.Xr bpf 2
+lifecycle events, see
+.Dv QUARK_EV_BPF
+in
+.Xr quark_queue_get_event 3 .
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.
