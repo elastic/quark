@@ -80,6 +80,35 @@ life, file-backed attempts once per protection transition per file per process
 life.
 It describes an attempt and does not assert that the protection change was
 committed.
+.It Dv QUARK_EV_TAMPER
+A process other than the consumer reached one of quark's eBPF maps through
+.Xr bpf 2 .
+The
+.Em tamper
+member carries the map's kernel
+.Em map_id
+and its
+.Em map_name
+.Pq owned by the queue, valid until Fn quark_queue_close ,
+the
+.Em cmd
+.Pq an Vt enum bpf_cmd ,
+the map
+.Em key
+when
+.Em flags
+has
+.Dv QUARK_TAMPER_F_KEY ,
+and
+.Em ret ,
+what the kernel answered.
+A stranger inserting itself into the trusted pids map shows as
+.Dv BPF_MAP_UPDATE_ELEM
+on
+.Em elastic_ebpf_events_trusted_pids
+with its own tgid as key and a zero
+.Em ret .
+The consumer's own updates are never reported.
 .El
 .Pp
 It's important to note that

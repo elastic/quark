@@ -23,6 +23,7 @@ enum ebpf_events_state_op {
     EBPF_EVENTS_STATE_CHOWN          = 9,
     EBPF_EVENTS_STATE_FS_CREATE      = 10,
     EBPF_EVENTS_STATE_MEMFD_CREATE   = 11,
+    EBPF_EVENTS_STATE_BPF            = 12,
 };
 
 struct ebpf_events_key {
@@ -86,6 +87,13 @@ struct ebpf_events_memfd_create_state {
     unsigned int flags;
 };
 
+struct ebpf_events_bpf_state {
+    u32 map_id;
+    u32 cmd;
+    u32 flags;
+    u32 key;
+};
+
 struct ebpf_events_state {
     union {
         struct ebpf_events_unlink_state unlink;
@@ -98,6 +106,7 @@ struct ebpf_events_state {
         struct ebpf_events_writev_state writev;
         struct ebpf_events_chown_state chown;
         struct ebpf_events_memfd_create_state memfd;
+        struct ebpf_events_bpf_state tamper;
         /* struct ebpf_events_fs_create fs_create; nada */
     };
 };

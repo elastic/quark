@@ -65,6 +65,12 @@ in
 .Em quark_events .
 Entry leader is how the process entered the system, it is disabled by default as
 it is Elastic/ECS specific.
+.It Fl a
+Enable map tamper events (EBPF only).
+One event is emitted every time a process other than
+.Nm
+reaches one of quark's eBPF maps through
+.Xr bpf 2 .
 .It Fl F
 Enable file events (experimental).
 .It Fl G
