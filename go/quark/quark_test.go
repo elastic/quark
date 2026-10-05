@@ -5,6 +5,8 @@ package quark
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strconv"
@@ -174,6 +176,151 @@ func TestQuark(t *testing.T) {
 		require.True(t, foundChild)
 	})
 
+	t.Run("SocketLookup", func(t *testing.T) {
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+		attr.Flags |= QQ_SOCK_CONN
+
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		// Establish a TCP connection to ourselves so that both
+		// endpoints belong to this process.
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer listener.Close()
+
+		accepted := make(chan net.Conn, 1)
+		go func() {
+			conn, err := listener.Accept()
+			if err == nil {
+				accepted <- conn
+			}
+		}()
+
+		conn, err := net.Dial("tcp4", listener.Addr().String())
+		require.NoError(t, err)
+		defer conn.Close()
+		defer func() {
+			if conn := <-accepted; conn != nil {
+				conn.Close()
+			}
+		}()
+
+		local := conn.LocalAddr().(*net.TCPAddr).AddrPort()
+		remote := conn.RemoteAddr().(*net.TCPAddr).AddrPort()
+
+		// Drive the queue until the established socket shows up.
+		var socket Socket
+		found := drainUntil(queue, 5*time.Second, func() bool {
+			var ok bool
+			socket, ok = queue.SocketLookup(local, remote)
+			return ok
+		})
+		require.True(t, found)
+		require.Equal(t, uint32(os.Getpid()), socket.PidOrigin)
+		require.NotZero(t, socket.EstablishedTime)
+		require.Zero(t, socket.CloseTime)
+
+		// IPv4-mapped IPv6 form finds the same socket.
+		mappedLocal := netip.AddrPortFrom(
+			netip.AddrFrom16(local.Addr().As16()), local.Port())
+		_, ok := queue.SocketLookup(mappedLocal, remote)
+		require.True(t, ok)
+
+		// The snapshot contains it too.
+		foundInSnapshot := false
+		for _, s := range queue.SocketSnapshot() {
+			if s.Local == socket.Local && s.Remote == socket.Remote {
+				foundInSnapshot = true
+				break
+			}
+		}
+		require.True(t, foundInSnapshot)
+
+		// After close, the socket must remain visible with a
+		// non-zero CloseTime until CacheGraceTime expires.
+		conn.Close()
+		found = drainUntil(queue, 5*time.Second, func() bool {
+			socket, ok = queue.SocketLookup(local, remote)
+			return ok && socket.CloseTime != 0
+		})
+		require.True(t, found)
+		require.Equal(t, uint32(os.Getpid()), socket.PidOrigin)
+	})
+
+	t.Run("SocketLookupDualStack", func(t *testing.T) {
+		// IPv4 traffic on a dual-stack AF_INET6 listener is cached
+		// by quark in IPv4-mapped form. SocketLookup must still
+		// find it when queried with plain IPv4 endpoints, which is
+		// what a packet capture sees on the wire.
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+		attr.Flags |= QQ_SOCK_CONN
+
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		listener, err := net.Listen("tcp", ":0")
+		require.NoError(t, err)
+		defer listener.Close()
+
+		listenAddr := listener.Addr().(*net.TCPAddr)
+		if listenAddr.IP.To4() != nil {
+			t.Skip("no dual-stack listener: IPv6 unavailable")
+		}
+
+		accepted := make(chan net.Conn, 1)
+		go func() {
+			conn, err := listener.Accept()
+			if err == nil {
+				accepted <- conn
+			}
+		}()
+
+		conn, err := net.Dial("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenAddr.Port)))
+		require.NoError(t, err)
+		defer conn.Close()
+		defer func() {
+			if conn := <-accepted; conn != nil {
+				conn.Close()
+			}
+		}()
+
+		// Server side of the connection, in plain IPv4 form.
+		local := netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(listenAddr.Port))
+		remote := conn.LocalAddr().(*net.TCPAddr).AddrPort()
+		require.True(t, remote.Addr().Is4())
+
+		var socket Socket
+		found := drainUntil(queue, 5*time.Second, func() bool {
+			var ok bool
+			socket, ok = queue.SocketLookup(local, remote)
+			return ok
+		})
+		require.True(t, found)
+		require.Equal(t, uint32(os.Getpid()), socket.PidOrigin)
+		// The socket is reported as quark stores it: IPv4-mapped.
+		require.True(t, socket.Local.Addr().Is4In6())
+		require.Equal(t, local, netip.AddrPortFrom(socket.Local.Addr().Unmap(), socket.Local.Port()))
+
+		// The IPv4-mapped form finds it as well.
+		mappedLocal := netip.AddrPortFrom(netip.AddrFrom16(local.Addr().As16()), local.Port())
+		mappedRemote := netip.AddrPortFrom(netip.AddrFrom16(remote.Addr().As16()), remote.Port())
+		_, ok := queue.SocketLookup(mappedLocal, mappedRemote)
+		require.True(t, ok)
+
+		// The client side is a plain AF_INET socket and is found
+		// through the AF_INET key.
+		clientSocket, ok := queue.SocketLookup(remote, local)
+		require.True(t, ok)
+		require.True(t, clientSocket.Local.Addr().Is4())
+	})
+
 	t.Run("PasswdGroupLookup", func(t *testing.T) {
 		queue, err := OpenQueue(DefaultQueueAttr())
 		require.NoError(t, err)
@@ -235,6 +382,23 @@ func testStats(t *testing.T, attr QueueAttr) {
 	require.True(t, stats.Backend == QQ_EBPF || stats.Backend == QQ_KPROBE)
 
 	require.NotEmpty(t, qevs)
+}
+
+// drainUntil drives the queue until cond is satisfied or the timeout
+// expires, returning the final value of cond.
+func drainUntil(qq *Queue, d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
+
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		if _, ok := qq.GetEvent(); !ok {
+			qq.Block()
+		}
+	}
+
+	return cond()
 }
 
 func drainFor(qq *Queue, d time.Duration) ([]Event, error) {
