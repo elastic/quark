@@ -545,15 +545,35 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 // quark_socket_lookup(3). Sockets are only tracked when the queue was
 // opened with QQ_SOCK_CONN, which requires the EBPF backend. A closed
 // socket remains visible with a non-zero CloseTime until it ages out
-// after the queue's CacheGraceTime. IPv4-mapped IPv6 addresses are
-// unmapped, so both forms find the same socket. The boolean is false
-// if no such socket is known.
+// after the queue's CacheGraceTime. The boolean is false if no such
+// socket is known.
+//
+// quark caches sockets under the address family the kernel reports,
+// so IPv4 traffic on a dual-stack AF_INET6 socket is cached with
+// IPv4-mapped IPv6 addresses (::ffff:a.b.c.d). IPv4 endpoints may be
+// given in either form: the AF_INET key is tried first and the
+// IPv4-mapped AF_INET6 key second. A socket found through the mapped
+// key reports Local and Remote in mapped form, as quark stores them.
 func (queue *Queue) SocketLookup(local, remote netip.AddrPort) (Socket, bool) {
-	clocal, ok := sockaddrToC(local)
+	if socket, ok := queue.socketLookup(local, remote, false); ok {
+		return socket, true
+	}
+	if local.Addr().Unmap().Is4() && remote.Addr().Unmap().Is4() {
+		return queue.socketLookup(local, remote, true)
+	}
+
+	return Socket{}, false
+}
+
+// socketLookup performs a single quark_socket_lookup(3) call. When
+// mapped is set, IPv4 endpoints are converted to their IPv4-mapped
+// AF_INET6 form before the lookup.
+func (queue *Queue) socketLookup(local, remote netip.AddrPort, mapped bool) (Socket, bool) {
+	clocal, ok := sockaddrToC(local, mapped)
 	if !ok {
 		return Socket{}, false
 	}
-	cremote, ok := sockaddrToC(remote)
+	cremote, ok := sockaddrToC(remote, mapped)
 	if !ok {
 		return Socket{}, false
 	}
@@ -786,14 +806,19 @@ func addrPortFromQuarkSockaddr(csa *C.struct_quark_sockaddr) netip.AddrPort {
 }
 
 // sockaddrToC converts a netip.AddrPort to quark's sockaddr
-// representation, the inverse of addrPortFromQuarkSockaddr.
-// IPv4-mapped IPv6 addresses are unmapped so that callers can pass
-// either form. The boolean is false if the address is invalid.
-func sockaddrToC(ap netip.AddrPort) (C.struct_quark_sockaddr, bool) {
+// representation, the inverse of addrPortFromQuarkSockaddr. IPv4
+// addresses, including IPv4-mapped IPv6 ones, become AF_INET, or
+// AF_INET6 in IPv4-mapped form when mapped is set. The boolean is
+// false if the address is invalid.
+func sockaddrToC(ap netip.AddrPort, mapped bool) (C.struct_quark_sockaddr, bool) {
 	var csa C.struct_quark_sockaddr
 
 	addr := ap.Addr().Unmap()
 	switch {
+	case addr.Is4() && mapped:
+		csa.af = C.AF_INET6
+		addr16 := addr.As16() // As16 of an IPv4 address is its IPv4-mapped form.
+		copy(csa.u[:], addr16[:])
 	case addr.Is4():
 		csa.af = C.AF_INET
 		addr4 := addr.As4()
