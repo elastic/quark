@@ -7,6 +7,7 @@
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/select.h>
 #include <sys/shm.h>
@@ -1649,6 +1650,200 @@ t_memfd_exec(const struct test *t, struct quark_queue_attr *qa)
 	quark_queue_close(&qq);
 
 #endif	/* NO_MEMFD */
+
+	return (0);
+}
+
+static int
+t_detached_mount_exec(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	char				 path[] = "/tmp/quark-test-mount.XXXXXX";
+	char				 dir[] = "/tmp/quark-test-dir.XXXXXX";
+	char				 src[] = "/tmp/quark-test-src.XXXXXX";
+	char				 sub[64];
+	pid_t				 child;
+	int				 fd, status;
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	close(fd);
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp dir");
+	if (mkdtemp(src) == NULL)
+		err(1, "mkdtemp src");
+	snprintf(sub, sizeof(sub), "%s/sub", src);
+	if (mkdir(sub, 0755) == -1)
+		err(1, "mkdir sub");
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0) {
+		const char	*true_path;
+		char		 fd_path[64];
+		cpu_set_t	 cpus;
+		pid_t		 grandchild;
+		int		 cpu;
+
+		true_path = access("/usr/bin/true", X_OK) == 0 ?
+		    "/usr/bin/true" : "/bin/true";
+
+		/*
+		 * The exec probe fills a per-cpu event buffer that is reused
+		 * without being zeroed, so a missing NUL after '.' is only
+		 * observable if a previous event left bytes behind at that
+		 * offset. Pin to the cpu we're already on and exec true by its
+		 * real path first, so the filename slot is dirty when the
+		 * detached exec below reuses it.
+		 */
+		if ((cpu = sched_getcpu()) == -1)
+			err(1, "sched_getcpu");
+		CPU_ZERO(&cpus);
+		CPU_SET(cpu, &cpus);
+		if (sched_setaffinity(0, sizeof(cpus), &cpus) == -1)
+			err(1, "sched_setaffinity");
+		if ((grandchild = fork()) == -1)
+			err(1, "fork");
+		if (grandchild == 0) {
+			execl(true_path, "true", "detached-mount-exec",
+			    (char *)NULL);
+			err(1, "execl true");
+		}
+		if (waitpid(grandchild, NULL, 0) == -1)
+			err(1, "waitpid");
+
+		/* Keep the bind mount and its propagation private to this child. */
+		if (unshare(CLONE_NEWNS) == -1)
+			err(1, "unshare");
+		if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1)
+			err(1, "mount private");
+
+		/*
+		 * Directory case: make cwd a subdirectory of a bind mount and
+		 * then detach it. "sub" is collected before the walk reaches
+		 * the disconnected root, so cwd must come out as "/sub".
+		 */
+		if (mount(src, dir, NULL, MS_BIND, NULL) == -1)
+			err(1, "bind mount dir");
+		snprintf(sub, sizeof(sub), "%s/sub", dir);
+		if (chdir(sub) == -1)
+			err(1, "chdir sub");
+		if (umount2(dir, MNT_DETACH) == -1)
+			err(1, "detach dir");
+
+		if (mount(true_path, path, NULL, MS_BIND, NULL) == -1)
+			err(1, "bind mount true");
+		if (mount(NULL, path, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) == -1)
+			err(1, "remount read-only");
+		if ((fd = open(path, O_RDONLY)) == -1)
+			err(1, "open mounted true");
+		if (umount2(path, MNT_DETACH) == -1)
+			err(1, "detach mount");
+
+		/* The fd retains a mount root unreachable from the task's root. */
+		snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+		execl(fd_path, "true", "detached-mount-exec", (char *)NULL);
+		err(1, "execl detached mount");
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (unlink(path) == -1)
+		err(1, "unlink mountpoint");
+	if (rmdir(sub) == -1 || rmdir(src) == -1 || rmdir(dir) == -1)
+		err(1, "rmdir");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "detached mount child didn't exit cleanly");
+
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_EXEC);
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->exe != NULL);
+	/*
+	 * The mount is disconnected, so the walk stops at its root and the
+	 * file, being that root, is "/", which is what d_path() reports too.
+	 */
+	assert(!strcmp(qp->exe, "/"));
+	assert(qp->cwd != NULL);
+	assert(!strcmp(qp->cwd, "/sub"));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A path outside the task's root walks up to the mount namespace root,
+ * which has no parent either, so it must come back absolute, as d_path()
+ * reports it, and not as a "./" relative path.
+ */
+static int
+t_chroot_escape_exec(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	const char			*true_path;
+	char				 dir[] = "/tmp/quark-test-chroot.XXXXXX";
+	pid_t				 child;
+	int				 status;
+
+	true_path = access("/usr/bin/true", X_OK) == 0 ?
+	    "/usr/bin/true" : "/bin/true";
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0) {
+		char	*argv[] = { "true", "chroot-escape-exec", NULL };
+		int	 fd;
+
+		/* Opened before the chroot, this fd is what escapes it. */
+		if ((fd = open(true_path, O_RDONLY | O_CLOEXEC)) == -1)
+			err(1, "open true");
+
+		if (unshare(CLONE_NEWNS) == -1)
+			err(1, "unshare");
+		if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1)
+			err(1, "mount private");
+		/*
+		 * Chroot into a bind mount of / so the dynamic loader still
+		 * resolves. The fd points into the original mount, which is
+		 * outside the new root.
+		 */
+		if (mount("/", dir, NULL, MS_BIND | MS_REC, NULL) == -1)
+			err(1, "bind mount root");
+		if (chroot(dir) == -1)
+			err(1, "chroot");
+		if (chdir("/") == -1)
+			err(1, "chdir");
+		fexecve(fd, argv, environ);
+		err(1, "fexecve");
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (rmdir(dir) == -1)
+		err(1, "rmdir");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "chroot child didn't exit cleanly");
+
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_EXEC);
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->exe != NULL);
+	assert(!strcmp(qp->exe, true_path));
+	assert(qp->cwd != NULL);
+	assert(!strcmp(qp->cwd, "/"));
+
+	quark_queue_close(&qq);
 
 	return (0);
 }
@@ -4226,6 +4421,8 @@ struct test all_tests[] = {
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
+	T_EBPF(t_detached_mount_exec),
+	T_EBPF(t_chroot_escape_exec),
 	T_EBPF(t_shmget),
 	T_EBPF(t_mprotect),
 	T_EBPF(t_shm_open),

@@ -65,6 +65,7 @@ ebpf_resolve_path_to_string(char *buf, struct path *path, const struct task_stru
 {
     long size      = 0;
     bool truncated = true;
+    bool done      = false;
 
     struct fs_struct *fs_struct    = BPF_CORE_READ(task, fs);
     struct path root               = BPF_CORE_READ(fs_struct, root);
@@ -111,11 +112,11 @@ ebpf_resolve_path_to_string(char *buf, struct path *path, const struct task_stru
     // PATH_RESOLVER_MAX_COMPONENTS) and store pointers to each dentry in
     // dentry_arr
     for (int i = 0; i < PATH_RESOLVER_MAX_COMPONENTS; i++) {
-        if (curr_dentry == root.dentry && curr_vfsmount == root.mnt) {
-            // We've reached the global root if both the current dentry and the
-            // current vfsmount match those of the root struct path. Fill in
-            // the rest of dentry_arr with NULLs so the next loop ignores the
-            // remaining entries.
+        if (done || (curr_dentry == root.dentry && curr_vfsmount == root.mnt)) {
+            // We've reached the task's root if both the current dentry and
+            // the current vfsmount match those of the root struct path, or a
+            // disconnected mount root below. Fill in the rest of dentry_arr
+            // with NULLs so the next loop ignores the remaining entries.
             truncated     = false;
             dentry_arr[i] = NULL;
             continue;
@@ -123,12 +124,29 @@ ebpf_resolve_path_to_string(char *buf, struct path *path, const struct task_stru
 
         struct dentry *parent = BPF_CORE_READ(curr_dentry, d_parent);
         if (curr_dentry == parent || curr_dentry == BPF_CORE_READ(curr_vfsmount, mnt_root)) {
+            struct mount *parent_mnt = BPF_CORE_READ(mnt, mnt_parent);
+
+            // A mount with no parent is either the root of a mount namespace
+            // or a lazily unmounted (detached) mount: mnt_parent points back
+            // at itself and mnt_mountpoint at its own root, so the jump below
+            // would spin in place until we run out of components. We only get
+            // here without having matched the task's root when the path is
+            // outside of it (chroot escape, fd from another mount namespace,
+            // detached mount), and nothing above us is reachable either way,
+            // so mirror d_path() and stop with an absolute path. Note the
+            // flag at the top so the remaining iterations skip the reads.
+            if (parent_mnt == mnt) {
+                done          = true;
+                truncated     = false;
+                dentry_arr[i] = NULL;
+                continue;
+            }
 
             // We've hit the root of a mounted filesystem. The dentry walk must
             // be continued from mnt_mountpoint in the current struct mount.
             // Also update curr_vfsmount to point to the parent filesystem root.
             curr_dentry   = (struct dentry *)BPF_CORE_READ(mnt, mnt_mountpoint);
-            mnt           = BPF_CORE_READ(mnt, mnt_parent);
+            mnt           = parent_mnt;
             curr_vfsmount = (struct vfsmount *)&mnt->mnt;
 
             // We might be at another fs root here (in which case
@@ -148,6 +166,8 @@ ebpf_resolve_path_to_string(char *buf, struct path *path, const struct task_stru
         // Use a relative path eg. ./some/dir as a best effort if we have
         // more components than PATH_RESOLVER_MAX_COMPONENTS.
         buf[0] = '.';
+        // A detached mount root may have no components for loop 2 to copy.
+        buf[1] = '\0';
         size   = 1;
     }
 

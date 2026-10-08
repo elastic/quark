@@ -564,6 +564,69 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 	return processFromC(process), true
 }
 
+// SocketLookup looks up the socket identified by the local and remote
+// endpoints in quark's internal socket cache, mirroring
+// quark_socket_lookup(3). Sockets are only tracked when the queue was
+// opened with QQ_SOCK_CONN, which requires the EBPF backend. A closed
+// socket remains visible with a non-zero CloseTime until it ages out
+// after the queue's CacheGraceTime. The boolean is false if no such
+// socket is known.
+//
+// quark caches sockets under the address family the kernel reports,
+// so IPv4 traffic on a dual-stack AF_INET6 socket is cached with
+// IPv4-mapped IPv6 addresses (::ffff:a.b.c.d). IPv4 endpoints may be
+// given in either form: the AF_INET key is tried first and the
+// IPv4-mapped AF_INET6 key second. A socket found through the mapped
+// key reports Local and Remote in mapped form, as quark stores them.
+func (queue *Queue) SocketLookup(local, remote netip.AddrPort) (Socket, bool) {
+	if socket, ok := queue.socketLookup(local, remote, false); ok {
+		return socket, true
+	}
+	if local.Addr().Unmap().Is4() && remote.Addr().Unmap().Is4() {
+		return queue.socketLookup(local, remote, true)
+	}
+
+	return Socket{}, false
+}
+
+// socketLookup performs a single quark_socket_lookup(3) call. When
+// mapped is set, IPv4 endpoints are converted to their IPv4-mapped
+// AF_INET6 form before the lookup.
+func (queue *Queue) socketLookup(local, remote netip.AddrPort, mapped bool) (Socket, bool) {
+	clocal, ok := sockaddrToC(local, mapped)
+	if !ok {
+		return Socket{}, false
+	}
+	cremote, ok := sockaddrToC(remote, mapped)
+	if !ok {
+		return Socket{}, false
+	}
+
+	socket, _ := C.quark_socket_lookup(queue.quarkQueue, &clocal, &cremote)
+	if socket == nil {
+		return Socket{}, false
+	}
+
+	return socketFromC(socket), true
+}
+
+// SocketSnapshot returns a snapshot of all sockets in the cache,
+// including recently closed sockets that still wait out the queue's
+// CacheGraceTime. Sockets are only tracked when the queue was opened
+// with QQ_SOCK_CONN.
+func (queue *Queue) SocketSnapshot() []Socket {
+	var sockets []Socket
+	var iter C.struct_quark_socket_iter
+	var qsk *C.struct_quark_socket
+
+	C.quark_socket_iter_init(&iter, queue.quarkQueue)
+	for qsk = C.quark_socket_iter_next(&iter); qsk != nil; qsk = C.quark_socket_iter_next(&iter) {
+		sockets = append(sockets, socketFromC(qsk))
+	}
+
+	return sockets
+}
+
 // PasswdLookup looks up uid in quark's passwd(5) cache, mirroring
 // quark_passwd_lookup(3). The boolean is false if uid is unknown.
 func (queue *Queue) PasswdLookup(uid uint32) (Passwd, bool) {
@@ -795,6 +858,39 @@ func addrPortFromQuarkSockaddr(csa *C.struct_quark_sockaddr) netip.AddrPort {
 	port := uint16(csa.port)>>8 | uint16(csa.port)<<8
 
 	return netip.AddrPortFrom(addr, port)
+}
+
+// sockaddrToC converts a netip.AddrPort to quark's sockaddr
+// representation, the inverse of addrPortFromQuarkSockaddr. IPv4
+// addresses, including IPv4-mapped IPv6 ones, become AF_INET, or
+// AF_INET6 in IPv4-mapped form when mapped is set. The boolean is
+// false if the address is invalid.
+func sockaddrToC(ap netip.AddrPort, mapped bool) (C.struct_quark_sockaddr, bool) {
+	var csa C.struct_quark_sockaddr
+
+	addr := ap.Addr().Unmap()
+	switch {
+	case addr.Is4() && mapped:
+		csa.af = C.AF_INET6
+		addr16 := addr.As16() // As16 of an IPv4 address is its IPv4-mapped form.
+		copy(csa.u[:], addr16[:])
+	case addr.Is4():
+		csa.af = C.AF_INET
+		addr4 := addr.As4()
+		copy(csa.u[:4], addr4[:])
+	case addr.Is6():
+		csa.af = C.AF_INET6
+		addr16 := addr.As16()
+		copy(csa.u[:], addr16[:])
+	default:
+		return csa, false
+	}
+
+	// quark stores ports in network byte order.
+	port := ap.Port()
+	csa.port = C.u16(port>>8 | port<<8)
+
+	return csa, true
 }
 
 func socketFromC(cSocket *C.struct_quark_socket) Socket {

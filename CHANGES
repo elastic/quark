@@ -207,3 +207,19 @@ Changes from 0.8 to 0.9
     and friends are unaffected. Every other eBPF map except the ring buffer
     is frozen after load (BPF_MAP_FREEZE, also 5.2+), so no process can
     change quark's internal state through bpf(2).
+
+Changes from 0.9 to 0.10
+~~~~~~~~~~~~~~~~~~~~~~~~
+  o The Go bindings (go/quark) learned SocketLookup() and SocketSnapshot(),
+    mirroring quark_socket_lookup(3) and quark_socket_iter_*(3). SocketLookup()
+    accepts IPv4 endpoints in plain or IPv4-mapped IPv6 form and tries the
+    AF_INET key before the IPv4-mapped AF_INET6 key, since IPv4 traffic on
+    dual-stack sockets is cached in mapped form.
+  o Path resolution in the eBPF backend (exe, cwd and file paths) now stops
+    at a mount with no parent instead of spinning until it runs out of
+    components. Paths inside a lazily unmounted (MNT_DETACH) mount and paths
+    outside the task's root, like an fd opened before a chroot or one from
+    another mount namespace, come back absolute within their mount
+    namespace, as d_path() reports them, instead of "./" relative with
+    possibly stale bytes appended. The "./" prefix is still produced for
+    genuinely truncated paths with more components than the resolver holds.
