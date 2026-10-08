@@ -2926,6 +2926,60 @@ t_kube_container_attach(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * A pod created through the API before the kube talker reports it must
+ * be completed by the talker, not left with unset fields. Fields the API
+ * user did set are kept, first writer wins, like for containers.
+ */
+static int
+t_kube_pod_attach(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct {
+		const char *name, *ns;
+		const char *expected_name, *expected_ns;
+	} cases[] = {
+		{ NULL, NULL, "web", "default" },
+		{ "api-web", NULL, "api-web", "default" },
+		{ NULL, "api-ns", "web", "api-ns" },
+		{ "api-web", "api-ns", "api-web", "api-ns" },
+	};
+	const char	*pod_json =
+	    "{\"kind\":\"Pod\","
+	    "\"metadata\":{\"name\":\"web\",\"namespace\":\"default\","
+	    "\"uid\":\"pod-1\"},"
+	    "\"spec\":{\"containers\":[]},"
+	    "\"status\":{\"phase\":\"Running\",\"containerStatuses\":[]}}";
+	size_t		 i;
+
+	for (i = 0; i < nitems(cases); i++) {
+		struct quark_queue	 qq;
+		struct quark_pod	*pod;
+		cJSON			*json;
+
+		quark_queue_init_bare(&qq);
+		pod = quark_pod_create(&qq, "pod-1", cases[i].name,
+		    cases[i].ns, NULL);
+		assert(pod != NULL);
+
+		json = cJSON_Parse(pod_json);
+		assert(json != NULL);
+		assert(kube_handle_pod(&qq, json) == 0);
+		cJSON_Delete(json);
+
+		assert(quark_pod_lookup(&qq, "pod-1") == pod);
+		assert(pod->name != NULL);
+		assert(!strcmp(pod->name, cases[i].expected_name));
+		assert(pod->ns != NULL);
+		assert(!strcmp(pod->ns, cases[i].expected_ns));
+		assert(pod->phase != NULL);
+		assert(!strcmp(pod->phase, "Running"));
+
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+/*
  * quark_queue_open() must refuse anything but exactly one backend
  * with EINVAL, and the default attr must select only EBPF.
  */
@@ -4138,18 +4192,28 @@ t_pod_dump(const struct test *t, struct quark_queue_attr *qa)
 	const struct {
 		const char *name, *ns, *phase;
 		const char *expected_name_ns, *expected_uid_phase;
+		const char *expected_ecs;
 	} cases[] = {
 		{ NULL, NULL, NULL,
 		  "name=<unknown> namespace=<unknown>\n",
-		  "uid=pod phase=<unknown>\n" },
+		  "uid=pod phase=<unknown>\n",
+		  "\"orchestrator\":{\"resource\":{\"type\":\"pod\",\"ip\":" },
 		{ "test-pod", "test-ns", "Running",
-		  "name=test-pod namespace=test-ns\n", "uid=pod phase=Running\n" },
+		  "name=test-pod namespace=test-ns\n", "uid=pod phase=Running\n",
+		  "\"orchestrator\":{\"namespace\":\"test-ns\","
+		  "\"resource\":{\"type\":\"pod\",\"name\":\"test-pod\",\"ip\":" },
 		{ NULL, "test-ns", "Running",
-		  "name=<unknown> namespace=test-ns\n", "uid=pod phase=Running\n" },
+		  "name=<unknown> namespace=test-ns\n", "uid=pod phase=Running\n",
+		  "\"orchestrator\":{\"namespace\":\"test-ns\","
+		  "\"resource\":{\"type\":\"pod\",\"ip\":" },
 		{ "test-pod", NULL, "Running",
-		  "name=test-pod namespace=<unknown>\n", "uid=pod phase=Running\n" },
+		  "name=test-pod namespace=<unknown>\n", "uid=pod phase=Running\n",
+		  "\"orchestrator\":{"
+		  "\"resource\":{\"type\":\"pod\",\"name\":\"test-pod\",\"ip\":" },
 		{ "test-pod", "test-ns", NULL,
-		  "name=test-pod namespace=test-ns\n", "uid=pod phase=<unknown>\n" },
+		  "name=test-pod namespace=test-ns\n", "uid=pod phase=<unknown>\n",
+		  "\"orchestrator\":{\"namespace\":\"test-ns\","
+		  "\"resource\":{\"type\":\"pod\",\"name\":\"test-pod\",\"ip\":" },
 	};
 	size_t	 i;
 
@@ -4159,10 +4223,20 @@ t_pod_dump(const struct test *t, struct quark_queue_attr *qa)
 		struct quark_event	 event = { .process = &process };
 		struct quark_pod		*pod;
 		FILE			*f;
-		char			*buf = NULL;
-		size_t			 len = 0;
+		char			*buf = NULL, *ecs = NULL;
+		size_t			 len = 0, ecs_len = 0;
 
 		quark_queue_init_bare(&qq);
+		/*
+		 * orchestrator.* is only emitted with a kube talker, fake an
+		 * idle one, quark_queue_close() frees it. A real one always
+		 * has a node name, kube_prime() fails otherwise.
+		 */
+		qq.qkube = calloc(1, sizeof(*qq.qkube));
+		assert(qq.qkube != NULL);
+		qq.qkube->fd = -1;
+		qq.qkube->node.name = strdup("test-node");
+		assert(qq.qkube->node.name != NULL);
 		bzero(&process, sizeof(process));
 		pod = quark_pod_create(&qq, "pod", cases[i].name,
 		    cases[i].ns, cases[i].phase);
@@ -4179,6 +4253,9 @@ t_pod_dump(const struct test *t, struct quark_queue_attr *qa)
 		assert((pod->name == NULL) == (cases[i].name == NULL));
 		assert((pod->ns == NULL) == (cases[i].ns == NULL));
 		assert((pod->phase == NULL) == (cases[i].phase == NULL));
+		assert(quark_event_to_ecs(&qq, &event, &ecs, &ecs_len) == 0);
+		assert(strstr(ecs, cases[i].expected_ecs) != NULL);
+		free(ecs);
 		free(buf);
 		quark_queue_close(&qq);
 	}
@@ -4443,6 +4520,7 @@ struct test all_tests[] = {
 	T(t_process_container_cache),
 	T(t_link_container_data),
 	T(t_kube_container_attach),
+	T(t_kube_pod_attach),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),
 	T_EBPF(t_cache_grace),
