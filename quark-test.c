@@ -4083,13 +4083,19 @@ static int
 t_container_dump(const struct test *t, struct quark_queue_attr *qa)
 {
 	const struct {
-		const char *name, *image, *expected;
+		const char *name, *image, *expected, *expected_ecs;
 	} cases[] = {
-		{ NULL, NULL, "name=<unknown> image=<unknown>\n" },
+		{ NULL, NULL, "name=<unknown> image=<unknown>\n",
+		  "\"container\":{\"id\":\"container\",\"runtime\":" },
 		{ "test-container", "test-image",
-		  "name=test-container image=test-image\n" },
-		{ NULL, "test-image", "name=<unknown> image=test-image\n" },
-		{ "test-container", NULL, "name=test-container image=<unknown>\n" },
+		  "name=test-container image=test-image\n",
+		  "\"container\":{\"id\":\"container\","
+		  "\"name\":\"test-container\",\"runtime\":" },
+		{ NULL, "test-image", "name=<unknown> image=test-image\n",
+		  "\"container\":{\"id\":\"container\",\"runtime\":" },
+		{ "test-container", NULL, "name=test-container image=<unknown>\n",
+		  "\"container\":{\"id\":\"container\","
+		  "\"name\":\"test-container\",\"runtime\":" },
 	};
 	size_t	 i;
 
@@ -4099,8 +4105,8 @@ t_container_dump(const struct test *t, struct quark_queue_attr *qa)
 		struct quark_event	 event = { .process = &process };
 		struct quark_container	*container;
 		FILE			*f;
-		char			*buf = NULL;
-		size_t			 len = 0;
+		char			*buf = NULL, *ecs = NULL;
+		size_t			 len = 0, ecs_len = 0;
 
 		quark_queue_init_bare(&qq);
 		bzero(&process, sizeof(process));
@@ -4116,6 +4122,9 @@ t_container_dump(const struct test *t, struct quark_queue_attr *qa)
 		assert(strstr(buf, "container_id=container\n") != NULL);
 		assert((container->name == NULL) == (cases[i].name == NULL));
 		assert((container->image == NULL) == (cases[i].image == NULL));
+		assert(quark_event_to_ecs(&qq, &event, &ecs, &ecs_len) == 0);
+		assert(strstr(ecs, cases[i].expected_ecs) != NULL);
+		free(ecs);
 		free(buf);
 		quark_queue_close(&qq);
 	}
