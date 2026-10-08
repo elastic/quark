@@ -1206,6 +1206,17 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 			return (-1);
 	}
 
+	/*
+	 * The pod may have been created by a library user through
+	 * quark_pod_create(3) with name or namespace unset. Fill in only
+	 * what is missing, as kube_handle_container() does for containers.
+	 * On failure the field stays unset and the next update retries.
+	 */
+	if (pod->name == NULL)
+		pod->name = strdup(name->valuestring);
+	if (pod->ns == NULL)
+		pod->ns = strdup(namespace->valuestring);
+
 	/* Mutable data */
 	if ((tmp = strdup(phase->valuestring)) != NULL) {
 		free(pod->phase);

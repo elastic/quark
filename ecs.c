@@ -563,14 +563,17 @@ ecs_orchestrator(struct quark_kube *qkube, struct hanson *h, struct quark_pod *p
 		hanson_close_object(h);
 	}
 
-	hanson_add_key_value(h, "namespace", pod->ns, first);
+	if (pod->ns != NULL)
+		hanson_add_key_value(h, "namespace", pod->ns, first);
 
 	hanson_add_object(h, "resource", first);
 	{
 		int	resource_first = 1;
 
 		hanson_add_key_value(h, "type", "pod", &resource_first);
-		hanson_add_key_value(h, "name", pod->name, &resource_first);
+		if (pod->name != NULL)
+			hanson_add_key_value(h, "name", pod->name,
+			    &resource_first);
 
 		hanson_add_array(h, "ip", &resource_first);
 		{
