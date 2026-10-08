@@ -82,6 +82,19 @@ const struct quark_socket *quark_socket_lookup(struct quark_queue *,
 			     struct quark_sockaddr *, struct quark_sockaddr *);
 struct quark_passwd	*quark_passwd_lookup(struct quark_queue *, uid_t);
 struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
+struct quark_pod	*quark_pod_get(struct quark_queue *, const char *);
+const struct quark_pod	*quark_pod_lookup(struct quark_queue *, const char *);
+struct quark_container	*quark_container_get(struct quark_queue *,
+			     const char *, const char *);
+const struct quark_container *quark_container_lookup(struct quark_queue *,
+			     const char *);
+struct quark_pod	*quark_pod_create(struct quark_queue *, const char *,
+			     const char *, const char *, const char *);
+struct quark_container	*quark_container_create(struct quark_queue *,
+			     const char *, const char *, const char *,
+			     const char *);
+int			 quark_pod_remove(struct quark_queue *, const char *);
+int			 quark_container_remove(struct quark_queue *, const char *);
 void			 quark_ruleset_init(struct quark_ruleset *);
 void			 quark_ruleset_clear(struct quark_ruleset *);
 int			 quark_ruleset_parse(struct quark_ruleset *, FILE *,
@@ -111,7 +124,14 @@ int			 quark_can_aggregate_tty(struct quark_queue *,
 			     struct raw_event *, struct raw_event *);
 
 /* quark.c: These are exported for testing only */
-int	 parse_container_cgroup(const char *, char *, size_t);
+struct cJSON;
+void		 quark_queue_init_bare(struct quark_queue *);
+int		 parse_container_cgroup(const char *, char *, size_t);
+const char	*process_container_id(struct quark_process *);
+void		 process_set_cgroup(struct quark_process *, char **);
+void		 link_container_data(struct quark_queue *,
+		     struct quark_process *);
+int		 kube_handle_pod(struct quark_queue *, struct cJSON *);
 
 /* btf.c */
 struct quark_btf_target {
@@ -594,6 +614,7 @@ enum gc_type {
 	GC_PROCESS,
 	GC_SOCKET,
 	GC_POD,
+	GC_CONTAINER,
 };
 
 struct gc_link {
@@ -603,9 +624,10 @@ struct gc_link {
 };
 
 /*
- * gc queue, after processes or sockets are are marked for deletion, they still
- * get a grace time of qq->cache_grace_time before removal, this is to allow
- * lookups from users on processes and sockets that have just vanished.
+ * gc queue, after processes, sockets, pods or containers are marked for
+ * deletion, they still get a grace time of qq->cache_grace_time before removal,
+ * this is to allow lookups from users on objects that have just vanished.
+ * Marking is final, nothing unmarks an object once it is in the queue.
  */
 TAILQ_HEAD(gc_queue, gc_link);
 
@@ -621,6 +643,7 @@ struct quark_process {
 	TAILQ_ENTRY(quark_process)	entry_container;
 	/* Always present */
 	u32	 pid;
+	u32	 container_id_parsed;	/* cgroup was parsed into container_id */
 
 #define QUARK_F_PROC		(1 << 0)
 #define QUARK_F_EXIT		(1 << 1)
@@ -662,6 +685,7 @@ struct quark_process {
 	char	*cmdline;
 	char	*cwd;
 	char	*cgroup;
+	char	*container_id;
 	struct quark_container *container;
 	char	*env;
 	size_t	 env_len;
@@ -711,9 +735,13 @@ RB_HEAD(label_tree, label_node);
 RB_PROTOTYPE(label_tree, label_node, entry, label_node_cmp);
 
 /*
- * A container's lifecycle is tied to its parent quark_pod.
+ * A container is removed when its parent quark_pod is removed, or on its own
+ * through quark_container_remove(). Either way it stays valid for the gc grace
+ * time and is then freed, possibly while its pod is still alive. A container
+ * without a pod has a NULL pod backpointer.
  */
 struct quark_container {
+	struct gc_link			 gc;		/* must be first */
 	RB_ENTRY(quark_container)	 entry_qkube;	/* our ""global"" linkage */
 	RB_ENTRY(quark_container)	 entry_pod;	/* our linkage inside a quark_pod */
 	TAILQ_HEAD(, quark_process)	 processes;	/* processes in this container */
@@ -730,10 +758,9 @@ struct quark_container {
 };
 
 /*
- * A quark_pod holds multiple containters in pod_containters.
- * The same containers are also linked in containters_by_id inside quark_kube.
- * This is to allow a search by container_id, which then can follow the pod
- * backpointer, to finally find the pod of a containter_id.
+ * A quark_pod holds its containers in pod_containers.
+ * All containers are indexed by container_id in quark_queue, including those
+ * without a pod. A container's pod backpointer identifies its parent, if any.
  */
 RB_HEAD(pod_containers, quark_container);
 RB_HEAD(container_by_id, quark_container);
@@ -755,7 +782,7 @@ struct quark_pod {
 };
 
 /*
- * A quark_pod indexed by uid, this is the main data structure for quark_kube{}.
+ * Pods indexed by uid in quark_queue.
  */
 RB_HEAD(pod_by_uid, quark_pod);
 
@@ -784,7 +811,6 @@ struct quark_kube {
 	size_t			 buf_r;			/* read pointer */
 	size_t			 buf_len;		/* total length */
 	struct quark_kube_node	 node;			/* node we're running on */
-	struct pod_by_uid	 pod_by_uid;		/* uid comes from json */
 };
 
 /*
@@ -944,6 +970,7 @@ struct quark_queue {
 	struct passwd_by_uid		 passwd_by_uid;
 	struct group_by_gid		 group_by_gid;
 	struct container_by_id		 container_by_id;	/* all known containers */
+	struct pod_by_uid		 pod_by_uid;		/* all known pods */
 	struct quark_sysinfo		 sysinfo;
 	struct quark_event		 event_storage;
 	struct quark_queue_stats	 stats;

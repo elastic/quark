@@ -19,6 +19,7 @@
 #include <sys/wait.h>
 
 #include <bpf/bpf.h>
+#include <cjson/cJSON.h>
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -2606,6 +2607,324 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static struct quark_process *
+test_process_event(struct quark_queue *qq, u32 pid, const char *cgroup)
+{
+	const struct quark_event *qev;
+	struct raw_event	*raw;
+
+	raw = raw_event_alloc(RAW_GETPID);
+	assert(raw != NULL);
+	raw->pid = pid;
+	raw->task.cgroup = strdup(cgroup);
+	assert(raw->task.cgroup != NULL);
+	assert(raw_event_insert(qq, raw) == 0);
+	qev = quark_queue_get_event(qq);
+	assert(qev != NULL);
+	assert(qev->process != NULL);
+
+	return ((struct quark_process *)qev->process);
+}
+
+/*
+ * Test the parsed container ID cache and cgroup replacement.
+ */
+static int
+t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_process	 qp;
+	struct quark_container	 container;
+	const char		*cached;
+	char			*cgroup;
+
+	bzero(&qp, sizeof(qp));
+	bzero(&container, sizeof(container));
+	TAILQ_INIT(&container.processes);
+
+	/* Parse and cache the first container ID. */
+	cgroup = strdup("/system.slice/docker-old.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(process_container_id(&qp) != NULL);
+	assert(!strcmp(qp.container_id, "docker://old"));
+	assert(qp.container_id_parsed);
+	assert(qp.container_id != NULL);
+	cached = qp.container_id;
+
+	/*
+	 * The same cgroup must preserve the cached ID and the container
+	 * link.
+	 */
+	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
+	qp.container = &container;
+
+	cgroup = strdup("/system.slice/docker-old.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container == &container);
+	assert(qp.container_id == cached);
+	assert(TAILQ_FIRST(&container.processes) == &qp);
+
+	/*
+	 * A nested cgroup inside the same container must preserve the
+	 * cached ID and the container link.
+	 */
+	cgroup = strdup("/system.slice/docker-old.scope/init.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(!strcmp(qp.cgroup, "/system.slice/docker-old.scope/init.scope"));
+	assert(qp.container == &container);
+	assert(qp.container_id == cached);
+	assert(qp.container_id_parsed);
+	assert(TAILQ_FIRST(&container.processes) == &qp);
+
+	/*
+	 * A different cgroup must remove the old link and clear the
+	 * cached ID.
+	 */
+	cgroup = strdup("/system.slice/containerd-new.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container == NULL);
+	assert(TAILQ_EMPTY(&container.processes));
+	assert(qp.container_id == NULL);
+	assert(!qp.container_id_parsed);
+
+	assert(!strcmp(process_container_id(&qp), "containerd://new"));
+	assert(qp.container_id_parsed);
+	cached = qp.container_id;
+
+	/*
+	 * A cgroup that does not name a container keeps the last known
+	 * container ID, the process may have moved to a nested cgroup.
+	 */
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container_id == cached);
+	assert(qp.container_id_parsed);
+
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	/* Cache a negative parse result on a fresh process. */
+	bzero(&qp, sizeof(qp));
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(process_container_id(&qp) == NULL);
+	assert(qp.container_id_parsed);
+
+	/* The second call uses the cached negative result. */
+	assert(process_container_id(&qp) == NULL);
+	assert(qp.container_id_parsed);
+
+	/* A container cgroup after a negative result must be parsed. */
+	cgroup = strdup("/system.slice/docker-late.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(!qp.container_id_parsed);
+	assert(!strcmp(process_container_id(&qp), "docker://late"));
+	assert(qp.container_id_parsed);
+
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	return (0);
+}
+
+/*
+ * Test container linking when metadata arrives before or after the
+ * process.
+ */
+static int
+t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_process	 qp;
+	struct quark_process	*iter_qp, *lookup_qp;
+	struct quark_process_iter qi;
+	struct quark_container	*container;
+	struct quark_queue_stats qs;
+	const struct quark_process *seen;
+	const char		*cached;
+
+	quark_queue_init_bare(&qq);
+	bzero(&qp, sizeof(qp));
+
+	qp.cgroup = strdup("/system.slice/docker-target.scope");
+	assert(qp.cgroup != NULL);
+
+	/* No metadata exists. RB_EMPTY must stop the parse. */
+	link_container_data(&qq, &qp);
+	assert(qp.container == NULL);
+	assert(qp.container_id == NULL);
+	assert(!qp.container_id_parsed);
+
+	/*
+	 * Unrelated metadata now exists. The lookup fails, but the parsed
+	 * ID stays in the process cache.
+	 */
+	assert(quark_container_get(&qq, "docker://other", NULL) != NULL);
+	link_container_data(&qq, &qp);
+	assert(qp.container == NULL);
+	assert(qp.container_id_parsed);
+	assert(!strcmp(qp.container_id, "docker://target"));
+	cached = qp.container_id;
+
+	/* A second failed lookup must use the same cached string. */
+	link_container_data(&qq, &qp);
+	assert(qp.container == NULL);
+	assert(qp.container_id == cached);
+
+	/* Matching metadata arrives after the process. */
+	container = quark_container_get(&qq, "docker://target", NULL);
+	assert(container != NULL);
+	link_container_data(&qq, &qp);
+	assert(qp.container == container);
+	assert(TAILQ_FIRST(&container->processes) == &qp);
+
+	/* Public cache reads must link metadata that arrived later. */
+	lookup_qp = test_process_event(&qq, 100,
+	    "/system.slice/docker-lookup.scope");
+	iter_qp = test_process_event(&qq, 200,
+	    "/system.slice/docker-iterator.scope");
+
+	assert(quark_container_get(&qq, "docker://lookup", NULL) != NULL);
+	assert(quark_container_get(&qq, "docker://iterator", NULL) != NULL);
+	assert(lookup_qp->container == NULL);
+	assert(iter_qp->container == NULL);
+
+	seen = quark_process_lookup(&qq, lookup_qp->pid);
+	assert(seen == lookup_qp);
+	assert(lookup_qp->container != NULL);
+	assert(!strcmp(lookup_qp->container->container_id, "docker://lookup"));
+
+	quark_process_iter_init(&qi, &qq);
+	seen = quark_process_iter_next(&qi);
+	assert(seen == lookup_qp);
+	seen = quark_process_iter_next(&qi);
+	assert(seen == iter_qp);
+	assert(iter_qp->container != NULL);
+	assert(!strcmp(iter_qp->container->container_id, "docker://iterator"));
+	assert(quark_process_iter_next(&qi) == NULL);
+
+	/* Stats must work without a backend. */
+	quark_queue_get_stats(&qq, &qs);
+	assert(qs.insertions == 2);
+
+	quark_queue_close(&qq);
+	assert(qp.container == NULL);
+
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	return (0);
+}
+
+/*
+ * A container created through the API before the kube talker reports its
+ * pod must be attached to that pod and completed, not rejected as a
+ * duplicate. Processes already linked to it must survive, a repeated pod
+ * update must be a NOP and a second pod claiming the same container must
+ * be refused without touching the first link.
+ */
+static int
+t_kube_container_attach(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_container	*container;
+	struct quark_process	*qp;
+	const struct quark_pod	*pod, *other;
+	cJSON			*json, *other_json;
+	const char		*pod_json =
+	    "{\"kind\":\"Pod\","
+	    "\"metadata\":{\"name\":\"web\",\"namespace\":\"default\","
+	    "\"uid\":\"pod-1\",\"labels\":{\"app\":\"web\"}},"
+	    "\"spec\":{\"containers\":[{\"name\":\"nginx\"}]},"
+	    "\"status\":{\"phase\":\"Running\","
+	    "\"podIPs\":[{\"ip\":\"10.0.0.7\"}],"
+	    "\"containerStatuses\":[{\"name\":\"nginx\","
+	    "\"image\":\"registry.k8s.io/nginx:1.25\","
+	    "\"imageID\":\"docker-pullable://registry.k8s.io/nginx@sha256:abc\","
+	    "\"containerID\":\"docker://abc\","
+	    "\"state\":{\"running\":{}}}]}}";
+	const char		*other_pod_json =
+	    "{\"kind\":\"Pod\","
+	    "\"metadata\":{\"name\":\"web2\",\"namespace\":\"default\","
+	    "\"uid\":\"pod-2\"},"
+	    "\"spec\":{\"containers\":[{\"name\":\"nginx\"}]},"
+	    "\"status\":{\"phase\":\"Running\","
+	    "\"containerStatuses\":[{\"name\":\"nginx\","
+	    "\"image\":\"registry.k8s.io/nginx:1.25\","
+	    "\"imageID\":\"docker-pullable://registry.k8s.io/nginx@sha256:abc\","
+	    "\"containerID\":\"docker://abc\","
+	    "\"state\":{\"running\":{}}}]}}";
+
+	quark_queue_init_bare(&qq);
+
+	/* The library user registers the container first, pod unknown. */
+	container = quark_container_create(&qq, "docker://abc", NULL, NULL,
+	    NULL);
+	assert(container != NULL);
+	assert(container->pod == NULL);
+	qp = test_process_event(&qq, 100, "/system.slice/docker-abc.scope");
+	assert(qp->container == container);
+
+	/* The talker reports the pod that owns it. */
+	json = cJSON_Parse(pod_json);
+	assert(json != NULL);
+	assert(kube_handle_pod(&qq, json) == 0);
+
+	/* Same object, now attached to the pod and completed. */
+	assert(quark_container_lookup(&qq, "docker://abc") == container);
+	pod = quark_pod_lookup(&qq, "pod-1");
+	assert(pod != NULL);
+	assert(container->pod == pod);
+	assert(!RB_EMPTY(&pod->containers));
+	assert(!strcmp(container->name, "nginx"));
+	assert(!strcmp(container->image, "registry.k8s.io/nginx:1.25"));
+	assert(!strcmp(container->image_id,
+	    "docker-pullable://registry.k8s.io/nginx@sha256:abc"));
+	assert(!strcmp(container->image_name, "nginx"));
+	assert(!strcmp(container->image_tag, "1.25"));
+	assert(!strcmp(container->image_hash, "sha256:abc"));
+	assert(qp->container == container);
+	assert(TAILQ_FIRST(&container->processes) == qp);
+
+	/* A repeated update of the same pod changes nothing. */
+	assert(kube_handle_pod(&qq, json) == 0);
+	assert(quark_container_lookup(&qq, "docker://abc") == container);
+	assert(container->pod == pod);
+	assert(qp->container == container);
+	cJSON_Delete(json);
+
+	/*
+	 * Another pod claiming the same container is refused per container,
+	 * the pod itself is still created, and the first link is untouched.
+	 */
+	other_json = cJSON_Parse(other_pod_json);
+	assert(other_json != NULL);
+	assert(kube_handle_pod(&qq, other_json) == 0);
+	other = quark_pod_lookup(&qq, "pod-2");
+	assert(other != NULL);
+	assert(RB_EMPTY(&other->containers));
+	assert(container->pod == pod);
+	assert(qp->container == container);
+	cJSON_Delete(other_json);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /*
  * quark_queue_open() must refuse anything but exactly one backend
  * with EINVAL, and the default attr must select only EBPF.
@@ -3637,6 +3956,439 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_container_remove(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_process	 process;
+	struct quark_pod		*pod;
+	struct quark_container	*container, *orphan;
+	u64			 marked;
+
+	quark_queue_init_bare(&qq);
+	bzero(&process, sizeof(process));
+	qq.cache_grace_time = UINT64_MAX;
+	pod = quark_pod_get(&qq, "pod");
+	assert(pod != NULL);
+	container = quark_container_get(&qq, "container", "pod");
+	orphan = quark_container_get(&qq, "orphan", NULL);
+	assert(container != NULL && orphan != NULL);
+	process.container = container;
+	TAILQ_INSERT_TAIL(&container->processes, &process, entry_container);
+
+	errno = 0;
+	assert(quark_container_remove(&qq, "absent") == -1);
+	assert(errno == ESRCH);
+	assert(quark_pod_remove(&qq, "absent") == -1);
+	assert(errno == ESRCH);
+	assert(TAILQ_EMPTY(&qq.event_gc));
+
+	assert(quark_container_remove(&qq, "container") == 0);
+	marked = container->gc.gc_time;
+	assert(marked != 0);
+	/* Repeated removal is idempotent and still reports success. */
+	assert(quark_container_remove(&qq, "container") == 0);
+	assert(container->gc.gc_time == marked);
+	assert(TAILQ_FIRST(&qq.event_gc) == &container->gc);
+	assert(TAILQ_NEXT(&container->gc, gc_entry) == NULL);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(process.container == container);
+
+	/* End the grace period without a timed sleep. */
+	qq.cache_grace_time = 0;
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_container_lookup(&qq, "container") == NULL);
+	assert(process.container == NULL);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(RB_EMPTY(&pod->containers));
+	assert(TAILQ_EMPTY(&qq.event_gc));
+	assert(quark_container_lookup(&qq, "orphan") == orphan);
+
+	/* A collected id is absent again. */
+	errno = 0;
+	assert(quark_container_remove(&qq, "container") == -1);
+	assert(errno == ESRCH);
+
+	assert(quark_container_remove(&qq, "orphan") == 0);
+	assert(quark_container_remove(&qq, "orphan") == 0);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_container_lookup(&qq, "orphan") == NULL);
+	assert(TAILQ_EMPTY(&qq.event_gc));
+	assert(qq.stats.garbage_collections == 2);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_pod_remove(const struct test *t, struct quark_queue_attr *qa)
+{
+	int	 child_first;
+
+	/* Both queue orders must remove each child only once. */
+	for (child_first = 0; child_first < 2; child_first++) {
+		struct quark_queue	 qq;
+		struct quark_process	 process;
+		struct quark_pod		*pod;
+		struct quark_container	*child, *queued, *orphan;
+		u64			 marked;
+
+		quark_queue_init_bare(&qq);
+		bzero(&process, sizeof(process));
+		qq.cache_grace_time = UINT64_MAX;
+		pod = quark_pod_get(&qq, "pod");
+		assert(pod != NULL);
+		child = quark_container_get(&qq, "child", "pod");
+		queued = quark_container_get(&qq, "queued", "pod");
+		orphan = quark_container_get(&qq, "orphan", NULL);
+		assert(child != NULL && queued != NULL && orphan != NULL);
+		process.container = child;
+		TAILQ_INSERT_TAIL(&child->processes, &process, entry_container);
+
+		if (child_first)
+			assert(quark_container_remove(&qq, "queued") == 0);
+		assert(quark_pod_remove(&qq, "pod") == 0);
+		marked = pod->gc.gc_time;
+		assert(marked != 0);
+		assert(quark_pod_remove(&qq, "pod") == 0);
+		assert(pod->gc.gc_time == marked);
+		if (!child_first)
+			assert(quark_container_remove(&qq, "queued") == 0);
+		assert(quark_queue_get_event(&qq) == NULL);
+		assert(quark_pod_lookup(&qq, "pod") == pod);
+		assert(quark_container_lookup(&qq, "child") == child);
+		assert(quark_container_lookup(&qq, "queued") == queued);
+
+		qq.cache_grace_time = 0;
+		assert(quark_queue_get_event(&qq) == NULL);
+		assert(quark_pod_lookup(&qq, "pod") == NULL);
+		assert(quark_container_lookup(&qq, "child") == NULL);
+		assert(quark_container_lookup(&qq, "queued") == NULL);
+		assert(process.container == NULL);
+		assert(TAILQ_EMPTY(&qq.event_gc));
+		assert(quark_container_lookup(&qq, "orphan") == orphan);
+		/* Pod plus both containers, regardless of removal order. */
+		assert(qq.stats.garbage_collections == 3);
+		errno = 0;
+		assert(quark_pod_remove(&qq, "pod") == -1);
+		assert(errno == ESRCH);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+static int
+t_container_dump(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct {
+		const char *name, *image, *expected;
+	} cases[] = {
+		{ NULL, NULL, "name=<unknown> image=<unknown>\n" },
+		{ "test-container", "test-image",
+		  "name=test-container image=test-image\n" },
+		{ NULL, "test-image", "name=<unknown> image=test-image\n" },
+		{ "test-container", NULL, "name=test-container image=<unknown>\n" },
+	};
+	size_t	 i;
+
+	for (i = 0; i < nitems(cases); i++) {
+		struct quark_queue	 qq;
+		struct quark_process	 process;
+		struct quark_event	 event = { .process = &process };
+		struct quark_container	*container;
+		FILE			*f;
+		char			*buf = NULL;
+		size_t			 len = 0;
+
+		quark_queue_init_bare(&qq);
+		bzero(&process, sizeof(process));
+		container = quark_container_create(&qq, "container", NULL,
+		    cases[i].name, cases[i].image);
+		assert(container != NULL);
+		process.container = container;
+		f = open_memstream(&buf, &len);
+		assert(f != NULL);
+		assert(quark_event_dump(&event, f) == 0);
+		assert(fclose(f) == 0);
+		assert(strstr(buf, cases[i].expected) != NULL);
+		assert(strstr(buf, "container_id=container\n") != NULL);
+		assert((container->name == NULL) == (cases[i].name == NULL));
+		assert((container->image == NULL) == (cases[i].image == NULL));
+		free(buf);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+static int
+t_pod_dump(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct {
+		const char *name, *ns, *phase;
+		const char *expected_name_ns, *expected_uid_phase;
+	} cases[] = {
+		{ NULL, NULL, NULL,
+		  "name=<unknown> namespace=<unknown>\n",
+		  "uid=pod phase=<unknown>\n" },
+		{ "test-pod", "test-ns", "Running",
+		  "name=test-pod namespace=test-ns\n", "uid=pod phase=Running\n" },
+		{ NULL, "test-ns", "Running",
+		  "name=<unknown> namespace=test-ns\n", "uid=pod phase=Running\n" },
+		{ "test-pod", NULL, "Running",
+		  "name=test-pod namespace=<unknown>\n", "uid=pod phase=Running\n" },
+		{ "test-pod", "test-ns", NULL,
+		  "name=test-pod namespace=test-ns\n", "uid=pod phase=<unknown>\n" },
+	};
+	size_t	 i;
+
+	for (i = 0; i < nitems(cases); i++) {
+		struct quark_queue	 qq;
+		struct quark_process	 process;
+		struct quark_event	 event = { .process = &process };
+		struct quark_pod		*pod;
+		FILE			*f;
+		char			*buf = NULL;
+		size_t			 len = 0;
+
+		quark_queue_init_bare(&qq);
+		bzero(&process, sizeof(process));
+		pod = quark_pod_create(&qq, "pod", cases[i].name,
+		    cases[i].ns, cases[i].phase);
+		assert(pod != NULL);
+		process.container = quark_container_create(&qq, "container",
+		    "pod", "test-container", "test-image");
+		assert(process.container != NULL);
+		f = open_memstream(&buf, &len);
+		assert(f != NULL);
+		assert(quark_event_dump(&event, f) == 0);
+		assert(fclose(f) == 0);
+		assert(strstr(buf, cases[i].expected_name_ns) != NULL);
+		assert(strstr(buf, cases[i].expected_uid_phase) != NULL);
+		assert((pod->name == NULL) == (cases[i].name == NULL));
+		assert((pod->ns == NULL) == (cases[i].ns == NULL));
+		assert((pod->phase == NULL) == (cases[i].phase == NULL));
+		free(buf);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+static int
+t_pod_create(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_pod		*pod, *other;
+	char			 uid[] = "pod", name[] = "test-pod";
+	char			 ns[] = "test-ns", phase[] = "Running";
+
+	quark_queue_init_bare(&qq);
+	pod = quark_pod_create(&qq, uid, name, ns, phase);
+	assert(pod != NULL);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(quark_pod_get(&qq, "pod") == pod);
+	assert(RB_EMPTY(&pod->containers));
+	assert(RB_EMPTY(&pod->labels));
+	assert(pod->name != NULL && pod->ns != NULL && pod->phase != NULL);
+
+	/* Changes to input buffers must not change the stored values. */
+	uid[0] = name[0] = ns[0] = phase[0] = 'x';
+	assert(strcmp(pod->uid, "pod") == 0);
+	assert(strcmp(pod->name, "test-pod") == 0);
+	assert(strcmp(pod->ns, "test-ns") == 0);
+	assert(strcmp(pod->phase, "Running") == 0);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(quark_pod_lookup(&qq, uid) == NULL);
+
+	/* A duplicate UID must not replace the pod or its values. */
+	errno = 0;
+	assert(quark_pod_create(&qq, "pod", "new", "new", "Pending") == NULL);
+	assert(errno == EEXIST);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(strcmp(pod->name, "test-pod") == 0);
+	assert(strcmp(pod->ns, "test-ns") == 0);
+	assert(strcmp(pod->phase, "Running") == 0);
+
+	/* Optional fields can be absent. */
+	other = quark_pod_create(&qq, "other", NULL, NULL, NULL);
+	assert(other != NULL && other != pod);
+	assert(other->name == NULL && other->ns == NULL && other->phase == NULL);
+	assert(quark_pod_lookup(&qq, "other") == other);
+	assert(quark_pod_get(&qq, "other") == other);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.pod_by_uid));
+
+	return (0);
+}
+
+static int
+t_pod_get(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_pod		*pod, *other;
+	char			 uid[] = "pod";
+
+	quark_queue_init_bare(&qq);
+	errno = 0;
+	assert(quark_pod_lookup(&qq, uid) == NULL);
+	assert(errno == ESRCH);
+	pod = quark_pod_get(&qq, uid);
+	assert(pod != NULL);
+	assert(strcmp(pod->uid, "pod") == 0);
+	assert(RB_EMPTY(&pod->containers));
+	assert(RB_EMPTY(&pod->labels));
+	assert(pod->name == NULL && pod->ns == NULL && pod->phase == NULL);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+
+	/* The pod owns its UID independently of the caller's buffer. */
+	uid[0] = 'x';
+	assert(strcmp(pod->uid, "pod") == 0);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(quark_pod_lookup(&qq, uid) == NULL);
+
+	/* Getting an existing pod must preserve caller-populated metadata. */
+	pod->name = strdup("test-pod");
+	pod->ns = strdup("test-namespace");
+	pod->phase = strdup("Running");
+	assert(pod->name != NULL && pod->ns != NULL && pod->phase != NULL);
+	assert(quark_pod_get(&qq, "pod") == pod);
+	assert(strcmp(pod->name, "test-pod") == 0);
+	assert(strcmp(pod->ns, "test-namespace") == 0);
+	assert(strcmp(pod->phase, "Running") == 0);
+
+	other = quark_pod_get(&qq, "other");
+	assert(other != NULL && other != pod);
+	assert(quark_pod_lookup(&qq, "other") == other);
+	assert(quark_pod_get(&qq, "pod") == pod);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.pod_by_uid));
+
+	return (0);
+}
+
+static int
+t_container_create(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_pod		*pod, *other;
+	struct quark_container	*container, *orphan;
+	char			 id[] = "container", name[] = "test-container";
+	char			 image[] = "test-image";
+
+	quark_queue_init_bare(&qq);
+	pod = quark_pod_create(&qq, "pod", NULL, NULL, NULL);
+	other = quark_pod_create(&qq, "other", NULL, NULL, NULL);
+	assert(pod != NULL && other != NULL);
+	container = quark_container_create(&qq, id, "pod", name, image);
+	assert(container != NULL);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(quark_container_get(&qq, "container", "pod") == container);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(TAILQ_EMPTY(&container->processes));
+	assert(container->name != NULL && container->image != NULL);
+
+	/* Changes to input buffers must not change the stored values. */
+	id[0] = name[0] = image[0] = 'x';
+	assert(strcmp(container->container_id, "container") == 0);
+	assert(strcmp(container->name, "test-container") == 0);
+	assert(strcmp(container->image, "test-image") == 0);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(quark_container_lookup(&qq, id) == NULL);
+
+	/* A duplicate ID must not change the values or the parent pod. */
+	errno = 0;
+	assert(quark_container_create(&qq, "container", "other", "new", "new") == NULL);
+	assert(errno == EEXIST);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(strcmp(container->name, "test-container") == 0);
+	assert(strcmp(container->image, "test-image") == 0);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(RB_EMPTY(&other->containers));
+
+	/* A missing pod must not cause a container to be inserted. */
+	errno = 0;
+	assert(quark_container_create(&qq, "absent", "missing", NULL, NULL) == NULL);
+	assert(errno == ESRCH);
+	assert(quark_container_lookup(&qq, "absent") == NULL);
+
+	/* A container can have no pod and no optional fields. */
+	orphan = quark_container_create(&qq, "orphan", NULL, NULL, NULL);
+	assert(orphan != NULL && orphan != container);
+	assert(orphan->pod == NULL && !orphan->linked_by_pod);
+	assert(orphan->name == NULL && orphan->image == NULL);
+	assert(quark_container_lookup(&qq, "orphan") == orphan);
+	assert(quark_container_get(&qq, "orphan", NULL) == orphan);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.container_by_id));
+	assert(RB_EMPTY(&qq.pod_by_uid));
+
+	return (0);
+}
+
+static int
+t_container_get(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_pod		*pod, *other;
+	struct quark_container	*container, *direct;
+
+	quark_queue_init_bare(&qq);
+	/* These cache operations do not require a kernel backend. */
+	pod = quark_pod_get(&qq, "pod");
+	other = quark_pod_get(&qq, "other");
+	assert(pod != NULL && other != NULL);
+
+	container = quark_container_get(&qq, "container", NULL);
+	assert(container != NULL);
+	assert(container->pod == NULL && !container->linked_by_pod);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(quark_container_get(&qq, "container", NULL) == container);
+
+	/* A missing pod must leave the existing container unchanged. */
+	errno = 0;
+	assert(quark_container_get(&qq, "container", "missing") == NULL);
+	assert(errno == ESRCH);
+	assert(container->pod == NULL && !container->linked_by_pod);
+
+	/* Attach later, and allow repeated requests for the same pod. */
+	assert(quark_container_get(&qq, "container", "pod") == container);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(quark_container_get(&qq, "container", "pod") == container);
+	assert(quark_container_get(&qq, "container", NULL) == container);
+	assert(container->pod == pod && container->linked_by_pod);
+
+	/* Reject a different parent without changing either pod's tree. */
+	errno = 0;
+	assert(quark_container_get(&qq, "container", "other") == NULL);
+	assert(errno == EEXIST);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(RB_EMPTY(&other->containers));
+	assert(quark_container_lookup(&qq, "container") == container);
+
+	/* Creation with a parent and rejection of a missing parent. */
+	direct = quark_container_get(&qq, "direct", "other");
+	assert(direct != NULL && direct->pod == other);
+	assert(direct->linked_by_pod && RB_ROOT(&other->containers) == direct);
+	errno = 0;
+	assert(quark_container_get(&qq, "absent", "missing") == NULL);
+	assert(errno == ESRCH);
+	assert(quark_container_lookup(&qq, "absent") == NULL);
+
+	assert(quark_container_get(&qq, "orphan", NULL) != NULL);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.pod_by_uid));
+	assert(RB_EMPTY(&qq.container_by_id));
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  * Use T() for tests that require no queue.
@@ -3679,6 +4431,9 @@ struct test all_tests[] = {
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
 	T_EBPF(t_cgroup_parse),
+	T(t_process_container_cache),
+	T(t_link_container_data),
+	T(t_kube_container_attach),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),
 	T_EBPF(t_cache_grace),
@@ -3689,6 +4444,14 @@ struct test all_tests[] = {
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
 	T(t_backend_flags),
+	T(t_pod_get),
+	T(t_pod_create),
+	T(t_pod_dump),
+	T(t_container_dump),
+	T(t_container_get),
+	T(t_container_create),
+	T(t_pod_remove),
+	T(t_container_remove),
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),
