@@ -2626,6 +2626,83 @@ test_process_event(struct quark_queue *qq, u32 pid, const char *cgroup)
 	return ((struct quark_process *)qev->process);
 }
 
+static struct quark_process *
+test_raw_task_event(struct quark_queue *qq, int type, u32 pid,
+    const char *cgroup)
+{
+	const struct quark_event *qev;
+	struct raw_event	*raw;
+
+	raw = raw_event_alloc(type);
+	assert(raw != NULL);
+	raw->pid = pid;
+	if (cgroup != NULL) {
+		raw->task.cgroup = strdup(cgroup);
+		assert(raw->task.cgroup != NULL);
+	}
+	assert(raw_event_insert(qq, raw) == 0);
+	qev = quark_queue_get_event(qq);
+	assert(qev != NULL);
+	assert(qev->process != NULL);
+
+	return ((struct quark_process *)qev->process);
+}
+
+/*
+ * A fork for a PID we saw exit is a reused PID, the new process must not
+ * keep the cgroup and the container link of the previous owner, even if
+ * the fork carries no cgroup, as with the kprobe backend. A fork of a
+ * live process, like a kprobe thread event, keeps them.
+ */
+static int
+t_fork_pid_reuse_cgroup(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_container	*container;
+	struct quark_process	*qp;
+
+	quark_queue_init_bare(&qq);
+	/* Keep exited processes cached, as within the gc grace window. */
+	qq.cache_grace_time = MS_TO_NS(60000);
+	container = quark_container_create(&qq, "docker://abc", NULL, NULL,
+	    NULL);
+	assert(container != NULL);
+
+	qp = test_process_event(&qq, 100, "/system.slice/docker-abc.scope");
+	assert(qp->container == container);
+
+	/* A fork without a cgroup on a live process keeps everything. */
+	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, NULL) == qp);
+	assert(!strcmp(qp->cgroup, "/system.slice/docker-abc.scope"));
+	assert(qp->container == container);
+
+	/* The owner exits, a new process reuses the PID without a cgroup. */
+	assert(test_raw_task_event(&qq, RAW_EXIT_THREAD, 100, NULL) == qp);
+	assert(qp->flags & QUARK_F_EXIT);
+	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, NULL) == qp);
+	assert(qp->cgroup == NULL);
+	assert(qp->container == NULL);
+	assert(TAILQ_EMPTY(&container->processes));
+	assert(qp->container_id == NULL);
+	assert(!qp->container_id_parsed);
+
+	/* A reuse by a process in the same container links it again. */
+	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100,
+	    "/system.slice/docker-abc.scope") == qp);
+	assert(qp->container == container);
+
+	/* A reuse by a host process does not keep the link. */
+	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100,
+	    "/user.slice/user-1000.slice") == qp);
+	assert(!strcmp(qp->cgroup, "/user.slice/user-1000.slice"));
+	assert(qp->container == NULL);
+	assert(TAILQ_EMPTY(&container->processes));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /*
  * Test the parsed container ID cache and cgroup replacement.
  */
@@ -4535,6 +4612,7 @@ struct test all_tests[] = {
 	T(t_link_container_data),
 	T(t_kube_container_attach),
 	T(t_kube_pod_attach),
+	T(t_fork_pid_reuse_cgroup),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),
 	T_EBPF(t_cache_grace),

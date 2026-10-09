@@ -1699,8 +1699,21 @@ process_container_id(struct quark_process *qp)
 }
 
 /*
+ * Drop the container link and the cached container ID, they no longer
+ * match qp->cgroup. link_container_data() relinks lazily.
+ */
+static void
+process_forget_container(struct quark_process *qp)
+{
+	process_unlink_container(qp);
+	free(qp->container_id);
+	qp->container_id = NULL;
+	qp->container_id_parsed = 0;
+}
+
+/*
  * Take ownership of *cgroup. Keep the cached data if the value did
- * not change, otherwise drop it, link_container_data() relinks lazily.
+ * not change, otherwise drop it.
  * The container is a function of the cgroup path only, so an unchanged
  * path keeps a correct link, and a changed one, like a reused PID now
  * owned by a host process, must not keep a stale one.
@@ -1721,10 +1734,20 @@ process_set_cgroup(struct quark_process *qp, char **cgroup)
 	qp->cgroup = *cgroup;
 	*cgroup = NULL;
 
-	process_unlink_container(qp);
-	free(qp->container_id);
-	qp->container_id = NULL;
-	qp->container_id_parsed = 0;
+	process_forget_container(qp);
+}
+
+/*
+ * Forget the cgroup of a previous owner of a reused PID. A fork may not
+ * carry a cgroup of its own, the kprobe backend never does, so the new
+ * process would otherwise keep the old one and its container link.
+ */
+static void
+process_clear_cgroup(struct quark_process *qp)
+{
+	free(qp->cgroup);
+	qp->cgroup = NULL;
+	process_forget_container(qp);
 }
 
 void
@@ -2825,6 +2848,13 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 	case RAW_WAKE_UP_NEW_TASK:
 		dst->events |= QUARK_EV_FORK;
 		raw_task = &src->task;
+		/*
+		 * A fork for a PID we saw exit is a reused PID. Only check the
+		 * exit flag, kprobe thread events also come in as forks of a
+		 * live process, and must keep its cgroup.
+		 */
+		if (qp->flags & QUARK_F_EXIT)
+			process_clear_cgroup(qp);
 		process_cache_inherit(qq, qp, raw_task->ppid);
 		break;
 	case RAW_EXEC:
