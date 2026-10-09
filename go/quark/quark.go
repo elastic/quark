@@ -541,6 +541,15 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	return event, true
 }
 
+// GetEventAsECS returns the next event serialized as ECS JSON. The boolean is
+// false if no event is available.
+//
+// Pod metadata only reaches ECS with a kube talker: orchestrator.* is emitted
+// only when the queue runs one, and container.labels come from pod labels,
+// which only the talker provides. Without it, a process linked to a container
+// created through CreateContainer gets only container.* from the fields given
+// there, and the name and namespace of a pod created through CreatePod are
+// not emitted. Use GetEvent to read Process.Container and its Pod instead.
 func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
 	var ecsBuf *C.char
 	var ecsLen C.size_t
@@ -1027,6 +1036,8 @@ func optCString(s string) *C.char {
 // if a pod with the same uid is already present. A pod passed to RemovePod
 // stays present until the cache grace time ends, so creating the same uid
 // within that window also returns syscall.EEXIST. The result is a data copy.
+// Without a kube talker the pod does not appear in GetEventAsECS output, see
+// there.
 func (queue *Queue) CreatePod(uid, name, ns, phase string) (PodInfo, error) {
 	cUID := C.CString(uid)
 	defer C.free(unsafe.Pointer(cUID))
