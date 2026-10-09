@@ -82,10 +82,7 @@ const struct quark_socket *quark_socket_lookup(struct quark_queue *,
 			     struct quark_sockaddr *, struct quark_sockaddr *);
 struct quark_passwd	*quark_passwd_lookup(struct quark_queue *, uid_t);
 struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
-struct quark_pod	*quark_pod_get(struct quark_queue *, const char *);
 const struct quark_pod	*quark_pod_lookup(struct quark_queue *, const char *);
-struct quark_container	*quark_container_get(struct quark_queue *,
-			     const char *, const char *);
 const struct quark_container *quark_container_lookup(struct quark_queue *,
 			     const char *);
 struct quark_pod	*quark_pod_create(struct quark_queue *, const char *,
@@ -132,6 +129,9 @@ void		 process_set_cgroup(struct quark_process *, char **);
 void		 link_container_data(struct quark_queue *,
 		     struct quark_process *);
 int		 kube_handle_pod(struct quark_queue *, struct cJSON *);
+struct quark_pod *quark_pod_get(struct quark_queue *, const char *);
+struct quark_container *quark_container_get(struct quark_queue *,
+		     const char *, const char *);
 
 /* btf.c */
 struct quark_btf_target {
