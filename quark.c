@@ -561,6 +561,7 @@ process_free(struct quark_process *qp)
 	free(qp->cwd);
 	free(qp->cmdline);
 	free(qp->cgroup);
+	free(qp->container_id);
 	free(qp->env);
 	free(qp);
 }
@@ -625,16 +626,22 @@ process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid
 }
 
 static void
+process_unlink_container(struct quark_process *qp)
+{
+	if (qp->container == NULL)
+		return;
+	TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
+	qp->container = NULL;
+}
+
+static void
 process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 {
 	struct gc_link	*gc;
 
 	gc = &qp->gc;
 	RB_REMOVE(process_by_pid, &qq->process_by_pid, qp);
-	if (qp->container) {
-		TAILQ_REMOVE(&qp->container->processes, qp, entry_container);
-		qp->container = NULL;
-	}
+	process_unlink_container(qp);
 	gc_unlink(qq, gc);
 	process_free(qp);
 }
@@ -851,10 +858,8 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 		container->linked_by_pod = 0;
 	}
 	gc_unlink(qq, &container->gc);
-	while ((qp = TAILQ_FIRST(&container->processes)) != NULL) {
-		TAILQ_REMOVE(&container->processes, qp, entry_container);
-		qp->container = NULL;
-	}
+	while ((qp = TAILQ_FIRST(&container->processes)) != NULL)
+		process_unlink_container(qp);
 
 	free(container->container_id);
 	free(container->name);
@@ -867,11 +872,11 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 }
 
 static struct quark_container *
-container_lookup(struct quark_queue *qq, char *container_id)
+container_lookup(struct quark_queue *qq, const char *container_id)
 {
 	struct quark_container	 key, *k;
 
-	key.container_id = container_id;
+	key.container_id = (char *)container_id;
 	k = RB_FIND(container_by_id, &qq->container_by_id, &key);
 	if (k == NULL)
 		errno = ESRCH;
@@ -1637,21 +1642,102 @@ parse_container_cgroup(const char *cgroup, char *container_id, size_t container_
 	return (0);
 }
 
-static void
-link_kube_data(struct quark_queue *qq, struct quark_process *qp)
+/*
+ * Return the cached container ID. Parse the cgroup if necessary.
+ * A NULL result with container_id_parsed set means that the cgroup
+ * is not a container cgroup.
+ */
+const char *
+process_container_id(struct quark_process *qp)
+{
+	char	cid[NAME_MAX];
+
+	if (qp->container_id_parsed)
+		return (qp->container_id);
+	if (qp->cgroup == NULL)
+		return (NULL);
+
+	if (parse_container_cgroup(qp->cgroup, cid, sizeof(cid)) == -1) {
+		qp->container_id_parsed = 1;
+		return (NULL);
+	}
+
+	/*
+	 * If strdup fails, leave container_id_parsed unset so the next call
+	 * retries instead of treating this as a non-container cgroup.
+	 */
+	qp->container_id = strdup(cid);
+	if (qp->container_id == NULL)
+		return (NULL);
+
+	qp->container_id_parsed = 1;
+	return (qp->container_id);
+}
+
+/*
+ * Take ownership of *cgroup. Keep the cached data if the value did
+ * not change.
+ */
+void
+process_set_cgroup(struct quark_process *qp, char **cgroup)
+{
+	char	cid[NAME_MAX];
+	int	same_container;
+
+	if (*cgroup == NULL)
+		return;
+
+	if (qp->cgroup != NULL && !strcmp(qp->cgroup, *cgroup)) {
+		free(*cgroup);
+		*cgroup = NULL;
+		return;
+	}
+
+	/*
+	 * A process can move to a nested cgroup inside its own container,
+	 * like systemd as init moving to <container>.scope/init.scope. The
+	 * basename of the nested cgroup does not name a container, so keep
+	 * the cached ID and the container link unless the new cgroup names
+	 * a different container.
+	 */
+	same_container = 0;
+	if (qp->container_id_parsed && qp->container_id != NULL) {
+		if (parse_container_cgroup(*cgroup, cid, sizeof(cid)) == -1 ||
+		    !strcmp(cid, qp->container_id))
+			same_container = 1;
+	}
+
+	free(qp->cgroup);
+	qp->cgroup = *cgroup;
+	*cgroup = NULL;
+
+	if (same_container)
+		return;
+
+	process_unlink_container(qp);
+	free(qp->container_id);
+	qp->container_id = NULL;
+	qp->container_id_parsed = 0;
+}
+
+void
+link_container_data(struct quark_queue *qq, struct quark_process *qp)
 {
 	struct quark_container	*container;
-	char			 cid[NAME_MAX];
+	const char		*container_id;
 
 	if (qp == NULL)
 		return;
 	if (qp->container != NULL)
 		return;
-	if (qp->cgroup == NULL)
+	/* Do not parse the cgroup if no container metadata exists. */
+	if (RB_EMPTY(&qq->container_by_id))
 		return;
-	if (parse_container_cgroup(qp->cgroup, cid, sizeof(cid)) == -1)
+
+	container_id = process_container_id(qp);
+	if (container_id == NULL)
 		return;
-	if ((container = container_lookup(qq, cid)) == NULL)
+	if ((container = container_lookup(qq, container_id)) == NULL)
 		return;
 
 	qp->container = container;
@@ -2388,7 +2474,13 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 const struct quark_process *
 quark_process_lookup(struct quark_queue *qq, int pid)
 {
-	return (process_cache_get(qq, pid, 0));
+	struct quark_process *qp;
+
+	qp = process_cache_get(qq, pid, 0);
+	if (qp != NULL)
+		link_container_data(qq, qp);
+
+	return (qp);
 }
 
 /*
@@ -2451,7 +2543,7 @@ quark_container_get(struct quark_queue *qq, const char *container_id,
 			return (NULL);
 	}
 
-	container = container_lookup(qq, (char *)container_id);
+	container = container_lookup(qq, container_id);
 	if (container != NULL) {
 		if (pod != NULL && container->pod != pod) {
 			if (container->pod != NULL)
@@ -2498,7 +2590,7 @@ quark_container_get(struct quark_queue *qq, const char *container_id,
 const struct quark_container *
 quark_container_lookup(struct quark_queue *qq, const char *container_id)
 {
-	return (container_lookup(qq, (char *)container_id));
+	return (container_lookup(qq, container_id));
 }
 
 /*
@@ -2569,7 +2661,7 @@ quark_container_create(struct quark_queue *qq, const char *container_id,
 			return (NULL);
 	}
 
-	if (container_lookup(qq, (char *)container_id) != NULL)
+	if (container_lookup(qq, container_id) != NULL)
 		return (errno = EEXIST, NULL);
 
 	container = calloc(1, sizeof(*container));
@@ -2662,11 +2754,14 @@ quark_process_iter_init(struct quark_process_iter *qi, struct quark_queue *qq)
 const struct quark_process *
 quark_process_iter_next(struct quark_process_iter *qi)
 {
-	const struct quark_process	*qp;
+	struct quark_process *qp;
 
 	qp = qi->qp;
 	if (qi->qp != NULL)
-		qi->qp = RB_NEXT(process_by_pid, &qq->process_by_pid, qi->qp);
+		qi->qp = RB_NEXT(process_by_pid, &qi->qq->process_by_pid,
+		    qi->qp);
+	if (qp != NULL)
+		link_container_data(qi->qq, qp);
 
 	return (qp);
 }
@@ -2803,12 +2898,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		qp->proc_mnt_inonum = raw_task->mnt_inonum;
 		qp->proc_net_inonum = raw_task->net_inonum;
 
-		if (raw_task->cgroup != NULL) {
-			free(qp->cgroup);
-			qp->cgroup = raw_task->cgroup;
-			raw_task->cgroup = NULL;
-
-		}
+		process_set_cgroup(qp, &raw_task->cgroup);
 		if (raw_task->env != NULL) {
 			free(qp->env);
 			qp->env = raw_task->env;
@@ -3113,7 +3203,7 @@ sproc_cgroup(struct quark_process *qp, int dfd)
 {
 	int	 fd;
 	size_t	 len;
-	char	*cgroup, *tail, *p;
+	char	*cgroup, *new_cgroup, *tail, *p;
 
 	cgroup = NULL;
 	if ((fd = openat(dfd, "cgroup", O_RDONLY)) == -1) {
@@ -3139,7 +3229,10 @@ sproc_cgroup(struct quark_process *qp, int dfd)
 		goto bad;
 	*tail = 0;
 
-	qp->cgroup = strdup(p);
+	new_cgroup = strdup(p);
+	if (new_cgroup == NULL)
+		goto bad;
+	process_set_cgroup(qp, &new_cgroup);
 	free(cgroup);
 
 	return (0);
@@ -4437,10 +4530,59 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->ruleset = NULL;		/* no rules */
 }
 
+static void
+quark_queue_init_trees(struct quark_queue *qq)
+{
+	RB_INIT(&qq->raw_event_by_time);
+	RB_INIT(&qq->raw_event_by_pidtime);
+	RB_INIT(&qq->process_by_pid);
+	RB_INIT(&qq->socket_by_src_dst);
+	RB_INIT(&qq->passwd_by_uid);
+	RB_INIT(&qq->group_by_gid);
+	RB_INIT(&qq->container_by_id);
+	RB_INIT(&qq->pod_by_uid);
+	TAILQ_INIT(&qq->event_gc);
+}
+
+static int
+queue_ops_none_nop(struct quark_queue *qq)
+{
+	return (0);
+}
+
+static void
+queue_ops_none_close(struct quark_queue *qq)
+{
+}
+
+/* Backend that does nothing, for queues that only exercise the caches */
+static struct quark_queue_ops queue_ops_none = {
+	.open		= queue_ops_none_nop,
+	.populate	= queue_ops_none_nop,
+	.update_stats	= queue_ops_none_nop,
+	.close		= queue_ops_none_close,
+};
+
+/*
+ * Initialize a queue without a kernel backend. Tests use it to exercise
+ * the process and container caches; populate, stats and close are NOPs.
+ * The queue must still be released with quark_queue_close().
+ */
+void
+quark_queue_init_bare(struct quark_queue *qq)
+{
+	bzero(qq, sizeof(*qq));
+	quark_queue_init_trees(qq);
+	qq->epollfd = -1;
+	qq->max_length = 1;
+	qq->queue_ops = &queue_ops_none;
+}
+
 int
 quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 {
 	struct quark_queue_attr	 qa_default;
+	struct quark_process	*qp;
 	struct timespec		 unused;
 	char			*ver;
 	int			 backends;
@@ -4501,16 +4643,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		return (-1);
 
 	bzero(qq, sizeof(*qq));
-
-	RB_INIT(&qq->raw_event_by_time);
-	RB_INIT(&qq->raw_event_by_pidtime);
-	RB_INIT(&qq->process_by_pid);
-	RB_INIT(&qq->socket_by_src_dst);
-	RB_INIT(&qq->passwd_by_uid);
-	RB_INIT(&qq->group_by_gid);
-	RB_INIT(&qq->container_by_id);
-	RB_INIT(&qq->pod_by_uid);
-	TAILQ_INIT(&qq->event_gc);
+	quark_queue_init_trees(qq);
 	qq->flags = qa->flags;
 	qq->max_length = qa->max_length;
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
@@ -4639,14 +4772,14 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	}
 
 	/*
-	 * At this point, existing processes have been loaded and kubernetes
-	 * metada has been primed. Now it's the time to correlate both.
+	 * At this point, existing processes and container metadata have been
+	 * loaded. Now it is time to correlate them. Without a kube talker the
+	 * container tree is necessarily empty here, as metadata can only be
+	 * supplied after the queue is opened, so the pass would be a NOP.
 	 */
 	if (qq->qkube != NULL) {
-		struct quark_process	*qp;
-
 		RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
-			link_kube_data(qq, qp);
+			link_container_data(qq, qp);
 		}
 	}
 
@@ -5031,7 +5164,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 	qsk->pid_last_use = raw->pid;
 
 	qev->socket = qsk;
-	qev->process = quark_process_lookup(qq, qsk->pid_origin);
+	qev->process = process_cache_get(qq, qsk->pid_origin, 0);
 
 	return (qev);
 }
@@ -5050,7 +5183,7 @@ raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_PACKET;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 
 	/* Steal the packet */
 	qev->packet = raw->packet.quark_packet;
@@ -5075,7 +5208,7 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_FILE;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 
 	/*
 	 * File aggregation is basically joining op_mask and then using the last
@@ -5106,7 +5239,7 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_PTRACE;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 	qev->ptrace = raw->ptrace.quark_ptrace;
 
 	return (qev);
@@ -5120,7 +5253,7 @@ raw_event_mprotect(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_MPROTECT;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 	qev->mprotect = raw->mprotect.quark_mprotect;
 	/* Steal the path; event_storage_clear() frees it */
 	raw->mprotect.quark_mprotect.path = NULL;
@@ -5136,7 +5269,7 @@ raw_event_module_load(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_MODULE_LOAD;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 	/* Steal it */
 	qev->module_load = raw->module_load.quark_module_load;
 	raw->module_load.quark_module_load = NULL;
@@ -5152,7 +5285,7 @@ raw_event_shm(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_SHM;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 	/* Steal it */
 	qev->shm = raw->shm.quark_shm;
 	raw->shm.quark_shm = NULL;
@@ -5175,7 +5308,7 @@ raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_TTY;
-	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->process = process_cache_get(qq, raw->pid, 0);
 
 	/* Link raw (our head) to the first chunk in tha agg queue */
 	next = TAILQ_FIRST(&raw->agg_queue);
@@ -5570,10 +5703,8 @@ quark_queue_get_event1(struct quark_queue *qq)
 	if (qev == NULL)
 		return (NULL);
 
-	/* Try to correlate kubernetes metadata */
-	if (qq->qkube != NULL)
-		link_kube_data(qq,
-		    (struct quark_process *)qev->process);
+	/* Try to correlate container metadata. */
+	link_container_data(qq, (struct quark_process *)qev->process);
 
 	return (qev);
 }
