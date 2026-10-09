@@ -269,6 +269,13 @@ type Event struct {
 }
 
 // Queue holds the state of a quark instance.
+//
+// A Queue is not safe for concurrent use, as with the C library (see
+// quark(7)). Callers driving it from multiple goroutines must serialize
+// all methods. This includes the read-like ones such as Lookup and
+// Snapshot, which may update links from processes to container metadata.
+// Block is the exception, it only waits on the epoll descriptor and may
+// run concurrently with any method other than Close.
 type Queue struct {
 	quarkQueue *C.struct_quark_queue   // pointer to the queue structure
 	ruleset    *C.struct_quark_ruleset // active ruleset, nil if none
