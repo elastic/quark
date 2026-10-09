@@ -566,7 +566,7 @@ quark-kube-talker: $(GO_FILES)
 
 quark-go-test: $(QUARK_GO_DEPS)
 	$(call msg,GO,$@)
-	$(Q)cd go/quark && go test -c -o ../../quark-go-test
+	$(Q)cd go/quark && go test -tags quarktest -c -o ../../quark-go-test
 
 man-embedder: man-embedder.c
 	$(call msg,CC,$@)
