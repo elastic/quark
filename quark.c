@@ -1700,14 +1700,14 @@ process_container_id(struct quark_process *qp)
 
 /*
  * Take ownership of *cgroup. Keep the cached data if the value did
- * not change.
+ * not change, otherwise drop it, link_container_data() relinks lazily.
+ * The container is a function of the cgroup path only, so an unchanged
+ * path keeps a correct link, and a changed one, like a reused PID now
+ * owned by a host process, must not keep a stale one.
  */
 void
 process_set_cgroup(struct quark_process *qp, char **cgroup)
 {
-	char	cid[NAME_MAX];
-	int	same_container;
-
 	if (*cgroup == NULL)
 		return;
 
@@ -1717,26 +1717,9 @@ process_set_cgroup(struct quark_process *qp, char **cgroup)
 		return;
 	}
 
-	/*
-	 * A process can move to a nested cgroup inside its own container,
-	 * like systemd as init moving to <container>.scope/init.scope. The
-	 * basename of the nested cgroup does not name a container, so keep
-	 * the cached ID and the container link unless the new cgroup names
-	 * a different container.
-	 */
-	same_container = 0;
-	if (qp->container_id_parsed && qp->container_id != NULL) {
-		if (parse_container_cgroup(*cgroup, cid, sizeof(cid)) == -1 ||
-		    !strcmp(cid, qp->container_id))
-			same_container = 1;
-	}
-
 	free(qp->cgroup);
 	qp->cgroup = *cgroup;
 	*cgroup = NULL;
-
-	if (same_container)
-		return;
 
 	process_unlink_container(qp);
 	free(qp->container_id);
