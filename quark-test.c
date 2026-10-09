@@ -2668,23 +2668,32 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	assert(TAILQ_FIRST(&container.processes) == &qp);
 
 	/*
-	 * A nested cgroup inside the same container must preserve the
-	 * cached ID and the container link.
+	 * Any cgroup change drops the link and the cached ID, even a nested
+	 * cgroup inside the same container. The parser only looks at the
+	 * basename, so it does not relink nested cgroups yet.
 	 */
 	cgroup = strdup("/system.slice/docker-old.scope/init.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
 	assert(!strcmp(qp.cgroup, "/system.slice/docker-old.scope/init.scope"));
-	assert(qp.container == &container);
-	assert(qp.container_id == cached);
-	assert(qp.container_id_parsed);
-	assert(TAILQ_FIRST(&container.processes) == &qp);
+	assert(qp.container == NULL);
+	assert(TAILQ_EMPTY(&container.processes));
+	assert(qp.container_id == NULL);
+	assert(!qp.container_id_parsed);
 
 	/*
-	 * A different cgroup must remove the old link and clear the
-	 * cached ID.
+	 * A different container cgroup must remove the old link and clear
+	 * the cached ID.
 	 */
+	cgroup = strdup("/system.slice/docker-old.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(!strcmp(process_container_id(&qp), "docker://old"));
+	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
+	qp.container = &container;
+
 	cgroup = strdup("/system.slice/containerd-new.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
@@ -2696,17 +2705,22 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 
 	assert(!strcmp(process_container_id(&qp), "containerd://new"));
 	assert(qp.container_id_parsed);
-	cached = qp.container_id;
 
 	/*
-	 * A cgroup that does not name a container keeps the last known
-	 * container ID, the process may have moved to a nested cgroup.
+	 * A host cgroup, like a reused PID now owned by a host process,
+	 * must not keep the container link or the cached ID.
 	 */
+	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
+	qp.container = &container;
 	cgroup = strdup("/user.slice/user-1000.slice");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
-	assert(qp.container_id == cached);
+	assert(qp.container == NULL);
+	assert(TAILQ_EMPTY(&container.processes));
+	assert(qp.container_id == NULL);
+	assert(!qp.container_id_parsed);
+	assert(process_container_id(&qp) == NULL);
 	assert(qp.container_id_parsed);
 
 	free(qp.cgroup);
