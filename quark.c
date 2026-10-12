@@ -2852,6 +2852,11 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		 * A fork for a PID we saw exit is a reused PID. Only check the
 		 * exit flag, kprobe thread events also come in as forks of a
 		 * live process, and must keep its cgroup.
+		 * Not exact with QQ_THREAD_EVENTS on kprobe: the exit of any
+		 * thread sets QUARK_F_EXIT on the live process, so the next
+		 * thread fork clears its cgroup, and kprobe never sends one
+		 * again. The entry is gc marked by that exit and loses its
+		 * cgroup when collected anyway.
 		 */
 		if (qp->flags & QUARK_F_EXIT)
 			process_clear_cgroup(qp);
