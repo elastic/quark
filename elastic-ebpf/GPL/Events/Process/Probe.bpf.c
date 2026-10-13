@@ -19,6 +19,279 @@
 #include "State.h"
 #include "Varlen.h"
 
+/*
+ * Observe one syscall result, enriched with the task resolved by mm_access.
+ * Raw syscall hooks also observe compat calls, unlike named syscall events.
+ * User iovecs are bounded entry snapshots, never actual accessed ranges.
+ */
+const volatile bool process_vm_access_enabled = false;
+
+struct process_vm_access_state {
+    struct ebpf_process_vm_access_event event;
+    u64 thread_start_time;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, u64);
+    __type(value, struct process_vm_access_state);
+    __uint(max_entries, 0);
+} process_vm_access_state SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, u32);
+    __type(value, u64);
+    __uint(max_entries, 0);
+} process_vm_access_failures SEC(".maps");
+
+static void process_vm_access_state_failure(void)
+{
+    u32 zero = 0;
+    u64 *failures = bpf_map_lookup_elem(&process_vm_access_failures, &zero);
+    if (failures)
+        (*failures)++;
+}
+
+
+/* Linux syscall tables and arch/{x86,arm64}/include/asm/syscall.h. */
+static u32 process_vm_access_operation(const struct pt_regs *regs, u32 nr, bool *compat)
+{
+#if defined(__TARGET_ARCH_x86)
+    /* Filter before task reads on the overwhelmingly common unrelated path. */
+    if (nr != 310 && nr != 311 && nr != 347 && nr != 348 &&
+        nr != (0x40000000U | 539) && nr != (0x40000000U | 540))
+        return 0;
+    const struct task_struct *task = (void *)bpf_get_current_task();
+    /* TS_COMPAT also handles int $0x80 from a 64-bit executable. */
+    bool ia32 = BPF_CORE_READ(task, thread_info.status) & 0x2;
+    *compat = ia32 || (nr & 0x40000000U);
+    if (ia32)
+        return nr == 347 ? EBPF_PROCESS_VM_ACCESS_READ :
+               nr == 348 ? EBPF_PROCESS_VM_ACCESS_WRITE : 0;
+    return nr == 310 || nr == (0x40000000U | 539) ? EBPF_PROCESS_VM_ACCESS_READ :
+           nr == 311 || nr == (0x40000000U | 540) ? EBPF_PROCESS_VM_ACCESS_WRITE : 0;
+#elif defined(__TARGET_ARCH_arm64)
+    if (nr != 270 && nr != 271 && nr != 376 && nr != 377)
+        return 0;
+    *compat = BPF_CORE_READ(regs, pstate) & 0x10; /* PSR_MODE32_BIT */
+    if (*compat)
+        return nr == 376 ? EBPF_PROCESS_VM_ACCESS_READ :
+               nr == 377 ? EBPF_PROCESS_VM_ACCESS_WRITE : 0;
+    return nr == 270 ? EBPF_PROCESS_VM_ACCESS_READ :
+           nr == 271 ? EBPF_PROCESS_VM_ACCESS_WRITE : 0;
+#else
+#error Unsupported process_vm_access architecture
+#endif
+}
+
+static void process_vm_access_args(const struct pt_regs *regs, u32 nr, u64 args[6])
+{
+#if defined(__TARGET_ARCH_x86)
+    if (nr == 347 || nr == 348) {
+        args[0] = (u32)BPF_CORE_READ(regs, bx);
+        args[1] = (u32)BPF_CORE_READ(regs, cx);
+        args[2] = (u32)BPF_CORE_READ(regs, dx);
+        args[3] = (u32)BPF_CORE_READ(regs, si);
+        args[4] = (u32)BPF_CORE_READ(regs, di);
+        args[5] = (u32)BPF_CORE_READ(regs, bp);
+    } else {
+        args[0] = BPF_CORE_READ(regs, di);
+        args[1] = BPF_CORE_READ(regs, si);
+        args[2] = BPF_CORE_READ(regs, dx);
+        args[3] = BPF_CORE_READ(regs, r10);
+        args[4] = BPF_CORE_READ(regs, r8);
+        args[5] = BPF_CORE_READ(regs, r9);
+    }
+#else
+    args[0] = BPF_CORE_READ(regs, orig_x0);
+    args[1] = BPF_CORE_READ(regs, regs[1]);
+    args[2] = BPF_CORE_READ(regs, regs[2]);
+    args[3] = BPF_CORE_READ(regs, regs[3]);
+    args[4] = BPF_CORE_READ(regs, regs[4]);
+    args[5] = BPF_CORE_READ(regs, regs[5]);
+#endif
+}
+
+struct process_vm_snapshot {
+    u64 capacity;
+    u64 first_addr;
+    u64 first_len;
+    u32 first_valid;
+};
+
+/* Complete totals only. A prefix is never advertised as a request total. */
+static u32 process_vm_access_snapshot(u64 ptr, u64 count, bool compat,
+                                      struct process_vm_snapshot *snapshot)
+{
+    u64 sum = 0;
+    if (count > 1024) /* UIO_MAXIOV */
+        return EBPF_PROCESS_VM_SNAPSHOT_INVALID;
+#pragma unroll
+    for (int i = 0; i < EBPF_PROCESS_VM_SNAPSHOT_MAX; i++) {
+        if ((u64)i >= count)
+            break;
+        u64 addr, len;
+        if (compat) {
+            struct { u32 base; u32 len; } vec = {};
+            if (bpf_probe_read_user(&vec, sizeof(vec), (void *)(ptr + i * sizeof(vec))))
+                return EBPF_PROCESS_VM_SNAPSHOT_UNREADABLE;
+            addr = vec.base;
+            len = vec.len;
+        } else {
+            struct { u64 base; u64 len; } vec = {};
+            if (bpf_probe_read_user(&vec, sizeof(vec), (void *)(ptr + i * sizeof(vec))))
+                return EBPF_PROCESS_VM_SNAPSHOT_UNREADABLE;
+            addr = vec.base;
+            len = vec.len;
+        }
+        if (i == 0) {
+            snapshot->first_addr = addr;
+            snapshot->first_len = len;
+            snapshot->first_valid = 1;
+        }
+        if (len > (~0ULL >> 1) - sum)
+            return EBPF_PROCESS_VM_SNAPSHOT_OVERFLOW;
+        sum += len;
+    }
+    if (count > EBPF_PROCESS_VM_SNAPSHOT_MAX)
+        return EBPF_PROCESS_VM_SNAPSHOT_TRUNCATED;
+    snapshot->capacity = sum;
+    return EBPF_PROCESS_VM_SNAPSHOT_COMPLETE;
+}
+
+SEC("raw_tracepoint/sys_enter")
+int raw_tracepoint__process_vm_enter(struct bpf_raw_tracepoint_args *ctx)
+{
+    const struct pt_regs *regs = (void *)ctx->args[0];
+    u32 nr = ctx->args[1];
+    bool compat = false;
+    u32 operation = process_vm_access_operation(regs, nr, &compat);
+    if (!operation)
+        return 0;
+
+    preempt_disable();
+    u64 key = bpf_get_current_pid_tgid();
+    /* Never retain a previous invocation, including a newly trusted thread. */
+    bpf_map_delete_elem(&process_vm_access_state, &key);
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+    const struct task_struct *task = (void *)bpf_get_current_task();
+    struct process_vm_access_state state = {};
+    u64 args[6];
+    process_vm_access_args(regs, nr, args);
+#pragma unroll
+    for (int i = 0; i < 6; i++)
+        if (compat)
+            args[i] = (u32)args[i];
+    state.thread_start_time = BPF_CORE_READ(task, start_time);
+    state.event.operation = operation;
+    state.event.requested_pid = (s32)args[0];
+    state.event.flags = args[5];
+    state.event.local_iovcnt = args[2];
+    state.event.remote_iovcnt = args[4];
+    struct pid *pid = BPF_CORE_READ(task, thread_pid);
+    u32 level = BPF_CORE_READ(pid, level);
+    state.event.caller_pidns = BPF_CORE_READ(pid, numbers[level].ns, ns.inum);
+    struct process_vm_snapshot local = {}, remote = {};
+    state.event.local_snapshot_status = process_vm_access_snapshot(args[1], args[2], compat, &local);
+    state.event.remote_snapshot_status = process_vm_access_snapshot(args[3], args[4], compat, &remote);
+    state.event.local_capacity = local.capacity;
+    state.event.remote_capacity = remote.capacity;
+    state.event.first_remote_addr = remote.first_addr;
+    state.event.first_remote_len = remote.first_len;
+    state.event.first_remote_valid = remote.first_valid;
+    if (bpf_map_update_elem(&process_vm_access_state, &key, &state, BPF_ANY))
+        process_vm_access_state_failure();
+out:
+    preempt_enable();
+    return 0;
+}
+
+/* Earlier than ptrace credential/dumpability checks, including denied attempts. */
+static int process_vm_access_target(const struct task_struct *target)
+{
+    u64 key = bpf_get_current_pid_tgid();
+    struct process_vm_access_state *state = bpf_map_lookup_elem(&process_vm_access_state, &key);
+    if (!state)
+        return 0;
+    const struct task_struct *task = (void *)bpf_get_current_task();
+    if (state->thread_start_time != BPF_CORE_READ(task, start_time))
+        return 0;
+    state->event.target_pid = BPF_CORE_READ(target, tgid);
+    /* CLOCK_MONOTONIC, matching ebpf_pid_info.start_time_ns. */
+    state->event.target_start_time_ns = BPF_CORE_READ(target, group_leader, start_time);
+    state->event.target_resolved = 1;
+    return 0;
+}
+
+SEC("fentry/mm_access")
+int BPF_PROG(fentry__mm_access, struct task_struct *target)
+{
+    preempt_disable();
+    process_vm_access_target(target);
+    preempt_enable();
+    return 0;
+}
+
+SEC("kprobe/mm_access")
+int BPF_KPROBE(kprobe__mm_access, struct task_struct *target)
+{
+    preempt_disable();
+    process_vm_access_target(target);
+    preempt_enable();
+    return 0;
+}
+
+/* Clean every thread, including one killed before its syscall exit hook. */
+SEC("raw_tracepoint/sched_process_exit")
+int raw_tracepoint__process_vm_cleanup(struct bpf_raw_tracepoint_args *ctx)
+{
+    u64 key = bpf_get_current_pid_tgid();
+    bpf_map_delete_elem(&process_vm_access_state, &key);
+    return 0;
+}
+
+SEC("raw_tracepoint/sys_exit")
+int raw_tracepoint__process_vm_exit(struct bpf_raw_tracepoint_args *ctx)
+{
+    const struct pt_regs *regs = (void *)ctx->args[0];
+#if defined(__TARGET_ARCH_x86)
+    u32 nr = BPF_CORE_READ(regs, orig_ax);
+#else
+    u32 nr = BPF_CORE_READ(regs, syscallno);
+#endif
+    bool compat = false;
+    u32 operation = process_vm_access_operation(regs, nr, &compat);
+    if (!operation)
+        return 0;
+    preempt_disable();
+    u64 key = bpf_get_current_pid_tgid();
+    struct process_vm_access_state *state = bpf_map_lookup_elem(&process_vm_access_state, &key);
+    if (!state)
+        goto out;
+    struct process_vm_access_state saved = *state;
+    bpf_map_delete_elem(&process_vm_access_state, &key);
+    const struct task_struct *task = (void *)bpf_get_current_task();
+    if (saved.thread_start_time != BPF_CORE_READ(task, start_time) ||
+        saved.event.operation != operation)
+        goto out;
+    if (saved.event.target_resolved && saved.event.target_pid == (u32)(key >> 32))
+        goto out;
+    struct ebpf_process_vm_access_event *event = get_zeroed_event_buffer(sizeof(*event));
+    if (!event)
+        goto out;
+    *event = saved.event;
+    event->hdr.type = EBPF_EVENT_PROCESS_VM_ACCESS;
+    event->hdr.ts = bpf_ktime_get_boot_ns();
+    ebpf_pid_info__fill(&event->pids, task);
+    event->ret = compat ? (s64)(s32)ctx->args[1] : (s64)ctx->args[1];
+    ebpf_ringbuf_write(&ringbuf, event, sizeof(*event), 0);
+out:
+    preempt_enable();
+    return 0;
+}
+
 /* tty_write */
 DECL_FIELD_OFFSET(iov_iter, __iov);
 
@@ -257,6 +530,10 @@ int BPF_PROG(sched_process_exec,
     // The address space is replaced on exec; reported mprotect transitions
     // belong to the previous program image, so start fresh.
     mprotect_seen__clear(BPF_CORE_READ(task, tgid));
+    if (process_vm_access_enabled) {
+        u64 key = bpf_get_current_pid_tgid();
+        bpf_map_delete_elem(&process_vm_access_state, &key);
+    }
 
     struct ebpf_process_exec_event *event = get_event_buffer();
     if (!event)
@@ -373,6 +650,10 @@ static int disassociate_ctty__enter(int on_exit)
     // dead, so this runs exactly once per process; drop its dedup state so a
     // recycled tgid does not inherit (and suppress) old transitions.
     mprotect_seen__clear(BPF_CORE_READ(task, tgid));
+    if (process_vm_access_enabled) {
+        u64 key = bpf_get_current_pid_tgid();
+        bpf_map_delete_elem(&process_vm_access_state, &key);
+    }
 
     event = get_event_buffer();
     if (event == NULL)
