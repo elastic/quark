@@ -3878,13 +3878,9 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 
 	/*
-	 * A move to a cgroup that does not name a container keeps the
-	 * cached container ID, see t_process_set_cgroup. Use a fresh
-	 * process for the host scope.
+	 * A move to a cgroup that does not name a container drops the
+	 * cached container ID, see t_process_container_cache.
 	 */
-	free(qp.cgroup);
-	free(qp.container_id);
-	bzero(&qp, sizeof(qp));
 	cgroup = strdup("/user.slice/user-1000.slice");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
