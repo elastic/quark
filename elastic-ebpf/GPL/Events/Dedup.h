@@ -102,17 +102,4 @@ static __always_inline void ebpf_dedup__set(void *map, const void *key,
         bpf_map_update_elem(map, key, fresh, BPF_ANY);
 }
 
-// Both halves at once, for a caller that claims the bit before output and
-// accepts that an event lost to a full ring buffer is not retried.
-static __always_inline bool ebpf_dedup__test_and_set(void *map, const void *key,
-                                                     struct ebpf_dedup_seen *fresh,
-                                                     const struct task_struct *task, u64 bit)
-{
-    if (ebpf_dedup__test(map, key, fresh, task, bit))
-        return true;
-    ebpf_dedup__set(map, key, fresh);
-
-    return false;
-}
-
 #endif // EBPF_EVENTPROBE_EVENTS_DEDUP_H
