@@ -267,4 +267,28 @@ struct task_struct___4_18 {
 	struct pid_link___4_18	pids[3];
 };
 
+/*
+ * The context a tracepoint/syscalls/sys_{enter,exit}_* program receives is
+ * not the ftrace record described by the tracepoint format file, it is the
+ * function-local struct syscall_tp_t that perf_call_bpf_{enter,exit}() in
+ * kernel/trace/trace_syscalls.c build on the stack. The two agree on where
+ * args and ret live on most kernels, but not on RHEL 9.3 (5.14.0-362): there
+ * struct trace_entry grew a preempt_lazy_count byte and syscall_tp_t carried
+ * syscall_nr as an unsigned long, which pushed args and ret to offset 24
+ * while the format file, and struct syscall_trace_{enter,exit} in BTF, still
+ * say 16. Upstream reconciled the two in ba8ea72388a1 ("bpf: Change
+ * syscall_nr type to int in struct syscall_tp_t"), RHEL 9.4 carries it.
+ *
+ * pahole emits both local variants under the same name; a member access
+ * only matches the variant that owns the member. Partial definitions, CO-RE
+ * matches by name.
+ */
+struct syscall_tp_t___enter {
+	unsigned long		args[6];
+};
+
+struct syscall_tp_t___exit {
+	long			ret;
+};
+
 #endif	/* _VMLINUX_EXTRA_H_ */
