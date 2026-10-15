@@ -523,6 +523,7 @@ struct file_access_scratch {
     struct file_access_fail_key fail_key;
     struct ebpf_dedup_seen fresh;
     struct file_access_target target;
+    bool procfs; // the file is a /proc/<pid>/ entry and target is its task
     struct path path;
 };
 
@@ -625,8 +626,10 @@ static bool file_access_procfs_target(struct file_access_target *target, struct 
     return true;
 }
 
-static void file_access_event__fill_task(struct ebpf_file_access_event *event,
-                                         struct task_struct *task)
+// Out of line so that its namespace struct is not in the emitter's frame, see
+// file_access__match().
+static __attribute__((noinline)) void file_access_event__fill_task(struct ebpf_file_access_event *event,
+                                                                   struct task_struct *task)
 {
     struct ebpf_namespace_info ns;
 
@@ -639,62 +642,82 @@ static void file_access_event__fill_task(struct ebpf_file_access_event *event,
     bpf_get_current_comm(event->comm, TASK_COMM_LEN);
 }
 
-// A completed open: leaf or ancestor anchor hit, dedup, resolve, emit. Kept
-// out of line so its locals are not added to the do_filp_open__exit() frame
-// that every open pays for. Disables preemption itself for the per-cpu
-// scratch, event buffer and resolver state, like prepare_and_send_file_event():
-// the caller runs with preemption enabled.
-static __attribute__((noinline)) void file_access__open(struct file *f, u32 open_flags)
+// The match half of a completed open: the anchor walk, then the dedup test,
+// with the keys in the per-cpu scratch. True if the open is to be reported;
+// scratch->path is then the file's path for the emitter.
+//
+// A subprogram of its own, not the top of file_access__open(): the verifier
+// charges a program the deepest chain of frames it can reach, and with the
+// file events on the same hook that chain runs do_filp_open__exit() through
+// the emitter into the cgroup path resolver, a few bytes under the 512 limit.
+// Here, the walk's locals are off the stack before the emitter calls the
+// resolvers, and the emitter itself keeps little live across its calls.
+static __attribute__((noinline)) bool file_access__match(struct file_access_scratch *scratch,
+                                                         struct file *f, u32 open_flags)
 {
-    struct ebpf_file_access_event *event;
-    struct file_access_scratch    *scratch;
-    struct task_struct            *task;
-    struct dentry                 *de;
-    u32                            zero = 0, roles;
-    u64                            class;
-    bool                           procfs;
+    struct task_struct *task;
+    struct dentry      *de;
+    u32                 roles;
 
-    preempt_disable();
-    scratch = bpf_map_lookup_elem(&elastic_ebpf_file_access_scratch, &zero);
-    if (scratch == NULL)
-        goto out;
-
-    de    = BPF_CORE_READ(f, f_path.dentry);
-    roles = file_access_anchored(&scratch->key, de);
+    scratch->path = BPF_CORE_READ(f, f_path);
+    de            = scratch->path.dentry;
+    roles         = file_access_anchored(&scratch->key, de);
     if (roles == 0)
-        goto out;
+        return false;
 
     task                   = (struct task_struct *)bpf_get_current_task();
     scratch->file_key.tgid = BPF_CORE_READ(task, tgid);
 
     // The target of a procfs entry is taken before the dedup test so that an
     // open skipped for being the caller's own does not claim the slot.
-    procfs = file_access_procfs_target(&scratch->target, de);
-    if (procfs && (roles & EBPF_FILE_ACCESS_ANCHOR_OTHER_TASK) &&
+    scratch->procfs = file_access_procfs_target(&scratch->target, de);
+    if (scratch->procfs && (roles & EBPF_FILE_ACCESS_ANCHOR_OTHER_TASK) &&
         scratch->target.tgid == scratch->file_key.tgid)
-        goto out;
+        return false;
 
-    class                   = file_access_class(open_flags);
     scratch->file_key.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
     scratch->file_key.inode = BPF_CORE_READ(de, d_inode, i_ino);
-    if (ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key, &scratch->fresh,
-                         task, class))
+
+    return !ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
+                             &scratch->fresh, task, file_access_class(open_flags));
+}
+
+// A completed open: match, resolve, emit. Kept out of line so its locals are
+// not added to the do_filp_open__exit() frame that every open pays for.
+// Disables preemption itself for the per-cpu scratch, event buffer and
+// resolver state, like prepare_and_send_file_event(): the caller runs with
+// preemption enabled.
+static __attribute__((noinline)) void file_access__open(struct file *f, u32 open_flags)
+{
+    struct ebpf_file_access_event *event;
+    struct file_access_scratch    *scratch;
+    struct task_struct            *task;
+    struct dentry                 *de;
+    u32                            zero = 0;
+
+    preempt_disable();
+    scratch = bpf_map_lookup_elem(&elastic_ebpf_file_access_scratch, &zero);
+    if (scratch == NULL)
+        goto out;
+    if (!file_access__match(scratch, f, open_flags))
         goto out;
 
     event = get_event_buffer();
     if (!event)
         goto out;
 
-    file_access_event__fill_task(event, task);
-    ebpf_file_info__fill(&event->finfo, de);
     event->open_flags           = open_flags;
     event->fmode                = BPF_CORE_READ(f, f_mode);
     event->error                = 0;
-    event->flags                = procfs ? EBPF_FILE_ACCESS_F_PROCFS : 0;
+    event->flags                = scratch->procfs ? EBPF_FILE_ACCESS_F_PROCFS : 0;
     event->dfd                  = 0;
     event->target_tid           = scratch->target.tid;
     event->target_tgid          = scratch->target.tgid;
     event->target_start_time_ns = scratch->target.start_time_ns;
+    task                        = (struct task_struct *)bpf_get_current_task();
+    file_access_event__fill_task(event, task);
+    de = scratch->path.dentry; // a plain load: scratch is not a kernel type
+    ebpf_file_info__fill(&event->finfo, de);
 
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);
@@ -702,15 +725,14 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     long size;
 
     // path
-    field         = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
-    scratch->path = BPF_CORE_READ(f, f_path);
-    size          = ebpf_resolve_path_to_string(field->data, &scratch->path, task);
+    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
+    size  = ebpf_resolve_path_to_string(field->data, &scratch->path, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // symlink_target_path
-    field      = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
-    char *link = BPF_CORE_READ(de, d_inode, i_link);
-    size       = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
+    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
+    de    = scratch->path.dentry;
+    size  = read_kernel_str_or_empty_str(field->data, PATH_MAX, BPF_CORE_READ(de, d_inode, i_link));
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // pids ss cgroup path
@@ -759,40 +781,25 @@ static __always_inline bool file_access_string_anchored(struct file_access_scrat
     return false;
 }
 
-// A failed open: only EACCES, EPERM and ENOENT are of interest, and only when
-// the leaf of the requested string is a leaf anchor or one of the directory
-// components before it is a parent anchor. There is no dentry, so the names
-// are matched on the string and the base directory of a relative name is
-// resolved so userspace can rebuild the path. Disables preemption itself for
-// the per-cpu scratch, like file_access__open().
-static __attribute__((noinline)) void file_access__open_failed(int dfd, struct filename *pathname,
-                                                               u32 open_flags, long error)
+// The match half of a failed open, the string counterpart of
+// file_access__match(): the requested name is read into the scratch, its leaf
+// and directory components are matched against the anchors, the base
+// directory of a relative name is resolved into scratch->path and the dedup
+// key is tested. True if the open is to be reported.
+static __attribute__((noinline)) bool file_access__match_failed(struct file_access_scratch *scratch,
+                                                                int dfd, struct filename *pathname,
+                                                                u32 open_flags, long error)
 {
-    struct ebpf_file_access_event *event;
-    struct file_access_scratch    *scratch;
-    struct task_struct            *task;
-    struct dentry                 *base;
-    const char                    *name;
-    u32                            zero = 0, hash;
-    int                            len, leaf, i, j;
-    bool                           relative;
-
-    if (error != EACCES && error != EPERM && error != ENOENT)
-        return;
-    if (pathname == NULL)
-        return;
-    if (ebpf_events_is_trusted_pid())
-        return;
-
-    preempt_disable();
-    scratch = bpf_map_lookup_elem(&elastic_ebpf_file_access_scratch, &zero);
-    if (scratch == NULL)
-        goto out;
+    struct task_struct *task;
+    struct dentry      *base;
+    const char         *name;
+    u32                 hash;
+    int                 len, leaf, i, j;
 
     name = BPF_CORE_READ(pathname, name);
     len  = bpf_probe_read_kernel_str(scratch->filename, sizeof(scratch->filename), name);
     if (len <= 1 || len >= (int)sizeof(scratch->filename)) // empty, or truncated: leaf unknown
-        goto out;
+        return false;
 
     // FNV-1a over the whole string for the dedup key, the leaf start, which
     // is the byte after the last '/', and the positions of the last few '/'
@@ -827,22 +834,21 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
         __builtin_memset(&scratch->key, 0, sizeof(scratch->key));
         if (bpf_probe_read_kernel_str(scratch->key.name, sizeof(scratch->key.name),
                                       &scratch->filename[leaf]) <= 0)
-            goto out;
+            return false;
         roles = bpf_map_lookup_elem(&elastic_ebpf_file_access_anchors, &scratch->key);
     }
     if ((roles == NULL || !(*roles & EBPF_FILE_ACCESS_ANCHOR_LEAF)) &&
         !file_access_string_anchored(scratch))
-        goto out;
+        return false;
 
     task = (struct task_struct *)bpf_get_current_task();
 
     // The base directory of a relative name, part of the dedup key and the
-    // cwd field below. Left empty for an absolute name or a dirfd that is
-    // not a valid descriptor.
+    // emitter's cwd field. Left empty for an absolute name or a dirfd that
+    // is not a valid descriptor.
     scratch->path.dentry = NULL;
     scratch->path.mnt    = NULL;
-    relative             = scratch->filename[0] != '/';
-    if (relative) {
+    if (scratch->filename[0] != '/') {
         if (dfd == AT_FDCWD) {
             scratch->path = BPF_CORE_READ(task, fs, pwd);
         } else {
@@ -867,16 +873,43 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
         scratch->fail_key.base_dev   = BPF_CORE_READ(base, d_inode, i_sb, s_dev);
         scratch->fail_key.base_inode = BPF_CORE_READ(base, d_inode, i_ino);
     }
-    if (ebpf_dedup__test(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key, &scratch->fresh,
-                         task, file_access_class(open_flags)))
+
+    return !ebpf_dedup__test(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key,
+                             &scratch->fresh, task, file_access_class(open_flags));
+}
+
+// A failed open: only EACCES, EPERM and ENOENT are of interest, and only when
+// the leaf of the requested string is a leaf anchor or one of the directory
+// components before it is a parent anchor. There is no dentry, so the names
+// are matched on the string and the base directory of a relative name is
+// resolved so userspace can rebuild the path. Disables preemption itself for
+// the per-cpu scratch, like file_access__open().
+static __attribute__((noinline)) void file_access__open_failed(int dfd, struct filename *pathname,
+                                                               u32 open_flags, long error)
+{
+    struct ebpf_file_access_event *event;
+    struct file_access_scratch    *scratch;
+    struct task_struct            *task;
+    u32                            zero = 0;
+
+    if (error != EACCES && error != EPERM && error != ENOENT)
+        return;
+    if (pathname == NULL)
+        return;
+    if (ebpf_events_is_trusted_pid())
+        return;
+
+    preempt_disable();
+    scratch = bpf_map_lookup_elem(&elastic_ebpf_file_access_scratch, &zero);
+    if (scratch == NULL)
+        goto out;
+    if (!file_access__match_failed(scratch, dfd, pathname, open_flags, error))
         goto out;
 
     event = get_event_buffer();
     if (!event)
         goto out;
 
-    file_access_event__fill_task(event, task);
-    __builtin_memset(&event->finfo, 0, sizeof(event->finfo));
     event->open_flags           = open_flags;
     event->fmode                = 0;
     event->error                = error;
@@ -885,6 +918,9 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
     event->target_tid           = 0;
     event->target_tgid          = 0;
     event->target_start_time_ns = 0;
+    task                        = (struct task_struct *)bpf_get_current_task();
+    file_access_event__fill_task(event, task);
+    __builtin_memset(&event->finfo, 0, sizeof(event->finfo));
 
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);
@@ -901,7 +937,7 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // cwd: the directory a relative name was resolved against
-    if (relative) {
+    if (scratch->filename[0] != '/') {
         event->flags |= EBPF_FILE_ACCESS_F_RELATIVE;
         field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_CWD);
         if (scratch->path.dentry != NULL)
