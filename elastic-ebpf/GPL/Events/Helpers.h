@@ -57,6 +57,39 @@ const volatile int consumer_pid = 0;
 // Compiler barrier, used to prevent compile-time insns reordering and optimizations.
 #define barrier() asm volatile("" ::: "memory")
 
+// Pass a kernel pointer to a global BPF function as a scalar.
+//
+// A global function (non-static, __noinline) is verified once, on its own,
+// instead of once per call site and per path leading to it, which is what
+// keeps a hook with several emit paths under BPF_COMPLEXITY_LIMIT_INSNS: one
+// walk of the path resolvers costs ~200k instructions on RHEL 8's 4.18. The
+// price is the argument contract: the function is checked without knowing its
+// callers, so what a parameter may hold is fixed by its type. A scalar
+// parameter is accepted by every verifier. Passing a kernel pointer as a
+// pointer needs per-verifier support for typed pointer arguments (BTF-typed
+// args, later __arg_trusted), which the oldest verifier we load on, RHEL 8's
+// 4.18, rejects outright ("Caller passes invalid args"). Every access to such
+// a pointer already goes through bpf_probe_read_kernel() via BPF_CORE_READ,
+// which takes any value, so it travels as a u64 and the code is the same on
+// every kernel.
+//
+// A cast alone does not change what the verifier knows about a register, hence
+// the read of the pointer's own stack slot: a helper wrote it, so what comes
+// back is an unknown scalar.
+//
+// Two more rules for the global function itself: it must return a scalar, and
+// it may not be called with preemption disabled on verifiers from 6.10 (where
+// bpf_preempt_disable() appeared) to 6.14 (before the sleepability analysis
+// that allows it), so it disables preemption for its own per-cpu state and
+// the caller keeps it enabled.
+static __always_inline u64 ebpf_ptr_to_scalar(const void *ptr)
+{
+    u64 v = 0;
+
+    bpf_probe_read_kernel(&v, sizeof(v), &ptr);
+    return v;
+}
+
 #define DECL_FUNC_ARG(func, arg) const volatile int arg__##func##__##arg##__ = 0;
 #define FUNC_ARG_READ(type, func, arg)                                                             \
     ({                                                                                             \
@@ -127,6 +160,39 @@ const volatile int consumer_pid = 0;
 
 #define DECL_FIELD_OFFSET(struct, field) const volatile int off__##struct##__##field##__ = 0;
 #define FIELD_OFFSET(struct, field) off__##struct##__##field##__
+
+/*
+ * Syscall argument n at a tracepoint/syscalls/sys_enter_* program, and the
+ * return value at sys_exit_*. Relocated against struct syscall_tp_t, the
+ * layout the kernel actually hands us, with struct syscall_trace_{enter,exit}
+ * as the fallback for a BTF that lacks the function-local type; see
+ * vmlinux_extra.h for why the two can disagree. Never restate the record
+ * layout in C, the offsets are not stable across kernels.
+ *
+ * The reads go through bpf_probe_read_kernel() rather than the context
+ * pointer on purpose: perf_event_set_bpf_prog() rejects a program whose
+ * direct context accesses reach past the size of the format record, and on
+ * the kernels where the layouts diverge the last argument lives past it.
+ */
+#define SYSCALL_ENTER_ARG(ctx, n)                                                                  \
+    ({                                                                                             \
+        unsigned long _arg;                                                                        \
+        if (bpf_core_field_exists(struct syscall_tp_t___enter, args))                              \
+            _arg = BPF_CORE_READ((struct syscall_tp_t___enter *)(ctx), args[n]);                   \
+        else                                                                                       \
+            _arg = BPF_CORE_READ((struct syscall_trace_enter *)(ctx), args[n]);                    \
+        _arg;                                                                                      \
+    })
+
+#define SYSCALL_EXIT_RET(ctx)                                                                      \
+    ({                                                                                             \
+        long _ret;                                                                                 \
+        if (bpf_core_field_exists(struct syscall_tp_t___exit, ret))                                \
+            _ret = BPF_CORE_READ((struct syscall_tp_t___exit *)(ctx), ret);                        \
+        else                                                                                       \
+            _ret = BPF_CORE_READ((struct syscall_trace_exit *)(ctx), ret);                         \
+        _ret;                                                                                      \
+    })
 
 // From linux/err.h
 #define MAX_ERRNO 4095

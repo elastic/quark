@@ -106,7 +106,7 @@ static s32
 btf_offsetof_rec(struct btf *btf, struct btf_type const *t, const char *member_name,
     struct btf_member **ret_member, s32 cur_off)
 {
-	int			 i;
+	u32			 i;
 	s32			 off;
 	struct btf_member	*m;
 	const char		*name;
@@ -294,7 +294,7 @@ btf_root_offset(struct btf *btf, const char *dotname, int alternatives)
 static int
 btf_enum_value(struct btf *btf, const char *dotname, ssize_t *uv)
 {
-	int			 i;
+	u32			 i;
 	const struct btf_type	*parent;
 	const struct btf_enum	*v;
 	char			 enum_type[256], enum_member[256];
@@ -374,7 +374,7 @@ btf_index_of_param(struct btf *btf, const char *func, const char *param)
 	struct btf_param	*bp;
 	const struct btf_type	*t;
 	const char		*cand;
-	int			 i;
+	u32			 i;
 
 	off = btf__find_by_name_kind(btf, func, BTF_KIND_FUNC);
 	if (off < 0)
@@ -395,7 +395,7 @@ btf_index_of_param(struct btf *btf, const char *func, const char *param)
 		}
 		/* found it */
 		if (!strcmp(cand, param))
-			return (i);
+			return ((int)i);
 	}
 
 	return (-1);

@@ -11,6 +11,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <bpf/libbpf.h>
@@ -321,23 +322,36 @@ safe_basename(const char *path)
 	return (NULL);
 }
 
+/*
+ * The distance between two clocks, hi minus lo, in nanoseconds.
+ * hi MUST be ahead of lo (e.g. as for CLOCK_REALTIME and CLOCK_BOOTTIME,
+ * CLOCK_BOOTTIME and CLOCK_MONOTONIC). The lo clock is read first so
+ * that hi-lo can only increase even if the process gets preempted
+ * between the clock reads. This allows to take the smallest of three
+ * samples as the best one.
+ * Returns zero on failure and also returns zero if hi is behind lo.
+ */
 u64
-fetch_boottime(void)
+clock_diff(clockid_t hi, clockid_t lo)
 {
-	char		*line;
-	const char	*errstr, *needle;
-	u64		 btime;
+	struct timespec	h, l;
+	s64		best, diff;
 
-	needle = "btime ";
-	line = find_line_p("/proc/stat", needle);
-	if (line == NULL)
+	best = INT64_MAX;
+	for (int i = 0; i < 3; i++) {
+		if (clock_gettime(lo, &l) == -1 ||
+		    clock_gettime(hi, &h) == -1)
+			return (0);
+		diff = (s64)TS_TO_NS(h) - (s64)TS_TO_NS(l);
+		/* diff is guaranteed not to exceed INT64_MAX */
+		if (diff < best)
+			best = diff;
+	}
+	/* Should never happen except if we get passed lo ahead of hi */
+	if (best <= 0)
 		return (0);
-	btime = strtonum(line + strlen(needle), 1, LLONG_MAX, &errstr);
-	free(line);
-	if (errstr != NULL)
-		qwarnx("can't parse btime: %s", errstr);
 
-	return (btime * NS_PER_S);
+	return ((u64)best);
 }
 
 /*
