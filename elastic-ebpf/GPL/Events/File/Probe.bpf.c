@@ -573,8 +573,10 @@ static __always_inline bool file_access_anchored(struct ebpf_file_access_name *k
     return false;
 }
 
-static void file_access_event__fill_task(struct ebpf_file_access_event *event,
-                                         struct task_struct *task)
+// Out of line so that its namespace struct is not in the emitter's frame, see
+// file_access__match().
+static __attribute__((noinline)) void file_access_event__fill_task(struct ebpf_file_access_event *event,
+                                                                   struct task_struct *task)
 {
     struct ebpf_namespace_info ns;
 
@@ -587,11 +589,41 @@ static void file_access_event__fill_task(struct ebpf_file_access_event *event,
     bpf_get_current_comm(event->comm, TASK_COMM_LEN);
 }
 
-// A completed open: leaf or ancestor anchor hit, dedup, resolve, emit. Kept
-// out of line so its locals are not added to the do_filp_open__exit() frame
-// that every open pays for. Disables preemption itself for the per-cpu
-// scratch, event buffer and resolver state, like prepare_and_send_file_event():
-// the caller runs with preemption enabled.
+// The match half of a completed open: the anchor walk, then the dedup test,
+// with the keys in the per-cpu scratch. True if the open is to be reported;
+// scratch->path is then the file's path for the emitter.
+//
+// A subprogram of its own, not the top of file_access__open(): the verifier
+// charges a program the deepest chain of frames it can reach, and with the
+// file events on the same hook that chain runs do_filp_open__exit() through
+// the emitter into the cgroup path resolver, a few bytes under the 512 limit.
+// Here, the walk's locals are off the stack before the emitter calls the
+// resolvers, and the emitter itself keeps little live across its calls.
+static __attribute__((noinline)) bool file_access__match(struct file_access_scratch *scratch,
+                                                         struct file *f, u32 open_flags)
+{
+    struct task_struct *task;
+    struct dentry      *de;
+
+    scratch->path = BPF_CORE_READ(f, f_path);
+    de            = scratch->path.dentry;
+    if (!file_access_anchored(&scratch->key, de))
+        return false;
+
+    task                    = (struct task_struct *)bpf_get_current_task();
+    scratch->file_key.tgid  = BPF_CORE_READ(task, tgid);
+    scratch->file_key.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
+    scratch->file_key.inode = BPF_CORE_READ(de, d_inode, i_ino);
+
+    return !ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
+                             &scratch->fresh, task, file_access_class(open_flags));
+}
+
+// A completed open: match, resolve, emit. Kept out of line so its locals are
+// not added to the do_filp_open__exit() frame that every open pays for.
+// Disables preemption itself for the per-cpu scratch, event buffer and
+// resolver state, like prepare_and_send_file_event(): the caller runs with
+// preemption enabled.
 static __attribute__((noinline)) void file_access__open(struct file *f, u32 open_flags)
 {
     struct ebpf_file_access_event *event;
@@ -599,37 +631,27 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     struct task_struct            *task;
     struct dentry                 *de;
     u32                            zero = 0;
-    u64                            class;
 
     preempt_disable();
     scratch = bpf_map_lookup_elem(&elastic_ebpf_file_access_scratch, &zero);
     if (scratch == NULL)
         goto out;
-
-    de = BPF_CORE_READ(f, f_path.dentry);
-    if (!file_access_anchored(&scratch->key, de))
-        goto out;
-
-    task                    = (struct task_struct *)bpf_get_current_task();
-    class                   = file_access_class(open_flags);
-    scratch->file_key.tgid  = BPF_CORE_READ(task, tgid);
-    scratch->file_key.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
-    scratch->file_key.inode = BPF_CORE_READ(de, d_inode, i_ino);
-    if (ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key, &scratch->fresh,
-                         task, class))
+    if (!file_access__match(scratch, f, open_flags))
         goto out;
 
     event = get_event_buffer();
     if (!event)
         goto out;
 
-    file_access_event__fill_task(event, task);
-    ebpf_file_info__fill(&event->finfo, de);
     event->open_flags = open_flags;
     event->fmode      = BPF_CORE_READ(f, f_mode);
     event->error      = 0;
     event->flags      = 0;
     event->dfd        = 0;
+    task              = (struct task_struct *)bpf_get_current_task();
+    file_access_event__fill_task(event, task);
+    de = scratch->path.dentry; // a plain load: scratch is not a kernel type
+    ebpf_file_info__fill(&event->finfo, de);
 
     // Variable length fields
     ebpf_vl_fields__init(&event->vl_fields);
@@ -637,15 +659,14 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     long size;
 
     // path
-    field         = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
-    scratch->path = BPF_CORE_READ(f, f_path);
-    size          = ebpf_resolve_path_to_string(field->data, &scratch->path, task);
+    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
+    size  = ebpf_resolve_path_to_string(field->data, &scratch->path, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // symlink_target_path
-    field      = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
-    char *link = BPF_CORE_READ(de, d_inode, i_link);
-    size       = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
+    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
+    de    = scratch->path.dentry;
+    size  = read_kernel_str_or_empty_str(field->data, PATH_MAX, BPF_CORE_READ(de, d_inode, i_link));
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // pids ss cgroup path
