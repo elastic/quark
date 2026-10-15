@@ -6,9 +6,6 @@
 package quark
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../
-#cgo LDFLAGS: -Wl,--wrap=fmemopen ${SRCDIR}/../../libquark_big.a
-
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,6 +71,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"strings"
 	"syscall"
@@ -116,6 +114,27 @@ type Exit struct {
 	Valid           bool
 }
 
+// PodInfo is a copy of the pod data. It remains valid after collection or queue close.
+type PodInfo struct {
+	UID   string
+	Name  string
+	NS    string
+	Phase string
+}
+
+// ContainerInfo is a copy of the container data and its optional parent pod.
+// It remains valid after collection or queue close.
+type ContainerInfo struct {
+	ContainerID string
+	Name        string
+	Image       string
+	ImageID     string
+	ImageName   string
+	ImageTag    string
+	ImageHash   string
+	Pod         *PodInfo // nil if the container has no pod link
+}
+
 // Process represents a single process.
 type Process struct {
 	Pid       uint32 // Always present
@@ -126,7 +145,8 @@ type Process struct {
 	Cmdline   []string
 	Cwd       string
 	Cgroup    string
-	PoisonTag uint64 // Set by matching poison rules, zero if none matched
+	PoisonTag uint64         // Set by matching poison rules, zero if none matched
+	Container *ContainerInfo // nil if the process is not in a container
 }
 
 // Passwd is a cached passwd(5) entry, see PasswdLookup.
@@ -249,6 +269,13 @@ type Event struct {
 }
 
 // Queue holds the state of a quark instance.
+//
+// A Queue is not safe for concurrent use, as with the C library (see
+// quark(7)). Callers driving it from multiple goroutines must serialize
+// all methods. This includes the read-like ones such as Lookup and
+// Snapshot, which may update links from processes to container metadata.
+// Block is the exception, it only waits on the epoll descriptor and may
+// run concurrently with any method other than Close.
 type Queue struct {
 	quarkQueue *C.struct_quark_queue   // pointer to the queue structure
 	ruleset    *C.struct_quark_ruleset // active ruleset, nil if none
@@ -454,7 +481,12 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 }
 
 // Close closes the queue.
+// It is safe to call Close on a previously closed queue.
 func (queue *Queue) Close() {
+	if queue.quarkQueue == nil {
+		// previously closed
+		return
+	}
 	C.quark_queue_close(queue.quarkQueue)
 	C.free(unsafe.Pointer(queue.quarkQueue))
 	queue.quarkQueue = nil
@@ -509,6 +541,15 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	return event, true
 }
 
+// GetEventAsECS returns the next event serialized as ECS JSON. The boolean is
+// false if no event is available.
+//
+// Pod metadata only reaches ECS with a kube talker: orchestrator.* is emitted
+// only when the queue runs one, and container.labels come from pod labels,
+// which only the talker provides. Without it, a process linked to a container
+// created through CreateContainer gets only container.* from the fields given
+// there, and the name and namespace of a pod created through CreatePod are
+// not emitted. Use GetEvent to read Process.Container and its Pod instead.
 func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
 	var ecsBuf *C.char
 	var ecsLen C.size_t
@@ -527,7 +568,8 @@ func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
 	return b, true, nil
 }
 
-// Lookup looks up for the Process associated with PID in quark's internal cache.
+// Lookup returns the Process associated with PID in quark's internal cache. It
+// refreshes the process link to container metadata before it returns.
 func (queue *Queue) Lookup(pid int) (Process, bool) {
 	process, _ := C.quark_process_lookup(queue.quarkQueue, C.int(pid))
 
@@ -536,6 +578,69 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 	}
 
 	return processFromC(process), true
+}
+
+// SocketLookup looks up the socket identified by the local and remote
+// endpoints in quark's internal socket cache, mirroring
+// quark_socket_lookup(3). Sockets are only tracked when the queue was
+// opened with QQ_SOCK_CONN, which requires the EBPF backend. A closed
+// socket remains visible with a non-zero CloseTime until it ages out
+// after the queue's CacheGraceTime. The boolean is false if no such
+// socket is known.
+//
+// quark caches sockets under the address family the kernel reports,
+// so IPv4 traffic on a dual-stack AF_INET6 socket is cached with
+// IPv4-mapped IPv6 addresses (::ffff:a.b.c.d). IPv4 endpoints may be
+// given in either form: the AF_INET key is tried first and the
+// IPv4-mapped AF_INET6 key second. A socket found through the mapped
+// key reports Local and Remote in mapped form, as quark stores them.
+func (queue *Queue) SocketLookup(local, remote netip.AddrPort) (Socket, bool) {
+	if socket, ok := queue.socketLookup(local, remote, false); ok {
+		return socket, true
+	}
+	if local.Addr().Unmap().Is4() && remote.Addr().Unmap().Is4() {
+		return queue.socketLookup(local, remote, true)
+	}
+
+	return Socket{}, false
+}
+
+// socketLookup performs a single quark_socket_lookup(3) call. When
+// mapped is set, IPv4 endpoints are converted to their IPv4-mapped
+// AF_INET6 form before the lookup.
+func (queue *Queue) socketLookup(local, remote netip.AddrPort, mapped bool) (Socket, bool) {
+	clocal, ok := sockaddrToC(local, mapped)
+	if !ok {
+		return Socket{}, false
+	}
+	cremote, ok := sockaddrToC(remote, mapped)
+	if !ok {
+		return Socket{}, false
+	}
+
+	socket, _ := C.quark_socket_lookup(queue.quarkQueue, &clocal, &cremote)
+	if socket == nil {
+		return Socket{}, false
+	}
+
+	return socketFromC(socket), true
+}
+
+// SocketSnapshot returns a snapshot of all sockets in the cache,
+// including recently closed sockets that still wait out the queue's
+// CacheGraceTime. Sockets are only tracked when the queue was opened
+// with QQ_SOCK_CONN.
+func (queue *Queue) SocketSnapshot() []Socket {
+	var sockets []Socket
+	var iter C.struct_quark_socket_iter
+	var qsk *C.struct_quark_socket
+
+	C.quark_socket_iter_init(&iter, queue.quarkQueue)
+	for qsk = C.quark_socket_iter_next(&iter); qsk != nil; qsk = C.quark_socket_iter_next(&iter) {
+		sockets = append(sockets, socketFromC(qsk))
+	}
+
+	return sockets
 }
 
 // PasswdLookup looks up uid in quark's passwd(5) cache, mirroring
@@ -580,7 +685,8 @@ func (queue *Queue) Block() error {
 	return err
 }
 
-// Snapshot returns a snapshot of all processes in the cache.
+// Snapshot returns all processes in the cache. It refreshes each process link
+// to container metadata before it copies the process into the snapshot.
 func (queue *Queue) Snapshot() []Process {
 	var processes []Process
 	var iter C.struct_quark_process_iter
@@ -617,32 +723,28 @@ func SetVerbose(level int) {
 	C.quark_verbose = C.int(level)
 }
 
-// UpdateBoottime refetches the boottime epoch used by TimeToWallclock.
-// Call it when the system clock might have been stepped, as when NTP
-// corrects a clock that was wrong at boot.
-func UpdateBoottime() error {
-	ret, err := C.quark_update_boottime()
-	if ret == -1 {
-		return wrapErrno(err)
-	}
-
-	return nil
-}
-
-// Boottime returns the boottime epoch used by TimeToWallclock: the
-// wallclock time of boot in nanoseconds since the Unix epoch, zero
-// before the first queue is opened.
+// Boottime returns the boottime epoch: the wallclock time of boot in
+// nanoseconds since the Unix epoch. Adding it to a time-since-boot, as
+// in Proc.TimeBoot, Exit.ExitTimeProcess, Socket.EstablishedTime and
+// Socket.CloseTime, yields nanoseconds since the Unix epoch.
+//
+// The value is stable across calls, only a system clock step moves it
+// once the accumulated change exceeds 10ms. Such system clock steps
+// are expected to be rare for most systems as they do not include
+// regular clock slewing that results in 0ns difference in Boottime.
+// The C counterpart is cheap, but a cgo call per event is not: fetch
+// it once per batch and convert with plain addition:
+//
+//	epoch := quark.Boottime()
+//	for _, ev := range events {
+//		wallclock := ev.Process.Proc.TimeBoot + epoch
+//		...
+//	}
+//
+// Times-since-boot are immune to system clock changes, convert at the
+// last moment, when a time leaves the system for display or storage.
 func Boottime() uint64 {
 	return uint64(C.quark_get_boottime())
-}
-
-// TimeToWallclock translates timeSinceBoot from nanoseconds since boot,
-// as in Proc.TimeBoot, Exit.ExitTimeProcess, Socket.EstablishedTime and
-// Socket.CloseTime, to nanoseconds since the Unix epoch. Times since
-// boot are immune to system clock changes; translate at the last moment
-// and keep the epoch fresh with UpdateBoottime.
-func TimeToWallclock(timeSinceBoot uint64) uint64 {
-	return uint64(C.quark_time_to_wallclock(C.u64(timeSinceBoot)))
 }
 
 // DisableAggregation clears every entry in Quark's aggregation matrix.
@@ -657,6 +759,32 @@ func (queue *Queue) DisableAggregation() error {
 		}
 	}
 	return nil
+}
+
+func podInfoFromC(cp *C.struct_quark_pod) PodInfo {
+	return PodInfo{
+		UID:   C.GoString(cp.uid),
+		Name:  C.GoString(cp.name),
+		NS:    C.GoString(cp.ns),
+		Phase: C.GoString(cp.phase),
+	}
+}
+
+func containerInfoFromC(cc *C.struct_quark_container) ContainerInfo {
+	ci := ContainerInfo{
+		ContainerID: C.GoString(cc.container_id),
+		Name:        C.GoString(cc.name),
+		Image:       C.GoString(cc.image),
+		ImageID:     C.GoString(cc.image_id),
+		ImageName:   C.GoString(cc.image_name),
+		ImageTag:    C.GoString(cc.image_tag),
+		ImageHash:   C.GoString(cc.image_hash),
+	}
+	if cc.pod != nil {
+		pi := podInfoFromC(cc.pod)
+		ci.Pod = &pi
+	}
+	return ci
 }
 
 // processFromC converts the C process structure to a go process.
@@ -720,6 +848,10 @@ func processFromC(cProcess *C.struct_quark_process) Process {
 		process.Cgroup = C.GoString(cProcess.cgroup)
 	}
 	process.PoisonTag = uint64(cProcess.poison_tag)
+	if cProcess.container != nil {
+		ci := containerInfoFromC(cProcess.container)
+		process.Container = &ci
+	}
 
 	return process
 }
@@ -742,6 +874,39 @@ func addrPortFromQuarkSockaddr(csa *C.struct_quark_sockaddr) netip.AddrPort {
 	port := uint16(csa.port)>>8 | uint16(csa.port)<<8
 
 	return netip.AddrPortFrom(addr, port)
+}
+
+// sockaddrToC converts a netip.AddrPort to quark's sockaddr
+// representation, the inverse of addrPortFromQuarkSockaddr. IPv4
+// addresses, including IPv4-mapped IPv6 ones, become AF_INET, or
+// AF_INET6 in IPv4-mapped form when mapped is set. The boolean is
+// false if the address is invalid.
+func sockaddrToC(ap netip.AddrPort, mapped bool) (C.struct_quark_sockaddr, bool) {
+	var csa C.struct_quark_sockaddr
+
+	addr := ap.Addr().Unmap()
+	switch {
+	case addr.Is4() && mapped:
+		csa.af = C.AF_INET6
+		addr16 := addr.As16() // As16 of an IPv4 address is its IPv4-mapped form.
+		copy(csa.u[:], addr16[:])
+	case addr.Is4():
+		csa.af = C.AF_INET
+		addr4 := addr.As4()
+		copy(csa.u[:4], addr4[:])
+	case addr.Is6():
+		csa.af = C.AF_INET6
+		addr16 := addr.As16()
+		copy(csa.u[:], addr16[:])
+	default:
+		return csa, false
+	}
+
+	// quark stores ports in network byte order.
+	port := ap.Port()
+	csa.port = C.u16(port>>8 | port<<8)
+
+	return csa, true
 }
 
 func socketFromC(cSocket *C.struct_quark_socket) Socket {
@@ -858,6 +1023,121 @@ func shmFromC(cShm *C.struct_quark_shm) (any, error) {
 	return nil, fmt.Errorf("invalid shm kind")
 }
 
+// optCString returns a C string allocated with C.CString, or nil when s is
+// empty. The result may always be passed to C.free, which ignores nil.
+func optCString(s string) *C.char {
+	if s == "" {
+		return nil
+	}
+	return C.CString(s)
+}
+
+// CreatePod inserts a new pod into the queue's pod tree. Returns syscall.EEXIST
+// if a pod with the same uid is already present. A pod passed to RemovePod
+// stays present until the cache grace time ends, so creating the same uid
+// within that window also returns syscall.EEXIST. The result is a data copy.
+// Without a kube talker the pod does not appear in GetEventAsECS output, see
+// there.
+func (queue *Queue) CreatePod(uid, name, ns, phase string) (PodInfo, error) {
+	cUID := C.CString(uid)
+	defer C.free(unsafe.Pointer(cUID))
+	cName := optCString(name)
+	defer C.free(unsafe.Pointer(cName))
+	cNS := optCString(ns)
+	defer C.free(unsafe.Pointer(cNS))
+	cPhase := optCString(phase)
+	defer C.free(unsafe.Pointer(cPhase))
+
+	pod, err := C.quark_pod_create(queue.quarkQueue, cUID, cName, cNS, cPhase)
+	if pod == nil {
+		return PodInfo{}, wrapErrno(err)
+	}
+	return podInfoFromC(pod), nil
+}
+
+// LookupPod returns a copy of the pod data. The boolean is false if absent.
+func (queue *Queue) LookupPod(uid string) (PodInfo, bool) {
+	cUID := C.CString(uid)
+	defer C.free(unsafe.Pointer(cUID))
+
+	pod := C.quark_pod_lookup(queue.quarkQueue, cUID)
+	if pod == nil {
+		return PodInfo{}, false
+	}
+	return podInfoFromC(pod), true
+}
+
+// CreateContainer inserts a new container into the queue's container tree.
+// The containerID must be in the form the cgroup parser produces,
+// "<runtime>://<id>" as in "containerd://<id>" or "docker://<id>", otherwise
+// processes never link to it and lookups and removals by the bare id miss. If
+// podUID is non-empty the container is linked to that pod, which must already
+// exist. Returns syscall.EEXIST if a container with the same containerID is
+// already present. A container passed to RemoveContainer, or whose pod was
+// passed to RemovePod, stays present until the cache grace time ends, so
+// creating the same containerID within that window also returns
+// syscall.EEXIST. The result is a data copy.
+func (queue *Queue) CreateContainer(containerID, podUID, name, image string) (ContainerInfo, error) {
+	cContainerID := C.CString(containerID)
+	defer C.free(unsafe.Pointer(cContainerID))
+	cPodUID := optCString(podUID)
+	defer C.free(unsafe.Pointer(cPodUID))
+	cName := optCString(name)
+	defer C.free(unsafe.Pointer(cName))
+	cImage := optCString(image)
+	defer C.free(unsafe.Pointer(cImage))
+
+	container, err := C.quark_container_create(queue.quarkQueue, cContainerID, cPodUID, cName, cImage)
+	if container == nil {
+		return ContainerInfo{}, wrapErrno(err)
+	}
+	return containerInfoFromC(container), nil
+}
+
+// RemovePod schedules the current pod with this UID for removal after the
+// cache grace time. Its child containers are also removed. Lookups keep
+// succeeding until then. Removal is final and cannot be cancelled. Repeated
+// calls do not extend the grace time and still succeed. Returns syscall.ESRCH
+// if the UID is absent.
+func (queue *Queue) RemovePod(uid string) error {
+	cUID := C.CString(uid)
+	defer C.free(unsafe.Pointer(cUID))
+
+	ret, err := C.quark_pod_remove(queue.quarkQueue, cUID)
+	if ret == -1 {
+		return wrapErrno(err)
+	}
+	return nil
+}
+
+// RemoveContainer schedules the current container with this ID for removal
+// after the cache grace time, independently of its pod. Lookups keep
+// succeeding until then. Removal is final and cannot be cancelled. Repeated
+// calls do not extend the grace time and still succeed. Returns syscall.ESRCH
+// if the ID is absent.
+func (queue *Queue) RemoveContainer(containerID string) error {
+	cID := C.CString(containerID)
+	defer C.free(unsafe.Pointer(cID))
+
+	ret, err := C.quark_container_remove(queue.quarkQueue, cID)
+	if ret == -1 {
+		return wrapErrno(err)
+	}
+	return nil
+}
+
+// LookupContainer returns a copy of the container data. The boolean is false if absent.
+func (queue *Queue) LookupContainer(containerID string) (ContainerInfo, bool) {
+	cContainerID := C.CString(containerID)
+	defer C.free(unsafe.Pointer(cContainerID))
+
+	container := C.quark_container_lookup(queue.quarkQueue, cContainerID)
+	if container == nil {
+		return ContainerInfo{}, false
+	}
+	return containerInfoFromC(container), true
+}
+
 func ttyFromC(cTty *C.struct_quark_tty) Tty {
 	var tty Tty
 	var t *C.struct_quark_tty
@@ -879,4 +1159,25 @@ func ttyFromC(cTty *C.struct_quark_tty) Tty {
 	}
 
 	return tty
+}
+
+// newTestQueue returns a backend-less queue for tests that only exercise
+// the process and container caches. cgo is not available in _test.go files,
+// so this lives here, mirroring the "exported for testing only" section of
+// quark.h.
+func newTestQueue() *Queue {
+	p := C.calloc(C.size_t(1), C.sizeof_struct_quark_queue)
+	if p == nil {
+		panic("cannot allocate test queue")
+	}
+	qq := (*C.struct_quark_queue)(p)
+	C.quark_queue_init_bare(qq)
+	qq.cache_grace_time = C.u64(math.MaxUint64)
+	return &Queue{quarkQueue: qq, epollFd: -1}
+}
+
+// expireTestGrace makes removed pods and containers collectable on the
+// next GetEvent.
+func expireTestGrace(queue *Queue) {
+	queue.quarkQueue.cache_grace_time = 0
 }
