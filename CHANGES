@@ -243,5 +243,6 @@ Changes from 0.10 to 0.11
     docker.io/library/nginx:1.25. Both accept a single * wildcard, as in
     pod.name nginx-* or container.image quay.io/*. Both need container
     metadata, from quark-kube-talker or the container API, a process
-    without a known container matches neither. The nova backend rejects
-    both fields with ENOTSUP.
+    without a known container matches neither. Like event.scope, both
+    fields are only supported by the ebpf backend, the kprobe and nova
+    backends reject them with ENOTSUP.

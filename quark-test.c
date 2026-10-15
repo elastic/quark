@@ -3957,22 +3957,29 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
- * kprobe can't scope new processes, so it must reject event.scope.
+ * kprobe doesn't know the cgroup of new processes, so it must reject
+ * every container field.
  */
 static int
-t_rule_scope_kprobe(const struct test *t, struct quark_queue_attr *qa)
+t_rule_container_kprobe(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	qq;
-	struct quark_ruleset	ruleset;
+	struct quark_queue	  qq;
+	struct quark_ruleset	  ruleset;
+	char			**r, *rules[] = {
+		"pass on event.scope container\ndrop on any\n",
+		"drop on pod.name nginx-*\n",
+		"drop on container.image docker.io/library/nginx:1.25\n",
+		NULL
+	};
 
-	ruleset_from_string(&ruleset,
-	    "pass on event.scope container\n"
-	    "drop on any\n");
-	qa->ruleset = &ruleset;
-	errno = 0;
-	assert(quark_queue_open(&qq, qa) == -1);
-	assert(errno == ENOTSUP);
-	quark_ruleset_clear(&ruleset);
+	for (r = rules; *r != NULL; r++) {
+		ruleset_from_string(&ruleset, *r);
+		qa->ruleset = &ruleset;
+		errno = 0;
+		assert(quark_queue_open(&qq, qa) == -1);
+		assert(errno == ENOTSUP);
+		quark_ruleset_clear(&ruleset);
+	}
 
 	return (0);
 }
@@ -5035,7 +5042,7 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
 	T(t_rule_scope),
-	T_KPROBE(t_rule_scope_kprobe),
+	T_KPROBE(t_rule_container_kprobe),
 	T(t_rule_pod_name),
 	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),
