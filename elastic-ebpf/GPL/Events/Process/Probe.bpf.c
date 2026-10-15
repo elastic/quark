@@ -689,6 +689,8 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
         .dev   = dev,
         .inode = inode,
     };
+    // Older verifiers can lose the correlation between the two file checks.
+    // Keep fresh initialized even on the anonymous path.
     struct mprotect_file_seen fresh = {};
 
     if (file ? mprotect_file_seen__test(&file_key, &fresh, task, id)
