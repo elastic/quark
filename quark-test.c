@@ -4057,10 +4057,28 @@ t_rule_pod_name(const struct test *t, struct quark_queue_attr *qa)
 	assert(rule != NULL && rule->number == 0 &&
 	    rule->action == QUARK_RA_PASS);
 
-	/* Prefix alone is not a match, pod name must be longer. */
+	/* The wildcard may be empty, but the prefix must be complete. */
 	qp = rule_kube_process(&qq, 101, "bbb", "pod-b", "nginx", NULL);
 	qev.process = qp;
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	qp = rule_kube_process(&qq, 107, "hhh", "pod-h", "nginx-", NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+
+	/* PoC: pod.name ignores the namespace. */
+	qp = rule_kube_process(&qq, 108, "iii", "pod-i", "nginx-web", NULL);
+	qp->container->pod->ns = strdup("default");
+	assert(qp->container->pod->ns != NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+	qp = rule_kube_process(&qq, 109, "jjj", "pod-j", "nginx-web", NULL);
+	qp->container->pod->ns = strdup("other");
+	assert(qp->container->pod->ns != NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
 
 	/* Suffix wildcard. */
 	qp = rule_kube_process(&qq, 102, "ccc", "pod-c",
@@ -4152,6 +4170,7 @@ t_rule_container_image(const struct test *t, struct quark_queue_attr *qa)
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 1);
+	/* PoC: the reference is a label, a wildcard matches any registry. */
 	qp = rule_kube_process(&qq, 104, "eee", "pod-e", "web",
 	    "localhost:5000/busybox:1.36");
 	qev.process = qp;

@@ -142,8 +142,8 @@ The
 .Dq container.image
 field matches events from a process in a container whose image reference
 matches the given string.
-The image reference is compared as reported by the container runtime,
-registry and tag included, as in
+The image reference is compared exactly as Kubernetes reports it, or as
+given to the container API, as in
 .Dq container.image docker.io/library/nginx:1.25 .
 A single
 .Sq *
