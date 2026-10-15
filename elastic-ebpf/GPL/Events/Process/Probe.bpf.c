@@ -783,14 +783,24 @@ out:
     return 0;
 }
 
-SEC("tracepoint/syscalls/sys_enter_memfd_create")
-int tracepoint_syscalls_sys_enter_memfd_create(struct syscall_trace_enter *ctx)
+// memfd_create(const char *uname, unsigned int flags)
+//
+// This is a kprobe on the syscall wrapper instead of the perf syscall
+// tracepoint on purpose. Syscall tracepoints whose arguments include user
+// pointers (memfd_create's uname) are "faultable" and the kernel reads the
+// user memory before running the attached BPF programs. Stable kernels that
+// backported "tracing: perf: Fix stale head for perf syscall tracing"
+// (e.g. Ubuntu 7.0.0-38, linux-aws 7.0.0-1014) only run those programs
+// when the syscall happens on the CPU the perf event was opened on, so the
+// tracepoint silently drops most memfd_create events on SMP machines.
+// shmget below has no user pointers and is not affected.
+SEC("ksyscall/memfd_create")
+int BPF_KSYSCALL(ksyscall__memfd_create, const char *uname, unsigned int flags)
 {
     preempt_disable();
 
-    // memfd_create(const char *uname, unsigned int flags)
     struct ebpf_events_state state = {};
-    state.memfd.flags = SYSCALL_ENTER_ARG(ctx, 1);
+    state.memfd.flags = flags;
     ebpf_events_state__set(EBPF_EVENTS_STATE_MEMFD_CREATE, &state);
     preempt_enable();
     return 0;
