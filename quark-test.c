@@ -3776,7 +3776,6 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"pass on file.path foo-bar\n",
 		"pass on file.path /foo/* file.exec_change\n",
 		"pass on event.scope container\n",
-		"drop on event.scope host\n",
 		"drop on process.exe /foo/bar\n",
 		"drop on process.exe /foo/*\n",
 		"drop on process.exe */bar\n",
@@ -3809,6 +3808,7 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on file.name \"foo\n",
 		"drop on event.scope\n",
 		"drop on event.scope guest\n",
+		"drop on event.scope host\n",
 		NULL
 	};
 
@@ -3845,13 +3845,17 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	bzero(&qev, sizeof(qev));
 	bzero(&qp, sizeof(qp));
 
+	/* Keep only container events. */
 	ruleset_from_string(&ruleset,
 	    "pass on event.scope container\n"
-	    "drop on event.scope host\n");
+	    "drop on any\n");
 
-	/* A process with an unknown cgroup matches neither scope. */
+	/* A process with an unknown cgroup is not a container. */
 	qev.process = &qp;
-	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(rule->action == QUARK_RA_DROP);
 	assert(!qp.container_id_parsed);
 
 	/* Scope must use the process cgroup without container metadata. */
@@ -3875,7 +3879,9 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp.container_id == cached);
 
 	qev.process = NULL;
-	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
 
 	/*
 	 * A move to a cgroup that does not name a container drops the
@@ -3893,10 +3899,26 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp.container_id_parsed);
 	assert(qp.container_id == NULL);
 
-	/* Only the last cgroup component is parsed, nested cgroups are host. */
+	/*
+	 * Only the last cgroup component is parsed, a nested cgroup of a
+	 * container is not a container.
+	 */
 	free(qp.cgroup);
 	bzero(&qp, sizeof(qp));
 	cgroup = strdup("/system.slice/docker-abc123.scope/init.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(qp.container_id_parsed);
+	assert(qp.container_id == NULL);
+
+	/* The cgroupfs driver layout is not a container. */
+	free(qp.cgroup);
+	bzero(&qp, sizeof(qp));
+	cgroup = strdup("/kubepods/burstable/pod1234/abc123");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
@@ -3920,6 +3942,27 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	quark_ruleset_clear(&ruleset);
 	free(qp.cgroup);
 	free(qp.container_id);
+
+	return (0);
+}
+
+/*
+ * kprobe can't scope new processes, so it must reject event.scope.
+ */
+static int
+t_rule_scope_kprobe(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	qq;
+	struct quark_ruleset	ruleset;
+
+	ruleset_from_string(&ruleset,
+	    "pass on event.scope container\n"
+	    "drop on any\n");
+	qa->ruleset = &ruleset;
+	errno = 0;
+	assert(quark_queue_open(&qq, qa) == -1);
+	assert(errno == ENOTSUP);
+	quark_ruleset_clear(&ruleset);
 
 	return (0);
 }
@@ -4740,6 +4783,7 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
 	T(t_rule_scope),
+	T_KPROBE(t_rule_scope_kprobe),
 	T_EBPF(t_trusted_pid),
 	T_EBPF(t_trusted_map_rdonly),
 	T_EBPF(t_map_freeze),

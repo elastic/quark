@@ -5464,7 +5464,6 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
     struct quark_event *qev)
 {
 	const struct quark_process	*qp;
-	const char			*container_id;
 
 	qp = qev->process;
 
@@ -5504,16 +5503,10 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 			    (qev->file->mode & (S_IXUSR | S_IXGRP | S_IXOTH)));
 		break;
 	case QUARK_RF_EVENT_SCOPE:
-		if (qp == NULL || qp->cgroup == NULL)
-			break;
-		container_id = process_container_id((struct quark_process *)qp);
-		/* An unparsed cgroup (allocation failure) has no scope. */
-		if (!qp->container_id_parsed)
-			break;
-		if (field->id == QUARK_RULE_SCOPE_CONTAINER)
-			return (container_id != NULL);
-		if (field->id == QUARK_RULE_SCOPE_HOST)
-			return (container_id == NULL);
+		/* An unknown cgroup is not a container. */
+		if (qp != NULL && field->id == QUARK_RULE_SCOPE_CONTAINER)
+			return (process_container_id(
+			    (struct quark_process *)qp) != NULL);
 		break;
 	case QUARK_RF_POISON:
 		if (qp != NULL)
@@ -5652,8 +5645,7 @@ quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
 	case QUARK_RF_FILE_EXEC_CHANGE:
 		break;
 	case QUARK_RF_EVENT_SCOPE:
-		if (rf.id != QUARK_RULE_SCOPE_CONTAINER &&
-		    rf.id != QUARK_RULE_SCOPE_HOST)
+		if (rf.id != QUARK_RULE_SCOPE_CONTAINER)
 			goto inval;
 		break;
 	case QUARK_RF_POISON:

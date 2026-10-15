@@ -1420,6 +1420,32 @@ perf_open_kprobe(struct kprobe_queue *kqq, struct kprobe *k,
 	return (ks);
 }
 
+/*
+ * Reject rules that can't match on kprobe. New processes have no cgroup,
+ * so an event.scope rule would only match processes seen at start-up.
+ */
+static int
+kprobe_check_ruleset(struct quark_queue *qq)
+{
+	struct quark_rule	*qr;
+	size_t			 i, j;
+
+	if (qq->ruleset == NULL)
+		return (0);
+	for (i = 0; i < qq->ruleset->n_rules; i++) {
+		qr = qq->ruleset->rules + i;
+		for (j = 0; j < qr->n_fields; j++) {
+			if (qr->fields[j].code == QUARK_RF_EVENT_SCOPE) {
+				errno = ENOTSUP;
+				qwarn("event.scope is not supported in kprobe backend");
+				return (-1);
+			}
+		}
+	}
+
+	return (0);
+}
+
 int
 kprobe_queue_open(struct quark_queue *qq)
 {
@@ -1434,6 +1460,8 @@ kprobe_queue_open(struct quark_queue *qq)
 
 	if ((qq->flags & QQ_KPROBE) == 0)
 		return (errno = ENOTSUP, -1);
+	if (kprobe_check_ruleset(qq) == -1)
+		return (-1);
 	qid = __atomic_fetch_add(&qids, 1, __ATOMIC_RELAXED);
 	if (kprobe_install_all(qid) == -1)
 		goto fail;

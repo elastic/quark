@@ -127,8 +127,6 @@ matchfield:	PROCESS_PID num_u32 {
 			$$.rf.code = QUARK_RF_EVENT_SCOPE;
 			if (!strcmp($2.str, "container"))
 				$$.rf.id = QUARK_RULE_SCOPE_CONTAINER;
-			else if (!strcmp($2.str, "host"))
-				$$.rf.id = QUARK_RULE_SCOPE_HOST;
 			else
 				ABORT("bad event scope: %s", $2.str);
 		} | POISON num_u64 {

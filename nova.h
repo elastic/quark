@@ -40,7 +40,6 @@
 enum quark_rule_scope {
 	QUARK_RULE_SCOPE_INVALID,
 	QUARK_RULE_SCOPE_CONTAINER,
-	QUARK_RULE_SCOPE_HOST,
 };
 
 enum quark_rule_action {
