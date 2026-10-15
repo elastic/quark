@@ -611,7 +611,9 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
         .dev   = dev,
         .inode = inode,
     };
-    struct ebpf_dedup_seen fresh;
+    // Older verifiers can lose the correlation between the two file checks.
+    // Keep fresh initialized even on the anonymous path.
+    struct ebpf_dedup_seen fresh = {};
 
     if (file ? ebpf_dedup__test(&mprotect_file_seen, &file_key, &fresh, task, 1ULL << (id & 63))
              : mprotect_seen__test(tgid, id))

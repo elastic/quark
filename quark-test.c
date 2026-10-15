@@ -2096,6 +2096,7 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue		 qq;
 	struct quark_queue_stats		 stats;
 	const struct quark_event	*qev;
+	struct timespec			 start, now;
 	void				*addr, *file_addr;
 	struct stat			 st;
 	const size_t			 len = 4096;
@@ -2154,16 +2155,46 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 		if (stats.lost > lost)
 			break;
 	}
-	assert(which < nitems(prev));
+	if (which == nitems(prev))
+		errx(1, "no anonymous mprotect drop observed; "
+		    "unrelated events may have advanced the loss counter");
 	lost = stats.lost;
 	if (mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
 		err(1, "mprotect");
 	quark_queue_get_stats(&qq, &stats);
 	assert(stats.lost > lost);
 
-	/* Drain until idle past hold_time, as in t_file_access. */
-	for (i = 0; i < 20; ) {
-		if (quark_queue_get_event(&qq) != NULL) {
+	/*
+	 * Loss counters are host-wide: verify that neither supposedly lost
+	 * transition was actually delivered. Bound the drain on noisy hosts.
+	 */
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	for (i = 0, now = start; i < 20;
+	    (void)clock_gettime(CLOCK_MONOTONIC, &now)) {
+		if (now.tv_sec - start.tv_sec >= 30)
+			errx(1, "ring buffer did not become idle; "
+			    "unrelated events may still be arriving");
+		qev = quark_queue_get_event(&qq);
+		if (qev != NULL) {
+			if ((qev->events & QUARK_EV_MPROTECT) &&
+			    qev->process != NULL && qev->process->pid == (u32)pid) {
+				if (!qev->mprotect.file_backed &&
+				    qev->mprotect.prev_prot == (u64)prev[which] &&
+				    qev->mprotect.effective_prot == PROT_EXEC &&
+				    qev->mprotect.vma_start <= (u64)(uintptr_t)addr &&
+				    qev->mprotect.vma_end >= (u64)(uintptr_t)addr + len)
+					errx(1, "anonymous mprotect was delivered; "
+					    "the loss counter advanced for another event");
+				if (qev->mprotect.file_backed &&
+				    qev->mprotect.inode == (u64)st.st_ino &&
+				    qev->mprotect.prev_prot == PROT_READ &&
+				    qev->mprotect.effective_prot == (PROT_READ | PROT_EXEC) &&
+				    qev->mprotect.vma_start <= (u64)(uintptr_t)file_addr &&
+				    qev->mprotect.vma_end >= (u64)(uintptr_t)file_addr + len)
+					errx(1, "file-backed mprotect was delivered; "
+					    "the loss counter advanced for another event");
+			}
 			i = 0;
 			continue;
 		}
