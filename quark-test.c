@@ -2123,7 +2123,7 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 		PROT_NONE, PROT_READ, PROT_WRITE, PROT_READ | PROT_WRITE,
 	};
 	const pid_t			 pid = getpid();
-	u64				 lost;
+	u64				 lost, sentinel_time;
 	int				 fd, i, nflood;
 	size_t				 which;
 
@@ -2185,15 +2185,19 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 
 	/*
 	 * Loss counters are host-wide: verify that neither supposedly lost
-	 * transition was actually delivered. Bound the drain on noisy hosts.
+	 * transition was actually delivered. Drain through a new GETPID event
+	 * instead of waiting for unrelated host activity to stop. Its timestamp
+	 * distinguishes it from the GETPID events used to fill the ring buffer.
 	 */
+	if (clock_gettime(CLOCK_BOOTTIME, &now) == -1)
+		err(1, "clock_gettime");
+	sentinel_time = (u64)now.tv_sec * 1000000000ULL + now.tv_nsec;
 	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
 		err(1, "clock_gettime");
-	for (i = 0, now = start; i < 20;
+	for (i = 0, now = start; ;
 	    (void)clock_gettime(CLOCK_MONOTONIC, &now)) {
 		if (now.tv_sec - start.tv_sec >= 30)
-			errx(1, "ring buffer did not become idle; "
-			    "unrelated events may still be arriving");
+			errx(1, "timed out waiting for the GETPID drain sentinel");
 		qev = quark_queue_get_event(&qq);
 		if (qev != NULL) {
 			if ((qev->events & QUARK_EV_MPROTECT) &&
@@ -2214,12 +2218,16 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 					errx(1, "file-backed mprotect was delivered; "
 					    "the loss counter advanced for another event");
 			}
-			i = 0;
-			continue;
-		}
-		if (quark_queue_block(&qq) == -1)
+			if ((qev->events & QUARK_EV_GETPID) &&
+			    qev->process != NULL && qev->process->pid == (u32)pid &&
+			    qev->time >= sentinel_time)
+				break;
+		} else if (quark_queue_block(&qq) == -1) {
 			err(1, "quark_queue_block");
-		i++;
+		}
+		/* Retry the sentinel if it was lost while the buffer was full. */
+		if ((i++ & 255) == 0 || qev == NULL)
+			(void)syscall(SYS_getpid);
 	}
 
 	if (mprotect(addr, len, prev[which]) == -1 ||
