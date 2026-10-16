@@ -1422,7 +1422,7 @@ perf_open_kprobe(struct kprobe_queue *kqq, struct kprobe *k,
 
 /*
  * Reject rules that can't match on kprobe. New processes have no cgroup,
- * so an event.scope rule would only match processes seen at start-up.
+ * so a container rule would only match processes seen at start-up.
  */
 static int
 kprobe_check_ruleset(struct quark_queue *qq)
@@ -1435,10 +1435,21 @@ kprobe_check_ruleset(struct quark_queue *qq)
 	for (i = 0; i < qq->ruleset->n_rules; i++) {
 		qr = qq->ruleset->rules + i;
 		for (j = 0; j < qr->n_fields; j++) {
-			if (qr->fields[j].code == QUARK_RF_EVENT_SCOPE) {
+			switch (qr->fields[j].code) {
+			case QUARK_RF_EVENT_SCOPE:
 				errno = ENOTSUP;
 				qwarn("event.scope is not supported in kprobe backend");
 				return (-1);
+			case QUARK_RF_POD_NAME:
+				errno = ENOTSUP;
+				qwarn("pod.name is not supported in kprobe backend");
+				return (-1);
+			case QUARK_RF_CONTAINER_IMAGE:
+				errno = ENOTSUP;
+				qwarn("container.image is not supported in kprobe backend");
+				return (-1);
+			default:
+				break;
 			}
 		}
 	}
