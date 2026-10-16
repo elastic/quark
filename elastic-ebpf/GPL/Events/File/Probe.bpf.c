@@ -473,9 +473,10 @@ struct {
 // misses.
 #define FILE_ACCESS_ANCESTORS 3
 
-// Per-cpu scratch, safe since the callers run with preemption disabled. The
-// keys and paths live here rather than on the stack: do_filp_open__exit()
-// sits close to the 512 byte combined stack limit already.
+// Per-cpu scratch, only used between file_access__open()'s preempt_disable()
+// and preempt_enable(). The keys and paths live here rather than on the
+// stack: do_filp_open__exit() sits close to the 512 byte combined stack
+// limit already.
 struct file_access_scratch {
     struct ebpf_file_access_name key;
     struct ebpf_dedup_file_key file_key;
