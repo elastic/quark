@@ -177,7 +177,20 @@ and
 which reports opens of any file whose directory, or one of the two directories
 above it, is called
 .Fa name .
-Registering an existing name adds to its roles.
+.Dv QUARK_FILE_ACCESS_NAME_OTHER_TASK
+modifies either: an entry under
+.Pa /proc/<pid>/
+matched through
+.Fa name
+is only reported when it belongs to another process than the one opening it,
+which spares the read a process makes of its own
+.Pa /proc/self/maps
+or
+.Pa environ
+while keeping the same read of another process.
+Registering an existing name adds to its roles, a modifier once given stays
+until
+.Fn quark_queue_file_access_name_reset .
 The names are matched in the kernel against the last four components of the
 opened path, so a user with a list of full paths registers the leaf of each and
 filters the resolved path in the resulting

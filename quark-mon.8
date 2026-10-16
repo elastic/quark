@@ -39,6 +39,17 @@ If
 .Ar name
 ends in a slash it is a directory name instead, and opens of any file up to
 three levels below a directory of that name are reported.
+If
+.Ar name
+starts with an at sign, an entry under
+.Pa /proc/<pid>/
+matched through it is only reported when it belongs to another process than
+the one opening it, so
+.Fl a Ar @maps
+skips the read of its own
+.Pa /proc/self/maps
+that glibc makes on behalf of every program calling
+.Xr pthread_getattr_np 3 .
 May be given multiple times.
 Failed opens with EACCES, EPERM or ENOENT of a matching name are also
 reported.

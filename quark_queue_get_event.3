@@ -96,6 +96,42 @@ the string the caller
 and, when that string was relative, the
 .Em base_dir
 it was resolved against.
+An open of an entry under a task's
+.Pa /proc/<pid>/ ,
+the opener's own included, carries
+.Dv QUARK_FILE_ACCESS_F_PROCFS
+and names that task in
+.Em target_pid ,
+.Em target_tid
+and
+.Em target_start_time ;
+comparing
+.Em target_pid
+with the opener's pid tells the two apart, unless the name was registered
+with
+.Dv QUARK_FILE_ACCESS_NAME_OTHER_TASK .
+.Em target_start_time
+is the task's start time on the same clock as
+.Em proc_time_boot
+of
+.Vt quark_process ,
+so it compares with that member of the target returned by
+.Xr quark_process_lookup 3
+(exactly for a process quark saw start, at the precision of
+.Pa /proc
+for one scraped at startup) and tells a reused pid from the process the open
+was made against.
+An ordinary open through one of the task's magic links
+.Po
+.Pa exe , cwd , root , fd/<n> , map_files/<range> , ns/<name>
+.Pc
+is an open of the link's target: it is reported only if the target matches
+a registered name, and without
+.Dv QUARK_FILE_ACCESS_F_PROCFS
+or a target.
+Only an
+.Dv O_PATH | O_NOFOLLOW
+open of the link itself is a procfs entry.
 Each combination of file and access class (read, write, exec, path only)
 is reported once per process life, a failed open once per requested name,
 base directory, error and access class.

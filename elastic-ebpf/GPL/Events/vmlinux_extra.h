@@ -253,6 +253,21 @@ struct task_struct___el8 {
 };
 
 /*
+ * Before 4.19 (2c4704756cab7cfa031ada4dab361562f0e357c0) a task hung off its
+ * struct pid through pid_link.node inside task_struct.pids[]; 4.19 flattened
+ * it into pid_links[]. Partial definition for the old layout, PIDTYPE_PID is
+ * index 0 so the node of pids[0] sits at the offset of pids itself.
+ */
+struct pid_link___4_18 {
+	struct hlist_node	node;
+	struct pid		*pid;
+};
+
+struct task_struct___4_18 {
+	struct pid_link___4_18	pids[3];
+};
+
+/*
  * The context a tracepoint/syscalls/sys_{enter,exit}_* program receives is
  * not the ftrace record described by the tracepoint format file, it is the
  * function-local struct syscall_tp_t that perf_call_bpf_{enter,exit}() in
