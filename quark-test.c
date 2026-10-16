@@ -1925,10 +1925,13 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	 * A class is claimed only once its event is out. Fill the ring buffer
 	 * with opens nobody drains, read flood while it is full so that its
 	 * read is lost, drain, and a second read must still be reported.
-	 * Skipped under valgrind, where it exercises the kernel at valgrind
-	 * speed.
+	 * The ring buffer is full to the last filler; a record shorter than
+	 * a filler could still fit, so flood's path is kept longer than any
+	 * filler path. Skipped under valgrind, where it exercises the kernel
+	 * at valgrind speed.
 	 */
-	snprintf(flood, sizeof(flood), "%s/quark-test-anchor/flood", dir);
+	snprintf(flood, sizeof(flood),
+	    "%s/quark-test-anchor/flood-at-least-as-long-as-a-filler", dir);
 	if ((fd = open(flood, O_WRONLY|O_CREAT, 0600)) == -1)
 		err(1, "open");
 	close(fd);
