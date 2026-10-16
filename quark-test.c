@@ -2462,6 +2462,171 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_queue_stats		 stats;
+	const struct quark_event	*qev;
+	struct timespec			 start, now;
+	void				*addr, *file_addr;
+	struct stat			 st;
+	const size_t			 len = 4096;
+	const int			 prev[] = {
+		PROT_NONE, PROT_READ, PROT_WRITE, PROT_READ | PROT_WRITE,
+	};
+	const pid_t			 pid = getpid();
+	u64				 lost, sentinel_time;
+	int				 fd, i, nflood;
+	size_t				 which;
+
+	if (in_valgrind) {
+		warnx("%s: skipping the ring buffer flood under valgrind",
+		    __func__);
+		return (0);
+	}
+
+	qa->flags |= QQ_MPROTECT | QQ_GETPID;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	addr = mmap(NULL, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS,
+	    -1, 0);
+	if (addr == MAP_FAILED)
+		err(1, "mmap");
+	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
+		err(1, "open");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	file_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+	if (file_addr == MAP_FAILED)
+		err(1, "mmap");
+
+	/* GETPID emits on every call without consuming mprotect categories. */
+	quark_queue_get_stats(&qq, &stats);
+	lost = stats.lost;
+	for (nflood = 0; stats.lost == lost; nflood++) {
+		if (nflood == 1000000)
+			errx(1, "could not fill the ring buffer");
+		(void)syscall(SYS_getpid);
+		if ((nflood & 255) == 255)
+			quark_queue_get_stats(&qq, &stats);
+	}
+
+	/*
+	 * A smaller anonymous event may still fit after GETPID first fails.
+	 * Try fresh transitions until one is confirmed lost, then retry that
+	 * exact transition after draining. A file-backed event is larger.
+	 */
+	for (which = 0; which < nitems(prev); which++) {
+		if (mprotect(addr, len, prev[which]) == -1)
+			err(1, "mprotect");
+		lost = stats.lost;
+		if (mprotect(addr, len, PROT_EXEC) == -1)
+			err(1, "mprotect");
+		quark_queue_get_stats(&qq, &stats);
+		if (stats.lost > lost)
+			break;
+	}
+	if (which == nitems(prev))
+		errx(1, "no anonymous mprotect drop observed; "
+		    "unrelated events may have advanced the loss counter");
+	lost = stats.lost;
+	if (mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.lost > lost);
+
+	/*
+	 * Loss counters are host-wide: verify that neither supposedly lost
+	 * transition was actually delivered. Drain through a new GETPID event
+	 * instead of waiting for unrelated host activity to stop. Its timestamp
+	 * distinguishes it from the GETPID events used to fill the ring buffer.
+	 */
+	if (clock_gettime(CLOCK_BOOTTIME, &now) == -1)
+		err(1, "clock_gettime");
+	sentinel_time = (u64)now.tv_sec * 1000000000ULL + now.tv_nsec;
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	for (i = 0, now = start; ;
+	    (void)clock_gettime(CLOCK_MONOTONIC, &now)) {
+		if (now.tv_sec - start.tv_sec >= 30)
+			errx(1, "timed out waiting for the GETPID drain sentinel");
+		qev = quark_queue_get_event(&qq);
+		if (qev != NULL) {
+			if ((qev->events & QUARK_EV_MPROTECT) &&
+			    qev->process != NULL && qev->process->pid == (u32)pid) {
+				if (!qev->mprotect.file_backed &&
+				    qev->mprotect.prev_prot == (u64)prev[which] &&
+				    qev->mprotect.effective_prot == PROT_EXEC &&
+				    qev->mprotect.vma_start <= (u64)(uintptr_t)addr &&
+				    qev->mprotect.vma_end >= (u64)(uintptr_t)addr + len)
+					errx(1, "anonymous mprotect was delivered; "
+					    "the loss counter advanced for another event");
+				if (qev->mprotect.file_backed &&
+				    qev->mprotect.inode == (u64)st.st_ino &&
+				    qev->mprotect.prev_prot == PROT_READ &&
+				    qev->mprotect.effective_prot == (PROT_READ | PROT_EXEC) &&
+				    qev->mprotect.vma_start <= (u64)(uintptr_t)file_addr &&
+				    qev->mprotect.vma_end >= (u64)(uintptr_t)file_addr + len)
+					errx(1, "file-backed mprotect was delivered; "
+					    "the loss counter advanced for another event");
+			}
+			if ((qev->events & QUARK_EV_GETPID) &&
+			    qev->process != NULL && qev->process->pid == (u32)pid &&
+			    qev->time >= sentinel_time)
+				break;
+		} else if (quark_queue_block(&qq) == -1) {
+			err(1, "quark_queue_block");
+		}
+		/* Retry the sentinel if it was lost while the buffer was full. */
+		if ((i++ & 255) == 0 || qev == NULL)
+			(void)syscall(SYS_getpid);
+	}
+
+	if (mprotect(addr, len, prev[which]) == -1 ||
+	    mprotect(addr, len, PROT_EXEC) == -1)
+		err(1, "mprotect");
+	if (mprotect(file_addr, len, PROT_READ) == -1 ||
+	    mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	do {
+		qev = drain_for_pid(&qq, pid);
+	} while (!(qev->events & QUARK_EV_MPROTECT));
+	assert(!qev->mprotect.file_backed);
+	assert(qev->mprotect.prev_prot == (u64)prev[which]);
+	assert(qev->mprotect.effective_prot == PROT_EXEC);
+	assert(qev->mprotect.vma_start <= (u64)(uintptr_t)addr);
+	assert(qev->mprotect.vma_end >= (u64)(uintptr_t)addr + len);
+	do {
+		qev = drain_for_pid(&qq, pid);
+	} while (!(qev->events & QUARK_EV_MPROTECT));
+	assert(qev->mprotect.file_backed);
+	assert(qev->mprotect.inode == (u64)st.st_ino);
+	assert(qev->mprotect.prev_prot == PROT_READ);
+	assert(qev->mprotect.effective_prot == (PROT_READ | PROT_EXEC));
+
+	/* Both delivered transitions must now be suppressed; GETPID is the sentinel. */
+	if (mprotect(addr, len, prev[which]) == -1 ||
+	    mprotect(addr, len, PROT_EXEC) == -1)
+		err(1, "mprotect");
+	if (mprotect(file_addr, len, PROT_READ) == -1 ||
+	    mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	(void)syscall(SYS_getpid);
+	do {
+		qev = drain_for_pid(&qq, pid);
+	} while (!(qev->events & (QUARK_EV_MPROTECT | QUARK_EV_GETPID)));
+	assert(qev->events & QUARK_EV_GETPID);
+	assert(!(qev->events & QUARK_EV_MPROTECT));
+
+	if (munmap(addr, len) == -1 || munmap(file_addr, len) == -1)
+		err(1, "munmap");
+	if (close(fd) == -1)
+		err(1, "close");
+	quark_queue_close(&qq);
+	return (0);
+}
+
+static int
 t_shm_open(const struct test *t, struct quark_queue_attr *qa)
 {
 #ifdef NO_SHM_OPEN
@@ -4956,6 +5121,7 @@ struct test all_tests[] = {
 	T_EBPF(t_chroot_escape_exec),
 	T_EBPF(t_shmget),
 	T_EBPF(t_mprotect),
+	T_EBPF(t_mprotect_retry),
 	T_EBPF(t_shm_open),
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),
