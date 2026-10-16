@@ -223,3 +223,26 @@ Changes from 0.9 to 0.10
     namespace, as d_path() reports them, instead of "./" relative with
     possibly stale bytes appended. The "./" prefix is still produced for
     genuinely truncated paths with more components than the resolver holds.
+
+Changes from 0.10 to 0.11
+~~~~~~~~~~~~~~~~~~~~~~~~~
+  o The rule DSL learned the event.scope container field. It matches
+    events from a process in a Kubernetes container, so "pass on
+    event.scope container" followed by "drop on any" keeps only container
+    events. Only the last cgroup component is parsed, and only the
+    systemd cgroup driver layout is recognized: containers on cgroupfs
+    driver nodes and nested cgroups of a container do not match. A
+    process with an unknown cgroup does not match. The field is only
+    supported by the ebpf backend. The kprobe backend does not report the
+    cgroup of new processes, so it rejects the field with ENOTSUP, and
+    so does the nova backend.
+  o The rule DSL learned the pod.name and container.image fields.
+    pod.name matches the Kubernetes pod name of the process container.
+    container.image matches the image reference of the process container
+    exactly as Kubernetes reports it, or as given to the container API,
+    as in docker.io/library/nginx:1.25. Both accept a single * wildcard,
+    as in pod.name nginx-* or container.image quay.io/*. Both need
+    container metadata, from quark-kube-talker or the container API, a
+    process without a known container matches neither. Like event.scope,
+    both fields are only supported by the ebpf backend, the kprobe and
+    nova backends reject them with ENOTSUP.
