@@ -1815,14 +1815,19 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "waitpid");
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		errx(1, "child didn't exit cleanly");
+	/*
+	 * Under valgrind the child reads the binary before it execs it, and
+	 * that read is reported under the child's pid first; wait for the
+	 * exec class.
+	 */
 	for (;;) {
 		qev = drain_for_pid(&qq, child);
-		if (qev->events & QUARK_EV_FILE_ACCESS)
+		if ((qev->events & QUARK_EV_FILE_ACCESS) &&
+		    (qev->file_access->open_flags & 0x20)) /* __FMODE_EXEC */
 			break;
 	}
 	qfa = qev->file_access;
 	assert(!strcmp(qfa->path, exec_path));
-	assert(qfa->open_flags & 0x20);	/* __FMODE_EXEC */
 	assert(!(qfa->open_flags & O_PATH));
 	assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
 
