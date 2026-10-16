@@ -500,10 +500,11 @@ struct {
 // misses.
 #define FILE_ACCESS_ANCESTORS 3
 
-// Per-cpu scratch, safe since the callers run with preemption disabled. The
-// requested pathname of a failed open is read here, and the keys and paths
-// live here rather than on the stack: do_filp_open__exit() sits close to the
-// 512 byte combined stack limit already.
+// Per-cpu scratch, only used between the preempt_disable() and
+// preempt_enable() of file_access__open() and file_access__open_failed().
+// The requested pathname of a failed open is read here, and the keys and
+// paths live here rather than on the stack: do_filp_open__exit() sits close
+// to the 512 byte combined stack limit already.
 #define FILE_ACCESS_FILENAME_MAX 256
 
 // The task a /proc/<pid>/ entry belongs to, see file_access_procfs_target().
