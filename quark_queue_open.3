@@ -187,6 +187,8 @@ The components are those of the file on its filesystem, not of the mount it
 was reached through: a file under a bind mount is matched against the
 directories it has on the underlying filesystem, and the walk stops at the root
 of that filesystem.
+Failed opens are matched the same way on the requested string, so a relative
+name only exposes the components it spells out.
 A component longer than
 .Dv QUARK_FILE_ACCESS_NAME_MAX
 - 1 bytes matches a registered name equal to its first
