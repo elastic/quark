@@ -233,4 +233,4 @@ Changes from 0.10 to 0.11
     quark_queue_file_access_name_add(3), and failed opens with
     EACCES, EPERM or ENOENT of a matching requested name. Events are
     deduplicated in the kernel per process life, file and access
-    class. Experimental.
+    class, until the names are reset. Experimental.

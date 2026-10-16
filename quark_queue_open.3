@@ -183,14 +183,34 @@ opened path, so a user with a list of full paths registers the leaf of each and
 filters the resolved path in the resulting
 .Vt quark_file_access
 itself.
-The walk does not cross mount points.
+The components are those of the file on its filesystem, not of the mount it
+was reached through: a file under a bind mount is matched against the
+directories it has on the underlying filesystem, and the walk stops at the root
+of that filesystem.
 Failed opens are matched the same way on the requested string, so a relative
 name only exposes the components it spells out.
+A component longer than
+.Dv QUARK_FILE_ACCESS_NAME_MAX
+- 1 bytes matches a registered name equal to its first
+.Dv QUARK_FILE_ACCESS_NAME_MAX
+- 1 bytes.
+The
+.Em ruleset
+of
+.Vt quark_queue_attr
+does not filter file access events, the names are their only filter.
+.Pp
+Each event is reported once per process, file and access class (read, write,
+exec, path-only), a repeat within the same process is suppressed in the kernel.
+A new process, including a forked child, is reported again.
 .Pp
 .Ft int
 .Fn quark_queue_file_access_name_reset "struct quark_queue *qq"
 .Pp
 Removes every registered name, after which nothing is reported.
+Also forgets what was already reported: once names are registered again, the
+first access of each process to each matching file is reported again, even if
+the same access was reported under the old names.
 .Sh RETURN VALUES
 Zero on success, -1 otherwise and
 .Va errno
