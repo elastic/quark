@@ -122,7 +122,7 @@ usage(void)
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-BbDeFGgHhkLMNnSsTtuv]\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
+	fprintf(stderr, "%16c [-a name] [-C filename ] [-K kubeconfig] "
 	    "[-l maxlength] [-m maxnodes]\n", ' ');
 	fprintf(stderr, "%16c [-P ppid] "
 	    "[-r rulefile ]\n", ' ');
@@ -158,6 +158,8 @@ main(int argc, char *argv[])
 	int				 ch, maxnodes;
 	int				 do_priv_drop, do_snap;
 	int				 benchmark, lflag;
+	int				 i, naccess;
+	const char			*access_names[64];
 	u32				 filter_ppid;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
@@ -180,6 +182,7 @@ main(int argc, char *argv[])
 	lflag = 0;
 	benchmark = 0;
 	kube_config = NULL;
+	naccess = 0;
 	print_event = print_dump;
 
 	if (argc == 2 &&
@@ -188,10 +191,18 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
+	while ((ch = getopt(argc, argv, "a:BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
+		case 'a':
+			if (optarg == NULL)
+				usage();
+			if (naccess == (int)nitems(access_names))
+				errx(1, "too many -a");
+			access_names[naccess++] = optarg;
+			qa.flags |= QQ_FILE_ACCESS;
+			break;
 		case 'B':
 			qa.flags |= QQ_BYPASS;
 			break;
@@ -369,6 +380,24 @@ main(int argc, char *argv[])
 
 	if (quark_verbose)
 		fprintf(stderr, "using %s for backend\n", fetch_backend(qq));
+
+	/* A trailing slash makes the name a parent anchor, see quark(7) */
+	for (i = 0; i < naccess; i++) {
+		char	 name[QUARK_FILE_ACCESS_NAME_MAX];
+		size_t	 len;
+		int	 role;
+
+		len = strlcpy(name, access_names[i], sizeof(name));
+		if (len >= sizeof(name))
+			errx(1, "-a %s: name too long", access_names[i]);
+		role = QUARK_FILE_ACCESS_NAME_LEAF;
+		if (len > 1 && name[len - 1] == '/') {
+			name[len - 1] = 0;
+			role = QUARK_FILE_ACCESS_NAME_PARENT;
+		}
+		if (quark_queue_file_access_name_add(qq, name, role) == -1)
+			err(1, "-a %s", access_names[i]);
+	}
 
 	/* From now on we will be nobody */
 	if (do_priv_drop)

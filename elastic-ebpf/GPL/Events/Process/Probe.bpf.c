@@ -14,6 +14,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#include "Dedup.h"
 #include "Helpers.h"
 #include "PathResolver.h"
 #include "State.h"
@@ -101,89 +102,30 @@ static void mprotect_seen__clear(u32 tgid)
 /*
  * File-backed transitions are deduplicated per file instead: one entry per
  * (tgid, device, inode) with the transitions already reported for that file,
- * so making a second file executable the same way is reported again. The
- * value carries the process start time and self_exec_id, which the kernel
- * bumps on every exec and never reuses within a process life; an entry left
- * behind by a dead process (recycled tgid) or by a previous program image no
- * longer matches and is simply claimed anew, so a stale entry never suppresses
- * and this map needs no exec or exit clearing. (The mm pointer would not do:
- * it is freed at exec and can come straight back from the slab two images
- * later.) LRU eviction takes care of the leftovers and at worst costs a
- * duplicate. Only referenced from the mprotect probes, sized from userspace,
+ * so making a second file executable the same way is reported again. Stale
+ * entries never suppress, see Dedup.h; this map needs no exec or exit
+ * clearing. Only referenced from the mprotect probes, sized from userspace,
  * see bpf_queue_open1().
  */
-struct mprotect_file_key {
-    u32 tgid;
-    u32 dev;
-    u64 inode;
-};
-
-struct mprotect_file_seen {
-    u64 start_time_ns;
-    u64 exec_id;
-    u64 bits;
-};
-
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, struct mprotect_file_key);
-    __type(value, struct mprotect_file_seen);
+    __type(key, struct ebpf_dedup_file_key);
+    __type(value, struct ebpf_dedup_seen);
     __uint(max_entries, 0);
 } mprotect_file_seen SEC(".maps");
 
-// The exec generation of the process. self_exec_id is u64 since Linux 5.7 and
-// u32 before, so read it by its relocated size; the targets are little endian
-// so a narrower field lands in the low bytes. RHEL 8 (4.18) backported the
-// widening under kABI and the live field only exists in the task_struct_rh
-// extension there, see vmlinux_extra.h; a kernel with neither yields zero and
-// falls back to start_time alone.
-static u64 mprotect_exec_id(const struct task_struct *task)
-{
-    const struct task_struct *leader = BPF_CORE_READ(task, group_leader);
-    u64                       exec_id = 0;
-
-    if (bpf_core_field_exists(leader->self_exec_id)) {
-        bpf_core_read(&exec_id, bpf_core_field_size(leader->self_exec_id),
-                      &leader->self_exec_id);
-    } else if (bpf_core_field_exists(struct task_struct___el8, task_struct_rh)) {
-        exec_id = BPF_CORE_READ((const struct task_struct___el8 *)leader, task_struct_rh,
-                                self_exec_id);
-    }
-
-    return exec_id;
-}
-
-// Same contract as mprotect_seen__test_and_set(), per file. Best effort with
-// the same plain read-test-write, and a lost race on a fresh or stale entry
-// overwrites it, so the failure mode is a duplicate event, never a lost one.
+// Same contract as mprotect_seen__test_and_set(), per file.
 static bool mprotect_file_seen__test_and_set(const struct task_struct *task, u32 tgid, u32 dev,
                                              u64 inode, u32 id)
 {
-    struct mprotect_file_key key = {
+    struct ebpf_dedup_file_key key = {
         .tgid  = tgid,
         .dev   = dev,
         .inode = inode,
     };
-    u64 start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
-    u64 exec_id       = mprotect_exec_id(task);
-    u64 bit           = 1ULL << (id & 63);
+    struct ebpf_dedup_seen fresh;
 
-    struct mprotect_file_seen *seen = bpf_map_lookup_elem(&mprotect_file_seen, &key);
-    if (seen == NULL || seen->start_time_ns != start_time_ns || seen->exec_id != exec_id) {
-        struct mprotect_file_seen fresh = {
-            .start_time_ns = start_time_ns,
-            .exec_id       = exec_id,
-            .bits          = bit,
-        };
-
-        bpf_map_update_elem(&mprotect_file_seen, &key, &fresh, BPF_ANY);
-        return false;
-    }
-    if (seen->bits & bit)
-        return true;
-    seen->bits |= bit;
-
-    return false;
+    return ebpf_dedup__test_and_set(&mprotect_file_seen, &key, &fresh, task, 1ULL << (id & 63));
 }
 
 SEC("tp_btf/sched_process_fork")
