@@ -438,15 +438,36 @@ struct {
 } elastic_ebpf_file_access_anchors SEC(".maps");
 
 /*
+ * The generation of the anchor set, bumped by userspace each time the names
+ * are reset (quark_queue_file_access_name_reset(3)). Part of the dedup key
+ * below, so a class claimed under the old names is reported again under the
+ * new ones without touching the seen map, which is frozen. One entry, read
+ * only on the hit path; not frozen itself.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, u32);
+    __type(value, u64);
+    __uint(max_entries, 1);
+} elastic_ebpf_file_access_generation SEC(".maps");
+
+// (process life, file) the dedup entries are kept by, and the generation of
+// the anchor set the entry was claimed under.
+struct file_access_seen_key {
+    struct ebpf_dedup_file_key file;
+    u64 generation;
+};
+
+/*
  * Access classes already reported for a (process life, file), one entry per
- * (tgid, device, inode) so a second watched file is reported again. A class
- * is claimed only once its event is in the ring buffer. Stale entries never
- * suppress, see Dedup.h; LRU eviction, procfs inode churn and a full ring
- * buffer cost a duplicate, never a lost event.
+ * (tgid, device, inode, generation) so a second watched file is reported
+ * again. A class is claimed only once its event is in the ring buffer. Stale
+ * entries never suppress, see Dedup.h; LRU eviction, procfs inode churn and a
+ * full ring buffer cost a duplicate, never a lost event.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, struct ebpf_dedup_file_key);
+    __type(key, struct file_access_seen_key);
     __type(value, struct ebpf_dedup_seen);
     __uint(max_entries, 0); // sized by userspace, see bpf_queue_open1()
 } elastic_ebpf_file_access_file_seen SEC(".maps");
@@ -479,7 +500,7 @@ struct {
 // limit already.
 struct file_access_scratch {
     struct ebpf_file_access_name key;
-    struct ebpf_dedup_file_key file_key;
+    struct file_access_seen_key file_key;
     struct ebpf_dedup_seen fresh;
     struct path path;
 };
@@ -490,6 +511,17 @@ struct {
     __type(value, struct file_access_scratch);
     __uint(max_entries, 1);
 } elastic_ebpf_file_access_scratch SEC(".maps");
+
+// The generation of the anchor set in force, for the dedup keys.
+static __always_inline u64 file_access_generation(void)
+{
+    u64 *generation;
+    u32  zero = 0;
+
+    generation = bpf_map_lookup_elem(&elastic_ebpf_file_access_generation, &zero);
+
+    return generation != NULL ? *generation : 0;
+}
 
 static u64 file_access_class(u32 open_flags)
 {
@@ -517,8 +549,10 @@ static __always_inline u32 file_access_anchor(struct ebpf_file_access_name *key,
 }
 
 // True if the leaf is a leaf anchor or one of its FILE_ACCESS_ANCESTORS
-// nearest ancestors is a parent anchor. The walk stops at the root of the
-// dentry tree, which is its own parent, so it does not cross mounts.
+// nearest ancestors is a parent anchor. The walk follows d_parent, so it
+// stops at the root of the filesystem the file is on, which is its own
+// parent, not at the mount point: a file reached through a bind mount is
+// still matched against its directories on the underlying filesystem.
 static __always_inline bool file_access_anchored(struct ebpf_file_access_name *key, struct dentry *de)
 {
     struct dentry *parent;
@@ -576,10 +610,11 @@ static __attribute__((noinline)) bool file_access__match(struct file_access_scra
     if (!file_access_anchored(&scratch->key, de))
         return false;
 
-    task                    = (struct task_struct *)bpf_get_current_task();
-    scratch->file_key.tgid  = BPF_CORE_READ(task, tgid);
-    scratch->file_key.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
-    scratch->file_key.inode = BPF_CORE_READ(de, d_inode, i_ino);
+    task                         = (struct task_struct *)bpf_get_current_task();
+    scratch->file_key.file.tgid  = BPF_CORE_READ(task, tgid);
+    scratch->file_key.file.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
+    scratch->file_key.file.inode = BPF_CORE_READ(de, d_inode, i_ino);
+    scratch->file_key.generation = file_access_generation();
 
     return !ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
                              &scratch->fresh, task, file_access_class(open_flags));
@@ -626,10 +661,20 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     size  = ebpf_resolve_path_to_string(field->data, &scratch->path, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
-    // symlink_target_path
+    // symlink_target_path, the inode's inline target when the opened file is
+    // the symlink itself (O_PATH|O_NOFOLLOW). i_link shares a union with
+    // i_pipe, i_cdev and i_dir_seq, so on anything but a symlink it is not a
+    // string. A symlink whose filesystem does not keep the target inline
+    // (xfs, btrfs, long targets on ext4) has no i_link and comes back empty.
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
-    de    = scratch->path.dentry;
-    size  = read_kernel_str_or_empty_str(field->data, PATH_MAX, BPF_CORE_READ(de, d_inode, i_link));
+    if (S_ISLNK(event->finfo.mode)) {
+        de   = scratch->path.dentry;
+        size = read_kernel_str_or_empty_str(field->data, PATH_MAX,
+                                            BPF_CORE_READ(de, d_inode, i_link));
+    } else {
+        field->data[0] = '\0';
+        size           = 1;
+    }
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // pids ss cgroup path

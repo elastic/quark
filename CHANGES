@@ -231,4 +231,5 @@ Changes from 0.10 to 0.11
     EBPF probe reports the open of any file whose name, or one of
     its three nearest directories, was registered through
     quark_queue_file_access_name_add(3). Events are deduplicated in
-    the kernel per process life, file and access class. Experimental.
+    the kernel per process life, file and access class, until the
+    names are reset. Experimental.

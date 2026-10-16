@@ -236,7 +236,11 @@ struct ebpf_file_modify_event {
 
 // Leaf and parent names the file access probe matches an open against before
 // it resolves anything. Names are NUL padded so the fixed size key hashes the
-// same in the probe and in userspace; a longer component never matches.
+// same in the probe and in userspace. The probe reads a component into the
+// key with bpf_probe_read_kernel_str(), which keeps the first
+// EBPF_FILE_ACCESS_NAME_MAX - 1 bytes, so a longer component matches a
+// registered name equal to that prefix of it; userspace filters the resolved
+// path anyway.
 #define EBPF_FILE_ACCESS_NAME_MAX 64
 
 struct ebpf_file_access_name {

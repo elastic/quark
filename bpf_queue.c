@@ -1280,9 +1280,9 @@ bpf_map_harden_supported(void)
 }
 
 /*
- * Everything but the trusted map, the file access anchors and the ring
- * buffer is written only by the probes: state, scratch space, dedup and
- * attribution tables. Freeze them so
+ * Everything but the trusted map, the file access anchors and generation
+ * and the ring buffer is written only by the probes: state, scratch space,
+ * dedup and attribution tables. Freeze them so
  * no process can plant or erase our state through bpf(2); a stranger could
  * otherwise pre-mark its own mprotect transitions as seen, or poison socket
  * attribution. libbpf freezes its own .rodata already, skip the internal
@@ -1303,6 +1303,7 @@ bpf_maps_freeze(struct bpf_probes *p)
 	bpf_object__for_each_map(m, p->obj) {
 		if (m == p->maps.elastic_ebpf_events_trusted_pids ||
 		    m == p->maps.elastic_ebpf_file_access_anchors ||
+		    m == p->maps.elastic_ebpf_file_access_generation ||
 		    m == p->maps.ringbuf || bpf_map__is_internal(m) ||
 		    !bpf_map__autocreate(m))
 			continue;
@@ -1562,6 +1563,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		}
 	} else {
 		if (bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_anchors, 0) != 0 ||
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_generation, 0) != 0 ||
 		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_file_seen, 0) != 0 ||
 		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0) {
 			qwarn("bpf_map__set_autocreate file_access");
@@ -1670,9 +1672,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 * BPF writer, ours or a stranger's; a root process can still update it
 	 * through bpf(2), but can't smuggle a writer in as BPF code. The init
 	 * buffer is only ever copied from, by anyone, so it gets the flag too
-	 * and is frozen below. The file access anchors are the trusted map's
-	 * case again: filled through quark_queue_file_access_name_add(3),
-	 * only looked up by the probes.
+	 * and is frozen below. The file access anchors and generation are the
+	 * trusted map's case again: written through
+	 * quark_queue_file_access_name_add(3) and _reset(3), only looked up by
+	 * the probes.
 	 */
 	harden = bpf_map_harden_supported();
 	if (harden & BPF_HARDEN_RDONLY_PROG) {
@@ -1684,6 +1687,11 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_file_access_anchors,
 		    BPF_F_RDONLY_PROG) != 0) {
 			qwarn("bpf_map__set_map_flags file_access_anchors");
+			goto fail;
+		}
+		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_file_access_generation,
+		    BPF_F_RDONLY_PROG) != 0) {
+			qwarn("bpf_map__set_map_flags file_access_generation");
 			goto fail;
 		}
 		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_events_init_buffer,
@@ -1968,11 +1976,21 @@ file_access_anchors_map(struct quark_queue *qq)
 	return (m);
 }
 
+/*
+ * The names go first and the generation after: a hit between the two still
+ * belongs to the old set and claims its class under the old generation,
+ * where it is of no consequence. The other way around, an open under a
+ * stale name would claim the class under the new generation and suppress
+ * its report once the new names are in.
+ */
 int
 quark_queue_file_access_name_reset(struct quark_queue *qq)
 {
+	struct bpf_probes		*p;
 	struct bpf_map			*m;
 	struct ebpf_file_access_name	 k;
+	u64				 generation;
+	u32				 zero;
 	int				 r;
 
 	if ((m = file_access_anchors_map(qq)) == NULL)
@@ -1981,8 +1999,22 @@ quark_queue_file_access_name_reset(struct quark_queue *qq)
 		if (bpf_map__delete_elem(m, &k, sizeof(k), 0) != 0)
 			return (-1);
 	}
+	if (r != -ENOENT)
+		return (-1);
 
-	return (r == -ENOENT ? 0 : -1);
+	/* Can't fail, file_access_anchors_map() checked the same */
+	p = quark_get_bpf_probes(qq);
+	m = p->maps.elastic_ebpf_file_access_generation;
+	zero = 0;
+	if (bpf_map__lookup_elem(m, &zero, sizeof(zero), &generation,
+	    sizeof(generation), 0) != 0)
+		return (-1);
+	generation++;
+	if (bpf_map__update_elem(m, &zero, sizeof(zero), &generation,
+	    sizeof(generation), BPF_ANY) != 0)
+		return (-1);
+
+	return (0);
 }
 
 /*
