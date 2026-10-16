@@ -1595,6 +1595,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_file_access	*qfa;
 	struct quark_queue_stats	 stats;
 	struct stat			 st;
+	const char			*true_path;
 	char				 dir[] = "/tmp/quark-test-fa.XXXXXX";
 	char				 leaf[PATH_MAX], parent_dir[PATH_MAX];
 	char				 parent_file[PATH_MAX], other[PATH_MAX];
@@ -1602,9 +1603,12 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	char				 deep[PATH_MAX], toodeep[PATH_MAX];
 	char				 flood[PATH_MAX], one[PATH_MAX], two[PATH_MAX];
 	char				 longname[QUARK_FILE_ACCESS_NAME_MAX + 8];
+	char				 symlink_path[PATH_MAX], chardev[PATH_MAX];
+	char				 exec_path[PATH_MAX], copybuf[4096];
 	u64				 lost;
-	int				 fd, i, nflood;
+	ssize_t				 n;
 	pid_t				 child;
+	int				 fd, fd2, i, nflood, status;
 
 	qa->flags |= QQ_FILE_ACCESS;
 
@@ -1633,8 +1637,15 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_queue_file_access_name_add(&qq, "status",
 	    QUARK_FILE_ACCESS_NAME_OTHER_TASK) == -1);
 
+	/*
+	 * On a tmpfs of its own: the symlink target below is the inode's
+	 * inline target, which tmpfs and ext4 keep and xfs and btrfs don't,
+	 * so the test must not depend on what /tmp is on.
+	 */
 	if (mkdtemp(dir) == NULL)
 		err(1, "mkdtemp");
+	if (mount("tmpfs", dir, "tmpfs", 0, NULL) == -1)
+		err(1, "mount");
 	snprintf(leaf, sizeof(leaf), "%s/quark-test-secret", dir);
 	snprintf(parent_dir, sizeof(parent_dir), "%s/quark-test-anchor", dir);
 	snprintf(parent_file, sizeof(parent_file), "%s/quark-test-anchor/plain",
@@ -1731,6 +1742,104 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qfa->path, leaf));
 	assert(qfa->open_flags & O_PATH);
 	assert_next_access_path(&qq, parent_file);
+
+	/*
+	 * Opening a symlink itself reports the symlink with its target. A
+	 * character device shares the inode slot the target is read from, so
+	 * it must come back with no target, not with garbage.
+	 */
+	snprintf(symlink_path, sizeof(symlink_path),
+	    "%s/quark-test-anchor/link", dir);
+	if (symlink("quark-test-target", symlink_path) == -1)
+		err(1, "symlink");
+	if ((fd = open(symlink_path, O_PATH|O_NOFOLLOW)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, symlink_path));
+	assert(S_ISLNK(qfa->mode));
+	assert(qfa->sym_target != NULL);
+	assert(!strcmp(qfa->sym_target, "quark-test-target"));
+	snprintf(chardev, sizeof(chardev), "%s/quark-test-anchor/chardev", dir);
+	if (mknod(chardev, S_IFCHR|0600, makedev(1, 3)) == -1) /* null */
+		err(1, "mknod");
+	if ((fd = open(chardev, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, chardev));
+	assert(S_ISCHR(qfa->mode));
+	assert(qfa->sym_target == NULL);
+
+	/*
+	 * Deduplication is per process: a child that reads the leaf we
+	 * already read is reported, under its own pid.
+	 */
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	else if (child == 0) {
+		if ((fd = open(leaf, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		_exit(0);
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child didn't exit cleanly");
+	for (;;) {
+		qev = drain_for_pid(&qq, child);
+		if (qev->events & QUARK_EV_FILE_ACCESS)
+			break;
+	}
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, leaf));
+	assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+	assert(!(qfa->open_flags & O_PATH));
+
+	/*
+	 * Executing an anchored binary is the exec class: the kernel opens it
+	 * with __FMODE_EXEC, which has no O_ name. Copying true in is a write
+	 * of the copy first.
+	 */
+	snprintf(exec_path, sizeof(exec_path), "%s/quark-test-anchor/true", dir);
+	true_path = access("/usr/bin/true", X_OK) == 0 ?
+	    "/usr/bin/true" : "/bin/true";
+	if ((fd = open(true_path, O_RDONLY)) == -1)
+		err(1, "open");
+	if ((fd2 = open(exec_path, O_WRONLY|O_CREAT|O_TRUNC, 0700)) == -1)
+		err(1, "open");
+	while ((n = read(fd, copybuf, sizeof(copybuf))) > 0) {
+		if (write(fd2, copybuf, n) != n)
+			err(1, "write");
+	}
+	if (n == -1)
+		err(1, "read");
+	close(fd);
+	close(fd2);
+	assert_next_access_path(&qq, exec_path);
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	else if (child == 0) {
+		execl(exec_path, "true", (char *)NULL);
+		err(1, "execl");
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child didn't exit cleanly");
+	for (;;) {
+		qev = drain_for_pid(&qq, child);
+		if (qev->events & QUARK_EV_FILE_ACCESS)
+			break;
+	}
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, exec_path));
+	assert(qfa->open_flags & 0x20);	/* __FMODE_EXEC */
+	assert(!(qfa->open_flags & O_PATH));
+	assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
 
 	/*
 	 * Failed opens: an anchored missing name is reported with ENOENT and
@@ -1910,13 +2019,9 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 			execl(noexec, noexec, NULL);
 			_exit(errno == EACCES ? 0 : 1);
 		}
-		{
-			int status;
-
-			if (waitpid(child, &status, 0) == -1)
-				err(1, "waitpid");
-			assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-		}
+		if (waitpid(child, &status, 0) == -1)
+			err(1, "waitpid");
+		assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 		qev = drain_for_pid(&qq, child);
 		while (!(qev->events & QUARK_EV_FILE_ACCESS))
 			qev = drain_for_pid(&qq, child);
@@ -2090,11 +2195,42 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 		    __func__);
 
 	/*
-	 * Same libbpf false positive as t_trusted_pid: bpf_map_get_next_key()
-	 * memsets bpf_attr short of flags and takes a NULL first key.
+	 * A reset forgets the names and what was reported under them: with
+	 * no names, the O_PATH open of the leaf is not reported; once the
+	 * names are registered again, the read of the leaf and the failed
+	 * read of missing, both long claimed, are reported again, and are
+	 * the next events.
+	 * Skipped under valgrind for the same libbpf false positive as
+	 * t_trusted_pid: bpf_map_get_next_key() memsets bpf_attr short of
+	 * flags and takes a NULL first key.
 	 */
-	if (!in_valgrind)
+	if (!in_valgrind) {
 		assert(!quark_queue_file_access_name_reset(&qq));
+		if ((fd = open(leaf, O_PATH)) == -1)
+			err(1, "open");
+		close(fd);
+		assert(!quark_queue_file_access_name_add(&qq,
+		    "quark-test-secret", QUARK_FILE_ACCESS_NAME_LEAF));
+		assert(!quark_queue_file_access_name_add(&qq,
+		    "quark-test-missing", QUARK_FILE_ACCESS_NAME_LEAF));
+		if ((fd = open(leaf, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		assert(open(missing, O_RDONLY) == -1 && errno == ENOENT);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(!strcmp(qfa->path, leaf));
+		assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+		assert(!(qfa->open_flags & O_PATH));
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(qfa->flags & QUARK_FILE_ACCESS_F_FAILED);
+		assert(qfa->error == ENOENT);
+		assert(!strcmp(qfa->requested, missing));
+		assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+		assert(!quark_queue_file_access_name_reset(&qq));
+	} else
+		warnx("%s: skipping the name reset under valgrind", __func__);
 
 	while (nflood-- > 0) {
 		snprintf(other, sizeof(other), "%s/quark-test-anchor/a/%d", dir,
@@ -2107,6 +2243,9 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	(void)unlink(noexec);
 	(void)unlink(deep);
 	(void)unlink(toodeep);
+	(void)unlink(symlink_path);
+	(void)unlink(chardev);
+	(void)unlink(exec_path);
 	snprintf(other, sizeof(other), "%s/plain", dir);
 	(void)unlink(other);
 	snprintf(other, sizeof(other), "%s/quark-test-anchor/a/b/c", dir);
@@ -2118,6 +2257,8 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	(void)rmdir(one);
 	(void)rmdir(two);
 	(void)rmdir(parent_dir);
+	if (umount(dir) == -1)
+		err(1, "umount");
 	(void)rmdir(dir);
 
 	quark_queue_close(&qq);
