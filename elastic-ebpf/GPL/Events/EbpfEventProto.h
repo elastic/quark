@@ -261,7 +261,7 @@ struct ebpf_file_access_event {
     uint32_t open_flags; // O_* the kernel used (open_flags.open_flag), before do_dentry_open strips
     uint32_t fmode;      // file.f_mode
 
-    // Variable length fields: path, symlink_target_path, pids_ss_cgroup_path
+    // Variable length fields: path, symlink_target_path
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 
