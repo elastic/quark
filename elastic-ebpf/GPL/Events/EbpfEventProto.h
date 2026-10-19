@@ -275,8 +275,8 @@ struct ebpf_file_access_event {
     uint32_t target_tgid;
     uint64_t target_start_time_ns;
 
-    // Variable length fields: path, symlink_target_path, pids_ss_cgroup_path;
-    // failed opens carry filename (the requested string) and, when relative, cwd
+    // Variable length fields: path, symlink_target_path; failed opens carry
+    // filename (the requested string) and, when relative, cwd
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 
