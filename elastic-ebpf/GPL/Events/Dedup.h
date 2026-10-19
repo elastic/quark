@@ -28,11 +28,27 @@
  * clearing. (The mm pointer would not do: it is freed at exec and can come
  * straight back from the slab two images later.) LRU eviction takes care of
  * the leftovers and at worst costs a duplicate.
+ *
+ * (device, inode number) alone does not identify a file for the life of a
+ * process: ext4 and xfs hand a freed number to the next inode they allocate,
+ * so a file created, unlinked and followed by another under the same anchor
+ * would inherit its bits and go unreported. i_generation is what the kernel
+ * itself adds to tell those apart (it is the file handle generation); the
+ * filesystems that reuse numbers all bump it. A filesystem that leaves it at
+ * zero falls back to the number alone.
+ *
+ * overlayfs is the known gap: its inode carries the upper filesystem's
+ * number, reused like ext4's, and a zero generation (the real inode's is not
+ * copied; verified on 6.8, the second file was suppressed). Reaching the
+ * real inode needs the overlay module's types or the private_data layout
+ * that changed in 6.12, neither of which is stable from here.
  */
 struct ebpf_dedup_file_key {
     u32 tgid;
     u32 dev;
     u64 inode;
+    u32 i_generation;
+    u32 pad; // the map compares every byte of the key, keep it zero
 };
 
 struct ebpf_dedup_seen {
