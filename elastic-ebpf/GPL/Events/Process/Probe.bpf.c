@@ -116,12 +116,14 @@ struct {
 
 // Same contract as mprotect_seen__test_and_set(), per file.
 static bool mprotect_file_seen__test_and_set(const struct task_struct *task, u32 tgid, u32 dev,
-                                             u64 inode, u32 id)
+                                             u64 inode, u32 i_generation, u32 id)
 {
     struct ebpf_dedup_file_key key = {
-        .tgid  = tgid,
-        .dev   = dev,
-        .inode = inode,
+        .tgid         = tgid,
+        .dev          = dev,
+        .inode        = inode,
+        .i_generation = i_generation,
+        .pad          = 0,
     };
     struct ebpf_dedup_seen fresh;
 
@@ -605,12 +607,14 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     u64 prev_prot          = mprotect_vm_flags_to_prot(vm_flags);
     struct file *file      = BPF_CORE_READ(vma, vm_file);
 
-    u64 inode = 0;
-    u32 dev   = 0;
+    u64 inode        = 0;
+    u32 dev          = 0;
+    u32 i_generation = 0;
     if (file) {
         struct inode *ino = BPF_CORE_READ(file, f_inode);
         if (ino) {
-            inode = BPF_CORE_READ(ino, i_ino);
+            inode        = BPF_CORE_READ(ino, i_ino);
+            i_generation = BPF_CORE_READ(ino, i_generation);
 
             struct super_block *sb = BPF_CORE_READ(ino, i_sb);
             if (sb)
@@ -622,7 +626,7 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     // transition per file for file-backed ones.
     u32 tgid = bpf_get_current_pid_tgid() >> 32;
     u32 id   = mprotect_transition_id(prev_prot, effective_prot, file != NULL);
-    if (file ? mprotect_file_seen__test_and_set(task, tgid, dev, inode, id)
+    if (file ? mprotect_file_seen__test_and_set(task, tgid, dev, inode, i_generation, id)
              : mprotect_seen__test_and_set(tgid, id))
         goto out;
 

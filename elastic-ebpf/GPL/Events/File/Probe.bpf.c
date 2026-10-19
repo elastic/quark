@@ -461,10 +461,11 @@ struct file_access_seen_key {
 
 /*
  * Access classes already reported for a (process life, file), one entry per
- * (tgid, device, inode, generation) so a second watched file is reported
- * again. A class is claimed only once its event is in the ring buffer. Stale
- * entries never suppress, see Dedup.h; LRU eviction, procfs inode churn and a
- * full ring buffer cost a duplicate, never a lost event.
+ * (tgid, device, inode, i_generation, anchor generation) so a second watched
+ * file is reported again, including one that took over a freed inode number.
+ * A class is claimed only once its event is in the ring buffer. Stale entries
+ * never suppress, see Dedup.h; LRU eviction, procfs inode churn and a full
+ * ring buffer cost a duplicate, never a lost event.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -480,9 +481,11 @@ struct {
  * against, not the dirfd number: AT_FDCWD names a different directory after
  * every chdir() and a closed descriptor is reused, so the number would fold
  * the same relative name in different directories into one attempt. It is
- * zero for an absolute name. Same value, same per class bits, same
- * generation and same contract as the file map; a hash collision costs a
- * duplicate suppression of a different name and nothing else.
+ * zero for an absolute name, and carries the directory's i_generation for
+ * the same reason the file key does, see Dedup.h. Same value, same per
+ * class bits, same generation and same contract as the file map; a hash
+ * collision costs a duplicate suppression of a different name and nothing
+ * else.
  */
 struct file_access_fail_key {
     u32 tgid;
@@ -490,6 +493,8 @@ struct file_access_fail_key {
     u32 base_dev;
     u32 name_hash;
     u64 base_inode;
+    u32 base_i_generation;
+    u32 pad; // the map compares every byte of the key, keep it zero
     u64 generation;
 };
 
@@ -701,8 +706,8 @@ static __attribute__((noinline)) bool file_access__match(struct file_access_scra
     if (roles == 0)
         return false;
 
-    task                        = (struct task_struct *)bpf_get_current_task();
-    scratch->file_key.file.tgid = BPF_CORE_READ(task, tgid);
+    task                                = (struct task_struct *)bpf_get_current_task();
+    scratch->file_key.file.tgid         = BPF_CORE_READ(task, tgid);
 
     // The target of a procfs entry is taken before the dedup test so that an
     // open skipped for being the caller's own does not claim the slot.
@@ -711,9 +716,11 @@ static __attribute__((noinline)) bool file_access__match(struct file_access_scra
         scratch->target.tgid == scratch->file_key.file.tgid)
         return false;
 
-    scratch->file_key.file.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
-    scratch->file_key.file.inode = BPF_CORE_READ(de, d_inode, i_ino);
-    scratch->file_key.generation = file_access_generation();
+    scratch->file_key.file.dev          = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
+    scratch->file_key.file.inode        = BPF_CORE_READ(de, d_inode, i_ino);
+    scratch->file_key.file.i_generation = BPF_CORE_READ(de, d_inode, i_generation);
+    scratch->file_key.file.pad          = 0;
+    scratch->file_key.generation        = file_access_generation();
 
     return !ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
                              &scratch->fresh, task, file_access_class(open_flags));
@@ -908,16 +915,19 @@ static __attribute__((noinline)) bool file_access__match_failed(struct file_acce
         }
     }
 
-    scratch->fail_key.tgid       = BPF_CORE_READ(task, tgid);
-    scratch->fail_key.error      = error;
-    scratch->fail_key.base_dev   = 0;
-    scratch->fail_key.name_hash  = hash;
-    scratch->fail_key.base_inode = 0;
-    scratch->fail_key.generation = file_access_generation();
+    scratch->fail_key.tgid              = BPF_CORE_READ(task, tgid);
+    scratch->fail_key.error             = error;
+    scratch->fail_key.base_dev          = 0;
+    scratch->fail_key.name_hash         = hash;
+    scratch->fail_key.base_inode        = 0;
+    scratch->fail_key.base_i_generation = 0;
+    scratch->fail_key.pad               = 0;
+    scratch->fail_key.generation        = file_access_generation();
     base = scratch->path.dentry; // a plain load: scratch is not a kernel type
     if (base != NULL) {
-        scratch->fail_key.base_dev   = BPF_CORE_READ(base, d_inode, i_sb, s_dev);
-        scratch->fail_key.base_inode = BPF_CORE_READ(base, d_inode, i_ino);
+        scratch->fail_key.base_dev          = BPF_CORE_READ(base, d_inode, i_sb, s_dev);
+        scratch->fail_key.base_inode        = BPF_CORE_READ(base, d_inode, i_ino);
+        scratch->fail_key.base_i_generation = BPF_CORE_READ(base, d_inode, i_generation);
     }
 
     return !ebpf_dedup__test(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key,
@@ -1084,7 +1094,10 @@ static int do_filp_open__exit(int dfd, struct filename *pathname, const struct o
     }
 
 out:
-    ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
+    // Only the fsnotify probe, loaded with the file events, sets this state;
+    // without them the delete would lock a bucket on every open for nothing.
+    if (file_events_enabled)
+        ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
 
     return 0;
 }
@@ -1176,13 +1189,17 @@ int BPF_KPROBE(kprobe__do_filp_open, int dfd, struct filename *pathname, const s
 
 static int do_filp_open__kretprobe(struct file *ret)
 {
-    struct ebpf_events_state *state;
+    struct ebpf_events_state *state    = NULL;
     int                       dfd      = 0;
     struct filename          *pathname = NULL;
     const struct open_flags  *op       = NULL;
     int                       r;
 
-    state = ebpf_events_state__get(EBPF_EVENTS_STATE_FILP_OPEN);
+    // The entry kprobe that keeps the arguments is loaded only with the file
+    // access events; the file events alone would pay a lookup per open for a
+    // state nothing sets.
+    if (file_access_enabled)
+        state = ebpf_events_state__get(EBPF_EVENTS_STATE_FILP_OPEN);
     if (state != NULL) {
         dfd      = state->filp_open.dfd;
         pathname = state->filp_open.pathname;
