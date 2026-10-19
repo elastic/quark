@@ -461,10 +461,11 @@ struct file_access_seen_key {
 
 /*
  * Access classes already reported for a (process life, file), one entry per
- * (tgid, device, inode, generation) so a second watched file is reported
- * again. A class is claimed only once its event is in the ring buffer. Stale
- * entries never suppress, see Dedup.h; LRU eviction, procfs inode churn and a
- * full ring buffer cost a duplicate, never a lost event.
+ * (tgid, device, inode, i_generation, anchor generation) so a second watched
+ * file is reported again, including one that took over a freed inode number.
+ * A class is claimed only once its event is in the ring buffer. Stale entries
+ * never suppress, see Dedup.h; LRU eviction, procfs inode churn and a full
+ * ring buffer cost a duplicate, never a lost event.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -646,11 +647,13 @@ static __attribute__((noinline)) bool file_access__match(struct file_access_scra
     if (!file_access_anchored(&scratch->key, de))
         return false;
 
-    task                         = (struct task_struct *)bpf_get_current_task();
-    scratch->file_key.file.tgid  = BPF_CORE_READ(task, tgid);
-    scratch->file_key.file.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
-    scratch->file_key.file.inode = BPF_CORE_READ(de, d_inode, i_ino);
-    scratch->file_key.generation = file_access_generation();
+    task                                = (struct task_struct *)bpf_get_current_task();
+    scratch->file_key.file.tgid         = BPF_CORE_READ(task, tgid);
+    scratch->file_key.file.dev          = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
+    scratch->file_key.file.inode        = BPF_CORE_READ(de, d_inode, i_ino);
+    scratch->file_key.file.i_generation = BPF_CORE_READ(de, d_inode, i_generation);
+    scratch->file_key.file.pad          = 0;
+    scratch->file_key.generation        = file_access_generation();
 
     return !ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
                              &scratch->fresh, task, file_access_class(open_flags));
@@ -1015,7 +1018,10 @@ static int do_filp_open__exit(int dfd, struct filename *pathname, const struct o
     }
 
 out:
-    ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
+    // Only the fsnotify probe, loaded with the file events, sets this state;
+    // without them the delete would lock a bucket on every open for nothing.
+    if (file_events_enabled)
+        ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
 
     return 0;
 }
@@ -1107,13 +1113,17 @@ int BPF_KPROBE(kprobe__do_filp_open, int dfd, struct filename *pathname, const s
 
 static int do_filp_open__kretprobe(struct file *ret)
 {
-    struct ebpf_events_state *state;
+    struct ebpf_events_state *state    = NULL;
     int                       dfd      = 0;
     struct filename          *pathname = NULL;
     const struct open_flags  *op       = NULL;
     int                       r;
 
-    state = ebpf_events_state__get(EBPF_EVENTS_STATE_FILP_OPEN);
+    // The entry kprobe that keeps the arguments is loaded only with the file
+    // access events; the file events alone would pay a lookup per open for a
+    // state nothing sets.
+    if (file_access_enabled)
+        state = ebpf_events_state__get(EBPF_EVENTS_STATE_FILP_OPEN);
     if (state != NULL) {
         dfd      = state->filp_open.dfd;
         pathname = state->filp_open.pathname;
