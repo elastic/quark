@@ -481,9 +481,11 @@ struct {
  * against, not the dirfd number: AT_FDCWD names a different directory after
  * every chdir() and a closed descriptor is reused, so the number would fold
  * the same relative name in different directories into one attempt. It is
- * zero for an absolute name. Same value, same per class bits, same
- * generation and same contract as the file map; a hash collision costs a
- * duplicate suppression of a different name and nothing else.
+ * zero for an absolute name, and carries the directory's i_generation for
+ * the same reason the file key does, see Dedup.h. Same value, same per
+ * class bits, same generation and same contract as the file map; a hash
+ * collision costs a duplicate suppression of a different name and nothing
+ * else.
  */
 struct file_access_fail_key {
     u32 tgid;
@@ -491,6 +493,8 @@ struct file_access_fail_key {
     u32 base_dev;
     u32 name_hash;
     u64 base_inode;
+    u32 base_i_generation;
+    u32 pad; // the map compares every byte of the key, keep it zero
     u64 generation;
 };
 
@@ -845,16 +849,19 @@ static __attribute__((noinline)) bool file_access__match_failed(struct file_acce
         }
     }
 
-    scratch->fail_key.tgid       = BPF_CORE_READ(task, tgid);
-    scratch->fail_key.error      = error;
-    scratch->fail_key.base_dev   = 0;
-    scratch->fail_key.name_hash  = hash;
-    scratch->fail_key.base_inode = 0;
-    scratch->fail_key.generation = file_access_generation();
+    scratch->fail_key.tgid              = BPF_CORE_READ(task, tgid);
+    scratch->fail_key.error             = error;
+    scratch->fail_key.base_dev          = 0;
+    scratch->fail_key.name_hash         = hash;
+    scratch->fail_key.base_inode        = 0;
+    scratch->fail_key.base_i_generation = 0;
+    scratch->fail_key.pad               = 0;
+    scratch->fail_key.generation        = file_access_generation();
     base = scratch->path.dentry; // a plain load: scratch is not a kernel type
     if (base != NULL) {
-        scratch->fail_key.base_dev   = BPF_CORE_READ(base, d_inode, i_sb, s_dev);
-        scratch->fail_key.base_inode = BPF_CORE_READ(base, d_inode, i_ino);
+        scratch->fail_key.base_dev          = BPF_CORE_READ(base, d_inode, i_sb, s_dev);
+        scratch->fail_key.base_inode        = BPF_CORE_READ(base, d_inode, i_ino);
+        scratch->fail_key.base_i_generation = BPF_CORE_READ(base, d_inode, i_generation);
     }
 
     return !ebpf_dedup__test(&elastic_ebpf_file_access_fail_seen, &scratch->fail_key,
