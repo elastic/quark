@@ -632,7 +632,7 @@ static __attribute__((noinline)) void file_access_event__fill_task(struct ebpf_f
 // A subprogram of its own, not the top of file_access__open(): the verifier
 // charges a program the deepest chain of frames it can reach, and with the
 // file events on the same hook that chain runs do_filp_open__exit() through
-// the emitter into the cgroup path resolver, a few bytes under the 512 limit.
+// the emitter into the path resolver, a few bytes under the 512 limit.
 // Here, the walk's locals are off the stack before the emitter calls the
 // resolvers, and the emitter itself keeps little live across its calls.
 static __attribute__((noinline)) bool file_access__match(struct file_access_scratch *scratch,
@@ -716,10 +716,8 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     }
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
-    // pids ss cgroup path
-    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH);
-    size  = ebpf_resolve_pids_ss_cgroup_path_to_string(field->data, task);
-    ebpf_vl_field__set_size(&event->vl_fields, field, size);
+    // No cgroup path: the consumer takes it from the process the event is
+    // linked to, and resolving it here was the deepest frame on this chain.
 
     // The class is claimed only once the event is out, see ebpf_dedup__set().
     if (ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0) == 0)
@@ -927,11 +925,6 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
         }
         ebpf_vl_field__set_size(&event->vl_fields, field, size);
     }
-
-    // pids ss cgroup path
-    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH);
-    size  = ebpf_resolve_pids_ss_cgroup_path_to_string(field->data, task);
-    ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // The class is claimed only once the event is out, see ebpf_dedup__set().
     if (ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0) == 0)

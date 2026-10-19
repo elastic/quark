@@ -268,8 +268,8 @@ struct ebpf_file_access_event {
     uint32_t flags;      // EBPF_FILE_ACCESS_F_*
     int32_t dfd;         // failed relative opens: the dirfd the name was relative to
 
-    // Variable length fields: path, symlink_target_path, pids_ss_cgroup_path;
-    // failed opens carry filename (the requested string) and, when relative, cwd
+    // Variable length fields: path, symlink_target_path; failed opens carry
+    // filename (the requested string) and, when relative, cwd
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 
