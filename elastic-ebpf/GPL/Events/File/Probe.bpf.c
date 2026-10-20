@@ -645,7 +645,13 @@ static __attribute__((noinline)) bool file_access__match(struct file_access_scra
 {
     struct task_struct *task;
     struct dentry      *de;
+    u64                 generation;
 
+    // The generation is read before the names: a reset deletes the names and
+    // bumps the generation after, so a name found here was in force under the
+    // generation read here, never under a later one. An array lookup the
+    // verifier inlines, a few instructions per open.
+    generation    = file_access_generation();
     scratch->path = BPF_CORE_READ(f, f_path);
     de            = scratch->path.dentry;
     if (!file_access_anchored(&scratch->key, de))
@@ -657,7 +663,7 @@ static __attribute__((noinline)) bool file_access__match(struct file_access_scra
     scratch->file_key.file.inode        = BPF_CORE_READ(de, d_inode, i_ino);
     scratch->file_key.file.i_generation = BPF_CORE_READ(de, d_inode, i_generation);
     scratch->file_key.file.pad          = 0;
-    scratch->file_key.generation        = file_access_generation();
+    scratch->file_key.generation        = generation;
 
     return !ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
                              &scratch->fresh, task, file_access_class(open_flags));

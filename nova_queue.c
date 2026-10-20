@@ -168,6 +168,21 @@ nova_rule_from_quark(struct nova_queue *nqq,
 			qwarn("file.exec_change is not supported in nova backend");
 			return (-1);
 			break;
+		case QUARK_RF_EVENT_SCOPE:
+			errno = ENOTSUP;
+			qwarn("event.scope is not supported in nova backend");
+			return (-1);
+			break;
+		case QUARK_RF_POD_NAME:
+			errno = ENOTSUP;
+			qwarn("pod.name is not supported in nova backend");
+			return (-1);
+			break;
+		case QUARK_RF_CONTAINER_IMAGE:
+			errno = ENOTSUP;
+			qwarn("container.image is not supported in nova backend");
+			return (-1);
+			break;
 		default:
 			errno = EINVAL;
 			qwarn("bad field->code %llu", field->code);
