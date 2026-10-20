@@ -211,7 +211,14 @@ The
 .Em ruleset
 of
 .Vt quark_queue_attr
-does not filter file access events, the names are their only filter.
+applies to file access events through their process, as to any other event:
+a rule on process fields, or
+.Dq drop on any ,
+drops them.
+A
+.Em file.path
+rule never matches a file access event; the names are the only filter on the
+file itself.
 .Pp
 Each event is reported once per process, file and access class (read, write,
 exec, path-only), a repeat within the same process is suppressed in the kernel.
