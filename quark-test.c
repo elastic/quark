@@ -4398,6 +4398,13 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on file.path /foo/bar\n",
 		"pass on file.path foo-bar\n",
 		"pass on file.path /foo/* file.exec_change\n",
+		"pass on event.scope container\n",
+		"pass on pod.name nginx-*\n",
+		"drop on pod.name *-sidecar\n",
+		"drop on pod.name \"my pod\"\n",
+		"drop on container.image docker.io/library/nginx:1.25\n",
+		"drop on container.image */nginx:1.25\n",
+		"pass on container.image registry.k8s.io/* event.scope container\n",
 		"drop on process.exe /foo/bar\n",
 		"drop on process.exe /foo/*\n",
 		"drop on process.exe */bar\n",
@@ -4428,6 +4435,13 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on foobar\n",
 		"drop on process.exe",
 		"drop on file.name \"foo\n",
+		"drop on event.scope\n",
+		"drop on event.scope guest\n",
+		"drop on event.scope host\n",
+		"drop on pod.name\n",
+		"drop on pod.name a*b*\n",
+		"drop on container.image\n",
+		"drop on container.image */nginx:*\n",
 		NULL
 	};
 
@@ -4450,6 +4464,410 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_event	 qev;
+	struct quark_process	 qp;
+	struct quark_rule	*rule;
+	struct quark_rule_field	 rf;
+	struct quark_ruleset	 ruleset;
+	const char		*cached;
+	char			*cgroup;
+
+	bzero(&qev, sizeof(qev));
+	bzero(&qp, sizeof(qp));
+
+	/* Keep only container events. */
+	ruleset_from_string(&ruleset,
+	    "pass on event.scope container\n"
+	    "drop on any\n");
+
+	/* A process with an unknown cgroup is not a container. */
+	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(rule->action == QUARK_RA_DROP);
+	assert(!qp.container_id_parsed);
+
+	/* Scope must use the process cgroup without container metadata. */
+	cgroup = strdup("/system.slice/docker-abc123.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 0);
+	assert(rule->action == QUARK_RA_PASS);
+	assert(qp.container_id_parsed);
+	assert(!strcmp(qp.container_id, "docker://abc123"));
+	cached = qp.container_id;
+
+	/* A second match must use the cached container ID. */
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 0);
+	assert(qp.container_id == cached);
+
+	qev.process = NULL;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+
+	/*
+	 * A move to a cgroup that does not name a container drops the
+	 * cached container ID, see t_process_container_cache.
+	 */
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(rule->action == QUARK_RA_DROP);
+	assert(qp.container_id_parsed);
+	assert(qp.container_id == NULL);
+
+	/*
+	 * Only the last cgroup component is parsed, a nested cgroup of a
+	 * container is not a container.
+	 */
+	free(qp.cgroup);
+	bzero(&qp, sizeof(qp));
+	cgroup = strdup("/system.slice/docker-abc123.scope/init.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(qp.container_id_parsed);
+	assert(qp.container_id == NULL);
+
+	/* The cgroupfs driver layout is not a container. */
+	free(qp.cgroup);
+	bzero(&qp, sizeof(qp));
+	cgroup = strdup("/kubepods/burstable/pod1234/abc123");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(qp.container_id_parsed);
+	assert(qp.container_id == NULL);
+
+	quark_ruleset_clear(&ruleset);
+
+	quark_ruleset_init(&ruleset);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
+	assert(rule != NULL);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_EVENT_SCOPE;
+	rf.id = 42;
+	errno = 0;
+	assert(quark_rule_match_field(rule, rf) == -1);
+	assert(errno == EINVAL);
+	quark_ruleset_clear(&ruleset);
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	return (0);
+}
+
+/*
+ * kprobe doesn't know the cgroup of new processes, so it must reject
+ * every container field.
+ */
+static int
+t_rule_container_kprobe(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	  qq;
+	struct quark_ruleset	  ruleset;
+	char			**r, *rules[] = {
+		"pass on event.scope container\ndrop on any\n",
+		"drop on pod.name nginx-*\n",
+		"drop on container.image docker.io/library/nginx:1.25\n",
+		NULL
+	};
+
+	for (r = rules; *r != NULL; r++) {
+		ruleset_from_string(&ruleset, *r);
+		qa->ruleset = &ruleset;
+		errno = 0;
+		assert(quark_queue_open(&qq, qa) == -1);
+		assert(errno == ENOTSUP);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	return (0);
+}
+
+/*
+ * Set up a process linked to a new container in a pod through the public
+ * API, as an embedder would. The pod name and image come from the caller,
+ * each cid must be unique within a test.
+ */
+static struct quark_process *
+rule_kube_process(struct quark_queue *qq, u32 pid, const char *cid,
+    const char *pod_uid, const char *pod_name, const char *image)
+{
+	struct quark_pod	*pod;
+	struct quark_container	*container;
+	struct quark_process	*qp;
+	char			*cgroup, *container_id;
+
+	/* The cgroup docker-<cid>.scope parses into docker://<cid> */
+	assert(asprintf(&container_id, "docker://%s", cid) != -1);
+	if (pod_uid != NULL) {
+		pod = quark_pod_get(qq, pod_uid);
+		assert(pod != NULL);
+		assert(pod->name == NULL);
+		if (pod_name != NULL) {
+			pod->name = strdup(pod_name);
+			assert(pod->name != NULL);
+		}
+	}
+	container = quark_container_create(qq, container_id, pod_uid, NULL,
+	    image);
+	assert(container != NULL);
+	free(container_id);
+
+	/* The container exists, so the event assembly links the process */
+	assert(asprintf(&cgroup, "/system.slice/docker-%s.scope", cid) != -1);
+	qp = test_process_event(qq, pid, cgroup);
+	free(cgroup);
+	assert(qp->container == container);
+
+	return (qp);
+}
+
+static int
+t_rule_pod_name(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_event	 qev;
+	struct quark_process	 bare;
+	struct quark_process	*qp;
+	struct quark_rule	*rule;
+	struct quark_ruleset	 ruleset;
+
+	quark_queue_init_bare(&qq);
+	bzero(&qev, sizeof(qev));
+	bzero(&bare, sizeof(bare));
+
+	ruleset_from_string(&ruleset,
+	    "pass on pod.name nginx-*\n"
+	    "drop on pod.name *-sidecar\n"
+	    "poison 7 on pod.name exact\n");
+
+	/* No process, no match. */
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Process without a container, no match. */
+	qev.process = &bare;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Prefix wildcard. */
+	qp = rule_kube_process(&qq, 100, "aaa", "pod-a",
+	    "nginx-7c5b8d-x9k2p", NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0 &&
+	    rule->action == QUARK_RA_PASS);
+
+	/* The wildcard may be empty, but the prefix must be complete. */
+	qp = rule_kube_process(&qq, 101, "bbb", "pod-b", "nginx", NULL);
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	qp = rule_kube_process(&qq, 107, "hhh", "pod-h", "nginx-", NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+
+	/* PoC: pod.name ignores the namespace. */
+	qp = rule_kube_process(&qq, 108, "iii", "pod-i", "nginx-web", NULL);
+	qp->container->pod->ns = strdup("default");
+	assert(qp->container->pod->ns != NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+	qp = rule_kube_process(&qq, 109, "jjj", "pod-j", "nginx-web", NULL);
+	qp->container->pod->ns = strdup("other");
+	assert(qp->container->pod->ns != NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+
+	/* Suffix wildcard. */
+	qp = rule_kube_process(&qq, 102, "ccc", "pod-c",
+	    "istio-sidecar", NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1 &&
+	    rule->action == QUARK_RA_DROP);
+
+	/* Exact, via poison. */
+	qp = rule_kube_process(&qq, 103, "ddd", "pod-d", "exact", NULL);
+	qev.process = qp;
+	assert(qp->poison_tag == 0);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp->poison_tag == 7);
+	qp = rule_kube_process(&qq, 104, "eee", "pod-e", "exactly", NULL);
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp->poison_tag == 0);
+
+	/* Pod without a name, no match. */
+	qp = rule_kube_process(&qq, 105, "fff", "pod-f", NULL, NULL);
+	qev.process = qp;
+	assert(qp->container->pod->name == NULL);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Container without a pod, no match. */
+	qp = rule_kube_process(&qq, 106, "ggg", NULL, NULL, NULL);
+	qev.process = qp;
+	assert(qp->container->pod == NULL);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	quark_ruleset_clear(&ruleset);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_rule_container_image(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_event	 qev;
+	struct quark_process	 bare;
+	struct quark_process	*qp;
+	struct quark_rule	*rule;
+	struct quark_rule_field	 rf;
+	struct quark_ruleset	 ruleset;
+
+	quark_queue_init_bare(&qq);
+	bzero(&qev, sizeof(qev));
+	bzero(&bare, sizeof(bare));
+
+	ruleset_from_string(&ruleset,
+	    "drop on container.image docker.io/library/nginx:1.25\n"
+	    "drop on container.image */busybox:1.36\n"
+	    "drop on container.image quay.io/*\n"
+	    "pass on container.image registry.k8s.io/e2e-test-images/agnhost:2.39"
+	    " pod.name e2e-*\n");
+
+	/* No process, no match. */
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Process without a container, no match. */
+	qev.process = &bare;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Exact match on the full image reference. */
+	qp = rule_kube_process(&qq, 100, "aaa", "pod-a", "web",
+	    "docker.io/library/nginx:1.25");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0 &&
+	    rule->action == QUARK_RA_DROP);
+
+	/* A different tag or registry of the same image is not exact. */
+	qp = rule_kube_process(&qq, 101, "bbb", "pod-b", "web",
+	    "docker.io/library/nginx:1.26");
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	qp = rule_kube_process(&qq, 102, "ccc", "pod-c", "web",
+	    "nginx:1.25");
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Prefix wildcard covers the registry. */
+	qp = rule_kube_process(&qq, 103, "ddd", "pod-d", "web",
+	    "docker.io/library/busybox:1.36");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	/* PoC: the reference is a label, a wildcard matches any registry. */
+	qp = rule_kube_process(&qq, 104, "eee", "pod-e", "web",
+	    "localhost:5000/busybox:1.36");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	/* A different tag is not a match. */
+	qp = rule_kube_process(&qq, 105, "fff", "pod-f", "web",
+	    "docker.io/library/busybox:1.37");
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Suffix wildcard matches a whole registry, digests included. */
+	qp = rule_kube_process(&qq, 106, "ggg", "pod-g", "web",
+	    "quay.io/prometheus/node-exporter@sha256:0123456789abcdef");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 2);
+	/* The wildcard may be empty, but the prefix must be complete. */
+	qp = rule_kube_process(&qq, 107, "hhh", "pod-h", "web", "quay.io/");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 2);
+	qp = rule_kube_process(&qq, 112, "mmm", "pod-m", "web", "quay.io");
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Container without an image, no match. */
+	qp = rule_kube_process(&qq, 108, "iii", "pod-i", "web", NULL);
+	qev.process = qp;
+	assert(qp->container->image == NULL);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Container without a pod still matches on the image. */
+	qp = rule_kube_process(&qq, 109, "jjj", NULL, NULL,
+	    "docker.io/library/nginx:1.25");
+	qev.process = qp;
+	assert(qp->container->pod == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+
+	/* Combined with pod.name, both must match. */
+	qp = rule_kube_process(&qq, 110, "kkk", "pod-k", "e2e-test",
+	    "registry.k8s.io/e2e-test-images/agnhost:2.39");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 3 &&
+	    rule->action == QUARK_RA_PASS);
+	qp = rule_kube_process(&qq, 111, "lll", "pod-l", "prod-test",
+	    "registry.k8s.io/e2e-test-images/agnhost:2.39");
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	quark_ruleset_clear(&ruleset);
+
+	/* Empty and double wildcard are rejected by the field API. */
+	quark_ruleset_init(&ruleset);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
+	assert(rule != NULL);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_CONTAINER_IMAGE;
+	rf.wild.pre = (char *)"*/nginx:*";
+	errno = 0;
+	assert(quark_rule_match_field(rule, rf) == -1);
+	assert(errno == EINVAL);
+	rf.wild.pre = (char *)"";
+	errno = 0;
+	assert(quark_rule_match_field(rule, rf) == -1);
+	assert(errno == EINVAL);
+	quark_ruleset_clear(&ruleset);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
 
 static int
 t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
@@ -5268,6 +5686,10 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
+	T(t_rule_scope),
+	T_KPROBE(t_rule_container_kprobe),
+	T(t_rule_pod_name),
+	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),
 	T_EBPF(t_trusted_map_rdonly),
 	T_EBPF(t_map_freeze),

@@ -134,6 +134,41 @@ Read rules from
 use
 .Em -
 for stdin.
+See
+.Sx CONTAINER SCOPE
+for the
+.Dq event.scope
+field.
+The
+.Dq pod.name
+field matches events from a process in a container that belongs to the
+named Kubernetes pod.
+A single
+.Sq *
+wildcard is accepted, as in
+.Dq pod.name nginx-* .
+The
+.Dq container.image
+field matches events from a process in a container whose image reference
+matches the given string.
+The image reference is compared exactly as Kubernetes reports it, or as
+given to the container API, as in
+.Dq container.image docker.io/library/nginx:1.25 .
+A single
+.Sq *
+wildcard is accepted, so
+.Dq container.image */nginx:1.25
+matches that image from any registry, and
+.Dq container.image quay.io/*
+matches every image from that registry.
+Both fields require container metadata, from quark-kube-talker, see
+.Fl K ,
+or from the container API of the library.
+An event without a process, or from a process whose container is unknown,
+matches neither field.
+Like
+.Dq event.scope ,
+these fields are only supported by the EBPF backend.
 .It Fl T
 Enable ptrace event tracing.
 .It Fl t
@@ -160,6 +195,39 @@ Exactly one of
 or
 .Fl n
 may be passed, there is no fallback between backends.
+.Sh CONTAINER SCOPE
+The
+.Dq event.scope container
+rule field matches events from a process in a Kubernetes container.
+To keep only container events on a Kubernetes node, use:
+.Bd -literal -offset indent
+pass on event.scope container
+drop on any
+.Ed
+.Pp
+A container is recognized only when the last component of the process
+cgroup is a container scope of the systemd cgroup driver, like
+.Pa cri-containerd-<id>.scope
+or
+.Pa crio-<id>.scope .
+This is the kubeadm default since Kubernetes 1.22.
+The following are not recognized as containers, and the rules above drop
+their events:
+.Bl -bullet
+.It
+All containers on a node that uses the cgroupfs driver, like
+.Pa /kubepods/burstable/pod<uid>/<id> .
+.It
+A process in a nested cgroup of a container, like
+.Pa cri-containerd-<id>.scope/init.scope .
+.It
+An event without a process, or from a process with an unknown cgroup.
+.El
+.Pp
+Containers outside Kubernetes are not a supported use case.
+The field is only supported by the EBPF backend.
+The kprobe backend does not report the cgroup of new processes, so it
+rejects the field, and so does the NOVA backend.
 .Sh EXIT STATUS
 .Nm
 exits with 0 in if a SIGINT was sent, or 1 in case of error.
