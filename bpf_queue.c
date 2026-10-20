@@ -1975,7 +1975,8 @@ file_access_anchors_map(struct quark_queue *qq)
 }
 
 /*
- * The names go first and the generation after: a hit between the two still
+ * The names go first and the generation after, and the probe reads them in
+ * the opposite order, generation then names: a hit between the two still
  * belongs to the old set and claims its class under the old generation,
  * where it is of no consequence. The other way around, an open under a
  * stale name would claim the class under the new generation and suppress
