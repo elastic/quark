@@ -2,6 +2,7 @@
 /* Copyright (c) 2024-2026 Elastic NV */
 
 #include <asm/termbits.h>
+#include <linux/magic.h>
 #include <linux/perf_event.h>
 
 #include <sys/ioctl.h>
@@ -16,6 +17,7 @@
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
+#include <sys/vfs.h>
 #include <sys/wait.h>
 
 #include <bpf/bpf.h>
@@ -1551,6 +1553,699 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 
 	return (0);
 }
+
+/*
+ * Next FILE_ACCESS event for our pid, skipping unrelated process events. The
+ * queue was opened without QQ_FILE, so a file event from the shared
+ * do_filp_open() probe is a leak, not something to skip.
+ */
+static const struct quark_event *
+drain_file_access(struct quark_queue *qq)
+{
+	const struct quark_event	*qev;
+
+	for (;;) {
+		qev = drain_for_pid(qq, getpid());
+		if (qev->events & QUARK_EV_FILE)
+			errx(1, "QUARK_EV_FILE without QQ_FILE");
+		if (qev->events & QUARK_EV_FILE_ACCESS)
+			return (qev);
+	}
+}
+
+/*
+ * Two consecutive triggers: the first must not be reported, the second must.
+ * Since quark orders by time, the next event being the second trigger proves
+ * the first was suppressed.
+ */
+static void
+assert_next_access_path(struct quark_queue *qq, const char *path)
+{
+	const struct quark_event	*qev;
+
+	qev = drain_file_access(qq);
+	assert(qev->file_access->path != NULL);
+	if (strcmp(qev->file_access->path, path) != 0)
+		errx(1, "expected %s, got %s", path, qev->file_access->path);
+}
+
+/*
+ * The probe skips the consumer's own opens, and the consumer is the process
+ * that opened the queue, so a file access test can't trigger from the
+ * process holding the queue. Fork once the queue is open and the names are
+ * in: the child inherits the queue, runs the rest of the test as an
+ * ordinary process draining its own events, and exits; the parent waits,
+ * closes its copy and reports the child's status. Returns 1 in the parent,
+ * with the test over, and 0 in the child, which must _exit() when done.
+ */
+static int
+file_access_in_child(struct quark_queue *qq)
+{
+	pid_t	child;
+	int	status;
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0)
+		return (0);
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	quark_queue_close(qq);
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "file access child didn't exit cleanly");
+
+	return (1);
+}
+
+static int
+t_file_access(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_file_access	*qfa;
+	struct quark_queue_stats	 stats;
+	struct stat			 st;
+	const char			*true_path;
+	char				 dir[] = "/tmp/quark-test-fa.XXXXXX";
+	char				 leaf[PATH_MAX], parent_dir[PATH_MAX];
+	char				 parent_file[PATH_MAX], other[PATH_MAX];
+	char				 noexec[PATH_MAX], flood[PATH_MAX];
+	char				 deep[PATH_MAX], toodeep[PATH_MAX];
+	char				 symlink_path[PATH_MAX], chardev[PATH_MAX];
+	char				 exec_path[PATH_MAX], copybuf[4096];
+	char				 consumer_file[PATH_MAX];
+	u64				 lost;
+	ssize_t				 n;
+	pid_t				 child;
+	int				 fd, fd2, i, nflood, status;
+
+	qa->flags |= QQ_FILE_ACCESS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* One name as a leaf, one as a parent */
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-secret",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-anchor",
+	    QUARK_FILE_ACCESS_NAME_PARENT));
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-noexec",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+	/* Bad input is refused */
+	assert(quark_queue_file_access_name_add(&qq, "a/b",
+	    QUARK_FILE_ACCESS_NAME_LEAF) == -1);
+	assert(quark_queue_file_access_name_add(&qq, "", 0) == -1);
+
+	/*
+	 * On a tmpfs of its own: the symlink target below is the inode's
+	 * inline target, which tmpfs and ext4 keep and xfs and btrfs don't,
+	 * so the test must not depend on what /tmp is on.
+	 */
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	if (mount("tmpfs", dir, "tmpfs", 0, NULL) == -1)
+		err(1, "mount");
+	snprintf(leaf, sizeof(leaf), "%s/quark-test-secret", dir);
+	snprintf(parent_dir, sizeof(parent_dir), "%s/quark-test-anchor", dir);
+	snprintf(parent_file, sizeof(parent_file), "%s/quark-test-anchor/plain",
+	    dir);
+	snprintf(other, sizeof(other), "%s/plain", dir);
+	snprintf(noexec, sizeof(noexec), "%s/quark-test-noexec", dir);
+	snprintf(consumer_file, sizeof(consumer_file),
+	    "%s/quark-test-anchor/consumer", dir);
+	if (mkdir(parent_dir, 0700) == -1)
+		err(1, "mkdir");
+
+	/*
+	 * An anchored create by the consumer itself, before the child's
+	 * first one: it must not be reported, which the child checks by
+	 * taking the first file access event of any pid.
+	 */
+	if ((fd = open(consumer_file, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+
+	if (file_access_in_child(&qq))
+		return (0);
+
+	if ((fd = open(leaf, O_WRONLY|O_CREAT|O_TRUNC, 0600)) == -1)
+		err(1, "open");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+	if ((fd = open(parent_file, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(other, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(noexec, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+
+	/*
+	 * Creating the leaf: write class, created with O_CREAT|O_TRUNC. The
+	 * first file access event from anyone, so the consumer's create of
+	 * consumer_file just before it was skipped.
+	 */
+	for (;;) {
+		qev = drain_any(&qq);
+		if (qev->events & QUARK_EV_FILE_ACCESS)
+			break;
+	}
+	assert(qev->events == QUARK_EV_FILE_ACCESS);
+	assert(qev->process != NULL);
+	assert(qev->process->pid == (u32)getpid());
+	qfa = qev->file_access;
+	assert(qfa != NULL);
+	assert(!strcmp(qfa->path, leaf));
+	assert(qfa->inode == st.st_ino);
+	assert(qfa->mode == st.st_mode);
+	assert(qfa->uid == getuid());
+	assert(qfa->gid == getgid());
+	assert((qfa->open_flags & O_ACCMODE) == O_WRONLY);
+	assert(qfa->open_flags & O_CREAT);
+	assert(qfa->open_flags & O_TRUNC);
+
+	/*
+	 * Creating a file under the parent anchor is reported, the same
+	 * name outside of it is not.
+	 */
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, parent_file));
+	assert(qfa->open_flags & O_CREAT);
+
+	/*
+	 * Creating noexec is the next one: other/plain was not reported.
+	 */
+	qev = drain_file_access(&qq);
+	assert(!strcmp(qev->file_access->path, noexec));
+
+	/*
+	 * A read of the leaf is a new class, a second read is not re-emitted:
+	 * the next event must be the read of parent_file.
+	 */
+	if ((fd = open(leaf, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(leaf, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(parent_file, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, leaf));
+	assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+	assert(!(qfa->open_flags & O_CREAT));
+	assert_next_access_path(&qq, parent_file);
+
+	/*
+	 * O_PATH is a class of its own: the leaf was read already but is
+	 * reported again, the repeat is not, so the next event is the O_PATH
+	 * open of parent_file.
+	 */
+	if ((fd = open(leaf, O_PATH)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(leaf, O_PATH)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(parent_file, O_PATH)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, leaf));
+	assert(qfa->open_flags & O_PATH);
+	assert_next_access_path(&qq, parent_file);
+
+	/*
+	 * Opening a symlink itself reports the symlink with its target. A
+	 * character device shares the inode slot the target is read from, so
+	 * it must come back with no target, not with garbage.
+	 */
+	snprintf(symlink_path, sizeof(symlink_path),
+	    "%s/quark-test-anchor/link", dir);
+	if (symlink("quark-test-target", symlink_path) == -1)
+		err(1, "symlink");
+	if ((fd = open(symlink_path, O_PATH|O_NOFOLLOW)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, symlink_path));
+	assert(S_ISLNK(qfa->mode));
+	assert(qfa->sym_target != NULL);
+	assert(!strcmp(qfa->sym_target, "quark-test-target"));
+	snprintf(chardev, sizeof(chardev), "%s/quark-test-anchor/chardev", dir);
+	if (mknod(chardev, S_IFCHR|0600, makedev(1, 3)) == -1) /* null */
+		err(1, "mknod");
+	if ((fd = open(chardev, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, chardev));
+	assert(S_ISCHR(qfa->mode));
+	assert(qfa->sym_target == NULL);
+
+	/*
+	 * Deduplication is per process: a child that reads the leaf we
+	 * already read is reported, under its own pid.
+	 */
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	else if (child == 0) {
+		if ((fd = open(leaf, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		_exit(0);
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child didn't exit cleanly");
+	for (;;) {
+		qev = drain_for_pid(&qq, child);
+		if (qev->events & QUARK_EV_FILE_ACCESS)
+			break;
+	}
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, leaf));
+	assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+	assert(!(qfa->open_flags & O_PATH));
+
+	/*
+	 * Executing an anchored binary is the exec class: the kernel opens it
+	 * with __FMODE_EXEC, which has no O_ name. Copying true in is a write
+	 * of the copy first.
+	 */
+	snprintf(exec_path, sizeof(exec_path), "%s/quark-test-anchor/true", dir);
+	true_path = access("/usr/bin/true", X_OK) == 0 ?
+	    "/usr/bin/true" : "/bin/true";
+	if ((fd = open(true_path, O_RDONLY)) == -1)
+		err(1, "open");
+	if ((fd2 = open(exec_path, O_WRONLY|O_CREAT|O_TRUNC, 0700)) == -1)
+		err(1, "open");
+	while ((n = read(fd, copybuf, sizeof(copybuf))) > 0) {
+		if (write(fd2, copybuf, n) != n)
+			err(1, "write");
+	}
+	if (n == -1)
+		err(1, "read");
+	close(fd);
+	close(fd2);
+	assert_next_access_path(&qq, exec_path);
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	else if (child == 0) {
+		execl(exec_path, "true", (char *)NULL);
+		err(1, "execl");
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child didn't exit cleanly");
+	/*
+	 * Under valgrind the child reads the binary before it execs it, and
+	 * that read is reported under the child's pid first; wait for the
+	 * exec class.
+	 */
+	for (;;) {
+		qev = drain_for_pid(&qq, child);
+		if ((qev->events & QUARK_EV_FILE_ACCESS) &&
+		    (qev->file_access->open_flags & 0x20)) /* __FMODE_EXEC */
+			break;
+	}
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, exec_path));
+	assert(!(qfa->open_flags & O_PATH));
+	assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+
+	/*
+	 * A parent anchor reaches three levels down: deep is reported, toodeep
+	 * (four levels) is not, so the read of noexec is the next event.
+	 */
+	snprintf(deep, sizeof(deep), "%s/quark-test-anchor/a", dir);
+	if (mkdir(deep, 0700) == -1)
+		err(1, "mkdir");
+	snprintf(deep, sizeof(deep), "%s/quark-test-anchor/a/b", dir);
+	if (mkdir(deep, 0700) == -1)
+		err(1, "mkdir");
+	snprintf(toodeep, sizeof(toodeep), "%s/quark-test-anchor/a/b/c", dir);
+	if (mkdir(toodeep, 0700) == -1)
+		err(1, "mkdir");
+	snprintf(deep, sizeof(deep), "%s/quark-test-anchor/a/b/deep", dir);
+	snprintf(toodeep, sizeof(toodeep), "%s/quark-test-anchor/a/b/c/toodeep",
+	    dir);
+	if ((fd = open(deep, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(toodeep, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	if ((fd = open(noexec, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	qev = drain_file_access(&qq);
+	qfa = qev->file_access;
+	assert(!strcmp(qfa->path, deep));
+	assert(qfa->open_flags & O_CREAT);
+	assert_next_access_path(&qq, noexec);
+
+	/*
+	 * A class is claimed only once its event is out. Fill the ring buffer
+	 * with opens nobody drains, read flood while it is full so that its
+	 * read is lost, drain, and a second read must still be reported.
+	 * The ring buffer is full to the last filler; a record shorter than
+	 * a filler could still fit, so flood's path is kept longer than any
+	 * filler path. Skipped under valgrind, where it exercises the kernel
+	 * at valgrind speed.
+	 */
+	snprintf(flood, sizeof(flood),
+	    "%s/quark-test-anchor/flood-at-least-as-long-as-a-filler", dir);
+	if ((fd = open(flood, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	assert_next_access_path(&qq, flood);
+	nflood = 0;
+	if (!in_valgrind) {
+		quark_queue_get_stats(&qq, &stats);
+		lost = stats.lost;
+		for (nflood = 0; lost == stats.lost; nflood++) {
+			if (nflood == 200000)
+				errx(1, "could not fill the ring buffer");
+			snprintf(other, sizeof(other),
+			    "%s/quark-test-anchor/a/%d", dir, nflood);
+			if ((fd = open(other, O_WRONLY|O_CREAT, 0600)) == -1)
+				err(1, "open");
+			close(fd);
+			if ((fd = open(other, O_PATH)) == -1)
+				err(1, "open");
+			close(fd);
+			if ((nflood & 255) == 255)
+				quark_queue_get_stats(&qq, &stats);
+		}
+		lost = stats.lost;
+		if ((fd = open(flood, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		quark_queue_get_stats(&qq, &stats);
+		assert(stats.lost > lost);
+		/*
+		 * Drain the flood until the queue stays idle past hold_time;
+		 * the lost read is not among them. Read again: with the class
+		 * unclaimed, this read is the next event.
+		 */
+		for (i = 0; i < 20; ) {
+			if (quark_queue_get_event(&qq) != NULL) {
+				i = 0;
+				continue;
+			}
+			if (quark_queue_block(&qq) == -1)
+				err(1, "quark_queue_block");
+			i++;
+		}
+		if ((fd = open(flood, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(!strcmp(qfa->path, flood));
+		assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+	} else
+		warnx("%s: skipping the ring buffer flood under valgrind",
+		    __func__);
+
+	/*
+	 * A reset forgets the names and what was reported under them: with
+	 * no names, the O_PATH open of the leaf is not reported; once the
+	 * leaf is registered again, its read, long claimed, is reported
+	 * again, and is the next event.
+	 * Skipped under valgrind for the same libbpf false positive as
+	 * t_trusted_pid: bpf_map_get_next_key() memsets bpf_attr short of
+	 * flags and takes a NULL first key.
+	 */
+	if (!in_valgrind) {
+		assert(!quark_queue_file_access_name_reset(&qq));
+		if ((fd = open(leaf, O_PATH)) == -1)
+			err(1, "open");
+		close(fd);
+		assert(!quark_queue_file_access_name_add(&qq,
+		    "quark-test-secret", QUARK_FILE_ACCESS_NAME_LEAF));
+		if ((fd = open(leaf, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(!strcmp(qfa->path, leaf));
+		assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+		assert(!(qfa->open_flags & O_PATH));
+		assert(!quark_queue_file_access_name_reset(&qq));
+	} else
+		warnx("%s: skipping the name reset under valgrind", __func__);
+
+	while (nflood-- > 0) {
+		snprintf(other, sizeof(other), "%s/quark-test-anchor/a/%d", dir,
+		    nflood);
+		(void)unlink(other);
+	}
+	(void)unlink(flood);
+	(void)unlink(leaf);
+	(void)unlink(parent_file);
+	(void)unlink(noexec);
+	(void)unlink(deep);
+	(void)unlink(toodeep);
+	(void)unlink(symlink_path);
+	(void)unlink(chardev);
+	(void)unlink(exec_path);
+	(void)unlink(consumer_file);
+	snprintf(other, sizeof(other), "%s/plain", dir);
+	(void)unlink(other);
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/a/b/c", dir);
+	(void)rmdir(other);
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/a/b", dir);
+	(void)rmdir(other);
+	snprintf(other, sizeof(other), "%s/quark-test-anchor/a", dir);
+	(void)rmdir(other);
+	(void)rmdir(parent_dir);
+	if (umount(dir) == -1)
+		err(1, "umount");
+	(void)rmdir(dir);
+
+	quark_queue_close(&qq);
+
+	_exit(0);
+}
+
+/*
+ * QQ_FILE and QQ_FILE_ACCESS together, as endpoint runs them: both branches
+ * of the shared do_filp_open() probe are then live in the same program and
+ * their frames count against the same 512 byte verifier stack limit, which
+ * t_file_access alone does not exercise. Creating an anchored file must
+ * yield both events.
+ *
+ * Unlike the other file access tests, the child only creates the file and
+ * the queue owner drains: make test-valgrind runs every test in one process
+ * with --child-silent-after-fork=yes and the fd leak check only sees that
+ * process, so this keeps the file access event parsing under both.
+ */
+static int
+t_file_access_with_file(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	char				 dir[] = "/tmp/quark-test-fa.XXXXXX";
+	char				 leaf[PATH_MAX];
+	pid_t				 child;
+	int				 fd, status, got_access, got_file;
+
+	qa->flags |= QQ_FILE | QQ_FILE_ACCESS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-secret",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	snprintf(leaf, sizeof(leaf), "%s/quark-test-secret", dir);
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0) {
+		if ((fd = open(leaf, O_WRONLY|O_CREAT, 0600)) == -1)
+			err(1, "open");
+		close(fd);
+		_exit(0);
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "file access child didn't exit cleanly");
+
+	/*
+	 * The two events may come in either order and the file event is
+	 * aggregated, so collect until both have been seen.
+	 */
+	got_access = got_file = 0;
+	while (!got_access || !got_file) {
+		qev = drain_for_pid(&qq, child);
+		if (qev->events & QUARK_EV_FILE_ACCESS) {
+			assert(qev->file_access != NULL);
+			assert(!strcmp(qev->file_access->path, leaf));
+			assert(qev->file_access->open_flags & O_CREAT);
+			got_access = 1;
+		}
+		if (qev->events & QUARK_EV_FILE) {
+			assert(qev->file != NULL);
+			assert(!strcmp(qev->file->path, leaf));
+			assert(qev->file->op_mask & QUARK_FILE_OP_CREATE);
+			got_file = 1;
+		}
+	}
+
+	(void)unlink(leaf);
+	(void)rmdir(dir);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A directory on a filesystem that hands a freed inode number to the next
+ * file it creates (ext4, xfs) and tells the two apart through i_generation.
+ * tmpfs and ramfs count up and never reuse, and /tmp is one of those on the
+ * CI initramfs and on recent Ubuntu, so the test would pass without
+ * exercising anything there. overlayfs reuses (the number is the upper
+ * filesystem's) but leaves i_generation zero, the known gap documented in
+ * Dedup.h, so the test would fail there for a reason it does not test.
+ * Returns 0 when no candidate qualifies, with dir set to /tmp.
+ */
+static int
+reusing_fs_dir(char *dir, size_t dirsz)
+{
+	static const char	*candidates[] = { "/var/tmp", "/tmp", "/" };
+	struct statfs		 sfs;
+	size_t			 i;
+
+	for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+		if (statfs(candidates[i], &sfs) == -1)
+			continue;
+		if (sfs.f_type == TMPFS_MAGIC || sfs.f_type == RAMFS_MAGIC ||
+		    sfs.f_type == OVERLAYFS_SUPER_MAGIC)
+			continue;
+		snprintf(dir, dirsz, "%s/quark-test-fa.XXXXXX", candidates[i]);
+		return (1);
+	}
+	snprintf(dir, dirsz, "/tmp/quark-test-fa.XXXXXX");
+
+	return (0);
+}
+
+/*
+ * The dedup key must tell apart two files that share (device, inode number).
+ * On a filesystem that reuses freed numbers, unlinking old and creating new
+ * in the same directory usually gives new the number of old: a different
+ * file, under a different name, that must be reported. Each attempt that
+ * does not reuse a number already claimed by this process is reported
+ * normally and the next one tries again; the test warns rather than pass
+ * vacuously if no attempt reused one.
+ */
+#define INODE_REUSE_ATTEMPTS 16
+static int
+t_file_access_inode_reuse(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct stat			 st;
+	ino_t				 claimed[INODE_REUSE_ATTEMPTS];
+	char				 dir[64], anchor[128];
+	char				 sentinel[PATH_MAX];
+	char				 old[PATH_MAX], new[PATH_MAX];
+	int				 fd, i, j, nclaimed, reused;
+
+	if (!reusing_fs_dir(dir, sizeof(dir)))
+		warnx("%s: no filesystem here reuses inode numbers, the reuse "
+		    "is not exercised", __func__);
+
+	qa->flags |= QQ_FILE_ACCESS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-anchor",
+	    QUARK_FILE_ACCESS_NAME_PARENT));
+
+	if (file_access_in_child(&qq))
+		return (0);
+
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	snprintf(anchor, sizeof(anchor), "%s/quark-test-anchor", dir);
+	if (mkdir(anchor, 0700) == -1)
+		err(1, "mkdir");
+	/* Created now, read later: its read class is unclaimed */
+	snprintf(sentinel, sizeof(sentinel), "%s/sentinel", anchor);
+	if ((fd = open(sentinel, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	assert_next_access_path(&qq, sentinel);
+
+	reused = 0;
+	nclaimed = 0;
+	for (i = 0; i < INODE_REUSE_ATTEMPTS && !reused; i++) {
+		/* The create of old claims the write class of its inode */
+		snprintf(old, sizeof(old), "%s/old-%d", anchor, i);
+		if ((fd = open(old, O_WRONLY|O_CREAT, 0600)) == -1)
+			err(1, "open");
+		if (fstat(fd, &st) == -1)
+			err(1, "fstat");
+		close(fd);
+		assert_next_access_path(&qq, old);
+		claimed[nclaimed++] = st.st_ino;
+		if (unlink(old) == -1)
+			err(1, "unlink");
+
+		snprintf(new, sizeof(new), "%s/new-%d", anchor, i);
+		if ((fd = open(new, O_WRONLY|O_CREAT, 0600)) == -1)
+			err(1, "open");
+		if (fstat(fd, &st) == -1)
+			err(1, "fstat");
+		close(fd);
+		for (j = 0; j < nclaimed; j++)
+			if (claimed[j] == st.st_ino)
+				reused = 1;
+		/*
+		 * new must be reported, then the read of the sentinel; with
+		 * new suppressed, the sentinel would come first.
+		 */
+		if (reused) {
+			if ((fd = open(sentinel, O_RDONLY)) == -1)
+				err(1, "open");
+			close(fd);
+			assert_next_access_path(&qq, new);
+			assert_next_access_path(&qq, sentinel);
+		} else
+			assert_next_access_path(&qq, new);
+		if (unlink(new) == -1)
+			err(1, "unlink");
+	}
+	if (!reused)
+		warnx("%s: no inode number reused in %d attempts, the reuse is"
+		    " not exercised", __func__, INODE_REUSE_ATTEMPTS);
+
+	(void)unlink(sentinel);
+	(void)rmdir(anchor);
+	(void)rmdir(dir);
+
+	quark_queue_close(&qq);
+
+	_exit(0);
+}
+#undef INODE_REUSE_ATTEMPTS
 
 static int
 t_memfd(const struct test *t, struct quark_queue_attr *qa)
@@ -5014,6 +5709,9 @@ struct test all_tests[] = {
 	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
+	T_EBPF(t_file_access),
+	T_EBPF(t_file_access_with_file),
+	T_EBPF(t_file_access_inode_reuse),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_detached_mount_exec),

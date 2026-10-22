@@ -13,6 +13,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#include "Dedup.h"
 #include "File.h"
 #include "Helpers.h"
 #include "PathResolver.h"
@@ -413,9 +414,304 @@ out:
     return 0;
 }
 
+/*
+ * The code executing on do_filp_open()'s return, do_filp_open__exit(),
+ * feeds two event families: file events (QQ_FILE) take the create, memfd and
+ * shmem opens from it whilst file access events (QQ_FILE_ACCESS) take the
+ * anchored opens. Either flag loads the probe but each family runs only
+ * behind its own gate, so a queue with one flag never emits the other's
+ * events and never pays for its bookkeeping. Both gates are rodata, set
+ * by bpf_queue_open1(), so the verifier prunes the one that is off.
+ */
+const volatile bool file_events_enabled = false;
+const volatile bool file_access_enabled = false;
+
+/*
+ * File access: report opens of files whose leaf or parent name is in the
+ * anchor map below. Userspace applies the real path patterns; the probe only has
+ * to be cheap on the miss path, which is every other open on the host. With
+ * file_access_enabled set to false the maps below are never created.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct ebpf_file_access_name);
+    __type(value, u32);
+    __uint(max_entries, 0); // sized by userspace, see bpf_queue_open1()
+} elastic_ebpf_file_access_anchors SEC(".maps");
+
+/*
+ * A reset of the names (quark_queue_file_access_name_reset(3)) must also
+ * forget which accesses were already reported, so that once names are
+ * registered again the first access of each process to each file is
+ * reported again. The seen map cannot be cleared for that: it is frozen
+ * against userspace writes. Instead this counter, the generation of the
+ * name set, is part of the seen key: userspace increments it on every
+ * reset, an entry claimed under generation N is never looked up under N+1,
+ * and LRU eviction reclaims it in time. Only one entry, written by userspace,
+ * so not frozen itself. Read once per open in file_access__match(), before
+ * the anchor walk; see there for why that order matters.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, u32);
+    __type(value, u64);
+    __uint(max_entries, 1);
+} elastic_ebpf_file_access_generation SEC(".maps");
+
+// (process life, file) the dedup entries are kept by, and the generation of
+// the anchor set the entry was claimed under.
+struct file_access_seen_key {
+    struct ebpf_dedup_file_key file;
+    u64 generation;
+};
+
+/*
+ * Access classes already reported for a (process life, file), one entry per
+ * (tgid, device, inode, i_generation, anchor generation) so a second watched
+ * file is reported again, including one that took over a freed inode number.
+ * A class is claimed only once its event is in the ring buffer. Stale entries
+ * never suppress, see Dedup.h; LRU eviction, procfs inode churn and a full
+ * ring buffer cost a duplicate, never a lost event.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, struct file_access_seen_key);
+    __type(value, struct ebpf_dedup_seen);
+    __uint(max_entries, 0); // sized by userspace, see bpf_queue_open1()
+} elastic_ebpf_file_access_file_seen SEC(".maps");
+
+// The access classes of an open, as the bits a process claims for a file in
+// elastic_ebpf_file_access_file_seen (ebpf_dedup_seen.bits, Dedup.h). Values
+// are private to this probe; the dedup helpers never interpret the bitmap.
+#define FILE_ACCESS_CLASS_READ (1ULL << 0)
+#define FILE_ACCESS_CLASS_WRITE (1ULL << 1)
+#define FILE_ACCESS_CLASS_EXEC (1ULL << 2)
+#define FILE_ACCESS_CLASS_PATH (1ULL << 3)
+
+// include/uapi/asm-generic/fcntl.h, include/linux/fs.h (__FMODE_EXEC)
+#define FILE_ACCESS_O_ACCMODE 00000003
+#define FILE_ACCESS_O_WRONLY 00000001
+#define FILE_ACCESS_O_RDWR 00000002
+#define FILE_ACCESS_O_CREAT 00000100
+#define FILE_ACCESS_O_TRUNC 00001000
+#define FILE_ACCESS_O_APPEND 00002000
+#define FILE_ACCESS_O_PATH 010000000
+#define FILE_ACCESS___FMODE_EXEC 0x20
+
+// How many directories are tested for a parent anchor, counting the leaf's
+// own directory as the first: with 3, a/b/c/leaf is reported for an anchor on
+// a, a/b/c/d/leaf is not. Deliberately small and not a runtime setting: the
+// walk in file_access_anchored runs on every open on the host, and a miss,
+// which almost all of them are, pays for every one of these lookups.
+#define FILE_ACCESS_ANCESTORS 3
+
+struct file_access_scratch {
+    struct ebpf_file_access_name key;
+    struct file_access_seen_key file_key;
+    struct ebpf_dedup_seen fresh;
+    struct path path;
+};
+
+// Per-cpu scratch, only used between file_access__open()'s preempt_disable()
+// and preempt_enable(). The keys and paths live here rather than on the
+// stack: do_filp_open__exit() sits close to the 512 byte combined stack
+// limit already.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, u32);
+    __type(value, struct file_access_scratch);
+    __uint(max_entries, 1);
+} elastic_ebpf_file_access_scratch SEC(".maps");
+
+// The generation of the anchor set in force, for the dedup keys.
+static __always_inline u64 file_access_generation(void)
+{
+    u64 *generation;
+    u32  zero = 0;
+
+    generation = bpf_map_lookup_elem(&elastic_ebpf_file_access_generation, &zero);
+
+    return generation != NULL ? *generation : 0;
+}
+
+static u64 file_access_class(u32 open_flags)
+{
+    if (open_flags & FILE_ACCESS_O_PATH)
+        return FILE_ACCESS_CLASS_PATH;
+    if (open_flags & FILE_ACCESS___FMODE_EXEC)
+        return FILE_ACCESS_CLASS_EXEC;
+    if ((open_flags & FILE_ACCESS_O_ACCMODE) != 0 ||
+        (open_flags & (FILE_ACCESS_O_CREAT | FILE_ACCESS_O_TRUNC | FILE_ACCESS_O_APPEND)))
+        return FILE_ACCESS_CLASS_WRITE;
+    return FILE_ACCESS_CLASS_READ;
+}
+
+// Anchor roles of a dentry name, 0 when the name is not an anchor.
+static __always_inline u32 file_access_anchor(struct ebpf_file_access_name *key, const unsigned char *name)
+{
+    u32 *roles;
+
+    __builtin_memset(key, 0, sizeof(*key));
+    if (bpf_probe_read_kernel_str(key->name, sizeof(key->name), name) <= 0)
+        return 0;
+    roles = bpf_map_lookup_elem(&elastic_ebpf_file_access_anchors, key);
+
+    return roles != NULL ? *roles : 0;
+}
+
+// True if the leaf is a leaf anchor or one of its FILE_ACCESS_ANCESTORS
+// nearest ancestors is a parent anchor. The walk follows d_parent, so it
+// stops at the root of the filesystem the file is on, which is its own
+// parent, not at the mount point: a file reached through a bind mount is
+// still matched against its directories on the underlying filesystem.
+static __always_inline bool file_access_anchored(struct ebpf_file_access_name *key, struct dentry *de)
+{
+    struct dentry *parent;
+    int            i;
+
+    if (file_access_anchor(key, BPF_CORE_READ(de, d_name.name)) & EBPF_FILE_ACCESS_ANCHOR_LEAF)
+        return true;
+    for (i = 0; i < FILE_ACCESS_ANCESTORS; i++) {
+        parent = BPF_CORE_READ(de, d_parent);
+        if (parent == NULL || parent == de)
+            return false;
+        if (file_access_anchor(key, BPF_CORE_READ(parent, d_name.name)) &
+            EBPF_FILE_ACCESS_ANCHOR_PARENT)
+            return true;
+        de = parent;
+    }
+
+    return false;
+}
+
+// Out of line so that its namespace struct is not in the emitter's frame, see
+// file_access__match().
+static __attribute__((noinline)) void file_access_event__fill_task(struct ebpf_file_access_event *event,
+                                                                   struct task_struct *task)
+{
+    struct ebpf_namespace_info ns;
+
+    event->hdr.type    = EBPF_EVENT_FILE_ACCESS;
+    event->hdr.ts      = bpf_ktime_get_boot_ns();
+    ebpf_pid_info__fill(&event->pids, task);
+    ebpf_cred_info__fill(&event->creds, task);
+    ebpf_ns__fill(&ns, task);
+    event->mntns = ns.mnt_inonum;
+    bpf_get_current_comm(event->comm, TASK_COMM_LEN);
+}
+
+// The match half of a completed open: the anchor walk, then the dedup test,
+// with the keys in the per-cpu scratch. True if the open is to be reported;
+// scratch->path is then the file's path for the emitter.
+//
+// A subprogram of its own, not the top of file_access__open(): the verifier
+// charges a program the deepest chain of frames it can reach, and with the
+// file events on the same hook that chain runs do_filp_open__exit() through
+// the emitter into the path resolver, a few bytes under the 512 limit.
+// Here, the walk's locals are off the stack before the emitter calls the
+// resolvers, and the emitter itself keeps little live across its calls.
+static __attribute__((noinline)) bool file_access__match(struct file_access_scratch *scratch,
+                                                         struct file *f, u32 open_flags)
+{
+    struct task_struct *task;
+    struct dentry      *de;
+    u64                 generation;
+
+    // The generation is read before the names: a reset deletes the names and
+    // bumps the generation after, so a name found here was in force under the
+    // generation read here, never under a later one. An array lookup the
+    // verifier inlines, a few instructions per open.
+    generation    = file_access_generation();
+    scratch->path = BPF_CORE_READ(f, f_path);
+    de            = scratch->path.dentry;
+    if (!file_access_anchored(&scratch->key, de))
+        return false;
+
+    task                                = (struct task_struct *)bpf_get_current_task();
+    scratch->file_key.file.tgid         = BPF_CORE_READ(task, tgid);
+    scratch->file_key.file.dev          = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
+    scratch->file_key.file.inode        = BPF_CORE_READ(de, d_inode, i_ino);
+    scratch->file_key.file.i_generation = BPF_CORE_READ(de, d_inode, i_generation);
+    scratch->file_key.file.pad          = 0;
+    scratch->file_key.generation        = generation;
+
+    return !ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
+                             &scratch->fresh, task, file_access_class(open_flags));
+}
+
+// A completed open: match, resolve, emit. Kept out of line so its locals are
+// not added to the do_filp_open__exit() frame that every open pays for.
+// Disables preemption itself for the per-cpu scratch, event buffer and
+// resolver state, like prepare_and_send_file_event(): the caller runs with
+// preemption enabled.
+static __attribute__((noinline)) void file_access__open(struct file *f, u32 open_flags)
+{
+    struct ebpf_file_access_event *event;
+    struct file_access_scratch    *scratch;
+    struct task_struct            *task;
+    struct dentry                 *de;
+    u32                            zero = 0;
+
+    preempt_disable();
+    scratch = bpf_map_lookup_elem(&elastic_ebpf_file_access_scratch, &zero);
+    if (scratch == NULL)
+        goto out;
+    if (!file_access__match(scratch, f, open_flags))
+        goto out;
+
+    event = get_event_buffer();
+    if (!event)
+        goto out;
+
+    event->open_flags = open_flags;
+    event->fmode      = BPF_CORE_READ(f, f_mode);
+    task              = (struct task_struct *)bpf_get_current_task();
+    file_access_event__fill_task(event, task);
+    de = scratch->path.dentry; // a plain load: scratch is not a kernel type
+    ebpf_file_info__fill(&event->finfo, de);
+
+    // Variable length fields
+    ebpf_vl_fields__init(&event->vl_fields);
+    struct ebpf_varlen_field *field;
+    long size;
+
+    // path
+    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
+    size  = ebpf_resolve_path_to_string(field->data, &scratch->path, task);
+    ebpf_vl_field__set_size(&event->vl_fields, field, size);
+
+    // symlink_target_path, the inode's inline target when the opened file is
+    // the symlink itself (O_PATH|O_NOFOLLOW). i_link shares a union with
+    // i_pipe, i_cdev and i_dir_seq, so on anything but a symlink it is not a
+    // string. A symlink whose filesystem does not keep the target inline
+    // (xfs, btrfs, long targets on ext4) has no i_link and comes back empty.
+    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
+    if (S_ISLNK(event->finfo.mode)) {
+        de   = scratch->path.dentry;
+        size = read_kernel_str_or_empty_str(field->data, PATH_MAX,
+                                            BPF_CORE_READ(de, d_inode, i_link));
+    } else {
+        field->data[0] = '\0';
+        size           = 1;
+    }
+    ebpf_vl_field__set_size(&event->vl_fields, field, size);
+
+    // No cgroup path: the consumer takes it from the process the event is
+    // linked to, and resolving it here was the deepest frame on this chain.
+
+    // The class is claimed only once the event is out, see ebpf_dedup__set().
+    if (ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0) == 0)
+        ebpf_dedup__set(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
+                        &scratch->fresh);
+
+out:
+    preempt_enable();
+}
+
 // Runs with preemption enabled, see prepare_and_send_file_event(); nothing
-// here but that call touches per-cpu state.
-static int do_filp_open__exit(struct file *f)
+// here but that call and file_access__open() touches per-cpu state.
+static int do_filp_open__exit(int dfd, struct filename *pathname, const struct open_flags *op,
+                              struct file *f)
 {
     /*
     'ret' fields such f_mode and f_path should be obtained via BPF_CORE_READ
@@ -427,6 +723,24 @@ static int do_filp_open__exit(struct file *f)
         goto out;
 
     if (ebpf_events_is_trusted_pid())
+        goto out;
+
+    // op is NULL on a kretprobe kernel when the entry state was missed; f_flags
+    // is then the fallback, and do_dentry_open() has already stripped
+    // O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC from it, so such an open is classified
+    // and reported without them.
+    //
+    // The consumer's own opens are skipped like the tty probes do: the trusted
+    // pid map only holds what the consumer puts there, and a consumer that reads
+    // the files it watches (hashing, header sampling, /proc/<pid>/environ) would
+    // otherwise pay the anchor walk and report itself to itself.
+    if (file_access_enabled && !is_consumer())
+        file_access__open(f, op != NULL ? (u32)BPF_CORE_READ(op, open_flag)
+                                        : (u32)BPF_CORE_READ(f, f_flags));
+
+    // The rest is the file event side of this hook, which file_access alone
+    // must not turn on.
+    if (!file_events_enabled)
         goto out;
 
     fmode_t fmode = BPF_CORE_READ(f, f_mode);
@@ -474,7 +788,10 @@ static int do_filp_open__exit(struct file *f)
     }
 
 out:
-    ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
+    // Only the fsnotify probe, loaded with the file events, sets this state;
+    // without them the delete would lock a bucket on every open for nothing.
+    if (file_events_enabled)
+        ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
 
     return 0;
 }
@@ -532,13 +849,68 @@ int BPF_PROG(fexit__do_filp_open,
              const struct open_flags *op,
              struct file *ret)
 {
-    return do_filp_open__exit(ret);
+    return do_filp_open__exit(dfd, pathname, op, ret);
+}
+
+// Without fexit the arguments are gone by the time we see the return; the
+// entry kprobe below keeps them, and is only loaded when file access events
+// are wanted since the create event does not need them.
+static int do_filp_open__enter(int dfd, struct filename *pathname, const struct open_flags *op)
+{
+    struct ebpf_events_state state = {};
+
+    // Same exclusions as the exit side, which is the only reader of this state
+    if (ebpf_events_is_trusted_pid() || is_consumer())
+        return 0;
+    state.filp_open.dfd      = dfd;
+    state.filp_open.pathname = pathname;
+    state.filp_open.op       = op;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_FILP_OPEN, &state);
+
+    return 0;
+}
+
+SEC("kprobe/do_filp_open")
+int BPF_KPROBE(kprobe__do_filp_open, int dfd, struct filename *pathname, const struct open_flags *op)
+{
+    int r;
+
+    preempt_disable();
+    r = do_filp_open__enter(dfd, pathname, op);
+    preempt_enable();
+
+    return r;
+}
+
+static int do_filp_open__kretprobe(struct file *ret)
+{
+    struct ebpf_events_state *state    = NULL;
+    int                       dfd      = 0;
+    struct filename          *pathname = NULL;
+    const struct open_flags  *op       = NULL;
+    int                       r;
+
+    // The entry kprobe that keeps the arguments is loaded only with the file
+    // access events; the file events alone would pay a lookup per open for a
+    // state nothing sets.
+    if (file_access_enabled)
+        state = ebpf_events_state__get(EBPF_EVENTS_STATE_FILP_OPEN);
+    if (state != NULL) {
+        dfd      = state->filp_open.dfd;
+        pathname = state->filp_open.pathname;
+        op       = state->filp_open.op;
+    }
+    r = do_filp_open__exit(dfd, pathname, op, ret);
+    if (state != NULL)
+        ebpf_events_state__del(EBPF_EVENTS_STATE_FILP_OPEN);
+
+    return r;
 }
 
 SEC("kretprobe/do_filp_open")
 int BPF_KRETPROBE(kretprobe__do_filp_open, struct file *ret)
 {
-    return do_filp_open__exit(ret);
+    return do_filp_open__kretprobe(ret);
 }
 
 SEC("fexit/do_file_open")
@@ -548,13 +920,25 @@ int BPF_PROG(fexit__do_file_open,
              const struct open_flags *op,
              struct file *ret)
 {
-    return do_filp_open__exit(ret);
+    return do_filp_open__exit(dfd, pathname, op, ret);
+}
+
+SEC("kprobe/do_file_open")
+int BPF_KPROBE(kprobe__do_file_open, int dfd, struct filename *pathname, const struct open_flags *op)
+{
+    int r;
+
+    preempt_disable();
+    r = do_filp_open__enter(dfd, pathname, op);
+    preempt_enable();
+
+    return r;
 }
 
 SEC("kretprobe/do_file_open")
 int BPF_KRETPROBE(kretprobe__do_file_open, struct file *ret)
 {
-    return do_filp_open__exit(ret);
+    return do_filp_open__kretprobe(ret);
 }
 
 static int do_renameat2__enter()
