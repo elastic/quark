@@ -20,12 +20,6 @@
 #include "State.h"
 #include "Varlen.h"
 
-// Set from userspace when QQ_FILE is enabled. The do_filp_open() return is
-// shared with file_access, which loads it on its own; the file event side of
-// that hook (create, memfd and shmem opens) is behind this flag so that
-// file_access alone does not emit file events.
-const volatile bool file_events_enabled = false;
-
 /* vfs_unlink */
 DECL_FUNC_ARG(vfs_unlink, dentry);
 DECL_FUNC_RET(vfs_unlink);
@@ -421,16 +415,25 @@ out:
 }
 
 /*
- * File access: report opens of files whose leaf or parent name is in the
- * anchor map, and failed opens of such names, from the same do_filp_open()
- * return the create event is taken from. Userspace applies the real path
- * patterns; the probe only has to be cheap on the miss path, which is every
- * other open on the host. Off by default: userspace sets the flag when it
- * wants the event, so with it off the verifier prunes the whole branch and
- * the maps below are never created.
+ * The code executing on do_filp_open()'s return, do_filp_open__exit(),
+ * feeds two event families: file events (QQ_FILE) take the create, memfd and
+ * shmem opens from it whilst file access events (QQ_FILE_ACCESS) take the
+ * anchored opens, completed and failed. Either flag loads the probe but each
+ * family runs only behind its own gate, so a queue with one flag never emits
+ * the other's events and never pays for its bookkeeping. Both gates are
+ * rodata, set by bpf_queue_open1(), so the verifier prunes the one that is
+ * off.
  */
+const volatile bool file_events_enabled = false;
 const volatile bool file_access_enabled = false;
 
+/*
+ * File access: report opens of files whose leaf or parent name is in the
+ * anchor map below, and failed opens of such names. Userspace applies the
+ * real path patterns; the probe only has to be cheap on the miss path, which
+ * is every other open on the host. With file_access_enabled set to false the
+ * maps below are never created.
+ */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, struct ebpf_file_access_name);
@@ -439,11 +442,16 @@ struct {
 } elastic_ebpf_file_access_anchors SEC(".maps");
 
 /*
- * The generation of the anchor set, bumped by userspace each time the names
- * are reset (quark_queue_file_access_name_reset(3)). Part of the dedup key
- * below, so a class claimed under the old names is reported again under the
- * new ones without touching the seen map, which is frozen. One entry, read
- * only on the hit path; not frozen itself.
+ * A reset of the names (quark_queue_file_access_name_reset(3)) must also
+ * forget which accesses were already reported, so that once names are
+ * registered again the first access of each process to each file is
+ * reported again. The seen map cannot be cleared for that: it is frozen
+ * against userspace writes. Instead this counter, the generation of the
+ * name set, is part of the seen key: userspace increments it on every
+ * reset, an entry claimed under generation N is never looked up under N+1,
+ * and LRU eviction reclaims it in time. Only one entry, written by userspace,
+ * so not frozen itself. Read once per open in file_access__match(), before
+ * the anchor walk; see there for why that order matters.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -505,7 +513,10 @@ struct {
     __uint(max_entries, 0); // sized by userspace, see bpf_queue_open1()
 } elastic_ebpf_file_access_fail_seen SEC(".maps");
 
-// Bits of ebpf_dedup_seen.bits, one per access class of open_flags.
+// The access classes of an open, as the bits a process claims for a file in
+// elastic_ebpf_file_access_file_seen, or for a failed name in
+// elastic_ebpf_file_access_fail_seen (ebpf_dedup_seen.bits, Dedup.h). Values
+// are private to this probe; the dedup helpers never interpret the bitmap.
 #define FILE_ACCESS_CLASS_READ (1ULL << 0)
 #define FILE_ACCESS_CLASS_WRITE (1ULL << 1)
 #define FILE_ACCESS_CLASS_EXEC (1ULL << 2)
@@ -523,15 +534,12 @@ struct {
 
 // How many directories are tested for a parent anchor, counting the leaf's
 // own directory as the first: with 3, a/b/c/leaf is reported for an anchor on
-// a, a/b/c/d/leaf is not. Bounded: every open on the system pays for the
-// misses.
+// a, a/b/c/d/leaf is not. Deliberately small and not a runtime setting: the
+// walk in file_access_anchored runs on every open on the host, and a miss,
+// which almost all of them are, pays for every one of these lookups.
 #define FILE_ACCESS_ANCESTORS 3
 
-// Per-cpu scratch, only used between the preempt_disable() and
-// preempt_enable() of file_access__open() and file_access__open_failed().
-// The requested pathname of a failed open is read here, and the keys and
-// paths live here rather than on the stack: do_filp_open__exit() sits close
-// to the 512 byte combined stack limit already.
+// The requested pathname of a failed open is read into the scratch below.
 #define FILE_ACCESS_FILENAME_MAX 256
 
 struct file_access_scratch {
@@ -546,6 +554,11 @@ struct file_access_scratch {
     struct path path;
 };
 
+// Per-cpu scratch, only used between the preempt_disable() and
+// preempt_enable() of file_access__open() and file_access__open_failed().
+// The requested pathname of a failed open is read here, and the keys and
+// paths live here rather than on the stack: do_filp_open__exit() sits close
+// to the 512 byte combined stack limit already.
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, u32);

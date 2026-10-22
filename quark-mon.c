@@ -360,6 +360,8 @@ main(int argc, char *argv[])
 
 	if ((qa.flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA)) == 0)
 		qa.flags |= QQ_EBPF;
+	if (naccess > 0 && !(qa.flags & QQ_EBPF))
+		errx(1, "file access(a) needs the ebpf backend");
 
 	bzero(&sigact, sizeof(sigact));
 	sigact.sa_flags = SA_RESTART | SA_RESETHAND;

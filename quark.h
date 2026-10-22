@@ -438,6 +438,7 @@ struct raw_file {
 #define QUARK_FILE_ACCESS_NAME_LEAF	(1 << 0)
 #define QUARK_FILE_ACCESS_NAME_PARENT	(1 << 1)
 #define QUARK_FILE_ACCESS_NAME_MAX	64		/* including NUL */
+#define QUARK_FILE_ACCESS_NAMES_MAX	1024		/* registered at once */
 
 #define QUARK_FILE_ACCESS_F_FAILED	(1 << 0)	/* error set, inode data absent */
 #define QUARK_FILE_ACCESS_F_RELATIVE	(1 << 1)	/* requested is relative to base_dir */

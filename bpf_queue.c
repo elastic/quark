@@ -22,8 +22,10 @@
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
-/* Names watched by the file access probe */
-#define FILE_ACCESS_ANCHORS_MAX_ENTRIES	1024
+/* Names watched by the file access probe, the public cap is the map size */
+#define FILE_ACCESS_ANCHORS_MAX_ENTRIES	QUARK_FILE_ACCESS_NAMES_MAX
+_Static_assert(QUARK_FILE_ACCESS_NAME_MAX == EBPF_FILE_ACCESS_NAME_MAX,
+    "quark.h and EbpfEventProto.h disagree on the file access name size");
 /* Files and failed names with a reported access, per process */
 #define FILE_ACCESS_SEEN_MAX_ENTRIES	16384
 
