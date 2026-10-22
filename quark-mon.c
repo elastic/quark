@@ -57,6 +57,11 @@ dump_stats(struct quark_queue *qq)
 	    s.insertions, s.removals, s.aggregations,
 	    s.non_aggregations, s.lost, s.garbage_collections, s.stalls);
 	fputc('\n', stderr);
+	if (s.bpf_state_lost || s.bpf_metadata_lost || s.bpf_retprobe_stats_valid)
+		fprintf(stderr, "bpf state-lost=%llu metadata-lost=%llu "
+		    "return-missed=%llu return-stats-valid=%d\n",
+		    s.bpf_state_lost, s.bpf_metadata_lost,
+		    s.bpf_retprobe_missed, s.bpf_retprobe_stats_valid);
 }
 
 static const char *
@@ -120,7 +125,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDeFGgHhkLMNnSsTtuv]\n",
+	fprintf(stderr, "usage: %s [-aBbDeFGgHhkLMNnSsTtuv]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
 	    "[-l maxlength] [-m maxnodes]\n", ' ');
@@ -188,7 +193,7 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
+	while ((ch = getopt(argc, argv, "aBbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -311,6 +316,9 @@ main(int argc, char *argv[])
 		}
 		case 'T':
 			qa.flags |= QQ_PTRACE;
+			break;
+		case 'a':
+			qa.flags |= QQ_BPF;
 			break;
 		case 'u':
 			qa.flags |= QQ_MPROTECT;

@@ -19,12 +19,25 @@
 #include <bpf/btf.h>
 
 #include "quark.h"
+#include "bpf_telemetry.h"
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
+
+#ifdef HAVE_STATIC_ASSERT
+/* bpf object kinds and names are copied straight from the probe */
+static_assert(QUARK_BPF_PROG == EBPF_BPF_KIND_PROG, "bpf kinds drifted");
+static_assert(QUARK_BPF_VALID_ATTR == EBPF_BPF_VALID_ATTR, "bpf validity drifted");
+static_assert(QUARK_BPF_VALID_OBJECT == EBPF_BPF_VALID_OBJECT, "bpf validity drifted");
+static_assert(QUARK_BPF_NAME_LEN == EBPF_BPF_NAME_LEN, "bpf names drifted");
+#endif
 
 struct bpf_queue {
 	struct bpf_probes	*probes;
 	struct ring_buffer	*ringbuf;
+	struct bpf_telemetry_boundary bpf_boundary[2];
+	size_t bpf_boundary_count;
+	struct bpf_link *bpf_entry[2];
+	struct bpf_telemetry_retprobe *bpf_return[2];
 };
 
 static int	bpf_queue_populate(struct quark_queue *);
@@ -717,6 +730,35 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_PROCESS_BPF: {
+		struct ebpf_process_bpf_event	*bpf;
+		struct quark_bpf		*qbpf;
+
+		bpf = (struct ebpf_process_bpf_event *)ev;
+		if ((raw = raw_event_alloc(RAW_BPF)) == NULL)
+			goto bad;
+
+		raw->pid = bpf->pids.tgid;
+		raw->time = ev->ts;
+
+		qbpf = &raw->bpf.quark_bpf;
+		qbpf->start_time_ns = bpf->pids.start_time_ns;
+		qbpf->tgid = bpf->pids.tgid;
+		qbpf->ret = bpf->ret;
+		qbpf->cmd = bpf->cmd;
+		qbpf->kind = bpf->kind;
+		qbpf->id = bpf->id;
+		qbpf->tid = bpf->pids.tid;
+		qbpf->valid = bpf->valid;
+		qbpf->type = bpf->type;
+		qbpf->attach_type = bpf->attach_type;
+		qbpf->flags = bpf->flags;
+		qbpf->insn_cnt = bpf->insn_cnt;
+		/* A failed load can contain a non-terminated requested name. */
+		memcpy(qbpf->name, bpf->name, sizeof(qbpf->name) - 1);
+
+		break;
+	}
 	case EBPF_EVENT_PROCESS_LOAD_MODULE: {
 		struct ebpf_process_load_module_event *module;
 		struct quark_module_load	*qml;
@@ -1221,6 +1263,82 @@ bpf_maps_freeze(struct bpf_probes *p)
 	}
 }
 
+static struct bpf_program *
+bpf_boundary_program(struct bpf_probes *p, enum bpf_telemetry_abi abi)
+{
+	switch (abi) {
+	case BPF_TELEMETRY_ABI_DIRECT:
+		return (p->progs.bpf_call_enter_direct);
+	case BPF_TELEMETRY_ABI_X86_NATIVE:
+	case BPF_TELEMETRY_ABI_ARM64_WRAPPER:
+		return (p->progs.bpf_call_enter_native);
+#if defined(__x86_64__)
+	case BPF_TELEMETRY_ABI_X86_COMPAT:
+		return (p->progs.bpf_call_enter_compat);
+#endif
+	default:
+		return (NULL);
+	}
+}
+
+static int
+bpf_telemetry_prepare(struct bpf_queue *bqq, struct btf *btf)
+{
+	struct bpf_probes *p = bqq->probes;
+	struct bpf_program *entry;
+	size_t i;
+
+	if (bpf_telemetry_select_boundaries(btf, bqq->bpf_boundary,
+	    nitems(bqq->bpf_boundary), &bqq->bpf_boundary_count) == -1) {
+		qwarn("QQ_BPF: required operation/security hooks unavailable");
+		return (-1);
+	}
+	for (i = 0; i < bqq->bpf_boundary_count; i++) {
+		entry = bpf_boundary_program(p, bqq->bpf_boundary[i].abi);
+		if (entry == NULL)
+			return (errno = EOPNOTSUPP, -1);
+		bpf_program__set_autoload(entry, true);
+		bpf_program__set_autoattach(entry, false);
+		qdebugx("BPF operation boundary %s", bqq->bpf_boundary[i].symbol);
+	}
+	bpf_program__set_autoload(p->progs.bpf_call_exit, true);
+	bpf_program__set_autoattach(p->progs.bpf_call_exit, false);
+	bpf_program__set_autoload(p->progs.bpf_load__security, true);
+	bpf_program__set_autoload(p->progs.bpf_load__prog, true);
+	bpf_program__set_autoload(p->progs.bpf_call_task_exit, true);
+	return (0);
+}
+
+static int
+bpf_telemetry_attach(struct bpf_queue *bqq)
+{
+	struct bpf_telemetry_boundary *boundary;
+	size_t i;
+	long error;
+
+	for (i = 0; i < bqq->bpf_boundary_count; i++) {
+		boundary = &bqq->bpf_boundary[i];
+		/* Arm the return before the entry to avoid stranded startup frames. */
+		if (bpf_telemetry_retprobe_attach(&bqq->bpf_return[i],
+		    bqq->probes->progs.bpf_call_exit, boundary->symbol, 4096) == -1) {
+			qwarn("QQ_BPF: required return hook %s", boundary->symbol);
+			return (-1);
+		}
+		bqq->bpf_entry[i] = bpf_program__attach_kprobe(
+		    bpf_boundary_program(bqq->probes, boundary->abi), false,
+		    boundary->symbol);
+		error = libbpf_get_error(bqq->bpf_entry[i]);
+		if (bqq->bpf_entry[i] == NULL || error != 0) {
+			bqq->bpf_entry[i] = NULL;
+			if (error != 0)
+				errno = (int)-error;
+			qwarn("QQ_BPF: required entry hook %s", boundary->symbol);
+			return (-1);
+		}
+	}
+	return (0);
+}
+
 static int
 bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
@@ -1228,9 +1346,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	struct bpf_queue		*bqq;
 	struct bpf_probes		*p;
 	struct bpf_program		*prog;
-	int				 cgroup_fd, i, ncpu, off, ringbuf_fd;
+	int				 cgroup_fd, i, ncpu, off, ringbuf_fd, saved_errno;
 	u32				 ringbuf_size;
 	char				*cgroup_umount;
+	const char			*btf_path;
 	struct bpf_prog_skeleton	*ps;
 	struct btf			*btf;
 	struct epoll_event		 ev;
@@ -1255,9 +1374,15 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	/*
 	 * BTF used for relocations
 	 */
-	btf = btf__load_vmlinux_btf();
+	btf_path = getenv("QUARK_BTF_PATH");
+	btf = btf_path ? btf__parse(btf_path, NULL) : btf__load_vmlinux_btf();
+	if (libbpf_get_error(btf) != 0) {
+		errno = (int)-libbpf_get_error(btf);
+		btf = NULL;
+	}
 	if (btf == NULL) {
-		qwarn("btf__load_vmlinux_btf");
+		qwarn("load kernel BTF%s%s", btf_path ? " from " : "",
+		    btf_path ? btf_path : "");
 		goto fail;
 	}
 
@@ -1473,6 +1598,14 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
 
+	if (qq->flags & QQ_BPF) {
+		if (bpf_telemetry_prepare(bqq, btf) == -1)
+			goto fail;
+	} else if (bpf_map__set_autocreate(p->maps.bpf_calls, false) != 0) {
+		qwarn("bpf_map__set_autocreate bpf_calls");
+		goto fail;
+	}
+
 	if (qq->flags & QQ_MPROTECT) {
 		if (use_fentry)
 			bpf_program__set_autoload(
@@ -1605,6 +1738,9 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		goto fail;
 	}
 
+	if ((qq->flags & QQ_BPF) && bpf_telemetry_attach(bqq) == -1)
+		goto fail;
+
 	bqq->ringbuf = ring_buffer__new(bpf_map__fd(p->maps.ringbuf),
 	    bpf_ringbuf_cb, qq, NULL);
 	if (bqq->ringbuf == NULL) {
@@ -1632,6 +1768,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	return (0);
 fail:
+	saved_errno = errno;
 	if (cgroup_fd != -1) {
 		close(cgroup_fd);
 		cgroup_fd = -1;
@@ -1641,6 +1778,7 @@ fail:
 		btf__free(btf);
 
 	bpf_queue_close(qq);
+	errno = saved_errno;
 
 	return (-1);
 }
@@ -1683,9 +1821,11 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	struct bpf_queue	*bqq  = qq->queue_be;
 	struct ebpf_event_stats	*pcpu_ees;
 	u32			 zero = 0;
-	u64			 lost;
+	u64			 lost, state_lost, metadata_lost, total_missed;
+	uint64_t		 missed;
 	int			 i, num_cpus;
 
+	qq->stats.bpf_retprobe_stats_valid = 0;
 	if ((num_cpus = libbpf_num_possible_cpus()) <= 0) {
 		qwarnx("bad libbpf_num_possible_cpus: %d", num_cpus);
 		return (-1);
@@ -1706,9 +1846,24 @@ bpf_queue_update_stats(struct quark_queue *qq)
 		goto fail;
 	}
 
-	for (i = 0, lost = 0; i < num_cpus; i++)
+	state_lost = metadata_lost = lost = total_missed = 0;
+	for (i = 0; i < num_cpus; i++) {
 		lost += pcpu_ees[i].lost;
+		state_lost += pcpu_ees[i].bpf_state_lost;
+		metadata_lost += pcpu_ees[i].bpf_metadata_lost;
+	}
 	qq->stats.lost = lost;
+	qq->stats.bpf_state_lost = state_lost;
+	qq->stats.bpf_metadata_lost = metadata_lost;
+	for (i = 0; (size_t)i < bqq->bpf_boundary_count; i++) {
+		if (bpf_telemetry_retprobe_missed(bqq->bpf_return[i], &missed) == -1) {
+			qwarn("BPF telemetry return-probe statistics unavailable");
+			goto fail;
+		}
+		total_missed += missed;
+	}
+	qq->stats.bpf_retprobe_missed = total_missed;
+	qq->stats.bpf_retprobe_stats_valid = bqq->bpf_boundary_count != 0;
 	free(pcpu_ees);
 
 	return (0);
@@ -1723,9 +1878,15 @@ static void
 bpf_queue_close(struct quark_queue *qq)
 {
 	struct bpf_queue	*bqq = qq->queue_be;
+	size_t i;
+	int saved_errno = errno;
 
 	if (bqq == NULL)
 		return;
+	for (i = 0; i < nitems(bqq->bpf_entry); i++) {
+		bpf_link__destroy(bqq->bpf_entry[i]);
+		bpf_telemetry_retprobe_detach(bqq->bpf_return[i]);
+	}
 	if (bqq->probes != NULL) {
 		bpf_probes__destroy(bqq->probes);
 		bqq->probes = NULL;
@@ -1745,6 +1906,7 @@ bpf_queue_close(struct quark_queue *qq)
 		bqq->ringbuf = NULL;
 	}
 	free(bqq);
+	errno = saved_errno;
 	bqq = NULL;
 	qq->queue_be = NULL;
 }

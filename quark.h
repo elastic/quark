@@ -258,6 +258,7 @@ enum raw_types {
 	RAW_TTY,
 	RAW_GETPID,
 	RAW_MPROTECT,
+	RAW_BPF,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -430,6 +431,31 @@ struct raw_mprotect {
 	struct quark_mprotect quark_mprotect;
 };
 
+/* Independently valid copied request metadata and successful object identity. */
+#define QUARK_BPF_PROG          2
+#define QUARK_BPF_NAME_LEN      16
+#define QUARK_BPF_VALID_ATTR    (1U << 0)
+#define QUARK_BPF_VALID_OBJECT  (1U << 1)
+struct quark_bpf {
+	u64	 start_time_ns; /* actor process start, CLOCK_MONOTONIC */
+	u32	 tgid;          /* actor process, in the host pid namespace */
+	s64	 ret;           /* operation result, fd or negative errno */
+	u32	 cmd;           /* normalized enum bpf_cmd */
+	u32	 tid;           /* invoking thread, in the host pid namespace */
+	u32	 valid;         /* QUARK_BPF_VALID_* */
+	u32	 kind;          /* QUARK_BPF_PROG when object is valid */
+	u32	 id;            /* successful program's kernel id */
+	u32	 type;          /* object type, else copied requested type */
+	u32	 attach_type;   /* copied expected_attach_type */
+	u32	 flags;         /* copied prog_flags */
+	u32	 insn_cnt;      /* requested count, before verifier rewriting */
+	char	 name[QUARK_BPF_NAME_LEN]; /* copied requested name */
+};
+
+struct raw_bpf {
+	struct quark_bpf quark_bpf;
+};
+
 struct quark_module_load {
 	char *name;
 	char *version;
@@ -503,6 +529,7 @@ struct raw_event {
 		struct raw_file			file;
 		struct raw_ptrace		ptrace;
 		struct raw_mprotect		mprotect;
+		struct raw_bpf			bpf;
 		struct raw_module_load		module_load;
 		struct raw_shm			shm;
 		struct raw_tty			tty;
@@ -540,6 +567,7 @@ struct quark_event {
 #define QUARK_EV_TTY			(1 << 13)
 #define QUARK_EV_GETPID			(1 << 14)
 #define QUARK_EV_MPROTECT		(1 << 15)
+#define QUARK_EV_BPF			(1 << 16)
 	u64				 events;
 	u64				 time;
 	const struct quark_process	*process;
@@ -549,6 +577,7 @@ struct quark_event {
 	struct quark_file		*file;
 	struct quark_ptrace		 ptrace;
 	struct quark_mprotect		 mprotect;
+	struct quark_bpf		 bpf;
 	struct quark_module_load	*module_load;
 	struct quark_shm		*shm;
 	struct quark_tty		*tty;
@@ -893,7 +922,11 @@ struct quark_queue_stats {
 	u64	non_aggregations;
 	u64	lost;
 	u64	garbage_collections;
+	u64	bpf_state_lost; /* discarded/rejected BPF invocation frames */
+	u64	bpf_metadata_lost; /* metadata capture failed for an operation */
+	u64	bpf_retprobe_missed; /* tracefs misses; may overlap state_lost */
 	u64	stalls;     /* stalled perf rings due to corruption, only for QQ_KPROBE */
+	int	bpf_retprobe_stats_valid; /* last miss-count refresh succeeded */
 	int	backend;    /* active backend, QQ_EBPF or QQ_KPROBE */
 	/* TODO u64    peak_nodes; */
 };
@@ -922,6 +955,7 @@ struct quark_queue_attr {
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
 #define QQ_MPROTECT		(1 << 15)
+#define QQ_BPF			(1 << 16)
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */
