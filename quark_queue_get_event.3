@@ -88,7 +88,9 @@ The
 .Em file_access
 member carries the resolved
 .Em path ,
-the open flags as passed by the caller, the file identity and owner.
+the
+.Dv O_*
+flags the kernel opened the file with, the file identity and owner.
 Each combination of file and access class (read, write, exec, path only)
 is reported once per process life.
 An event lost to a full ring buffer does not count as reported.

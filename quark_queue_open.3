@@ -124,7 +124,7 @@ Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
 .It Dv QQ_FILE_ACCESS
-Enable EBPF-only file access events (experimental).
+Enable file access events (EBPF backend only, experimental).
 Nothing is reported until names are registered with
 .Fn quark_queue_file_access_name_add ,
 see below.
@@ -178,6 +178,10 @@ which reports opens of any file whose directory, or one of the two directories
 above it, is called
 .Fa name .
 Registering an existing name adds to its roles.
+At most
+.Dv QUARK_FILE_ACCESS_NAMES_MAX
+distinct names can be registered at once; one more fails with
+.Er E2BIG .
 The names are matched in the kernel against the last four components of the
 opened path, so a user with a list of full paths registers the leaf of each and
 filters the resolved path in the resulting

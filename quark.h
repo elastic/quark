@@ -434,6 +434,7 @@ struct raw_file {
 #define QUARK_FILE_ACCESS_NAME_LEAF	(1 << 0)
 #define QUARK_FILE_ACCESS_NAME_PARENT	(1 << 1)
 #define QUARK_FILE_ACCESS_NAME_MAX	64		/* including NUL */
+#define QUARK_FILE_ACCESS_NAMES_MAX	1024		/* registered at once */
 
 struct quark_file_access {
 	const char	*path;		/* resolved path */
