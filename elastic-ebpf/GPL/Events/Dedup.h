@@ -41,7 +41,8 @@
  * number, reused like ext4's, and a zero generation (the real inode's is not
  * copied; verified on 6.8, the second file was suppressed). Reaching the
  * real inode needs the overlay module's types or the private_data layout
- * that changed in 6.12, neither of which is stable from here.
+ * that changed in 6.12, neither of which is stable from here. Tracked in
+ * elastic/quark#450.
  */
 struct ebpf_dedup_file_key {
     u32 tgid;
