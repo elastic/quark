@@ -4,7 +4,7 @@
 #include <sys/epoll.h>
 #include <sys/param.h>
 #include <sys/mount.h>
-#include <sys/sysinfo.h>
+#include <sys/resource.h>
 
 #include <assert.h>
 #include <ctype.h>
@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <bpf/bpf.h>
 #include <bpf/btf.h>
 
 #include "quark.h"
@@ -29,6 +30,75 @@ struct bpf_queue {
 static int	bpf_queue_populate(struct quark_queue *);
 static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
+static u32	bpf_ringbuf_size(int);
+static void	bump_memlock(void);
+
+/*
+ * Shared eBPF ring buffer is sized from CPU count so large hosts can absorb
+ * a burst of variable-length execs (argv+env). 512 KiB per CPU is the
+ * per-CPU headroom of the historical 4 MiB default at 8 CPUs, the point
+ * at which bursty large execs did not drop. Result is rounded up to a
+ * power of two (BPF ringbuf requirement), never below 4 MiB, never above
+ * 64 MiB.
+ */
+#define RINGBUF_BYTES_PER_CPU	(1U << 19)	/* 512 KiB */
+#define RINGBUF_MIN_SIZE	(1U << 22)	/* 4 MiB */
+#define RINGBUF_MAX_SIZE	(1U << 26)	/* 64 MiB */
+/* Processes and files with a reported executable mprotect transition */
+#define MPROTECT_SEEN_MAX_ENTRIES	16384
+#define MPROTECT_FILE_SEEN_MAX_ENTRIES	16384
+
+static u32
+bpf_ringbuf_size(int ncpu)
+{
+	u64 bytes;
+
+	if (ncpu < 1)
+		ncpu = 1;
+
+	bytes = (u64)ncpu * RINGBUF_BYTES_PER_CPU;
+
+	/* round up to the next power of two */
+	if (bytes > 1) {
+		bytes--;
+		bytes |= bytes >> 1;
+		bytes |= bytes >> 2;
+		bytes |= bytes >> 4;
+		bytes |= bytes >> 8;
+		bytes |= bytes >> 16;
+		bytes |= bytes >> 32;
+		bytes++;
+	}
+
+	if (bytes < RINGBUF_MIN_SIZE)
+		bytes = RINGBUF_MIN_SIZE;
+	if (bytes > RINGBUF_MAX_SIZE)
+		bytes = RINGBUF_MAX_SIZE;
+
+	return ((u32)bytes);
+}
+
+static void
+bump_memlock(void)
+{
+	struct rlimit rlim;
+
+	rlim.rlim_cur = RLIM_INFINITY;
+	rlim.rlim_max = RLIM_INFINITY;
+	if (setrlimit(RLIMIT_MEMLOCK, &rlim) == 0)
+		return;
+
+	/*
+	 * Raising the hard limit needs CAP_SYS_RESOURCE; fall back to
+	 * using whatever ceiling we already have.
+	 */
+	if (getrlimit(RLIMIT_MEMLOCK, &rlim) == 0) {
+		rlim.rlim_cur = rlim.rlim_max;
+		if (setrlimit(RLIMIT_MEMLOCK, &rlim) == 0)
+			return;
+	}
+	qwarn("setrlimit RLIMIT_MEMLOCK");
+}
 
 struct quark_queue_ops queue_ops_bpf = {
 	.open	      = bpf_queue_open,
@@ -47,7 +117,9 @@ struct ebpf_ctx {
 	char				*comm;
 	struct ebpf_namespace_info	*ns;
 	char				*cwd;
+	size_t				 cwd_len;
 	char				*cgroup;
+	size_t				 cgroup_len;
 	char				*env;
 	size_t				 env_len;
 };
@@ -78,9 +150,9 @@ ebpf_ctx_to_task(struct quark_queue *qq, struct ebpf_ctx *ebpf_ctx, struct raw_t
 	task->mnt_inonum = ebpf_ctx->ns->mnt_inonum;
 	task->net_inonum = ebpf_ctx->ns->net_inonum;
 	if (ebpf_ctx->cwd != NULL)
-		task->cwd = strdup(ebpf_ctx->cwd);
+		task->cwd = strndup(ebpf_ctx->cwd, ebpf_ctx->cwd_len);
 	if (ebpf_ctx->cgroup != NULL)
-		task->cgroup = strdup(ebpf_ctx->cgroup);
+		task->cgroup = strndup(ebpf_ctx->cgroup, ebpf_ctx->cgroup_len);
 	strlcpy(task->comm, ebpf_ctx->comm, sizeof(task->comm));
 	if (ebpf_ctx->env != NULL && ebpf_ctx->env_len > 0) {
 		size_t	env_len;
@@ -129,10 +201,13 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			switch (field->type) {
 			case EBPF_VL_FIELD_CWD:
 				ebpf_ctx.cwd = field->data;
+				ebpf_ctx.cwd_len = field->size;
 				break;
 			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH:
-				if (field->size > 0 && *field->data != 0)
+				if (field->size > 0 && *field->data != 0) {
 					ebpf_ctx.cgroup = field->data;
+					ebpf_ctx.cgroup_len = field->size;
+				}
 				break;
 			default:
 				break;
@@ -163,8 +238,10 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		FOR_EACH_VARLEN_FIELD(exit->vl_fields, field) {
 			switch (field->type) {
 			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH:
-				if (field->size > 0 && *field->data != 0)
+				if (field->size > 0 && *field->data != 0) {
 					ebpf_ctx.cgroup = field->data;
+					ebpf_ctx.cgroup_len = field->size;
+				}
 				break;
 			default:
 				break;
@@ -200,13 +277,17 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			switch (field->type) {
 			case EBPF_VL_FIELD_CWD:
 				ebpf_ctx.cwd = field->data;
+				ebpf_ctx.cwd_len = field->size;
 				break;
 			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH:
-				if (field->size > 0 && *field->data != 0)
+				if (field->size > 0 && *field->data != 0) {
 					ebpf_ctx.cgroup = field->data;
+					ebpf_ctx.cgroup_len = field->size;
+				}
 				break;
 			case EBPF_VL_FIELD_FILENAME:
-				raw->exec.filename = strdup(field->data);
+				if (field->size > 0)
+					raw->exec.filename = strndup(field->data, field->size);
 				/* filename might still be NULL */
 				break;
 			case EBPF_VL_FIELD_ARGV:
@@ -606,6 +687,44 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		qptrace->request = ptrace->request;
 		qptrace->addr = ptrace->addr;
 		qptrace->data = ptrace->data;
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_MPROTECT: {
+		struct ebpf_process_mprotect_event *mprotect;
+		struct quark_mprotect *qmprotect;
+
+		mprotect = (struct ebpf_process_mprotect_event *)ev;
+		if ((raw = raw_event_alloc(RAW_MPROTECT)) == NULL)
+			goto bad;
+
+		raw->pid = mprotect->pids.tgid;
+		raw->time = ev->ts;
+
+		qmprotect = &raw->mprotect.quark_mprotect;
+		qmprotect->vma_start = mprotect->vma_start;
+		qmprotect->vma_end = mprotect->vma_end;
+		qmprotect->prev_prot = mprotect->prev_prot;
+		qmprotect->req_prot = mprotect->req_prot;
+		qmprotect->effective_prot = mprotect->effective_prot;
+		qmprotect->inode = mprotect->inode;
+		qmprotect->dev_major = mprotect->dev_major;
+		qmprotect->dev_minor = mprotect->dev_minor;
+		qmprotect->file_backed = mprotect->file_backed;
+		qmprotect->path = NULL;
+
+		FOR_EACH_VARLEN_FIELD(mprotect->vl_fields, field) {
+			switch (field->type) {
+			case EBPF_VL_FIELD_PATH:
+				if (field->size > 0)
+					qmprotect->path =
+					    strndup(field->data, field->size);
+				break;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				break;
+			}
+		}
 
 		break;
 	}
@@ -1045,13 +1164,83 @@ open_probes(void)
 	return (bpf_probes__open_opts(op));
 }
 
+/*
+ * Two ways to take a map out of a stranger's hands, both since Linux 5.2:
+ * BPF_F_RDONLY_PROG makes the verifier reject any program that writes to it,
+ * BPF_MAP_FREEZE rejects any further write from userspace, through any fd.
+ * Older kernels reject the flag and the command themselves, so probe with a
+ * throwaway map and report what the kernel takes.
+ */
+#define BPF_HARDEN_RDONLY_PROG	(1 << 0)
+#define BPF_HARDEN_FREEZE	(1 << 1)
+
+static int
+bpf_map_harden_supported(void)
+{
+	LIBBPF_OPTS(bpf_map_create_opts, opts, .map_flags = BPF_F_RDONLY_PROG);
+	int	fd, r;
+
+	r = 0;
+	fd = bpf_map_create(BPF_MAP_TYPE_HASH, NULL, sizeof(u32), sizeof(u32),
+	    1, &opts);
+	if (fd < 0) {
+		/* Only EINVAL means the kernel doesn't know the flag */
+		if (errno != EINVAL)
+			qwarn("bpf_map_create BPF_F_RDONLY_PROG probe");
+		return (0);
+	}
+	r |= BPF_HARDEN_RDONLY_PROG;
+	if (bpf_map_freeze(fd) == 0)
+		r |= BPF_HARDEN_FREEZE;
+	else if (errno != EINVAL)
+		qwarn("bpf_map_freeze probe");
+	close(fd);
+
+	return (r);
+}
+
+/*
+ * Everything but the trusted map and the ring buffer is written only by the
+ * probes: state, scratch space, dedup and attribution tables. Freeze them so
+ * no process can plant or erase our state through bpf(2); a stranger could
+ * otherwise pre-mark its own mprotect transitions as seen, or poison socket
+ * attribution. libbpf freezes its own .rodata already, skip the internal
+ * maps. Maps that were not created (autocreate off) still have a placeholder
+ * fd from libbpf, so skip them by autocreate, not by fd.
+ *
+ * Best effort: the probe above only proves the kernel freezes a plain hash
+ * map, a backport could still refuse another type. A map left unfrozen is
+ * the state we had before hardening, not a reason to refuse to open, so
+ * warn and carry on.
+ */
+static void
+bpf_maps_freeze(struct bpf_probes *p)
+{
+	struct bpf_map	*m;
+	int		 fd;
+
+	bpf_object__for_each_map(m, p->obj) {
+		if (m == p->maps.elastic_ebpf_events_trusted_pids ||
+		    m == p->maps.ringbuf || bpf_map__is_internal(m) ||
+		    !bpf_map__autocreate(m))
+			continue;
+		if ((fd = bpf_map__fd(m)) < 0)
+			continue;
+		if (bpf_map_freeze(fd) != 0)
+			qwarn("bpf_map_freeze %s, map stays writable "
+			    "from userspace", bpf_map__name(m));
+	}
+}
+
 static int
 bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
+	int				 harden;
 	struct bpf_queue		*bqq;
 	struct bpf_probes		*p;
 	struct bpf_program		*prog;
-	int				 cgroup_fd, i, off, ringbuf_fd;
+	int				 cgroup_fd, i, ncpu, off, ringbuf_fd;
+	u32				 ringbuf_size;
 	char				*cgroup_umount;
 	struct bpf_prog_skeleton	*ps;
 	struct btf			*btf;
@@ -1150,14 +1339,20 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		    (btf_number_of_params(btf, "do_renameat2") == -1);
 
 		if (use_fentry) {
-			if (renameat2_renamed)
+			if (renameat2_renamed) {
 				bpf_program__set_autoload(p->progs.fentry__filename_renameat2, 1);
-			else
+				bpf_program__set_autoload(p->progs.fexit__filename_renameat2, 1);
+			} else {
 				bpf_program__set_autoload(p->progs.fentry__do_renameat2, 1);
-			if (unlink_renamed)
+				bpf_program__set_autoload(p->progs.fexit__do_renameat2, 1);
+			}
+			if (unlink_renamed) {
 				bpf_program__set_autoload(p->progs.fentry__filename_unlinkat, 1);
-			else
+				bpf_program__set_autoload(p->progs.fexit__filename_unlinkat, 1);
+			} else {
 				bpf_program__set_autoload(p->progs.fentry__do_unlinkat, 1);
+				bpf_program__set_autoload(p->progs.fexit__do_unlinkat, 1);
+			}
 			if (use_fsnotify)
 				bpf_program__set_autoload(p->progs.fentry__fsnotify, 1);
 			bpf_program__set_autoload(p->progs.fentry__mnt_want_write, 1);
@@ -1191,14 +1386,20 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_unlink, 1);
 			bpf_program__set_autoload(p->progs.kprobe__vfs_write, 1);
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_write, 1);
-			if (renameat2_renamed)
+			if (renameat2_renamed) {
 				bpf_program__set_autoload(p->progs.kprobe__filename_renameat2, 1);
-			else
+				bpf_program__set_autoload(p->progs.kretprobe__filename_renameat2, 1);
+			} else {
 				bpf_program__set_autoload(p->progs.kprobe__do_renameat2, 1);
-			if (unlink_renamed)
+				bpf_program__set_autoload(p->progs.kretprobe__do_renameat2, 1);
+			}
+			if (unlink_renamed) {
 				bpf_program__set_autoload(p->progs.kprobe__filename_unlinkat, 1);
-			else
+				bpf_program__set_autoload(p->progs.kretprobe__filename_unlinkat, 1);
+			} else {
 				bpf_program__set_autoload(p->progs.kprobe__do_unlinkat, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__do_unlinkat, 1);
+			}
 			bpf_program__set_autoload(p->progs.kprobe__mnt_want_write, 1);
 			if (filp_open_renamed)
 				bpf_program__set_autoload(p->progs.kretprobe__do_file_open, 1);
@@ -1249,7 +1450,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	}
 
 	if (qq->flags & QQ_SHM) {
-		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_memfd_create, 1);
+		bpf_program__set_autoload(p->progs.ksyscall__memfd_create, 1);
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_shmget, 1);
 		if (use_fentry) {
 			bpf_program__set_autoload(p->progs.fentry__hugetlb_file_setup, 1);
@@ -1283,19 +1484,102 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
 
+	if (qq->flags & QQ_MPROTECT) {
+		if (use_fentry)
+			bpf_program__set_autoload(
+			    p->progs.fentry__security_file_mprotect, 1);
+		else
+			bpf_program__set_autoload(
+			    p->progs.kprobe__security_file_mprotect, 1);
+		/*
+		 * Turns on the dedup bookkeeping in the always loaded exec
+		 * and exit probes; the map is only sized (and created) here,
+		 * so it costs nothing when the feature is off.
+		 */
+		p->rodata->mprotect_enabled = 1;
+		if (bpf_map__set_max_entries(p->maps.mprotect_seen,
+		    MPROTECT_SEEN_MAX_ENTRIES) != 0) {
+			qwarn("bpf_map__set_max_entries mprotect_seen");
+			goto fail;
+		}
+		if (bpf_map__set_max_entries(p->maps.mprotect_file_seen,
+		    MPROTECT_FILE_SEEN_MAX_ENTRIES) != 0) {
+			qwarn("bpf_map__set_max_entries mprotect_file_seen");
+			goto fail;
+		}
+	} else {
+		if (bpf_map__set_autocreate(p->maps.mprotect_seen, 0) != 0) {
+			qwarn("bpf_map__set_autocreate mprotect_seen");
+			goto fail;
+		}
+		if (bpf_map__set_autocreate(p->maps.mprotect_file_seen, 0) != 0) {
+			qwarn("bpf_map__set_autocreate mprotect_file_seen");
+			goto fail;
+		}
+	}
+
 	if (qq->flags & QQ_GETPID)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
 
-	if (bpf_map__set_max_entries(p->maps.event_buffer_map,
-	    get_nprocs_conf()) != 0) {
+	/*
+	 * Older kernels account BPF maps against RLIMIT_MEMLOCK. libbpf
+	 * tries to bump this itself but skips it when it (sometimes
+	 * wrongly) thinks the kernel uses memcg accounting. Do it before the
+	 * hardening probe below creates its throwaway map.
+	 */
+	bump_memlock();
+
+	/*
+	 * The trusted map is written from userspace and only ever read by the
+	 * probes. Mark it read-only for programs so the verifier refuses any
+	 * BPF writer, ours or a stranger's; a root process can still update it
+	 * through bpf(2), but can't smuggle a writer in as BPF code. The init
+	 * buffer is only ever copied from, by anyone, so it gets the flag too
+	 * and is frozen below.
+	 */
+	harden = bpf_map_harden_supported();
+	if (harden & BPF_HARDEN_RDONLY_PROG) {
+		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_events_trusted_pids,
+		    BPF_F_RDONLY_PROG) != 0) {
+			qwarn("bpf_map__set_map_flags trusted_pids");
+			goto fail;
+		}
+		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_events_init_buffer,
+		    BPF_F_RDONLY_PROG) != 0) {
+			qwarn("bpf_map__set_map_flags init_buffer");
+			goto fail;
+		}
+	} else
+		qdebugx("kernel lacks BPF_F_RDONLY_PROG, "
+		    "trusted map stays writable by BPF programs");
+
+	ncpu = libbpf_num_possible_cpus();
+	if (ncpu <= 0) {
+		qwarnx("bad libbpf_num_possible_cpus: %d", ncpu);
+		goto fail;
+	}
+	if (bpf_map__set_max_entries(p->maps.event_buffer_map, ncpu) != 0) {
 		qwarn("bpf_map__set_max_entries event_buffer_map");
 		goto fail;
 	}
+
+	ringbuf_size = bpf_ringbuf_size(ncpu);
+	if (bpf_map__set_max_entries(p->maps.ringbuf, ringbuf_size) != 0) {
+		qwarn("bpf_map__set_max_entries ringbuf");
+		goto fail;
+	}
+	qdebugx("eBPF ringbuf size %u bytes (%d cpus)", ringbuf_size, ncpu);
 
 	if (bpf_probes__load(p) != 0) {
 		qwarn("bpf_probes__load");
 		goto fail;
 	}
+
+	if (harden & BPF_HARDEN_FREEZE)
+		bpf_maps_freeze(p);
+	else
+		qdebugx("kernel lacks BPF_MAP_FREEZE, "
+		    "state maps stay writable from userspace");
 
 	if (cgroup_fd != -1) {
 		for (i = 0; i < p->skeleton->prog_cnt; i++) {

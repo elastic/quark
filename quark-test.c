@@ -7,14 +7,19 @@
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/select.h>
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+
+#include <bpf/bpf.h>
+#include <cjson/cJSON.h>
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -841,6 +846,31 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * CI boxes are small, so quark_queue_open() only allocates the 4 MiB
+ * floor. Create a 64 MiB ringbuf so RLIMIT_MEMLOCK / memcg accounting
+ * is exercised on every kernel we test.
+ */
+static int
+t_ringbuf_max(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	int			 fd;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+
+	fd = bpf_map_create(BPF_MAP_TYPE_RINGBUF, "quark_test_ringbuf",
+	    0, 0, 1U << 26, NULL);
+	if (fd < 0)
+		err(1, "%s: bpf_map_create 64MiB ringbuf", t->name);
+	close(fd);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
  * Return 1 if perf can stamp samples with a selectable clock,
  * kernels >= 4.1 and RHEL >= 7.4.
  */
@@ -1353,6 +1383,119 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * A failed unlink(2) must not leave stale probe state behind that hides a
+ * subsequent rename(2) on the same thread.
+ */
+static int
+t_file_bad_unlink_rename(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_file		*qf;
+	char				 gone[] = "/tmp/quark-test-gone.XXXXXX";
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	char				 newpath[PATH_MAX];
+	int				 fd;
+
+	qa->flags |= QQ_FILE;
+
+	/* Both files exist before we start watching */
+	if ((fd = mkstemp(gone)) == -1)
+		err(1, "mkstemp");
+	close(fd);
+	if (unlink(gone) == -1)
+		err(1, "unlink");
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	close(fd);
+	if (snprintf(newpath, sizeof(newpath), "%s.renamed", path) >=
+	    (int)sizeof(newpath))
+		errx(1, "snprintf");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Fails with ENOENT before ever reaching vfs_unlink() */
+	if (unlink(gone) != -1 || errno != ENOENT)
+		err(1, "unlink %s", gone);
+
+	if (rename(path, newpath) == -1)
+		err(1, "rename");
+
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->op_mask & QUARK_FILE_OP_MOVE);
+	assert(!strcmp(qf->path, newpath));
+	assert(qf->old_path != NULL);
+	assert(!strcmp(qf->old_path, path));
+
+	quark_queue_close(&qq);
+
+	if (unlink(newpath) == -1)
+		err(1, "unlink");
+
+	return (0);
+}
+
+/*
+ * A rename is the one file event where the probe resolves two paths, the old
+ * and the new name; check that both come out right and on the same file.
+ */
+static int
+t_file_rename(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_file		*qf;
+	struct stat			 st;
+	char				 old_path[] = "/tmp/quark-test.XXXXXX";
+	char				 new_path[sizeof(old_path) + 6];
+	int				 fd;
+
+	qa->flags |= QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd = mkstemp(old_path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+	if (snprintf(new_path, sizeof(new_path), "%s.moved", old_path) >=
+	    (int)sizeof(new_path))
+		errx(1, "new_path too long");
+	if (rename(old_path, new_path) == -1)
+		err(1, "rename");
+
+	/*
+	 * A move never aggregates into an earlier operation on the file
+	 * (quark_can_aggregate_file()), so the create comes first on its
+	 * own; skip to the move.
+	 */
+	do {
+		qev = drain_for_pid(&qq, getpid());
+		assert(qev->events == QUARK_EV_FILE);
+		qf = qev->file;
+		assert(qf != NULL);
+		assert(qf->inode == st.st_ino);
+	} while (!(qf->op_mask & QUARK_FILE_OP_MOVE));
+	assert(qf->path != NULL);
+	assert(!strcmp(qf->path, new_path));
+	assert(qf->old_path != NULL);
+	assert(!strcmp(qf->old_path, old_path));
+
+	if (unlink(new_path) == -1)
+		err(1, "unlink");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -1512,6 +1655,200 @@ t_memfd_exec(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_detached_mount_exec(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	char				 path[] = "/tmp/quark-test-mount.XXXXXX";
+	char				 dir[] = "/tmp/quark-test-dir.XXXXXX";
+	char				 src[] = "/tmp/quark-test-src.XXXXXX";
+	char				 sub[64];
+	pid_t				 child;
+	int				 fd, status;
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	close(fd);
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp dir");
+	if (mkdtemp(src) == NULL)
+		err(1, "mkdtemp src");
+	snprintf(sub, sizeof(sub), "%s/sub", src);
+	if (mkdir(sub, 0755) == -1)
+		err(1, "mkdir sub");
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0) {
+		const char	*true_path;
+		char		 fd_path[64];
+		cpu_set_t	 cpus;
+		pid_t		 grandchild;
+		int		 cpu;
+
+		true_path = access("/usr/bin/true", X_OK) == 0 ?
+		    "/usr/bin/true" : "/bin/true";
+
+		/*
+		 * The exec probe fills a per-cpu event buffer that is reused
+		 * without being zeroed, so a missing NUL after '.' is only
+		 * observable if a previous event left bytes behind at that
+		 * offset. Pin to the cpu we're already on and exec true by its
+		 * real path first, so the filename slot is dirty when the
+		 * detached exec below reuses it.
+		 */
+		if ((cpu = sched_getcpu()) == -1)
+			err(1, "sched_getcpu");
+		CPU_ZERO(&cpus);
+		CPU_SET(cpu, &cpus);
+		if (sched_setaffinity(0, sizeof(cpus), &cpus) == -1)
+			err(1, "sched_setaffinity");
+		if ((grandchild = fork()) == -1)
+			err(1, "fork");
+		if (grandchild == 0) {
+			execl(true_path, "true", "detached-mount-exec",
+			    (char *)NULL);
+			err(1, "execl true");
+		}
+		if (waitpid(grandchild, NULL, 0) == -1)
+			err(1, "waitpid");
+
+		/* Keep the bind mount and its propagation private to this child. */
+		if (unshare(CLONE_NEWNS) == -1)
+			err(1, "unshare");
+		if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1)
+			err(1, "mount private");
+
+		/*
+		 * Directory case: make cwd a subdirectory of a bind mount and
+		 * then detach it. "sub" is collected before the walk reaches
+		 * the disconnected root, so cwd must come out as "/sub".
+		 */
+		if (mount(src, dir, NULL, MS_BIND, NULL) == -1)
+			err(1, "bind mount dir");
+		snprintf(sub, sizeof(sub), "%s/sub", dir);
+		if (chdir(sub) == -1)
+			err(1, "chdir sub");
+		if (umount2(dir, MNT_DETACH) == -1)
+			err(1, "detach dir");
+
+		if (mount(true_path, path, NULL, MS_BIND, NULL) == -1)
+			err(1, "bind mount true");
+		if (mount(NULL, path, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) == -1)
+			err(1, "remount read-only");
+		if ((fd = open(path, O_RDONLY)) == -1)
+			err(1, "open mounted true");
+		if (umount2(path, MNT_DETACH) == -1)
+			err(1, "detach mount");
+
+		/* The fd retains a mount root unreachable from the task's root. */
+		snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+		execl(fd_path, "true", "detached-mount-exec", (char *)NULL);
+		err(1, "execl detached mount");
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (unlink(path) == -1)
+		err(1, "unlink mountpoint");
+	if (rmdir(sub) == -1 || rmdir(src) == -1 || rmdir(dir) == -1)
+		err(1, "rmdir");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "detached mount child didn't exit cleanly");
+
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_EXEC);
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->exe != NULL);
+	/*
+	 * The mount is disconnected, so the walk stops at its root and the
+	 * file, being that root, is "/", which is what d_path() reports too.
+	 */
+	assert(!strcmp(qp->exe, "/"));
+	assert(qp->cwd != NULL);
+	assert(!strcmp(qp->cwd, "/sub"));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A path outside the task's root walks up to the mount namespace root,
+ * which has no parent either, so it must come back absolute, as d_path()
+ * reports it, and not as a "./" relative path.
+ */
+static int
+t_chroot_escape_exec(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	const char			*true_path;
+	char				 dir[] = "/tmp/quark-test-chroot.XXXXXX";
+	pid_t				 child;
+	int				 status;
+
+	true_path = access("/usr/bin/true", X_OK) == 0 ?
+	    "/usr/bin/true" : "/bin/true";
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0) {
+		char	*argv[] = { "true", "chroot-escape-exec", NULL };
+		int	 fd;
+
+		/* Opened before the chroot, this fd is what escapes it. */
+		if ((fd = open(true_path, O_RDONLY | O_CLOEXEC)) == -1)
+			err(1, "open true");
+
+		if (unshare(CLONE_NEWNS) == -1)
+			err(1, "unshare");
+		if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1)
+			err(1, "mount private");
+		/*
+		 * Chroot into a bind mount of / so the dynamic loader still
+		 * resolves. The fd points into the original mount, which is
+		 * outside the new root.
+		 */
+		if (mount("/", dir, NULL, MS_BIND | MS_REC, NULL) == -1)
+			err(1, "bind mount root");
+		if (chroot(dir) == -1)
+			err(1, "chroot");
+		if (chdir("/") == -1)
+			err(1, "chdir");
+		fexecve(fd, argv, environ);
+		err(1, "fexecve");
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (rmdir(dir) == -1)
+		err(1, "rmdir");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "chroot child didn't exit cleanly");
+
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_EXEC);
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->exe != NULL);
+	assert(!strcmp(qp->exe, true_path));
+	assert(qp->cwd != NULL);
+	assert(!strcmp(qp->cwd, "/"));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
 t_shmget(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
@@ -1537,6 +1874,235 @@ t_shmget(const struct test *t, struct quark_queue_attr *qa)
 
 	if (shmctl(id, IPC_RMID, NULL) == -1)
 		err(1, "shmctl");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_mprotect(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_mprotect	*qmprotect;
+	void				*addr[4];
+	void				*file_addr;
+	void				*file2_addr;
+	void				*suppressed_addr;
+	const size_t			 len = 4096;
+	struct stat			 st, st2;
+	const char			*true_path;
+	int				 fd2;
+	const int			 expected[] = {
+		PROT_EXEC,
+		PROT_READ | PROT_EXEC,
+		PROT_WRITE | PROT_EXEC,
+		PROT_READ | PROT_WRITE | PROT_EXEC,
+	};
+	const int			 suppressed[] = {
+		PROT_NONE,
+		PROT_READ,
+		PROT_WRITE,
+		PROT_READ | PROT_WRITE,
+	};
+	int				 fd;
+	int				 saw[nitems(expected)] = { 0 };
+	size_t				 i, j;
+	int				 seen = 0;
+
+	qa->flags |= QQ_MPROTECT;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	suppressed_addr = mmap(NULL, len, PROT_READ | PROT_WRITE,
+	    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (suppressed_addr == MAP_FAILED)
+		err(1, "mmap");
+
+	/* Non-executable effective protections must not enter the ring buffer. */
+	for (i = 0; i < nitems(suppressed); i++) {
+		if (mprotect(suppressed_addr, len, suppressed[i]) == -1)
+			err(1, "mprotect");
+	}
+
+	/* Requests rejected before the LSM hook must not enter the ring buffer. */
+	if (mprotect((void *)(uintptr_t)1, len, PROT_EXEC) != -1)
+		errx(1, "unaligned mprotect unexpectedly succeeded");
+
+	for (i = 0; i < nitems(expected); i++) {
+		addr[i] = mmap(NULL, len, PROT_READ | PROT_WRITE,
+		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (addr[i] == MAP_FAILED)
+			err(1, "mmap");
+		if (mprotect(addr[i], len, expected[i]) == -1)
+			err(1, "mprotect");
+	}
+
+	while (seen < (int)nitems(expected)) {
+		qev = drain_for_pid(&qq, getpid());
+		if (!(qev->events & QUARK_EV_MPROTECT))
+			continue;
+		qmprotect = &qev->mprotect;
+		for (i = 0; i < nitems(expected); i++) {
+			if (qmprotect->req_prot == (u64)expected[i] &&
+			    qmprotect->vma_start <= (u64)(uintptr_t)addr[i] &&
+			    qmprotect->vma_end >=
+			    (u64)(uintptr_t)addr[i] + len)
+				break;
+		}
+		if (i == nitems(expected)) {
+			errx(1, "unexpected mprotect attempt req_prot 0x%llx",
+			    (unsigned long long)qmprotect->req_prot);
+		}
+		assert(qmprotect->prev_prot == (PROT_READ | PROT_WRITE));
+		assert(qmprotect->effective_prot == (u64)expected[i]);
+		assert(!qmprotect->file_backed);
+		assert(qmprotect->inode == 0);
+		assert(!saw[i]);
+		saw[i] = 1;
+		seen++;
+	}
+
+	for (i = 0; i < nitems(saw); i++)
+		assert(saw[i]);
+
+	/*
+	 * A repeated transition must not produce a second event for the same
+	 * process life: flip addr[0] back and redo the identical RW->X change.
+	 * The file-backed event drained below doubles as the sentinel; if the
+	 * duplicate were wrongly emitted it would be drained first and the
+	 * file_backed asserts would trip.
+	 */
+	if (mprotect(addr[0], len, PROT_READ | PROT_WRITE) == -1)
+		err(1, "mprotect");
+	if (mprotect(addr[0], len, expected[0]) == -1)
+		err(1, "mprotect");
+
+	/* File-backed attempts carry identity and a mount-ns relative path. */
+	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
+		err(1, "open");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	file_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+	if (file_addr == MAP_FAILED)
+		err(1, "mmap");
+	if (mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	do {
+		qev = drain_for_pid(&qq, getpid());
+	} while (!(qev->events & QUARK_EV_MPROTECT));
+	qmprotect = &qev->mprotect;
+	assert(qmprotect->vma_start <= (u64)(uintptr_t)file_addr);
+	assert(qmprotect->vma_end >= (u64)(uintptr_t)file_addr + len);
+	assert(qmprotect->prev_prot == PROT_READ);
+	assert(qmprotect->req_prot == (PROT_READ | PROT_EXEC));
+	assert(qmprotect->effective_prot == (PROT_READ | PROT_EXEC));
+	assert(qmprotect->file_backed);
+	assert(qmprotect->inode == (u64)st.st_ino);
+	assert(qmprotect->dev_major == (u32)major(st.st_dev));
+	assert(qmprotect->dev_minor == (u32)minor(st.st_dev));
+	{
+		char	self[PATH_MAX];
+		ssize_t	n;
+
+		n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+		if (n == -1)
+			err(1, "readlink");
+		self[n] = '\0';
+		assert(qmprotect->path != NULL);
+		assert(strcmp(qmprotect->path, self) == 0);
+	}
+
+	/*
+	 * File-backed transitions are deduplicated per file. Redo the same
+	 * R->RX on the first file, which must not be reported, then do it on
+	 * a second file, which must. The second file's event doubles as the
+	 * sentinel: if the repeat were wrongly emitted it would be drained
+	 * first and the identity asserts would trip.
+	 */
+	if (mprotect(file_addr, len, PROT_READ) == -1)
+		err(1, "mprotect");
+	if (mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	if (stat("/usr/bin/true", &st2) == 0)
+		true_path = "/usr/bin/true";
+	else if (stat("/bin/true", &st2) == 0)
+		true_path = "/bin/true";
+	else
+		err(1, "no true binary");
+	assert(st2.st_ino != st.st_ino || st2.st_dev != st.st_dev);
+	if ((fd2 = open(true_path, O_RDONLY)) == -1)
+		err(1, "open");
+	file2_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd2, 0);
+	if (file2_addr == MAP_FAILED)
+		err(1, "mmap");
+	if (mprotect(file2_addr, len, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect");
+	do {
+		qev = drain_for_pid(&qq, getpid());
+	} while (!(qev->events & QUARK_EV_MPROTECT));
+	qmprotect = &qev->mprotect;
+	assert(qmprotect->vma_start <= (u64)(uintptr_t)file2_addr);
+	assert(qmprotect->vma_end >= (u64)(uintptr_t)file2_addr + len);
+	assert(qmprotect->prev_prot == PROT_READ);
+	assert(qmprotect->effective_prot == (PROT_READ | PROT_EXEC));
+	assert(qmprotect->file_backed);
+	assert(qmprotect->inode == (u64)st2.st_ino);
+	assert(qmprotect->dev_major == (u32)major(st2.st_dev));
+	assert(qmprotect->dev_minor == (u32)minor(st2.st_dev));
+	assert(qmprotect->path != NULL);
+	assert(strcmp(qmprotect->path, true_path) == 0);
+
+#ifdef SYS_pkey_mprotect
+	/* The common LSM hook also observes pkey_mprotect without another probe. */
+	{
+		void *pkey_addr;
+
+		/*
+		 * Map read-only so this is an R->X transition: the RW->X id
+		 * was consumed by expected[0] above and would be deduplicated.
+		 */
+		pkey_addr = mmap(NULL, len, PROT_READ,
+		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (pkey_addr == MAP_FAILED)
+			err(1, "mmap");
+		if (syscall(SYS_pkey_mprotect, pkey_addr, len, PROT_EXEC, -1) == -1) {
+			if (errno != ENOSYS && errno != EINVAL)
+				err(1, "pkey_mprotect");
+		} else {
+			do {
+				qev = drain_for_pid(&qq, getpid());
+			} while (!(qev->events & QUARK_EV_MPROTECT));
+			qmprotect = &qev->mprotect;
+			assert(qmprotect->vma_start <= (u64)(uintptr_t)pkey_addr);
+			assert(qmprotect->vma_end >=
+			    (u64)(uintptr_t)pkey_addr + len);
+			assert(qmprotect->prev_prot == PROT_READ);
+			assert(qmprotect->req_prot == PROT_EXEC);
+			assert(qmprotect->effective_prot == PROT_EXEC);
+			assert(!qmprotect->file_backed);
+		}
+		if (munmap(pkey_addr, len) == -1)
+			err(1, "munmap");
+	}
+#endif
+
+	if (munmap(suppressed_addr, len) == -1)
+		err(1, "munmap");
+	for (j = 0; j < nitems(addr); j++) {
+		if (munmap(addr[j], len) == -1)
+			err(1, "munmap");
+	}
+	if (munmap(file_addr, len) == -1)
+		err(1, "munmap");
+	if (close(fd) == -1)
+		err(1, "close");
+	if (munmap(file2_addr, len) == -1)
+		err(1, "munmap");
+	if (close(fd2) == -1)
+		err(1, "close");
 
 	quark_queue_close(&qq);
 
@@ -2036,6 +2602,469 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 		assert(r == cases[i].expected_ret);
 		if (r == 0)
 			assert(!strcmp(cid, cases[i].out));
+	}
+
+	return (0);
+}
+
+static struct quark_process *
+test_process_event(struct quark_queue *qq, u32 pid, const char *cgroup)
+{
+	const struct quark_event *qev;
+	struct raw_event	*raw;
+
+	raw = raw_event_alloc(RAW_GETPID);
+	assert(raw != NULL);
+	raw->pid = pid;
+	raw->task.cgroup = strdup(cgroup);
+	assert(raw->task.cgroup != NULL);
+	assert(raw_event_insert(qq, raw) == 0);
+	qev = quark_queue_get_event(qq);
+	assert(qev != NULL);
+	assert(qev->process != NULL);
+
+	return ((struct quark_process *)qev->process);
+}
+
+static struct quark_process *
+test_raw_task_event(struct quark_queue *qq, int type, u32 pid,
+    const char *cgroup)
+{
+	const struct quark_event *qev;
+	struct raw_event	*raw;
+
+	raw = raw_event_alloc(type);
+	assert(raw != NULL);
+	raw->pid = pid;
+	if (cgroup != NULL) {
+		raw->task.cgroup = strdup(cgroup);
+		assert(raw->task.cgroup != NULL);
+	}
+	assert(raw_event_insert(qq, raw) == 0);
+	qev = quark_queue_get_event(qq);
+	assert(qev != NULL);
+	assert(qev->process != NULL);
+
+	return ((struct quark_process *)qev->process);
+}
+
+/*
+ * A fork for a PID we saw exit is a reused PID, the new process must not
+ * keep the cgroup and the container link of the previous owner, even if
+ * the fork carries no cgroup, as with the kprobe backend. A fork of a
+ * live process, like a kprobe thread event, keeps them.
+ */
+static int
+t_fork_pid_reuse_cgroup(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_container	*container;
+	struct quark_process	*qp;
+
+	quark_queue_init_bare(&qq);
+	/* Keep exited processes cached, as within the gc grace window. */
+	qq.cache_grace_time = MS_TO_NS(60000);
+	container = quark_container_create(&qq, "docker://abc", NULL, NULL,
+	    NULL);
+	assert(container != NULL);
+
+	qp = test_process_event(&qq, 100, "/system.slice/docker-abc.scope");
+	assert(qp->container == container);
+
+	/* A fork without a cgroup on a live process keeps everything. */
+	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, NULL) == qp);
+	assert(!strcmp(qp->cgroup, "/system.slice/docker-abc.scope"));
+	assert(qp->container == container);
+
+	/* The owner exits, a new process reuses the PID without a cgroup. */
+	assert(test_raw_task_event(&qq, RAW_EXIT_THREAD, 100, NULL) == qp);
+	assert(qp->flags & QUARK_F_EXIT);
+	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, NULL) == qp);
+	assert(qp->cgroup == NULL);
+	assert(qp->container == NULL);
+	assert(TAILQ_EMPTY(&container->processes));
+	assert(qp->container_id == NULL);
+	assert(!qp->container_id_parsed);
+
+	/* A reuse by a process in the same container links it again. */
+	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100,
+	    "/system.slice/docker-abc.scope") == qp);
+	assert(qp->container == container);
+
+	/* A reuse by a host process does not keep the link. */
+	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100,
+	    "/user.slice/user-1000.slice") == qp);
+	assert(!strcmp(qp->cgroup, "/user.slice/user-1000.slice"));
+	assert(qp->container == NULL);
+	assert(TAILQ_EMPTY(&container->processes));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Test the parsed container ID cache and cgroup replacement.
+ */
+static int
+t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_process	 qp;
+	struct quark_container	 container;
+	const char		*cached;
+	char			*cgroup;
+
+	bzero(&qp, sizeof(qp));
+	bzero(&container, sizeof(container));
+	TAILQ_INIT(&container.processes);
+
+	/* Parse and cache the first container ID. */
+	cgroup = strdup("/system.slice/docker-old.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(process_container_id(&qp) != NULL);
+	assert(!strcmp(qp.container_id, "docker://old"));
+	assert(qp.container_id_parsed);
+	assert(qp.container_id != NULL);
+	cached = qp.container_id;
+
+	/*
+	 * The same cgroup must preserve the cached ID and the container
+	 * link.
+	 */
+	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
+	qp.container = &container;
+
+	cgroup = strdup("/system.slice/docker-old.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container == &container);
+	assert(qp.container_id == cached);
+	assert(TAILQ_FIRST(&container.processes) == &qp);
+
+	/*
+	 * Any cgroup change drops the link and the cached ID, even a nested
+	 * cgroup inside the same container. The parser only looks at the
+	 * basename, so it does not relink nested cgroups yet.
+	 */
+	cgroup = strdup("/system.slice/docker-old.scope/init.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(!strcmp(qp.cgroup, "/system.slice/docker-old.scope/init.scope"));
+	assert(qp.container == NULL);
+	assert(TAILQ_EMPTY(&container.processes));
+	assert(qp.container_id == NULL);
+	assert(!qp.container_id_parsed);
+
+	/*
+	 * A different container cgroup must remove the old link and clear
+	 * the cached ID.
+	 */
+	cgroup = strdup("/system.slice/docker-old.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(!strcmp(process_container_id(&qp), "docker://old"));
+	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
+	qp.container = &container;
+
+	cgroup = strdup("/system.slice/containerd-new.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container == NULL);
+	assert(TAILQ_EMPTY(&container.processes));
+	assert(qp.container_id == NULL);
+	assert(!qp.container_id_parsed);
+
+	assert(!strcmp(process_container_id(&qp), "containerd://new"));
+	assert(qp.container_id_parsed);
+
+	/*
+	 * A host cgroup, like a reused PID now owned by a host process,
+	 * must not keep the container link or the cached ID.
+	 */
+	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
+	qp.container = &container;
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container == NULL);
+	assert(TAILQ_EMPTY(&container.processes));
+	assert(qp.container_id == NULL);
+	assert(!qp.container_id_parsed);
+	assert(process_container_id(&qp) == NULL);
+	assert(qp.container_id_parsed);
+
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	/* Cache a negative parse result on a fresh process. */
+	bzero(&qp, sizeof(qp));
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(process_container_id(&qp) == NULL);
+	assert(qp.container_id_parsed);
+
+	/* The second call uses the cached negative result. */
+	assert(process_container_id(&qp) == NULL);
+	assert(qp.container_id_parsed);
+
+	/* A container cgroup after a negative result must be parsed. */
+	cgroup = strdup("/system.slice/docker-late.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(!qp.container_id_parsed);
+	assert(!strcmp(process_container_id(&qp), "docker://late"));
+	assert(qp.container_id_parsed);
+
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	return (0);
+}
+
+/*
+ * Test container linking when metadata arrives before or after the
+ * process.
+ */
+static int
+t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_process	 qp;
+	struct quark_process	*iter_qp, *lookup_qp;
+	struct quark_process_iter qi;
+	struct quark_container	*container;
+	struct quark_queue_stats qs;
+	const struct quark_process *seen;
+	const char		*cached;
+
+	quark_queue_init_bare(&qq);
+	bzero(&qp, sizeof(qp));
+
+	qp.cgroup = strdup("/system.slice/docker-target.scope");
+	assert(qp.cgroup != NULL);
+
+	/* No metadata exists. RB_EMPTY must stop the parse. */
+	link_container_data(&qq, &qp);
+	assert(qp.container == NULL);
+	assert(qp.container_id == NULL);
+	assert(!qp.container_id_parsed);
+
+	/*
+	 * Unrelated metadata now exists. The lookup fails, but the parsed
+	 * ID stays in the process cache.
+	 */
+	assert(quark_container_get(&qq, "docker://other", NULL) != NULL);
+	link_container_data(&qq, &qp);
+	assert(qp.container == NULL);
+	assert(qp.container_id_parsed);
+	assert(!strcmp(qp.container_id, "docker://target"));
+	cached = qp.container_id;
+
+	/* A second failed lookup must use the same cached string. */
+	link_container_data(&qq, &qp);
+	assert(qp.container == NULL);
+	assert(qp.container_id == cached);
+
+	/* Matching metadata arrives after the process. */
+	container = quark_container_get(&qq, "docker://target", NULL);
+	assert(container != NULL);
+	link_container_data(&qq, &qp);
+	assert(qp.container == container);
+	assert(TAILQ_FIRST(&container->processes) == &qp);
+
+	/* Public cache reads must link metadata that arrived later. */
+	lookup_qp = test_process_event(&qq, 100,
+	    "/system.slice/docker-lookup.scope");
+	iter_qp = test_process_event(&qq, 200,
+	    "/system.slice/docker-iterator.scope");
+
+	assert(quark_container_get(&qq, "docker://lookup", NULL) != NULL);
+	assert(quark_container_get(&qq, "docker://iterator", NULL) != NULL);
+	assert(lookup_qp->container == NULL);
+	assert(iter_qp->container == NULL);
+
+	seen = quark_process_lookup(&qq, lookup_qp->pid);
+	assert(seen == lookup_qp);
+	assert(lookup_qp->container != NULL);
+	assert(!strcmp(lookup_qp->container->container_id, "docker://lookup"));
+
+	quark_process_iter_init(&qi, &qq);
+	seen = quark_process_iter_next(&qi);
+	assert(seen == lookup_qp);
+	seen = quark_process_iter_next(&qi);
+	assert(seen == iter_qp);
+	assert(iter_qp->container != NULL);
+	assert(!strcmp(iter_qp->container->container_id, "docker://iterator"));
+	assert(quark_process_iter_next(&qi) == NULL);
+
+	/* Stats must work without a backend. */
+	quark_queue_get_stats(&qq, &qs);
+	assert(qs.insertions == 2);
+
+	quark_queue_close(&qq);
+	assert(qp.container == NULL);
+
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	return (0);
+}
+
+/*
+ * A container created through the API before the kube talker reports its
+ * pod must be attached to that pod and completed, not rejected as a
+ * duplicate. Processes already linked to it must survive, a repeated pod
+ * update must be a NOP and a second pod claiming the same container must
+ * be refused without touching the first link.
+ */
+static int
+t_kube_container_attach(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_container	*container;
+	struct quark_process	*qp;
+	const struct quark_pod	*pod, *other;
+	cJSON			*json, *other_json;
+	const char		*pod_json =
+	    "{\"kind\":\"Pod\","
+	    "\"metadata\":{\"name\":\"web\",\"namespace\":\"default\","
+	    "\"uid\":\"pod-1\",\"labels\":{\"app\":\"web\"}},"
+	    "\"spec\":{\"containers\":[{\"name\":\"nginx\"}]},"
+	    "\"status\":{\"phase\":\"Running\","
+	    "\"podIPs\":[{\"ip\":\"10.0.0.7\"}],"
+	    "\"containerStatuses\":[{\"name\":\"nginx\","
+	    "\"image\":\"registry.k8s.io/nginx:1.25\","
+	    "\"imageID\":\"docker-pullable://registry.k8s.io/nginx@sha256:abc\","
+	    "\"containerID\":\"docker://abc\","
+	    "\"state\":{\"running\":{}}}]}}";
+	const char		*other_pod_json =
+	    "{\"kind\":\"Pod\","
+	    "\"metadata\":{\"name\":\"web2\",\"namespace\":\"default\","
+	    "\"uid\":\"pod-2\"},"
+	    "\"spec\":{\"containers\":[{\"name\":\"nginx\"}]},"
+	    "\"status\":{\"phase\":\"Running\","
+	    "\"containerStatuses\":[{\"name\":\"nginx\","
+	    "\"image\":\"registry.k8s.io/nginx:1.25\","
+	    "\"imageID\":\"docker-pullable://registry.k8s.io/nginx@sha256:abc\","
+	    "\"containerID\":\"docker://abc\","
+	    "\"state\":{\"running\":{}}}]}}";
+
+	quark_queue_init_bare(&qq);
+
+	/* The library user registers the container first, pod unknown. */
+	container = quark_container_create(&qq, "docker://abc", NULL, NULL,
+	    NULL);
+	assert(container != NULL);
+	assert(container->pod == NULL);
+	qp = test_process_event(&qq, 100, "/system.slice/docker-abc.scope");
+	assert(qp->container == container);
+
+	/* The talker reports the pod that owns it. */
+	json = cJSON_Parse(pod_json);
+	assert(json != NULL);
+	assert(kube_handle_pod(&qq, json) == 0);
+
+	/* Same object, now attached to the pod and completed. */
+	assert(quark_container_lookup(&qq, "docker://abc") == container);
+	pod = quark_pod_lookup(&qq, "pod-1");
+	assert(pod != NULL);
+	assert(container->pod == pod);
+	assert(!RB_EMPTY(&pod->containers));
+	assert(!strcmp(container->name, "nginx"));
+	assert(!strcmp(container->image, "registry.k8s.io/nginx:1.25"));
+	assert(!strcmp(container->image_id,
+	    "docker-pullable://registry.k8s.io/nginx@sha256:abc"));
+	assert(!strcmp(container->image_name, "nginx"));
+	assert(!strcmp(container->image_tag, "1.25"));
+	assert(!strcmp(container->image_hash, "sha256:abc"));
+	assert(qp->container == container);
+	assert(TAILQ_FIRST(&container->processes) == qp);
+
+	/* A repeated update of the same pod changes nothing. */
+	assert(kube_handle_pod(&qq, json) == 0);
+	assert(quark_container_lookup(&qq, "docker://abc") == container);
+	assert(container->pod == pod);
+	assert(qp->container == container);
+	cJSON_Delete(json);
+
+	/*
+	 * Another pod claiming the same container is refused per container,
+	 * the pod itself is still created, and the first link is untouched.
+	 */
+	other_json = cJSON_Parse(other_pod_json);
+	assert(other_json != NULL);
+	assert(kube_handle_pod(&qq, other_json) == 0);
+	other = quark_pod_lookup(&qq, "pod-2");
+	assert(other != NULL);
+	assert(RB_EMPTY(&other->containers));
+	assert(container->pod == pod);
+	assert(qp->container == container);
+	cJSON_Delete(other_json);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A pod created through the API before the kube talker reports it must
+ * be completed by the talker, not left with unset fields. Fields the API
+ * user did set are kept, first writer wins, like for containers.
+ */
+static int
+t_kube_pod_attach(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct {
+		const char *name, *ns;
+		const char *expected_name, *expected_ns;
+	} cases[] = {
+		{ NULL, NULL, "web", "default" },
+		{ "api-web", NULL, "api-web", "default" },
+		{ NULL, "api-ns", "web", "api-ns" },
+		{ "api-web", "api-ns", "api-web", "api-ns" },
+	};
+	const char	*pod_json =
+	    "{\"kind\":\"Pod\","
+	    "\"metadata\":{\"name\":\"web\",\"namespace\":\"default\","
+	    "\"uid\":\"pod-1\"},"
+	    "\"spec\":{\"containers\":[]},"
+	    "\"status\":{\"phase\":\"Running\",\"containerStatuses\":[]}}";
+	size_t		 i;
+
+	for (i = 0; i < nitems(cases); i++) {
+		struct quark_queue	 qq;
+		struct quark_pod	*pod;
+		cJSON			*json;
+
+		quark_queue_init_bare(&qq);
+		pod = quark_pod_create(&qq, "pod-1", cases[i].name,
+		    cases[i].ns, NULL);
+		assert(pod != NULL);
+
+		json = cJSON_Parse(pod_json);
+		assert(json != NULL);
+		assert(kube_handle_pod(&qq, json) == 0);
+		cJSON_Delete(json);
+
+		assert(quark_pod_lookup(&qq, "pod-1") == pod);
+		assert(pod->name != NULL);
+		assert(!strcmp(pod->name, cases[i].expected_name));
+		assert(pod->ns != NULL);
+		assert(!strcmp(pod->ns, cases[i].expected_ns));
+		assert(pod->phase != NULL);
+		assert(!strcmp(pod->phase, "Running"));
+
+		quark_queue_close(&qq);
 	}
 
 	return (0);
@@ -2765,6 +3794,13 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on file.path /foo/bar\n",
 		"pass on file.path foo-bar\n",
 		"pass on file.path /foo/* file.exec_change\n",
+		"pass on event.scope container\n",
+		"pass on pod.name nginx-*\n",
+		"drop on pod.name *-sidecar\n",
+		"drop on pod.name \"my pod\"\n",
+		"drop on container.image docker.io/library/nginx:1.25\n",
+		"drop on container.image */nginx:1.25\n",
+		"pass on container.image registry.k8s.io/* event.scope container\n",
 		"drop on process.exe /foo/bar\n",
 		"drop on process.exe /foo/*\n",
 		"drop on process.exe */bar\n",
@@ -2795,6 +3831,13 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on foobar\n",
 		"drop on process.exe",
 		"drop on file.name \"foo\n",
+		"drop on event.scope\n",
+		"drop on event.scope guest\n",
+		"drop on event.scope host\n",
+		"drop on pod.name\n",
+		"drop on pod.name a*b*\n",
+		"drop on container.image\n",
+		"drop on container.image */nginx:*\n",
 		NULL
 	};
 
@@ -2817,6 +3860,410 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_event	 qev;
+	struct quark_process	 qp;
+	struct quark_rule	*rule;
+	struct quark_rule_field	 rf;
+	struct quark_ruleset	 ruleset;
+	const char		*cached;
+	char			*cgroup;
+
+	bzero(&qev, sizeof(qev));
+	bzero(&qp, sizeof(qp));
+
+	/* Keep only container events. */
+	ruleset_from_string(&ruleset,
+	    "pass on event.scope container\n"
+	    "drop on any\n");
+
+	/* A process with an unknown cgroup is not a container. */
+	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(rule->action == QUARK_RA_DROP);
+	assert(!qp.container_id_parsed);
+
+	/* Scope must use the process cgroup without container metadata. */
+	cgroup = strdup("/system.slice/docker-abc123.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	assert(qp.container == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 0);
+	assert(rule->action == QUARK_RA_PASS);
+	assert(qp.container_id_parsed);
+	assert(!strcmp(qp.container_id, "docker://abc123"));
+	cached = qp.container_id;
+
+	/* A second match must use the cached container ID. */
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 0);
+	assert(qp.container_id == cached);
+
+	qev.process = NULL;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+
+	/*
+	 * A move to a cgroup that does not name a container drops the
+	 * cached container ID, see t_process_container_cache.
+	 */
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(rule->action == QUARK_RA_DROP);
+	assert(qp.container_id_parsed);
+	assert(qp.container_id == NULL);
+
+	/*
+	 * Only the last cgroup component is parsed, a nested cgroup of a
+	 * container is not a container.
+	 */
+	free(qp.cgroup);
+	bzero(&qp, sizeof(qp));
+	cgroup = strdup("/system.slice/docker-abc123.scope/init.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(qp.container_id_parsed);
+	assert(qp.container_id == NULL);
+
+	/* The cgroupfs driver layout is not a container. */
+	free(qp.cgroup);
+	bzero(&qp, sizeof(qp));
+	cgroup = strdup("/kubepods/burstable/pod1234/abc123");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(cgroup == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL);
+	assert(rule->number == 1);
+	assert(qp.container_id_parsed);
+	assert(qp.container_id == NULL);
+
+	quark_ruleset_clear(&ruleset);
+
+	quark_ruleset_init(&ruleset);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
+	assert(rule != NULL);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_EVENT_SCOPE;
+	rf.id = 42;
+	errno = 0;
+	assert(quark_rule_match_field(rule, rf) == -1);
+	assert(errno == EINVAL);
+	quark_ruleset_clear(&ruleset);
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	return (0);
+}
+
+/*
+ * kprobe doesn't know the cgroup of new processes, so it must reject
+ * every container field.
+ */
+static int
+t_rule_container_kprobe(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	  qq;
+	struct quark_ruleset	  ruleset;
+	char			**r, *rules[] = {
+		"pass on event.scope container\ndrop on any\n",
+		"drop on pod.name nginx-*\n",
+		"drop on container.image docker.io/library/nginx:1.25\n",
+		NULL
+	};
+
+	for (r = rules; *r != NULL; r++) {
+		ruleset_from_string(&ruleset, *r);
+		qa->ruleset = &ruleset;
+		errno = 0;
+		assert(quark_queue_open(&qq, qa) == -1);
+		assert(errno == ENOTSUP);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	return (0);
+}
+
+/*
+ * Set up a process linked to a new container in a pod through the public
+ * API, as an embedder would. The pod name and image come from the caller,
+ * each cid must be unique within a test.
+ */
+static struct quark_process *
+rule_kube_process(struct quark_queue *qq, u32 pid, const char *cid,
+    const char *pod_uid, const char *pod_name, const char *image)
+{
+	struct quark_pod	*pod;
+	struct quark_container	*container;
+	struct quark_process	*qp;
+	char			*cgroup, *container_id;
+
+	/* The cgroup docker-<cid>.scope parses into docker://<cid> */
+	assert(asprintf(&container_id, "docker://%s", cid) != -1);
+	if (pod_uid != NULL) {
+		pod = quark_pod_get(qq, pod_uid);
+		assert(pod != NULL);
+		assert(pod->name == NULL);
+		if (pod_name != NULL) {
+			pod->name = strdup(pod_name);
+			assert(pod->name != NULL);
+		}
+	}
+	container = quark_container_create(qq, container_id, pod_uid, NULL,
+	    image);
+	assert(container != NULL);
+	free(container_id);
+
+	/* The container exists, so the event assembly links the process */
+	assert(asprintf(&cgroup, "/system.slice/docker-%s.scope", cid) != -1);
+	qp = test_process_event(qq, pid, cgroup);
+	free(cgroup);
+	assert(qp->container == container);
+
+	return (qp);
+}
+
+static int
+t_rule_pod_name(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_event	 qev;
+	struct quark_process	 bare;
+	struct quark_process	*qp;
+	struct quark_rule	*rule;
+	struct quark_ruleset	 ruleset;
+
+	quark_queue_init_bare(&qq);
+	bzero(&qev, sizeof(qev));
+	bzero(&bare, sizeof(bare));
+
+	ruleset_from_string(&ruleset,
+	    "pass on pod.name nginx-*\n"
+	    "drop on pod.name *-sidecar\n"
+	    "poison 7 on pod.name exact\n");
+
+	/* No process, no match. */
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Process without a container, no match. */
+	qev.process = &bare;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Prefix wildcard. */
+	qp = rule_kube_process(&qq, 100, "aaa", "pod-a",
+	    "nginx-7c5b8d-x9k2p", NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0 &&
+	    rule->action == QUARK_RA_PASS);
+
+	/* The wildcard may be empty, but the prefix must be complete. */
+	qp = rule_kube_process(&qq, 101, "bbb", "pod-b", "nginx", NULL);
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	qp = rule_kube_process(&qq, 107, "hhh", "pod-h", "nginx-", NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+
+	/* PoC: pod.name ignores the namespace. */
+	qp = rule_kube_process(&qq, 108, "iii", "pod-i", "nginx-web", NULL);
+	qp->container->pod->ns = strdup("default");
+	assert(qp->container->pod->ns != NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+	qp = rule_kube_process(&qq, 109, "jjj", "pod-j", "nginx-web", NULL);
+	qp->container->pod->ns = strdup("other");
+	assert(qp->container->pod->ns != NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+
+	/* Suffix wildcard. */
+	qp = rule_kube_process(&qq, 102, "ccc", "pod-c",
+	    "istio-sidecar", NULL);
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1 &&
+	    rule->action == QUARK_RA_DROP);
+
+	/* Exact, via poison. */
+	qp = rule_kube_process(&qq, 103, "ddd", "pod-d", "exact", NULL);
+	qev.process = qp;
+	assert(qp->poison_tag == 0);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp->poison_tag == 7);
+	qp = rule_kube_process(&qq, 104, "eee", "pod-e", "exactly", NULL);
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp->poison_tag == 0);
+
+	/* Pod without a name, no match. */
+	qp = rule_kube_process(&qq, 105, "fff", "pod-f", NULL, NULL);
+	qev.process = qp;
+	assert(qp->container->pod->name == NULL);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Container without a pod, no match. */
+	qp = rule_kube_process(&qq, 106, "ggg", NULL, NULL, NULL);
+	qev.process = qp;
+	assert(qp->container->pod == NULL);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	quark_ruleset_clear(&ruleset);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_rule_container_image(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_event	 qev;
+	struct quark_process	 bare;
+	struct quark_process	*qp;
+	struct quark_rule	*rule;
+	struct quark_rule_field	 rf;
+	struct quark_ruleset	 ruleset;
+
+	quark_queue_init_bare(&qq);
+	bzero(&qev, sizeof(qev));
+	bzero(&bare, sizeof(bare));
+
+	ruleset_from_string(&ruleset,
+	    "drop on container.image docker.io/library/nginx:1.25\n"
+	    "drop on container.image */busybox:1.36\n"
+	    "drop on container.image quay.io/*\n"
+	    "pass on container.image registry.k8s.io/e2e-test-images/agnhost:2.39"
+	    " pod.name e2e-*\n");
+
+	/* No process, no match. */
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Process without a container, no match. */
+	qev.process = &bare;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Exact match on the full image reference. */
+	qp = rule_kube_process(&qq, 100, "aaa", "pod-a", "web",
+	    "docker.io/library/nginx:1.25");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0 &&
+	    rule->action == QUARK_RA_DROP);
+
+	/* A different tag or registry of the same image is not exact. */
+	qp = rule_kube_process(&qq, 101, "bbb", "pod-b", "web",
+	    "docker.io/library/nginx:1.26");
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	qp = rule_kube_process(&qq, 102, "ccc", "pod-c", "web",
+	    "nginx:1.25");
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Prefix wildcard covers the registry. */
+	qp = rule_kube_process(&qq, 103, "ddd", "pod-d", "web",
+	    "docker.io/library/busybox:1.36");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	/* PoC: the reference is a label, a wildcard matches any registry. */
+	qp = rule_kube_process(&qq, 104, "eee", "pod-e", "web",
+	    "localhost:5000/busybox:1.36");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	/* A different tag is not a match. */
+	qp = rule_kube_process(&qq, 105, "fff", "pod-f", "web",
+	    "docker.io/library/busybox:1.37");
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Suffix wildcard matches a whole registry, digests included. */
+	qp = rule_kube_process(&qq, 106, "ggg", "pod-g", "web",
+	    "quay.io/prometheus/node-exporter@sha256:0123456789abcdef");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 2);
+	/* The wildcard may be empty, but the prefix must be complete. */
+	qp = rule_kube_process(&qq, 107, "hhh", "pod-h", "web", "quay.io/");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 2);
+	qp = rule_kube_process(&qq, 112, "mmm", "pod-m", "web", "quay.io");
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Container without an image, no match. */
+	qp = rule_kube_process(&qq, 108, "iii", "pod-i", "web", NULL);
+	qev.process = qp;
+	assert(qp->container->image == NULL);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Container without a pod still matches on the image. */
+	qp = rule_kube_process(&qq, 109, "jjj", NULL, NULL,
+	    "docker.io/library/nginx:1.25");
+	qev.process = qp;
+	assert(qp->container->pod == NULL);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+
+	/* Combined with pod.name, both must match. */
+	qp = rule_kube_process(&qq, 110, "kkk", "pod-k", "e2e-test",
+	    "registry.k8s.io/e2e-test-images/agnhost:2.39");
+	qev.process = qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 3 &&
+	    rule->action == QUARK_RA_PASS);
+	qp = rule_kube_process(&qq, 111, "lll", "pod-l", "prod-test",
+	    "registry.k8s.io/e2e-test-images/agnhost:2.39");
+	qev.process = qp;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	quark_ruleset_clear(&ruleset);
+
+	/* Empty and double wildcard are rejected by the field API. */
+	quark_ruleset_init(&ruleset);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
+	assert(rule != NULL);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_CONTAINER_IMAGE;
+	rf.wild.pre = (char *)"*/nginx:*";
+	errno = 0;
+	assert(quark_rule_match_field(rule, rf) == -1);
+	assert(errno == EINVAL);
+	rf.wild.pre = (char *)"";
+	errno = 0;
+	assert(quark_rule_match_field(rule, rf) == -1);
+	assert(errno == EINVAL);
+	quark_ruleset_clear(&ruleset);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
 
 static int
 t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
@@ -2834,6 +4281,213 @@ t_trusted_pid(const struct test *t, struct quark_queue_attr *qa)
 
 	assert(!quark_queue_trusted_pid_add(&qq, getpid()));
 	assert(!quark_queue_trusted_pid_reset(&qq));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Find one of our maps the way a stranger would: walk every map id and match
+ * type, sizes, entries and name (bpf_map_info.name is truncated to 15
+ * characters, so every elastic_ebpf_events_* map shares one). A zero
+ * value_size or max_entries matches any. Returns an fd and fills info.
+ */
+static int
+find_map(struct bpf_map_info *info, u32 type, u32 key_size, u32 value_size,
+    u32 max_entries, const char *name)
+{
+	u32	id, len;
+	int	fd;
+
+	id = 0;
+	while (bpf_map_get_next_id(id, &id) == 0) {
+		if ((fd = bpf_map_get_fd_by_id(id)) < 0) {
+			if (fd == -ENOENT)
+				continue;
+			errno = -fd;
+			err(1, "bpf_map_get_fd_by_id");
+		}
+		bzero(info, sizeof(*info));
+		len = sizeof(*info);
+		if (bpf_map_get_info_by_fd(fd, info, &len) != 0)
+			err(1, "bpf_map_get_info_by_fd");
+		if (info->type == type &&
+		    info->key_size == key_size &&
+		    (value_size == 0 || info->value_size == value_size) &&
+		    (max_entries == 0 || info->max_entries == max_entries) &&
+		    !strncmp(info->name, name, 15))
+			return (fd);
+		close(fd);
+	}
+	errx(1, "map %s not found", name);
+}
+
+static int
+find_trusted_map(void)
+{
+	struct bpf_map_info	info;
+	int			fd;
+
+	fd = find_map(&info, BPF_MAP_TYPE_HASH, sizeof(u32), sizeof(u32), 512,
+	    "elastic_ebpf_events_trusted_pids");
+
+	return (fd);
+}
+
+/*
+ * Load a hand assembled program that calls helper(map, &key, &value, 0) with
+ * a zeroed u32 key and value on the stack. Extra arguments are ignored by
+ * map_lookup_elem, so the same body tests both a reader and a writer.
+ * Returns 0 if the program loads, -1 with errno set otherwise.
+ */
+static int
+load_map_prog(int map_fd, int helper)
+{
+	struct bpf_insn	insns[] = {
+		/* r1 = map */
+		{ .code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = 1,
+		  .src_reg = BPF_PSEUDO_MAP_FD, .imm = map_fd },
+		{ 0 },
+		/* *(u32 *)(r10 - 4) = 0; r2 = r10 - 4 */
+		{ .code = BPF_ST | BPF_W | BPF_MEM, .dst_reg = 10, .off = -4 },
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_X, .dst_reg = 2, .src_reg = 10 },
+		{ .code = BPF_ALU64 | BPF_ADD | BPF_K, .dst_reg = 2, .imm = -4 },
+		/* *(u32 *)(r10 - 8) = 0; r3 = r10 - 8 */
+		{ .code = BPF_ST | BPF_W | BPF_MEM, .dst_reg = 10, .off = -8 },
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_X, .dst_reg = 3, .src_reg = 10 },
+		{ .code = BPF_ALU64 | BPF_ADD | BPF_K, .dst_reg = 3, .imm = -8 },
+		/* r4 = 0 (BPF_ANY) */
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 4 },
+		{ .code = BPF_JMP | BPF_CALL, .imm = helper },
+		/* return 0 */
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 0 },
+		{ .code = BPF_JMP | BPF_EXIT },
+	};
+	int		fd;
+
+	fd = bpf_prog_load(BPF_PROG_TYPE_SOCKET_FILTER, "quark_test_map_prog",
+	    "GPL", insns, nitems(insns), NULL);
+	if (fd < 0) {
+		errno = -fd;
+		return (-1);
+	}
+	close(fd);
+
+	return (0);
+}
+
+/*
+ * The trusted pids map is BPF_F_RDONLY_PROG: userspace still writes it, a
+ * BPF program that reads it still loads, one that writes it does not.
+ */
+static int
+t_trusted_map_rdonly(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct bpf_map_info	 info;
+	LIBBPF_OPTS(bpf_map_create_opts, opts,
+	    .map_flags = BPF_F_RDONLY_PROG);
+	u32			 len = sizeof(info), pid, v;
+	int			 fd;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	fd = bpf_map_create(BPF_MAP_TYPE_HASH, NULL, sizeof(u32), sizeof(u32),
+	    1, &opts);
+	if (fd < 0) {
+		warnx("%s: kernel lacks BPF_F_RDONLY_PROG, skipping", __func__);
+		return (0);
+	}
+	close(fd);
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	fd = find_trusted_map();
+	/* Kernels since 6.18 read hash and hash_size back, garbage is EINVAL */
+	bzero(&info, sizeof(info));
+	if (bpf_map_get_info_by_fd(fd, &info, &len) != 0)
+		err(1, "bpf_map_get_info_by_fd");
+	assert(info.map_flags & BPF_F_RDONLY_PROG);
+
+	/* Userspace writes still go through, ours and a stranger's */
+	assert(!quark_queue_trusted_pid_add(&qq, getpid()));
+	assert(!quark_queue_trusted_pid_reset(&qq));
+	pid = getpid();
+	v = 1;
+	assert(bpf_map_update_elem(fd, &pid, &v, BPF_ANY) == 0);
+	assert(bpf_map_delete_elem(fd, &pid) == 0);
+
+	/* A BPF reader loads, a BPF writer is refused by the verifier */
+	if (load_map_prog(fd, BPF_FUNC_map_lookup_elem) != 0)
+		err(1, "load_map_prog lookup");
+	assert(load_map_prog(fd, BPF_FUNC_map_update_elem) == -1);
+	assert(errno == EACCES);
+
+	close(fd);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Every map but the trusted one and the ring buffer is frozen: a stranger's
+ * bpf(2) write fails with EPERM. Checked on sk_to_tgid, a hash the probes
+ * fill, and on the init buffer, which additionally is read-only for programs.
+ * The trusted map must still take writes, t_trusted_map_rdonly covers that.
+ */
+static int
+t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct bpf_map_info	 info;
+	LIBBPF_OPTS(bpf_map_create_opts, opts,
+	    .map_flags = BPF_F_RDONLY_PROG);
+	u64			 key64;
+	u32			 v, zero;
+	int			 fd;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	fd = bpf_map_create(BPF_MAP_TYPE_HASH, NULL, sizeof(u32), sizeof(u32),
+	    1, &opts);
+	if (fd < 0 || bpf_map_freeze(fd) != 0) {
+		warnx("%s: kernel lacks BPF_MAP_FREEZE, skipping", __func__);
+		if (fd >= 0)
+			close(fd);
+		return (0);
+	}
+	close(fd);
+
+	qa->flags |= QQ_SOCK_CONN;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* sk_to_tgid: struct sock * -> u32 */
+	fd = find_map(&info, BPF_MAP_TYPE_HASH, sizeof(void *), sizeof(u32), 0,
+	    "sk_to_tgid");
+	key64 = 0xdeadbeef;
+	v = 1;
+	assert(bpf_map_update_elem(fd, &key64, &v, BPF_ANY) == -EPERM);
+	assert(bpf_map_delete_elem(fd, &key64) == -EPERM);
+	close(fd);
+
+	/* init buffer: frozen and read-only for programs */
+	fd = find_map(&info, BPF_MAP_TYPE_PERCPU_ARRAY, sizeof(u32), 0, 1,
+	    "elastic_ebpf_events_init_buffer");
+	assert(info.map_flags & BPF_F_RDONLY_PROG);
+	zero = 0;
+	assert(bpf_map_update_elem(fd, &zero, &zero, BPF_ANY) == -EPERM);
+	close(fd);
 
 	quark_queue_close(&qq);
 
@@ -2884,6 +4538,471 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static int
+t_container_remove(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_process	 process;
+	struct quark_pod		*pod;
+	struct quark_container	*container, *orphan;
+	u64			 marked;
+
+	quark_queue_init_bare(&qq);
+	bzero(&process, sizeof(process));
+	qq.cache_grace_time = UINT64_MAX;
+	pod = quark_pod_get(&qq, "pod");
+	assert(pod != NULL);
+	container = quark_container_get(&qq, "container", "pod");
+	orphan = quark_container_get(&qq, "orphan", NULL);
+	assert(container != NULL && orphan != NULL);
+	process.container = container;
+	TAILQ_INSERT_TAIL(&container->processes, &process, entry_container);
+
+	errno = 0;
+	assert(quark_container_remove(&qq, "absent") == -1);
+	assert(errno == ESRCH);
+	assert(quark_pod_remove(&qq, "absent") == -1);
+	assert(errno == ESRCH);
+	assert(TAILQ_EMPTY(&qq.event_gc));
+
+	assert(quark_container_remove(&qq, "container") == 0);
+	marked = container->gc.gc_time;
+	assert(marked != 0);
+	/* Repeated removal is idempotent and still reports success. */
+	assert(quark_container_remove(&qq, "container") == 0);
+	assert(container->gc.gc_time == marked);
+	assert(TAILQ_FIRST(&qq.event_gc) == &container->gc);
+	assert(TAILQ_NEXT(&container->gc, gc_entry) == NULL);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(process.container == container);
+
+	/* End the grace period without a timed sleep. */
+	qq.cache_grace_time = 0;
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_container_lookup(&qq, "container") == NULL);
+	assert(process.container == NULL);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(RB_EMPTY(&pod->containers));
+	assert(TAILQ_EMPTY(&qq.event_gc));
+	assert(quark_container_lookup(&qq, "orphan") == orphan);
+
+	/* A collected id is absent again. */
+	errno = 0;
+	assert(quark_container_remove(&qq, "container") == -1);
+	assert(errno == ESRCH);
+
+	assert(quark_container_remove(&qq, "orphan") == 0);
+	assert(quark_container_remove(&qq, "orphan") == 0);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_container_lookup(&qq, "orphan") == NULL);
+	assert(TAILQ_EMPTY(&qq.event_gc));
+	assert(qq.stats.garbage_collections == 2);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_pod_remove(const struct test *t, struct quark_queue_attr *qa)
+{
+	int	 child_first;
+
+	/* Both queue orders must remove each child only once. */
+	for (child_first = 0; child_first < 2; child_first++) {
+		struct quark_queue	 qq;
+		struct quark_process	 process;
+		struct quark_pod		*pod;
+		struct quark_container	*child, *queued, *orphan;
+		u64			 marked;
+
+		quark_queue_init_bare(&qq);
+		bzero(&process, sizeof(process));
+		qq.cache_grace_time = UINT64_MAX;
+		pod = quark_pod_get(&qq, "pod");
+		assert(pod != NULL);
+		child = quark_container_get(&qq, "child", "pod");
+		queued = quark_container_get(&qq, "queued", "pod");
+		orphan = quark_container_get(&qq, "orphan", NULL);
+		assert(child != NULL && queued != NULL && orphan != NULL);
+		process.container = child;
+		TAILQ_INSERT_TAIL(&child->processes, &process, entry_container);
+
+		if (child_first)
+			assert(quark_container_remove(&qq, "queued") == 0);
+		assert(quark_pod_remove(&qq, "pod") == 0);
+		marked = pod->gc.gc_time;
+		assert(marked != 0);
+		assert(quark_pod_remove(&qq, "pod") == 0);
+		assert(pod->gc.gc_time == marked);
+		if (!child_first)
+			assert(quark_container_remove(&qq, "queued") == 0);
+		assert(quark_queue_get_event(&qq) == NULL);
+		assert(quark_pod_lookup(&qq, "pod") == pod);
+		assert(quark_container_lookup(&qq, "child") == child);
+		assert(quark_container_lookup(&qq, "queued") == queued);
+
+		qq.cache_grace_time = 0;
+		assert(quark_queue_get_event(&qq) == NULL);
+		assert(quark_pod_lookup(&qq, "pod") == NULL);
+		assert(quark_container_lookup(&qq, "child") == NULL);
+		assert(quark_container_lookup(&qq, "queued") == NULL);
+		assert(process.container == NULL);
+		assert(TAILQ_EMPTY(&qq.event_gc));
+		assert(quark_container_lookup(&qq, "orphan") == orphan);
+		/* Pod plus both containers, regardless of removal order. */
+		assert(qq.stats.garbage_collections == 3);
+		errno = 0;
+		assert(quark_pod_remove(&qq, "pod") == -1);
+		assert(errno == ESRCH);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+static int
+t_container_dump(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct {
+		const char *name, *image, *expected, *expected_ecs;
+	} cases[] = {
+		{ NULL, NULL, "name=<unknown> image=<unknown>\n",
+		  "\"container\":{\"id\":\"container\",\"runtime\":" },
+		{ "test-container", "test-image",
+		  "name=test-container image=test-image\n",
+		  "\"container\":{\"id\":\"container\","
+		  "\"name\":\"test-container\",\"runtime\":" },
+		{ NULL, "test-image", "name=<unknown> image=test-image\n",
+		  "\"container\":{\"id\":\"container\",\"runtime\":" },
+		{ "test-container", NULL, "name=test-container image=<unknown>\n",
+		  "\"container\":{\"id\":\"container\","
+		  "\"name\":\"test-container\",\"runtime\":" },
+	};
+	size_t	 i;
+
+	for (i = 0; i < nitems(cases); i++) {
+		struct quark_queue	 qq;
+		struct quark_process	 process;
+		struct quark_event	 event = { .process = &process };
+		struct quark_container	*container;
+		FILE			*f;
+		char			*buf = NULL, *ecs = NULL;
+		size_t			 len = 0, ecs_len = 0;
+
+		quark_queue_init_bare(&qq);
+		bzero(&process, sizeof(process));
+		container = quark_container_create(&qq, "container", NULL,
+		    cases[i].name, cases[i].image);
+		assert(container != NULL);
+		process.container = container;
+		f = open_memstream(&buf, &len);
+		assert(f != NULL);
+		assert(quark_event_dump(&event, f) == 0);
+		assert(fclose(f) == 0);
+		assert(strstr(buf, cases[i].expected) != NULL);
+		assert(strstr(buf, "container_id=container\n") != NULL);
+		assert((container->name == NULL) == (cases[i].name == NULL));
+		assert((container->image == NULL) == (cases[i].image == NULL));
+		assert(quark_event_to_ecs(&qq, &event, &ecs, &ecs_len) == 0);
+		assert(strstr(ecs, cases[i].expected_ecs) != NULL);
+		free(ecs);
+		free(buf);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+static int
+t_pod_dump(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct {
+		const char *name, *ns, *phase;
+		const char *expected_name_ns, *expected_uid_phase;
+		const char *expected_ecs;
+	} cases[] = {
+		{ NULL, NULL, NULL,
+		  "name=<unknown> namespace=<unknown>\n",
+		  "uid=pod phase=<unknown>\n",
+		  "\"orchestrator\":{\"resource\":{\"type\":\"pod\",\"ip\":" },
+		{ "test-pod", "test-ns", "Running",
+		  "name=test-pod namespace=test-ns\n", "uid=pod phase=Running\n",
+		  "\"orchestrator\":{\"namespace\":\"test-ns\","
+		  "\"resource\":{\"type\":\"pod\",\"name\":\"test-pod\",\"ip\":" },
+		{ NULL, "test-ns", "Running",
+		  "name=<unknown> namespace=test-ns\n", "uid=pod phase=Running\n",
+		  "\"orchestrator\":{\"namespace\":\"test-ns\","
+		  "\"resource\":{\"type\":\"pod\",\"ip\":" },
+		{ "test-pod", NULL, "Running",
+		  "name=test-pod namespace=<unknown>\n", "uid=pod phase=Running\n",
+		  "\"orchestrator\":{"
+		  "\"resource\":{\"type\":\"pod\",\"name\":\"test-pod\",\"ip\":" },
+		{ "test-pod", "test-ns", NULL,
+		  "name=test-pod namespace=test-ns\n", "uid=pod phase=<unknown>\n",
+		  "\"orchestrator\":{\"namespace\":\"test-ns\","
+		  "\"resource\":{\"type\":\"pod\",\"name\":\"test-pod\",\"ip\":" },
+	};
+	size_t	 i;
+
+	for (i = 0; i < nitems(cases); i++) {
+		struct quark_queue	 qq;
+		struct quark_process	 process;
+		struct quark_event	 event = { .process = &process };
+		struct quark_pod		*pod;
+		FILE			*f;
+		char			*buf = NULL, *ecs = NULL;
+		size_t			 len = 0, ecs_len = 0;
+
+		quark_queue_init_bare(&qq);
+		/*
+		 * orchestrator.* is only emitted with a kube talker, fake an
+		 * idle one, quark_queue_close() frees it. A real one always
+		 * has a node name, kube_prime() fails otherwise.
+		 */
+		qq.qkube = calloc(1, sizeof(*qq.qkube));
+		assert(qq.qkube != NULL);
+		qq.qkube->fd = -1;
+		qq.qkube->node.name = strdup("test-node");
+		assert(qq.qkube->node.name != NULL);
+		bzero(&process, sizeof(process));
+		pod = quark_pod_create(&qq, "pod", cases[i].name,
+		    cases[i].ns, cases[i].phase);
+		assert(pod != NULL);
+		process.container = quark_container_create(&qq, "container",
+		    "pod", "test-container", "test-image");
+		assert(process.container != NULL);
+		f = open_memstream(&buf, &len);
+		assert(f != NULL);
+		assert(quark_event_dump(&event, f) == 0);
+		assert(fclose(f) == 0);
+		assert(strstr(buf, cases[i].expected_name_ns) != NULL);
+		assert(strstr(buf, cases[i].expected_uid_phase) != NULL);
+		assert((pod->name == NULL) == (cases[i].name == NULL));
+		assert((pod->ns == NULL) == (cases[i].ns == NULL));
+		assert((pod->phase == NULL) == (cases[i].phase == NULL));
+		assert(quark_event_to_ecs(&qq, &event, &ecs, &ecs_len) == 0);
+		assert(strstr(ecs, cases[i].expected_ecs) != NULL);
+		free(ecs);
+		free(buf);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+static int
+t_pod_create(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_pod		*pod, *other;
+	char			 uid[] = "pod", name[] = "test-pod";
+	char			 ns[] = "test-ns", phase[] = "Running";
+
+	quark_queue_init_bare(&qq);
+	pod = quark_pod_create(&qq, uid, name, ns, phase);
+	assert(pod != NULL);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(quark_pod_get(&qq, "pod") == pod);
+	assert(RB_EMPTY(&pod->containers));
+	assert(RB_EMPTY(&pod->labels));
+	assert(pod->name != NULL && pod->ns != NULL && pod->phase != NULL);
+
+	/* Changes to input buffers must not change the stored values. */
+	uid[0] = name[0] = ns[0] = phase[0] = 'x';
+	assert(strcmp(pod->uid, "pod") == 0);
+	assert(strcmp(pod->name, "test-pod") == 0);
+	assert(strcmp(pod->ns, "test-ns") == 0);
+	assert(strcmp(pod->phase, "Running") == 0);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(quark_pod_lookup(&qq, uid) == NULL);
+
+	/* A duplicate UID must not replace the pod or its values. */
+	errno = 0;
+	assert(quark_pod_create(&qq, "pod", "new", "new", "Pending") == NULL);
+	assert(errno == EEXIST);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(strcmp(pod->name, "test-pod") == 0);
+	assert(strcmp(pod->ns, "test-ns") == 0);
+	assert(strcmp(pod->phase, "Running") == 0);
+
+	/* Optional fields can be absent. */
+	other = quark_pod_create(&qq, "other", NULL, NULL, NULL);
+	assert(other != NULL && other != pod);
+	assert(other->name == NULL && other->ns == NULL && other->phase == NULL);
+	assert(quark_pod_lookup(&qq, "other") == other);
+	assert(quark_pod_get(&qq, "other") == other);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.pod_by_uid));
+
+	return (0);
+}
+
+static int
+t_pod_get(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_pod		*pod, *other;
+	char			 uid[] = "pod";
+
+	quark_queue_init_bare(&qq);
+	errno = 0;
+	assert(quark_pod_lookup(&qq, uid) == NULL);
+	assert(errno == ESRCH);
+	pod = quark_pod_get(&qq, uid);
+	assert(pod != NULL);
+	assert(strcmp(pod->uid, "pod") == 0);
+	assert(RB_EMPTY(&pod->containers));
+	assert(RB_EMPTY(&pod->labels));
+	assert(pod->name == NULL && pod->ns == NULL && pod->phase == NULL);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+
+	/* The pod owns its UID independently of the caller's buffer. */
+	uid[0] = 'x';
+	assert(strcmp(pod->uid, "pod") == 0);
+	assert(quark_pod_lookup(&qq, "pod") == pod);
+	assert(quark_pod_lookup(&qq, uid) == NULL);
+
+	/* Getting an existing pod must preserve caller-populated metadata. */
+	pod->name = strdup("test-pod");
+	pod->ns = strdup("test-namespace");
+	pod->phase = strdup("Running");
+	assert(pod->name != NULL && pod->ns != NULL && pod->phase != NULL);
+	assert(quark_pod_get(&qq, "pod") == pod);
+	assert(strcmp(pod->name, "test-pod") == 0);
+	assert(strcmp(pod->ns, "test-namespace") == 0);
+	assert(strcmp(pod->phase, "Running") == 0);
+
+	other = quark_pod_get(&qq, "other");
+	assert(other != NULL && other != pod);
+	assert(quark_pod_lookup(&qq, "other") == other);
+	assert(quark_pod_get(&qq, "pod") == pod);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.pod_by_uid));
+
+	return (0);
+}
+
+static int
+t_container_create(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_pod		*pod, *other;
+	struct quark_container	*container, *orphan;
+	char			 id[] = "container", name[] = "test-container";
+	char			 image[] = "test-image";
+
+	quark_queue_init_bare(&qq);
+	pod = quark_pod_create(&qq, "pod", NULL, NULL, NULL);
+	other = quark_pod_create(&qq, "other", NULL, NULL, NULL);
+	assert(pod != NULL && other != NULL);
+	container = quark_container_create(&qq, id, "pod", name, image);
+	assert(container != NULL);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(quark_container_get(&qq, "container", "pod") == container);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(TAILQ_EMPTY(&container->processes));
+	assert(container->name != NULL && container->image != NULL);
+
+	/* Changes to input buffers must not change the stored values. */
+	id[0] = name[0] = image[0] = 'x';
+	assert(strcmp(container->container_id, "container") == 0);
+	assert(strcmp(container->name, "test-container") == 0);
+	assert(strcmp(container->image, "test-image") == 0);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(quark_container_lookup(&qq, id) == NULL);
+
+	/* A duplicate ID must not change the values or the parent pod. */
+	errno = 0;
+	assert(quark_container_create(&qq, "container", "other", "new", "new") == NULL);
+	assert(errno == EEXIST);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(strcmp(container->name, "test-container") == 0);
+	assert(strcmp(container->image, "test-image") == 0);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(RB_EMPTY(&other->containers));
+
+	/* A missing pod must not cause a container to be inserted. */
+	errno = 0;
+	assert(quark_container_create(&qq, "absent", "missing", NULL, NULL) == NULL);
+	assert(errno == ESRCH);
+	assert(quark_container_lookup(&qq, "absent") == NULL);
+
+	/* A container can have no pod and no optional fields. */
+	orphan = quark_container_create(&qq, "orphan", NULL, NULL, NULL);
+	assert(orphan != NULL && orphan != container);
+	assert(orphan->pod == NULL && !orphan->linked_by_pod);
+	assert(orphan->name == NULL && orphan->image == NULL);
+	assert(quark_container_lookup(&qq, "orphan") == orphan);
+	assert(quark_container_get(&qq, "orphan", NULL) == orphan);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.container_by_id));
+	assert(RB_EMPTY(&qq.pod_by_uid));
+
+	return (0);
+}
+
+static int
+t_container_get(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_pod		*pod, *other;
+	struct quark_container	*container, *direct;
+
+	quark_queue_init_bare(&qq);
+	/* These cache operations do not require a kernel backend. */
+	pod = quark_pod_get(&qq, "pod");
+	other = quark_pod_get(&qq, "other");
+	assert(pod != NULL && other != NULL);
+
+	container = quark_container_get(&qq, "container", NULL);
+	assert(container != NULL);
+	assert(container->pod == NULL && !container->linked_by_pod);
+	assert(quark_container_lookup(&qq, "container") == container);
+	assert(quark_container_get(&qq, "container", NULL) == container);
+
+	/* A missing pod must leave the existing container unchanged. */
+	errno = 0;
+	assert(quark_container_get(&qq, "container", "missing") == NULL);
+	assert(errno == ESRCH);
+	assert(container->pod == NULL && !container->linked_by_pod);
+
+	/* Attach later, and allow repeated requests for the same pod. */
+	assert(quark_container_get(&qq, "container", "pod") == container);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(quark_container_get(&qq, "container", "pod") == container);
+	assert(quark_container_get(&qq, "container", NULL) == container);
+	assert(container->pod == pod && container->linked_by_pod);
+
+	/* Reject a different parent without changing either pod's tree. */
+	errno = 0;
+	assert(quark_container_get(&qq, "container", "other") == NULL);
+	assert(errno == EEXIST);
+	assert(container->pod == pod && container->linked_by_pod);
+	assert(RB_ROOT(&pod->containers) == container);
+	assert(RB_EMPTY(&other->containers));
+	assert(quark_container_lookup(&qq, "container") == container);
+
+	/* Creation with a parent and rejection of a missing parent. */
+	direct = quark_container_get(&qq, "direct", "other");
+	assert(direct != NULL && direct->pod == other);
+	assert(direct->linked_by_pod && RB_ROOT(&other->containers) == direct);
+	errno = 0;
+	assert(quark_container_get(&qq, "absent", "missing") == NULL);
+	assert(errno == ESRCH);
+	assert(quark_container_lookup(&qq, "absent") == NULL);
+
+	assert(quark_container_get(&qq, "orphan", NULL) != NULL);
+	quark_queue_close(&qq);
+	assert(RB_EMPTY(&qq.pod_by_uid));
+	assert(RB_EMPTY(&qq.container_by_id));
+
+	return (0);
+}
+
 /*
  * Try to order by increasing order of complexity
  * Use T() for tests that require no queue.
@@ -2896,6 +5015,7 @@ t_nova(const struct test *t, struct quark_queue_attr *qa)
 #define S(_x)		#_x
 struct test all_tests[] = {
 	T_EBPF(t_probe),
+	T_EBPF(t_ringbuf_max),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
 	T_KPROBE(t_kprobe_clockid),
@@ -2909,17 +5029,27 @@ struct test all_tests[] = {
 	T_EBPF(t_exit_tgid),
 	T_KPROBE(t_exit_tgid),
 	T_EBPF(t_file),
+	T_EBPF(t_file_bad_unlink_rename),
+	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
+	T_EBPF(t_detached_mount_exec),
+	T_EBPF(t_chroot_escape_exec),
 	T_EBPF(t_shmget),
+	T_EBPF(t_mprotect),
 	T_EBPF(t_shm_open),
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
 	T_EBPF(t_cgroup_parse),
+	T(t_process_container_cache),
+	T(t_link_container_data),
+	T(t_kube_container_attach),
+	T(t_kube_pod_attach),
+	T(t_fork_pid_reuse_cgroup),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),
 	T_EBPF(t_cache_grace),
@@ -2930,6 +5060,14 @@ struct test all_tests[] = {
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
 	T(t_backend_flags),
+	T(t_pod_get),
+	T(t_pod_create),
+	T(t_pod_dump),
+	T(t_container_dump),
+	T(t_container_get),
+	T(t_container_create),
+	T(t_pod_remove),
+	T(t_container_remove),
 	T(t_hanson),
 	T(t_hanson_escape),
 	T_EBPF(t_rule_path),
@@ -2941,7 +5079,13 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
+	T(t_rule_scope),
+	T_KPROBE(t_rule_container_kprobe),
+	T(t_rule_pod_name),
+	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),
+	T_EBPF(t_trusted_map_rdonly),
+	T_EBPF(t_map_freeze),
 	T_NOVA(t_nova),		/* XXX temporary XXX */
 	{ NULL,	NULL, 0, 0 }
 };

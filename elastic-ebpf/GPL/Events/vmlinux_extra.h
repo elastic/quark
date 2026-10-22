@@ -237,4 +237,43 @@ struct inode___6_11 {
 	void			*i_private; /* fs or device private pointer */
 };
 
+/*
+ * RHEL 8 (4.18) backported the 5.7 widening of self_exec_id to u64 under
+ * kABI: the live field moved into the task_struct_rh extension, reached
+ * through task_struct.task_struct_rh, while task_struct keeps a dead
+ * rh_reserved_self_exec_id. Partial definitions, CO-RE matches by name.
+ */
+struct task_struct_rh___el8 {
+	u64			parent_exec_id;
+	u64			self_exec_id;
+};
+
+struct task_struct___el8 {
+	struct task_struct_rh___el8	*task_struct_rh;
+};
+
+/*
+ * The context a tracepoint/syscalls/sys_{enter,exit}_* program receives is
+ * not the ftrace record described by the tracepoint format file, it is the
+ * function-local struct syscall_tp_t that perf_call_bpf_{enter,exit}() in
+ * kernel/trace/trace_syscalls.c build on the stack. The two agree on where
+ * args and ret live on most kernels, but not on RHEL 9.3 (5.14.0-362): there
+ * struct trace_entry grew a preempt_lazy_count byte and syscall_tp_t carried
+ * syscall_nr as an unsigned long, which pushed args and ret to offset 24
+ * while the format file, and struct syscall_trace_{enter,exit} in BTF, still
+ * say 16. Upstream reconciled the two in ba8ea72388a1 ("bpf: Change
+ * syscall_nr type to int in struct syscall_tp_t"), RHEL 9.4 carries it.
+ *
+ * pahole emits both local variants under the same name; a member access
+ * only matches the variant that owns the member. Partial definitions, CO-RE
+ * matches by name.
+ */
+struct syscall_tp_t___enter {
+	unsigned long		args[6];
+};
+
+struct syscall_tp_t___exit {
+	long			ret;
+};
+
 #endif	/* _VMLINUX_EXTRA_H_ */

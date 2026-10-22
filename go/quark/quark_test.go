@@ -5,8 +5,13 @@ package quark
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,6 +54,31 @@ func TestQuark(t *testing.T) {
 		defer queue.Close()
 
 		_, _ = queue.GetEvent()
+	})
+
+	t.Run("DoubleClose", func(t *testing.T) {
+		// Close must be idempotent and not crash if a queue has
+		// previously been closed. Exercise both the plain queue
+		// and one carrying a ruleset, so the ruleset free path
+		// is covered as well.
+		for name, attr := range map[string]QueueAttr{
+			"plain": DefaultQueueAttr(),
+			"ruleset": func() QueueAttr {
+				attr := DefaultQueueAttr()
+				attr.RuleText = "pass on any"
+				return attr
+			}(),
+		} {
+			t.Run(name, func(t *testing.T) {
+				queue, err := OpenQueue(attr)
+				require.NoError(t, err)
+
+				queue.Close()
+				require.NotPanics(t, queue.Close)
+				require.Nil(t, queue.quarkQueue)
+				require.Nil(t, queue.ruleset)
+			})
+		}
 	})
 
 	t.Run("StatsEbpf", func(t *testing.T) {
@@ -146,6 +176,151 @@ func TestQuark(t *testing.T) {
 		require.True(t, foundChild)
 	})
 
+	t.Run("SocketLookup", func(t *testing.T) {
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+		attr.Flags |= QQ_SOCK_CONN
+
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		// Establish a TCP connection to ourselves so that both
+		// endpoints belong to this process.
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer listener.Close()
+
+		accepted := make(chan net.Conn, 1)
+		go func() {
+			conn, err := listener.Accept()
+			if err == nil {
+				accepted <- conn
+			}
+		}()
+
+		conn, err := net.Dial("tcp4", listener.Addr().String())
+		require.NoError(t, err)
+		defer conn.Close()
+		defer func() {
+			if conn := <-accepted; conn != nil {
+				conn.Close()
+			}
+		}()
+
+		local := conn.LocalAddr().(*net.TCPAddr).AddrPort()
+		remote := conn.RemoteAddr().(*net.TCPAddr).AddrPort()
+
+		// Drive the queue until the established socket shows up.
+		var socket Socket
+		found := drainUntil(queue, 5*time.Second, func() bool {
+			var ok bool
+			socket, ok = queue.SocketLookup(local, remote)
+			return ok
+		})
+		require.True(t, found)
+		require.Equal(t, uint32(os.Getpid()), socket.PidOrigin)
+		require.NotZero(t, socket.EstablishedTime)
+		require.Zero(t, socket.CloseTime)
+
+		// IPv4-mapped IPv6 form finds the same socket.
+		mappedLocal := netip.AddrPortFrom(
+			netip.AddrFrom16(local.Addr().As16()), local.Port())
+		_, ok := queue.SocketLookup(mappedLocal, remote)
+		require.True(t, ok)
+
+		// The snapshot contains it too.
+		foundInSnapshot := false
+		for _, s := range queue.SocketSnapshot() {
+			if s.Local == socket.Local && s.Remote == socket.Remote {
+				foundInSnapshot = true
+				break
+			}
+		}
+		require.True(t, foundInSnapshot)
+
+		// After close, the socket must remain visible with a
+		// non-zero CloseTime until CacheGraceTime expires.
+		conn.Close()
+		found = drainUntil(queue, 5*time.Second, func() bool {
+			socket, ok = queue.SocketLookup(local, remote)
+			return ok && socket.CloseTime != 0
+		})
+		require.True(t, found)
+		require.Equal(t, uint32(os.Getpid()), socket.PidOrigin)
+	})
+
+	t.Run("SocketLookupDualStack", func(t *testing.T) {
+		// IPv4 traffic on a dual-stack AF_INET6 listener is cached
+		// by quark in IPv4-mapped form. SocketLookup must still
+		// find it when queried with plain IPv4 endpoints, which is
+		// what a packet capture sees on the wire.
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+		attr.Flags |= QQ_SOCK_CONN
+
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		listener, err := net.Listen("tcp", ":0")
+		require.NoError(t, err)
+		defer listener.Close()
+
+		listenAddr := listener.Addr().(*net.TCPAddr)
+		if listenAddr.IP.To4() != nil {
+			t.Skip("no dual-stack listener: IPv6 unavailable")
+		}
+
+		accepted := make(chan net.Conn, 1)
+		go func() {
+			conn, err := listener.Accept()
+			if err == nil {
+				accepted <- conn
+			}
+		}()
+
+		conn, err := net.Dial("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenAddr.Port)))
+		require.NoError(t, err)
+		defer conn.Close()
+		defer func() {
+			if conn := <-accepted; conn != nil {
+				conn.Close()
+			}
+		}()
+
+		// Server side of the connection, in plain IPv4 form.
+		local := netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(listenAddr.Port))
+		remote := conn.LocalAddr().(*net.TCPAddr).AddrPort()
+		require.True(t, remote.Addr().Is4())
+
+		var socket Socket
+		found := drainUntil(queue, 5*time.Second, func() bool {
+			var ok bool
+			socket, ok = queue.SocketLookup(local, remote)
+			return ok
+		})
+		require.True(t, found)
+		require.Equal(t, uint32(os.Getpid()), socket.PidOrigin)
+		// The socket is reported as quark stores it: IPv4-mapped.
+		require.True(t, socket.Local.Addr().Is4In6())
+		require.Equal(t, local, netip.AddrPortFrom(socket.Local.Addr().Unmap(), socket.Local.Port()))
+
+		// The IPv4-mapped form finds it as well.
+		mappedLocal := netip.AddrPortFrom(netip.AddrFrom16(local.Addr().As16()), local.Port())
+		mappedRemote := netip.AddrPortFrom(netip.AddrFrom16(remote.Addr().As16()), remote.Port())
+		_, ok := queue.SocketLookup(mappedLocal, mappedRemote)
+		require.True(t, ok)
+
+		// The client side is a plain AF_INET socket and is found
+		// through the AF_INET key.
+		clientSocket, ok := queue.SocketLookup(remote, local)
+		require.True(t, ok)
+		require.True(t, clientSocket.Local.Addr().Is4())
+	})
+
 	t.Run("PasswdGroupLookup", func(t *testing.T) {
 		queue, err := OpenQueue(DefaultQueueAttr())
 		require.NoError(t, err)
@@ -209,6 +384,23 @@ func testStats(t *testing.T, attr QueueAttr) {
 	require.NotEmpty(t, qevs)
 }
 
+// drainUntil drives the queue until cond is satisfied or the timeout
+// expires, returning the final value of cond.
+func drainUntil(qq *Queue, d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
+
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		if _, ok := qq.GetEvent(); !ok {
+			qq.Block()
+		}
+	}
+
+	return cond()
+}
+
 func drainFor(qq *Queue, d time.Duration) ([]Event, error) {
 	var allQevs []Event
 
@@ -232,10 +424,85 @@ func drainFor(qq *Queue, d time.Duration) ([]Event, error) {
 	return allQevs, nil
 }
 
-func TestBoottime(t *testing.T) {
-	require.NoError(t, UpdateBoottime())
+// procStatBtime returns the btime field of /proc/stat: the boottime
+// epoch in seconds, truncated.
+func procStatBtime(t *testing.T) uint64 {
+	data, err := os.ReadFile("/proc/stat")
+	require.NoError(t, err)
+	for _, line := range strings.Split(string(data), "\n") {
+		if btime, ok := strings.CutPrefix(line, "btime "); ok {
+			v, err := strconv.ParseUint(strings.TrimSpace(btime), 10, 64)
+			require.NoError(t, err)
+			return v
+		}
+	}
+	t.Fatal("no btime in /proc/stat")
+	return 0
+}
 
+func TestBoottime(t *testing.T) {
 	boottime := Boottime()
 	require.NotZero(t, boottime)
-	require.Equal(t, boottime+12345, TimeToWallclock(12345))
+
+	t.Run("Resolution", func(t *testing.T) {
+		// Same quantity the kernel truncates to seconds (btime in /proc/stat).
+		// We must match the seconds exactly and additionally provide a non-zero
+		// sub-second part.
+		require.Equal(t, procStatBtime(t), boottime/uint64(time.Second))
+		require.NotZero(t, boottime%uint64(time.Second),
+			"epoch has no sub-second part")
+	})
+
+	t.Run("Stable", func(t *testing.T) {
+		// Consecutive boottimes should be bit-identical without jitter.
+		// Due to the internal hysteresis, sampling noise is never adopted.
+		// Sleep past the resample interval so at least one fresh sample is taken.
+		time.Sleep(15 * time.Millisecond)
+		for i := 0; i < 1000; i++ {
+			require.Equal(t, boottime, Boottime())
+		}
+	})
+
+	t.Run("StableInterspersed", func(t *testing.T) {
+		// Every iteration sleeps past the resample interval so each call takes
+		// a fresh sample. Hysteresis must reject all of them: the value stays
+		// bit-identical to the one read at the start of the test.
+		for i := 0; i < 20; i++ {
+			time.Sleep(15 * time.Millisecond)
+			require.Equal(t, boottime, Boottime())
+		}
+	})
+
+	t.Run("Concurrent", func(t *testing.T) {
+		const workers = 8
+		var wg sync.WaitGroup
+		seen := make([]map[uint64]struct{}, workers)
+		for w := 0; w < workers; w++ {
+			// Spawn eight goroutines that call Boottime for 50 ms and record
+			// every distinct value they see. Exactly one value must appear
+			// across all of them, and it must be the one read at the start of
+			// the test.
+			seen[w] = make(map[uint64]struct{})
+			wg.Add(1)
+			go func(m map[uint64]struct{}) {
+				defer wg.Done()
+				// Ensure at least one value is produced regardless of scheduling
+				m[Boottime()] = struct{}{}
+				deadline := time.Now().Add(50 * time.Millisecond)
+				for time.Now().Before(deadline) {
+					m[Boottime()] = struct{}{}
+				}
+			}(seen[w])
+		}
+		wg.Wait()
+
+		seenAny := false
+		for _, m := range seen {
+			for v := range m {
+				seenAny = true
+				require.Equal(t, boottime, v)
+			}
+		}
+		require.True(t, seenAny, "no boottime value returned from any worker")
+	})
 }

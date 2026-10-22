@@ -288,10 +288,16 @@ struct kprobe_queue {
 	u8				*wrapped_event_buf;
 	/*
 	 * Added to sample times to translate them from CLOCK_MONOTONIC
-	 * to CLOCK_BOOTTIME, see kprobe_queue_open().
+	 * to CLOCK_BOOTTIME, see kprobe_queue_open(). Refreshed at most
+	 * every BOOT_OFFSET_RESAMPLE_NS, boot_offset_sampled is the
+	 * CLOCK_MONOTONIC_COARSE time of the last refresh.
 	 */
 	u64				 boot_offset;
+	u64				 boot_offset_sampled;
 };
+
+#define BOOT_OFFSET_RESAMPLE_NS		MS_TO_NS(10)
+#define BOOT_OFFSET_HYSTERESIS_NS	MS_TO_NS(10)
 
 static int	kprobe_queue_populate(struct quark_queue *);
 static int	kprobe_queue_update_stats(struct quark_queue *);
@@ -570,34 +576,6 @@ perf_sample_to_raw(struct quark_queue *qq, struct perf_record_sample *sample)
 	return (raw);
 }
 
-/*
- * The distance between CLOCK_BOOTTIME and CLOCK_MONOTONIC: total
- * time spent suspended. The two clocks tick and slew at the same
- * rate, so adding it to a monotonic time yields a boottime time.
- */
-static u64
-boot_offset(void)
-{
-	struct timespec	bt, mt;
-	u64		best = UINT64_MAX;
-	for (int i = 0; i < 3; i++) {
-		/*
-		 * Read monotonic first, so a sample can not go negative on
-		 * hosts that never suspended. Taking a few samples and
-		 * keeping the smallest discards any sample inflated by a
-		 * preemption between the two reads.
-		 */
-		if (clock_gettime(CLOCK_MONOTONIC, &mt) == -1 ||
-		    clock_gettime(CLOCK_BOOTTIME, &bt) == -1)
-			return (0);
-		u64 off = TS_TO_NS(bt) - TS_TO_NS(mt);
-		if (off < best)
-			best = off;
-	}
-
-	return (best);
-}
-
 static struct raw_event *
 perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 {
@@ -717,10 +695,13 @@ perf_mmap_read(struct perf_mmap *mm, u8 *wrapped_event_buf)
 	if (diff < (int)sizeof(*evh))
 		return (NULL);
 	/*
-	 * Snapshot the size, the ring is a shared mapping and the checks below
-	 * are useless against a value that changes under our feet.
+	 * The header can't change under us: on a writable mapping the kernel
+	 * only writes beyond data_head and never into [data_tail, data_head)
+	 * (see __perf_output_begin()), and we don't publish a new data_tail
+	 * until perf_mmap_consume(). Same reason we can return a pointer into
+	 * the ring below.
 	 */
-	evsize = __atomic_load_n(&evh->size, __ATOMIC_RELAXED);
+	evsize = evh->size;
 	/*
 	 * A record smaller than its header is corruption, consuming it would
 	 * spin on the same offset forever, warn once and stall the ring
@@ -1439,6 +1420,43 @@ perf_open_kprobe(struct kprobe_queue *kqq, struct kprobe *k,
 	return (ks);
 }
 
+/*
+ * Reject rules that can't match on kprobe. New processes have no cgroup,
+ * so a container rule would only match processes seen at start-up.
+ */
+static int
+kprobe_check_ruleset(struct quark_queue *qq)
+{
+	struct quark_rule	*qr;
+	size_t			 i, j;
+
+	if (qq->ruleset == NULL)
+		return (0);
+	for (i = 0; i < qq->ruleset->n_rules; i++) {
+		qr = qq->ruleset->rules + i;
+		for (j = 0; j < qr->n_fields; j++) {
+			switch (qr->fields[j].code) {
+			case QUARK_RF_EVENT_SCOPE:
+				errno = ENOTSUP;
+				qwarn("event.scope is not supported in kprobe backend");
+				return (-1);
+			case QUARK_RF_POD_NAME:
+				errno = ENOTSUP;
+				qwarn("pod.name is not supported in kprobe backend");
+				return (-1);
+			case QUARK_RF_CONTAINER_IMAGE:
+				errno = ENOTSUP;
+				qwarn("container.image is not supported in kprobe backend");
+				return (-1);
+			default:
+				break;
+			}
+		}
+	}
+
+	return (0);
+}
+
 int
 kprobe_queue_open(struct quark_queue *qq)
 {
@@ -1453,6 +1471,8 @@ kprobe_queue_open(struct quark_queue *qq)
 
 	if ((qq->flags & QQ_KPROBE) == 0)
 		return (errno = ENOTSUP, -1);
+	if (kprobe_check_ruleset(qq) == -1)
+		return (-1);
 	qid = __atomic_fetch_add(&qids, 1, __ATOMIC_RELAXED);
 	if (kprobe_install_all(qid) == -1)
 		goto fail;
@@ -1502,7 +1522,7 @@ kprobe_queue_open(struct quark_queue *qq)
 	 * CLOCK_BOOTTIME in perf_event_to_raw() by adding boot_offset,
 	 * matching the other backends.
 	 */
-	kqq->boot_offset = boot_offset();
+	kqq->boot_offset = clock_diff(CLOCK_BOOTTIME, CLOCK_MONOTONIC);
 
 	i = 0;
 	while ((k = all_kprobes[i++]) != NULL) {
@@ -1557,7 +1577,8 @@ kprobe_queue_populate(struct quark_queue *qq)
 	struct perf_group_leader	*pgl;
 	struct perf_event		*ev;
 	struct raw_event		*raw;
-	u64				 off;
+	struct timespec			 ts;
+	u64				 off, now;
 
 	num_rings = kqq->num_perf_group_leaders;
 	npop = 0;
@@ -1566,14 +1587,27 @@ kprobe_queue_populate(struct quark_queue *qq)
 	 * Refresh the suspend time so records stamped after a resume
 	 * translate correctly. Records stamped before a suspend but read
 	 * after, are shifted late by that last suspend as we can't do better.
-	 * Only a suspend moves the offset and only forward as we ignore
-	 * anything below a 10ms threshold: it's call noise from the two
-	 * clock reads in boot_offset() and adopting it would jitter the
-	 * translation from batch to batch.
+	 * A sample within 10ms of the adopted offset is ignored as noise,
+	 * as adopting it would jitter the translation from batch to batch.
+	 * A sample further away is adopted in either direction: forward is a
+	 * suspend, backward means the adopted offset itself was an inflated
+	 * sample and moving back is what corrects it.
+	 * Reading CLOCK_BOOTTIME is a syscall on kernels before 5.3, so the
+	 * refresh is throttled. A CLOCK_MONOTONIC_COARSE read is cheap
+	 * everywhere (VDSO).
 	 */
-	off = boot_offset();
-	if (off > kqq->boot_offset + MS_TO_NS(10))
-		kqq->boot_offset = off;
+	if (clock_gettime(CLOCK_MONOTONIC_COARSE, &ts) == 0) {
+		now = TS_TO_NS(ts);
+		if (now - kqq->boot_offset_sampled >= BOOT_OFFSET_RESAMPLE_NS) {
+			kqq->boot_offset_sampled = now;
+			/* Zero is clock_diff() failing, never adopt it */
+			off = clock_diff(CLOCK_BOOTTIME, CLOCK_MONOTONIC);
+			if (off != 0 &&
+			    llabs((s64)(off - kqq->boot_offset)) >
+			    (s64)BOOT_OFFSET_HYSTERESIS_NS)
+				kqq->boot_offset = off;
+		}
+	}
 
 	/*
 	 * We stop if the queue is full, or if we see all perf ring buffers
