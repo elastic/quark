@@ -40,6 +40,8 @@ If
 ends in a slash it is a directory name instead, and opens of any file up to
 three levels below a directory of that name are reported.
 May be given multiple times.
+Failed opens with EACCES, EPERM or ENOENT of a matching name are also
+reported.
 .It Fl B
 Test bypass mode, where EBPF events are passed up directly without any
 processing.

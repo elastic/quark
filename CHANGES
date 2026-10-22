@@ -230,9 +230,11 @@ Changes from 0.10 to 0.11
     -a on quark-mon), quark_event{} gets a file_access member.
     The probe reports the open of any file whose name, or one of
     its three nearest directories, was registered through
-    quark_queue_file_access_name_add(3). Events are deduplicated in
-    the kernel per process life, file and access class, until the
-    names are reset. Experimental, only supported by the eBPF backend.
+    quark_queue_file_access_name_add(3), and failed opens with
+    EACCES, EPERM or ENOENT of a matching requested name. Events are
+    deduplicated in the kernel per process life, file and access
+    class, until the names are reset. Experimental, only supported by
+    the eBPF backend.
   o The rule DSL learned the event.scope container field. It matches
     events from a process in a Kubernetes container, so "pass on
     event.scope container" followed by "drop on any" keeps only container
