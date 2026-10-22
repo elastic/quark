@@ -38,3 +38,6 @@ zlib/Makefile
 zlib/zconf.h
 zlib/configure.log
 zlib/libz.a
+
+/bpf-call-stack-test
+/bpf-telemetry-test

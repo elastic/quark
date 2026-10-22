@@ -156,6 +156,7 @@ endif
 LIBQUARK_SRCS:=			\
 	base64.c		\
 	bpf_queue.c		\
+	bpf_telemetry.c		\
 	btfhub.c		\
 	compat.c		\
 	ecs.c			\
@@ -448,6 +449,20 @@ scan:
 test: quark-test
 	$(SUDO) ./quark-test
 
+bpf-call-stack-test: bpf-call-stack-test.c elastic-ebpf/GPL/Events/BpfCallStack.h
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $< -o $@
+
+test-bpf-call-stack: bpf-call-stack-test
+	./bpf-call-stack-test
+
+bpf-telemetry-test: bpf-telemetry-test.c bpf_telemetry.c bpf_telemetry.h $(LIBQUARK_TARGET)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS) -o $@
+
+test-bpf-telemetry: bpf-telemetry-test
+	./bpf-telemetry-test
+
 test-go: quark-go-test
 	$(SUDO) ./quark-go-test -test.v
 
@@ -638,6 +653,8 @@ clean:
 		*.a			\
 		parse.tab.c		\
 		hanson-bench		\
+		bpf-call-stack-test	\
+		bpf-telemetry-test	\
 		man-embedder		\
 		manpages.h		\
 		quark-mon		\
@@ -687,6 +704,8 @@ clean-docs:
 	eebpf-sync		\
 	scan			\
 	test			\
+	test-bpf-call-stack	\
+	test-bpf-telemetry	\
 	test-go			\
 	test-kernel		\
 	test-valgrind
@@ -704,6 +723,8 @@ clean-docs:
 	initramfs.gz		\
 	scan			\
 	test			\
+	test-bpf-call-stack	\
+	test-bpf-telemetry	\
 	test-go			\
 	test-kernel		\
 	test-valgrind
