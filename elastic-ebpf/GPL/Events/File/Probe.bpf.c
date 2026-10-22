@@ -958,7 +958,8 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
         return;
     if (pathname == NULL)
         return;
-    if (ebpf_events_is_trusted_pid())
+    // The consumer is skipped as on the completed side
+    if (ebpf_events_is_trusted_pid() || is_consumer())
         return;
 
     preempt_disable();
@@ -1046,7 +1047,12 @@ static int do_filp_open__exit(int dfd, struct filename *pathname, const struct o
     // is then the fallback, and do_dentry_open() has already stripped
     // O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC from it, so such an open is classified
     // and reported without them.
-    if (file_access_enabled)
+    //
+    // The consumer's own opens are skipped like the tty probes do: the trusted
+    // pid map only holds what the consumer puts there, and a consumer that reads
+    // the files it watches (hashing, header sampling, /proc/<pid>/environ) would
+    // otherwise pay the anchor walk and report itself to itself.
+    if (file_access_enabled && !is_consumer())
         file_access__open(f, op != NULL ? (u32)BPF_CORE_READ(op, open_flag)
                                         : (u32)BPF_CORE_READ(f, f_flags));
 
@@ -1171,7 +1177,8 @@ static int do_filp_open__enter(int dfd, struct filename *pathname, const struct 
 {
     struct ebpf_events_state state = {};
 
-    if (ebpf_events_is_trusted_pid())
+    // Same exclusions as the exit side, which is the only reader of this state
+    if (ebpf_events_is_trusted_pid() || is_consumer())
         return 0;
     state.filp_open.dfd      = dfd;
     state.filp_open.pathname = pathname;
