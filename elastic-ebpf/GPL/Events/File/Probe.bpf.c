@@ -892,7 +892,8 @@ static __attribute__((noinline)) void file_access__open_failed(int dfd, struct f
         return;
     if (pathname == NULL)
         return;
-    if (ebpf_events_is_trusted_pid())
+    // The consumer is skipped as on the completed side
+    if (ebpf_events_is_trusted_pid() || is_consumer())
         return;
 
     preempt_disable();

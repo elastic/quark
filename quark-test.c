@@ -1682,13 +1682,15 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "mkdir");
 
 	/*
-	 * An anchored create by the consumer itself, before the child's
-	 * first one: it must not be reported, which the child checks by
-	 * taking the first file access event of any pid.
+	 * An anchored create and an anchored failed open by the consumer
+	 * itself, before the child's first one: neither must be reported,
+	 * which the child checks by taking the first file access event of
+	 * any pid.
 	 */
 	if ((fd = open(consumer_file, O_WRONLY|O_CREAT, 0600)) == -1)
 		err(1, "open");
 	close(fd);
+	assert(open(missing, O_RDONLY) == -1 && errno == ENOENT);
 
 	if (file_access_in_child(&qq))
 		return (0);
