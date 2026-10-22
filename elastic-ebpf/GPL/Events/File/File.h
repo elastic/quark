@@ -48,6 +48,9 @@
 #define ENOENT 2
 #define EACCES 13
 
+// include/uapi/linux/magic.h
+#define PROC_SUPER_MAGIC 0x9fa0
+
 // include/uapi/linux/fcntl.h
 #define AT_FDCWD -100
 

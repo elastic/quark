@@ -233,8 +233,10 @@ Changes from 0.10 to 0.11
     quark_queue_file_access_name_add(3), and failed opens with
     EACCES, EPERM or ENOENT of a matching requested name. Events are
     deduplicated in the kernel per process life, file and access
-    class, until the names are reset. Experimental, only supported by
-    the eBPF backend.
+    class, until the names are reset. Opens of a task's /proc/<pid>/
+    entries name the target task, a name registered with
+    QUARK_FILE_ACCESS_NAME_OTHER_TASK reports them for other tasks
+    only. Experimental, only supported by the eBPF backend.
   o The rule DSL learned the event.scope container field. It matches
     events from a process in a Kubernetes container, so "pass on
     event.scope container" followed by "drop on any" keeps only container
