@@ -223,6 +223,9 @@ file itself.
 Each event is reported once per process, file and access class (read, write,
 exec, path-only), a repeat within the same process is suppressed in the kernel.
 A new process, including a forked child, is reported again.
+Opens by the process that owns the queue are never reported.
+On overlayfs, a file that takes over the inode number of an unlinked file
+opened earlier by the same process may be taken for it and not reported.
 .Pp
 .Ft int
 .Fn quark_queue_file_access_name_reset "struct quark_queue *qq"
