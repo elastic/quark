@@ -6,8 +6,6 @@
 package quark
 
 /*
-#cgo CFLAGS: -DWITH_SYNTHETIC
-
 #include <stdlib.h>
 #include "quark.h"
 */
