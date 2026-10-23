@@ -12,11 +12,14 @@
 #include "quark-test.h"
 
 static const char *symbol_fixture;
-static unsigned int selector_cases;
+static unsigned int selector_cases, trampoline_cases;
 static FILE *test_fopen(const char *, const char *);
 
 /* Include the implementation to test both architecture selectors. */
 #define bpf_telemetry_select_boundaries test_bpf_telemetry_select_boundaries
+/* The function-like macro leaves the structure tag unchanged. */
+#define bpf_telemetry_trampoline_layout(...) \
+	test_bpf_telemetry_trampoline_layout(__VA_ARGS__)
 #define fopen test_fopen
 #include "bpf_telemetry.c"
 #undef fopen
@@ -216,13 +219,177 @@ test_selector(void)
 #undef CHECK
 }
 
+static void
+test_trampoline_wrappers(void)
+{
+	static const struct bpf_telemetry_boundary boundaries[] = {
+		{ "__x64_sys_bpf", BPF_TELEMETRY_ABI_X86_NATIVE },
+		{ "__ia32_sys_bpf", BPF_TELEMETRY_ABI_X86_COMPAT },
+		{ "__arm64_sys_bpf", BPF_TELEMETRY_ABI_ARM64_WRAPPER },
+		{ "sys_bpf", BPF_TELEMETRY_ABI_DIRECT },
+		{ "__se_sys_bpf", BPF_TELEMETRY_ABI_DIRECT }
+	};
+	struct bpf_telemetry_trampoline_layout layout;
+	struct bpf_telemetry_boundary wrong = boundaries[0];
+	struct btf *btf;
+	size_t i;
+
+	btf = btf_fixture(false, 0, FIXTURE_VALID);
+	for (i = 0; i < sizeof(boundaries) / sizeof(boundaries[0]); i++) {
+		assert(bpf_telemetry_trampoline_layout(btf, &boundaries[i], &layout) == 0);
+		assert(layout.kind == (i < 3 ? BPF_TELEMETRY_TRAMPOLINE_WRAPPER :
+		    BPF_TELEMETRY_TRAMPOLINE_DIRECT3));
+		assert(layout.result_slot == (i < 3 ? 1 : 3));
+		trampoline_cases++;
+	}
+	wrong.abi = BPF_TELEMETRY_ABI_X86_COMPAT;
+	assert(bpf_telemetry_trampoline_layout(btf, &wrong, &layout) == -1 &&
+	    errno == EOPNOTSUPP && layout.kind == BPF_TELEMETRY_TRAMPOLINE_NONE);
+	wrong = boundaries[3];
+	wrong.symbol = "__sys_bpf.isra.0";
+	assert(bpf_telemetry_trampoline_layout(btf, &wrong, &layout) == -1 &&
+	    errno == EOPNOTSUPP);
+	assert(bpf_telemetry_trampoline_layout(NULL, &wrong, &layout) == -1 &&
+	    errno == EINVAL);
+	assert(bpf_telemetry_trampoline_layout(btf, NULL, &layout) == -1 &&
+	    errno == EINVAL);
+	assert(bpf_telemetry_trampoline_layout(btf, &wrong, NULL) == -1 &&
+	    errno == EINVAL);
+	btf__free(btf);
+	btf = btf_fixture(false, 0, FIXTURE_BAD_WRAPPER);
+	assert(bpf_telemetry_trampoline_layout(btf, &boundaries[0], &layout) == -1 &&
+	    errno == EOPNOTSUPP && layout.kind == BPF_TELEMETRY_TRAMPOLINE_NONE);
+	btf__free(btf);
+	trampoline_cases++;
+}
+
+enum trampoline_defect {
+	TRAMPOLINE_VALID,
+	TRAMPOLINE_POINTER32,
+	TRAMPOLINE_UNSIGNED_RESULT,
+	TRAMPOLINE_LONG_RESULT,
+	TRAMPOLINE_UNSIGNED_COMMAND,
+	TRAMPOLINE_ENUM_COMMAND,
+	TRAMPOLINE_LONG_SIZE,
+	TRAMPOLINE_SIGNED_SIZE,
+	TRAMPOLINE_SMALL_BPF_PTR,
+	TRAMPOLINE_UNION_OFFSET,
+	TRAMPOLINE_UNION_SIZE,
+	TRAMPOLINE_UNION_SCALAR,
+	TRAMPOLINE_FLAG_OFFSET,
+	TRAMPOLINE_FLAG_SCALAR,
+	TRAMPOLINE_FLAG_NOT_BITFIELD,
+	TRAMPOLINE_COMMON_POINTER,
+	TRAMPOLINE_COMMON_SIZE
+};
+
+static struct btf *
+trampoline_fixture(unsigned int count, bool byvalue, enum trampoline_defect defect)
+{
+	struct btf *btf = btf__new_empty();
+	int int32, uint32, long64, boolean, pointer, pointer_union, bpfptr, args[5];
+
+	assert(btf != NULL);
+	assert(btf__set_pointer_size(btf, defect == TRAMPOLINE_POINTER32 ? 4 : 8) == 0);
+	assert((int32 = btf__add_int(btf, "int", 4, BTF_INT_SIGNED)) > 0);
+	assert((uint32 = btf__add_int(btf, "unsigned int", 4, 0)) > 0);
+	assert((long64 = btf__add_int(btf, "long int", 8, BTF_INT_SIGNED)) > 0);
+	assert((boolean = btf__add_int(btf, "_Bool", 1, BTF_INT_BOOL)) > 0);
+	assert((pointer = btf__add_ptr(btf, 0)) > 0);
+	assert((pointer_union = btf__add_union(btf, "", defect ==
+	    TRAMPOLINE_UNION_SIZE ? 16 : 8)) > 0);
+	assert(btf__add_field(btf, "kernel", pointer, 0, 0) == 0);
+	assert(btf__add_field(btf, "user", defect == TRAMPOLINE_UNION_SCALAR ?
+	    long64 : pointer, 0, 0) == 0);
+	assert((bpfptr = btf__add_struct(btf, "", defect ==
+	    TRAMPOLINE_SMALL_BPF_PTR ? 8 : 16)) > 0);
+	assert(btf__add_field(btf, "", pointer_union,
+	    defect == TRAMPOLINE_UNION_OFFSET ? 8 : 0, 0) == 0);
+	assert(btf__add_field(btf, "is_kernel", defect == TRAMPOLINE_FLAG_SCALAR ?
+	    uint32 : boolean, defect == TRAMPOLINE_FLAG_OFFSET ? 65 : 64,
+	    defect == TRAMPOLINE_FLAG_NOT_BITFIELD ? 0 : 1) == 0);
+	assert((bpfptr = btf__add_typedef(btf, "sockptr_t", bpfptr)) > 0);
+	assert((bpfptr = btf__add_typedef(btf, "bpfptr_t", bpfptr)) > 0);
+	args[0] = defect == TRAMPOLINE_UNSIGNED_COMMAND ? uint32 : int32;
+	if (defect == TRAMPOLINE_ENUM_COMMAND) {
+		assert((args[0] = btf__add_enum(btf, "bpf_cmd", 4)) > 0);
+		assert(btf__add_enum_value(btf, "BPF_PROG_LOAD", 5) == 0);
+	}
+	args[1] = byvalue ? bpfptr : pointer;
+	args[2] = defect == TRAMPOLINE_LONG_SIZE ? long64 :
+	    defect == TRAMPOLINE_SIGNED_SIZE ? int32 : uint32;
+	args[3] = defect == TRAMPOLINE_COMMON_POINTER ? pointer : bpfptr;
+	args[4] = defect == TRAMPOLINE_COMMON_SIZE ? int32 : uint32;
+	add_function(btf, "__sys_bpf", defect == TRAMPOLINE_UNSIGNED_RESULT ? uint32 :
+	    defect == TRAMPOLINE_LONG_RESULT ? long64 : int32, args, count);
+	/* The ordinary selector intentionally permits unknown argument layouts. */
+	args[0] = int32;
+	args[1] = pointer;
+	args[2] = uint32;
+	add_function(btf, "security_bpf", int32, args, 3);
+	add_function(btf, "security_bpf_prog", int32, &pointer, 1);
+	return (btf);
+}
+
+static void
+test_trampoline_direct(void)
+{
+	const struct bpf_telemetry_boundary boundary = {
+		"__sys_bpf", BPF_TELEMETRY_ABI_DIRECT
+	};
+	struct bpf_telemetry_trampoline_layout layout;
+	struct bpf_telemetry_boundary selected[2];
+	enum trampoline_defect defect;
+	struct btf *btf;
+	size_t count;
+	unsigned int argc;
+
+	btf = trampoline_fixture(3, false, TRAMPOLINE_VALID);
+	assert(bpf_telemetry_trampoline_layout(btf, &boundary, &layout) == 0 &&
+	    layout.kind == BPF_TELEMETRY_TRAMPOLINE_DIRECT3 && layout.result_slot == 3);
+	btf__free(btf);
+	trampoline_cases++;
+	for (argc = 3; argc <= 5; argc += 2) {
+		for (defect = TRAMPOLINE_VALID; defect <= TRAMPOLINE_COMMON_SIZE; defect++) {
+			btf = trampoline_fixture(argc, true, defect);
+			if (defect == TRAMPOLINE_VALID || defect == TRAMPOLINE_ENUM_COMMAND ||
+			    (argc == 3 && defect >= TRAMPOLINE_COMMON_POINTER)) {
+				assert(bpf_telemetry_trampoline_layout(btf, &boundary, &layout) == 0);
+				assert(layout.kind == (argc == 3 ?
+				    BPF_TELEMETRY_TRAMPOLINE_DIRECT_BPF_PTR3 :
+				    BPF_TELEMETRY_TRAMPOLINE_DIRECT_BPF_PTR5));
+				assert(layout.result_slot == (argc == 3 ? 4 : 7));
+			} else {
+				assert(bpf_telemetry_trampoline_layout(btf, &boundary, &layout) == -1 &&
+				    errno == EOPNOTSUPP && layout.kind == BPF_TELEMETRY_TRAMPOLINE_NONE);
+				if (defect == TRAMPOLINE_SMALL_BPF_PTR) {
+					symbol_fixture = SYMBOL_MODERN;
+					assert(telemetry_select_boundaries_arch(btf, selected, 2, &count,
+					    TELEMETRY_ARCH_X86) == 0 && count == 1);
+				}
+			}
+			btf__free(btf);
+			trampoline_cases++;
+		}
+	}
+	btf = trampoline_fixture(4, true, TRAMPOLINE_VALID);
+	assert(bpf_telemetry_trampoline_layout(btf, &boundary, &layout) == -1 &&
+	    errno == EOPNOTSUPP && layout.kind == BPF_TELEMETRY_TRAMPOLINE_NONE);
+	btf__free(btf);
+	trampoline_cases++;
+}
+
 int
 t_bpf_telemetry(const struct test *t, struct quark_queue_attr *qa)
 {
-	selector_cases = 0;
+	selector_cases = trampoline_cases = 0;
 	test_selector();
-	qdebugx("bpf telemetry: %u selector tests passed", selector_cases);
+	test_trampoline_wrappers();
+	test_trampoline_direct();
+	qdebugx("bpf telemetry: %u selector and %u trampoline tests passed",
+	    selector_cases, trampoline_cases);
 	return (0);
 }
 
+#undef bpf_telemetry_trampoline_layout
 #undef bpf_telemetry_select_boundaries
