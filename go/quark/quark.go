@@ -365,14 +365,18 @@ type QueueAttr struct {
 
 // Documented in https://elastic.github.io/quark/quark_queue_get_stats.3.html.
 type Stats struct {
-	Insertions         uint64
-	Removals           uint64
-	Aggregations       uint64
-	NonAggregations    uint64
-	Lost               uint64
-	GarbageCollections uint64
-	Stalls             uint64
-	Backend            int
+	Insertions            uint64
+	Removals              uint64
+	Aggregations          uint64
+	NonAggregations       uint64
+	Lost                  uint64
+	GarbageCollections    uint64
+	BPFStateLost          uint64
+	BPFMetadataLost       uint64
+	BPFRetprobeMissed     uint64
+	Stalls                uint64
+	BPFRetprobeStatsValid bool // Whether the last return-probe miss refresh succeeded.
+	Backend               int
 }
 
 const (
@@ -712,7 +716,11 @@ func (queue *Queue) Stats() Stats {
 	stats.NonAggregations = uint64(cStats.non_aggregations)
 	stats.Lost = uint64(cStats.lost)
 	stats.GarbageCollections = uint64(cStats.garbage_collections)
+	stats.BPFStateLost = uint64(cStats.bpf_state_lost)
+	stats.BPFMetadataLost = uint64(cStats.bpf_metadata_lost)
+	stats.BPFRetprobeMissed = uint64(cStats.bpf_retprobe_missed)
 	stats.Stalls = uint64(cStats.stalls)
+	stats.BPFRetprobeStatsValid = cStats.bpf_retprobe_stats_valid != 0
 	stats.Backend = int(cStats.backend)
 
 	return stats

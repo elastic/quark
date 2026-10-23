@@ -47,6 +47,7 @@ enum ebpf_event_type {
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
     EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
     EBPF_EVENT_PROCESS_MPROTECT             = (1 << 22),
+    EBPF_EVENT_PROCESS_BPF                  = (1 << 23),
 };
 
 struct ebpf_event_header {
@@ -398,6 +399,31 @@ struct ebpf_process_mprotect_event {
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 
+#define EBPF_BPF_NAME_LEN 16 // BPF_OBJ_NAME_LEN
+
+enum ebpf_bpf_kind {
+    EBPF_BPF_KIND_PROG = 2,
+};
+
+#define EBPF_BPF_VALID_ATTR   (1U << 0)
+#define EBPF_BPF_VALID_OBJECT (1U << 1)
+
+// One operation result, with independently valid copied attrs and identity.
+struct ebpf_process_bpf_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    int64_t ret;
+    uint32_t cmd;
+    uint32_t valid;
+    uint32_t kind;
+    uint32_t id;
+    uint32_t type;
+    uint32_t attach_type;
+    uint32_t flags;
+    uint32_t insn_cnt; // requested length, before verifier rewriting
+    char name[EBPF_BPF_NAME_LEN]; // copied request name
+} __attribute__((packed));
+
 enum ebpf_net_info_transport {
     EBPF_NETWORK_EVENT_TRANSPORT_TCP = 1,
     EBPF_NETWORK_EVENT_TRANSPORT_UDP = 2,
@@ -462,6 +488,8 @@ struct ebpf_dns_event {
 struct ebpf_event_stats {
     uint64_t lost;          // lost events due to a full ringbuffer
     uint64_t sent;          // events sent through the ringbuffer
+    uint64_t bpf_state_lost; // discarded/rejected invocation frames
+    uint64_t bpf_metadata_lost; // operations with failed attrs/identity capture
     uint64_t dns_zero_body; // indicates that the dns body of a sk_buff was unavailable
 } __attribute__((aligned(8)));
 

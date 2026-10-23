@@ -538,7 +538,9 @@ quark-btf: quark-btf.c manpages.h $(LIBQUARK_TARGET)
 
 QUARK_TEST_SRCS= quark-test.c bpf-call-stack-test.c
 QUARK_TEST_SRCS+= bpf-telemetry-test.c bpf-telemetry-retprobe-test.c
+QUARK_TEST_SRCS+= bpf-queue-test.c
 QUARK_TEST_DEPS= quark-test.h elastic-ebpf/GPL/Events/BpfCallStack.h
+QUARK_TEST_DEPS+= bpf_queue.c bpf_probes_skel.h
 
 quark-test: $(QUARK_TEST_SRCS) $(QUARK_TEST_DEPS) manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
