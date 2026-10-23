@@ -133,6 +133,21 @@ A failed operation has no valid object identity, including failure to install
 the fd after verification.
 A successful event without valid identity indicates capture loss; consult
 .Xr quark_queue_get_stats 3 .
+.Pp
+The internal operation boundary covers native and compat syscalls and calls
+from the in-kernel
+.Fn bpf_sys_bpf
+helper where that boundary is available.
+Older kernels without the helper use native and compat syscall wrappers.
+Unsupported boundary/prototype combinations fail queue initialization.
+Each invocation has separate bounded state, including ignored commands, so
+nested loads are reported with their own results.
+Depth/resource limits and missing returns can lose events;
+loss counters do not establish complete observation of every call.
+Other commands, attachment paths and helper usage are not yet reported.
+The consumer's own calls are suppressed.
+Trust is sampled at each operation's entry and suppresses its event even if
+trust changes before return.
 .El
 .Pp
 It's important to note that
