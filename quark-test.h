@@ -8,5 +8,6 @@ struct test;
 struct quark_queue_attr;
 
 int t_bpf_call_stack(const struct test *, struct quark_queue_attr *);
+int t_bpf_telemetry(const struct test *, struct quark_queue_attr *);
 
 #endif
