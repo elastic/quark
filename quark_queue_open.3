@@ -130,12 +130,16 @@ program load attempts and results.
 The operation boundary, copied-attribute and referenced-program hooks are
 required: queue initialization fails if a required symbol, prototype or
 attachment is unavailable.
-The initial implementation requires readable kernel symbol names and BTF,
-and writable, already mounted tracefs with kprobe events and profiles.
-It uses named return probes with 4096 concurrent instances per boundary.
-Normal close and failed initialization remove the consumer's events;
-events left by a crash or SIGKILL stay disabled until a later queue
-initialization removes them.
+Readable kernel symbol names and BTF are required.
+The collector tries fentry/fexit first, validating the function's argument
+layout and attempting kernel load and attachment.
+Its compatibility fallback requires writable, already mounted tracefs with
+kprobe events and profiles, using named return probes with 4096 concurrent
+instances per boundary.
+For that fallback, normal close and failed initialization remove the consumer's
+events; events left by a crash or SIGKILL stay disabled until a later
+initialization that uses the fallback removes them.
+The trampoline adapter needs no named tracefs events or return-instance pool.
 This does not require enabling BPF LSM.
 See
 .Dv QUARK_EV_BPF
@@ -178,12 +182,30 @@ In the case of an error, the internal state is cleared up and a
 .Xr quark_queue_close 3
 should NOT be issued.
 .Sh ENVIRONMENT
-.Bl -tag -width Ds
+.Bl -tag -width QUARK_BPF_ADAPTER
 .It Ev QUARK_BPF_KPROBE
 The EBPF backend attaches to kernel functions with fentry, and uses kprobes
 if fentry fails.
 If set, the EBPF backend attaches with kprobes and does not try fentry.
 Use it to test the kprobe fallback on kernels where fentry works.
+.It Ev QUARK_BPF_ADAPTER
+Select the BPF telemetry adapter for diagnostics and testing:
+.Cm auto
+(the default),
+.Cm trampoline ,
+or
+.Cm kprobe .
+A forced adapter fails initialization when unavailable, without falling back
+to the other adapter.
+This setting applies only when
+.Dv QQ_BPF
+is enabled; it does not select adapters for other event classes.
+If
+.Ev QUARK_BPF_KPROBE
+is also set, selecting
+.Cm trampoline
+fails initialization with
+.Er EINVAL .
 .El
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
