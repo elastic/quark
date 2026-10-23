@@ -150,12 +150,76 @@ telemetry_common_prototype(const struct btf *btf)
 	    btf_params(prototype)[0].type), true));
 }
 
+/* Absence of the enum itself cannot establish absence of the helper. */
+static bool
+telemetry_legacy_helpers_absent(const struct btf *btf)
+{
+	const struct btf_type *type;
+	const char *name;
+	unsigned int i;
+	int id;
+
+	id = btf__find_by_name_kind(btf, "bpf_func_id", BTF_KIND_ENUM);
+	if (id < 0 || (type = btf__type_by_id(btf, (unsigned int)id)) == NULL ||
+	    btf_vlen(type) == 0)
+		return (false);
+	for (i = 0; i < btf_vlen(type); i++) {
+		name = btf__name_by_offset(btf, btf_enum(type)[i].name_off);
+		if (name == NULL || strcmp(name, "BPF_FUNC_sys_bpf") == 0)
+			return (false);
+	}
+	return (true);
+}
+
+static bool
+telemetry_wrapper_prototype(const struct btf *btf, const char *name)
+{
+	const struct btf_type *prototype, *pointer, *regs;
+	const char *type_name;
+
+	prototype = telemetry_prototype(btf, name);
+	if (prototype == NULL || btf_vlen(prototype) != 1 ||
+	    !telemetry_integer(telemetry_type(btf, prototype->type), 8, true))
+		return (false);
+	pointer = telemetry_type(btf, btf_params(prototype)[0].type);
+	if (!telemetry_pointer(pointer))
+		return (false);
+	regs = telemetry_type(btf, pointer->type);
+	if (regs == NULL || !btf_is_struct(regs))
+		return (false);
+	type_name = btf__name_by_offset(btf, regs->name_off);
+	return (type_name != NULL && strcmp(type_name, "pt_regs") == 0);
+}
+
+static bool
+telemetry_legacy_direct_prototype(const struct btf *btf, const char *name)
+{
+	const struct btf_type *prototype, *command, *attr, *size;
+	const struct btf_param *params;
+
+	prototype = telemetry_prototype(btf, name);
+	if (prototype == NULL || btf_vlen(prototype) != 3 ||
+	    !telemetry_integer(telemetry_type(btf, prototype->type), 8, true))
+		return (false);
+	params = btf_params(prototype);
+	command = telemetry_type(btf, params[0].type);
+	attr = telemetry_type(btf, params[1].type);
+	size = telemetry_type(btf, params[2].type);
+	/* sys_bpf's declared signature, or the generic __se_sys_bpf longs. */
+	return ((telemetry_command_type(command, true) && telemetry_pointer(attr) &&
+	    telemetry_integer(size, 4, false)) ||
+	    (telemetry_integer(command, 8, true) && telemetry_integer(attr, 8, true) &&
+	    telemetry_integer(size, 8, true)));
+}
+
 static int
 telemetry_select_boundaries_arch(struct btf *btf,
     struct bpf_telemetry_boundary *boundaries, size_t capacity, size_t *count,
     enum telemetry_arch arch)
 {
+	struct bpf_telemetry_boundary selected[2];
 	unsigned int found[TELEMETRY_SYMBOL_COUNT] = { 0 };
+	size_t selected_count = 0;
 
 	if (count == NULL) {
 		errno = EINVAL;
@@ -168,19 +232,71 @@ telemetry_select_boundaries_arch(struct btf *btf,
 	}
 	if (telemetry_read_symbols(found) == -1)
 		return (-1);
-	/* Legacy boundaries remain unsupported until their full ABI validates. */
 	if (found[TELEMETRY_SECURITY_BPF] != 1 ||
 	    found[TELEMETRY_SECURITY_PROG] != 1 ||
-	    found[TELEMETRY_SYS_BPF] != 1 ||
-	    !telemetry_security_prototypes(btf) || !telemetry_common_prototype(btf)) {
-		errno = EOPNOTSUPP;
+	    !telemetry_security_prototypes(btf))
+		goto unsupported;
+	if (found[TELEMETRY_SYS_BPF] != 0) {
+		if (found[TELEMETRY_SYS_BPF] != 1 || !telemetry_common_prototype(btf))
+			goto unsupported;
+		selected[selected_count++] = (struct bpf_telemetry_boundary) {
+			"__sys_bpf", BPF_TELEMETRY_ABI_DIRECT
+		};
+	} else {
+		/* Never silently fall back to syscall-only coverage on a new kernel. */
+		if (found[TELEMETRY_HELPER_BPF] != 0 || found[TELEMETRY_KERN_BPF] != 0 ||
+		    !telemetry_legacy_helpers_absent(btf))
+			goto unsupported;
+		if (arch == TELEMETRY_ARCH_X86) {
+			if (found[TELEMETRY_X64_BPF] != 1 ||
+			    !telemetry_wrapper_prototype(btf, "__x64_sys_bpf"))
+				goto unsupported;
+			selected[selected_count++] = (struct bpf_telemetry_boundary) {
+				"__x64_sys_bpf", BPF_TELEMETRY_ABI_X86_NATIVE
+			};
+			if (found[TELEMETRY_IA32_BPF] != 0) {
+				if (found[TELEMETRY_IA32_BPF] != 1 ||
+				    !telemetry_wrapper_prototype(btf, "__ia32_sys_bpf"))
+					goto unsupported;
+				selected[selected_count++] = (struct bpf_telemetry_boundary) {
+					"__ia32_sys_bpf", BPF_TELEMETRY_ABI_X86_COMPAT
+				};
+			}
+		} else if (arch == TELEMETRY_ARCH_ARM64 &&
+		    found[TELEMETRY_ARM64_BPF] != 0) {
+			if (found[TELEMETRY_ARM64_BPF] != 1 ||
+			    !telemetry_wrapper_prototype(btf, "__arm64_sys_bpf"))
+				goto unsupported;
+			selected[selected_count++] = (struct bpf_telemetry_boundary) {
+				"__arm64_sys_bpf", BPF_TELEMETRY_ABI_ARM64_WRAPPER
+			};
+		} else if (arch == TELEMETRY_ARCH_ARM64 &&
+		    found[TELEMETRY_LEGACY_BPF] == 1 &&
+		    telemetry_legacy_direct_prototype(btf, "sys_bpf")) {
+			selected[selected_count++] = (struct bpf_telemetry_boundary) {
+				"sys_bpf", BPF_TELEMETRY_ABI_DIRECT
+			};
+		} else if (arch == TELEMETRY_ARCH_ARM64 &&
+		    found[TELEMETRY_LEGACY_BPF] == 0 &&
+		    found[TELEMETRY_LEGACY_SE_BPF] == 1 &&
+		    telemetry_legacy_direct_prototype(btf, "__se_sys_bpf")) {
+			selected[selected_count++] = (struct bpf_telemetry_boundary) {
+				"__se_sys_bpf", BPF_TELEMETRY_ABI_DIRECT
+			};
+		} else
+			goto unsupported;
+	}
+	if (selected_count > capacity) {
+		errno = ENOSPC;
 		return (-1);
 	}
-	boundaries[0] = (struct bpf_telemetry_boundary) {
-		"__sys_bpf", BPF_TELEMETRY_ABI_DIRECT
-	};
-	*count = 1;
+	memcpy(boundaries, selected, selected_count * sizeof(*selected));
+	*count = selected_count;
 	return (0);
+
+unsupported:
+	errno = EOPNOTSUPP;
+	return (-1);
 }
 
 int
