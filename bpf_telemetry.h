@@ -27,6 +27,28 @@ struct bpf_telemetry_boundary {
 int bpf_telemetry_select_boundaries(struct btf *,
     struct bpf_telemetry_boundary *, size_t, size_t *);
 
+enum bpf_telemetry_trampoline_kind {
+	BPF_TELEMETRY_TRAMPOLINE_NONE,
+	BPF_TELEMETRY_TRAMPOLINE_DIRECT3,
+	BPF_TELEMETRY_TRAMPOLINE_DIRECT_BPF_PTR3,
+	BPF_TELEMETRY_TRAMPOLINE_DIRECT_BPF_PTR5,
+	BPF_TELEMETRY_TRAMPOLINE_WRAPPER
+};
+
+struct bpf_telemetry_trampoline_layout {
+	enum bpf_telemetry_trampoline_kind kind;
+	uint32_t result_slot;
+};
+
+/*
+ * Describe 64-bit trampoline context slots for an already selected boundary.
+ * This validates BTF layout, not trampoline availability; attachment must still
+ * be attempted. EOPNOTSUPP leaves kind NONE and permits kprobe fallback.
+ */
+int bpf_telemetry_trampoline_layout(struct btf *,
+    const struct bpf_telemetry_boundary *,
+    struct bpf_telemetry_trampoline_layout *);
+
 /*
  * Named tracefs return probes allow an explicit instance limit and expose
  * tracefs miss counts. Older kernels omit exhausted return-instance pools
