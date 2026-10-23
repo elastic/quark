@@ -130,11 +130,15 @@ program load attempts and results.
 The operation boundary, copied-attribute and referenced-program hooks are
 required: queue initialization fails if a required symbol, prototype or
 attachment is unavailable.
-The initial implementation requires readable kernel symbol names and BTF,
-and writable, already mounted tracefs with kprobe events and profiles.
-It uses named return probes with 4096 concurrent instances per boundary.
-Normal close and failed initialization remove the consumer's events;
-a crash or SIGKILL can leave disabled tracefs events behind.
+Readable kernel symbol names and BTF are required.
+The collector tries fentry/fexit first, validating the function's argument
+layout and attempting kernel load and attachment.
+Its compatibility fallback requires writable, already mounted tracefs with
+kprobe events and profiles, using named return probes with 4096 concurrent
+instances per boundary.
+For that fallback, normal close and failed initialization remove the consumer's
+events; a crash or SIGKILL can leave disabled tracefs events behind.
+The trampoline adapter needs no named tracefs events or return-instance pool.
 This does not require enabling BPF LSM.
 See
 .Dv QUARK_EV_BPF
@@ -168,6 +172,21 @@ decreases the more loaded it is.
 .Pp
 Details are described in
 .Xr quark 7 .
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width QUARK_BPF_ADAPTER
+.It Ev QUARK_BPF_ADAPTER
+Select the BPF telemetry adapter for diagnostics and testing:
+.Cm auto
+(the default),
+.Cm trampoline ,
+or
+.Cm kprobe .
+A forced adapter fails initialization when unavailable, without falling back
+to the other adapter.
+This setting applies only when
+.Dv QQ_BPF
+is enabled; it does not select adapters for other event classes.
 .El
 .Sh RETURN VALUES
 Zero on success, -1 otherwise and
