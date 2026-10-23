@@ -325,3 +325,118 @@ bpf_telemetry_select_boundaries(struct btf *btf,
 	return (-1);
 #endif
 }
+
+static bool
+telemetry_unsigned_integer(const struct btf_type *type, unsigned int bytes)
+{
+	return (telemetry_integer(type, bytes, false) &&
+	    (btf_int_encoding(type) & BTF_INT_SIGNED) == 0);
+}
+
+/* bpfptr_t is sockptr_t: a pointer union followed by a one-bit bool. */
+static bool
+telemetry_bpfptr(const struct btf *btf, unsigned int id)
+{
+	const struct btf_type *type = telemetry_type(btf, id), *pointer_union, *flag;
+	const struct btf_member *members;
+	const char *name;
+	unsigned int i;
+
+	if (type == NULL || !btf_is_struct(type) || type->size != 16 ||
+	    btf_vlen(type) != 2 || btf_member_bit_offset(type, 0) != 0 ||
+	    btf_member_bitfield_size(type, 0) != 0 ||
+	    btf_member_bit_offset(type, 1) != 64 ||
+	    btf_member_bitfield_size(type, 1) != 1)
+		return (false);
+	members = btf_members(type);
+	name = btf__name_by_offset(btf, members[1].name_off);
+	flag = telemetry_type(btf, members[1].type);
+	if (name == NULL || strcmp(name, "is_kernel") != 0 || flag == NULL ||
+	    !btf_is_int(flag) || flag->size != 1 || btf_int_bits(flag) != 8 ||
+	    btf_int_offset(flag) != 0 || btf_int_encoding(flag) != BTF_INT_BOOL)
+		return (false);
+	pointer_union = telemetry_type(btf, members[0].type);
+	if (pointer_union == NULL || !btf_is_union(pointer_union) ||
+	    pointer_union->size != 8 || btf_vlen(pointer_union) != 2)
+		return (false);
+	members = btf_members(pointer_union);
+	for (i = 0; i < 2; i++) {
+		name = btf__name_by_offset(btf, members[i].name_off);
+		if (name == NULL || strcmp(name, i == 0 ? "kernel" : "user") != 0 ||
+		    btf_member_bit_offset(pointer_union, i) != 0 ||
+		    btf_member_bitfield_size(pointer_union, i) != 0 ||
+		    !telemetry_pointer(telemetry_type(btf, members[i].type)))
+			return (false);
+	}
+	return (true);
+}
+
+int
+bpf_telemetry_trampoline_layout(struct btf *btf,
+    const struct bpf_telemetry_boundary *boundary,
+    struct bpf_telemetry_trampoline_layout *layout)
+{
+	const struct btf_type *prototype;
+	const struct btf_param *params;
+	unsigned int count;
+	bool direct;
+
+	if (layout != NULL)
+		memset(layout, 0, sizeof(*layout));
+	if (btf == NULL || boundary == NULL || boundary->symbol == NULL ||
+	    layout == NULL) {
+		errno = EINVAL;
+		return (-1);
+	}
+	if (btf__pointer_size(btf) != 8)
+		goto unsupported;
+	direct = boundary->abi == BPF_TELEMETRY_ABI_DIRECT;
+	if (!direct) {
+		if (!((boundary->abi == BPF_TELEMETRY_ABI_X86_NATIVE &&
+		    strcmp(boundary->symbol, "__x64_sys_bpf") == 0) ||
+		    (boundary->abi == BPF_TELEMETRY_ABI_X86_COMPAT &&
+		    strcmp(boundary->symbol, "__ia32_sys_bpf") == 0) ||
+		    (boundary->abi == BPF_TELEMETRY_ABI_ARM64_WRAPPER &&
+		    strcmp(boundary->symbol, "__arm64_sys_bpf") == 0)) ||
+		    !telemetry_wrapper_prototype(btf, boundary->symbol))
+			goto unsupported;
+		layout->kind = BPF_TELEMETRY_TRAMPOLINE_WRAPPER;
+		layout->result_slot = 1;
+		return (0);
+	}
+	if (strcmp(boundary->symbol, "sys_bpf") == 0 ||
+	    strcmp(boundary->symbol, "__se_sys_bpf") == 0) {
+		if (!telemetry_legacy_direct_prototype(btf, boundary->symbol))
+			goto unsupported;
+		layout->kind = BPF_TELEMETRY_TRAMPOLINE_DIRECT3;
+		layout->result_slot = 3;
+		return (0);
+	}
+	if (strcmp(boundary->symbol, "__sys_bpf") != 0 ||
+	    (prototype = telemetry_prototype(btf, boundary->symbol)) == NULL ||
+	    !telemetry_integer(telemetry_type(btf, prototype->type), 4, true))
+		goto unsupported;
+	count = btf_vlen(prototype);
+	params = btf_params(prototype);
+	if ((count != 3 && count != 5) ||
+	    !telemetry_command_type(telemetry_type(btf, params[0].type), true) ||
+	    !telemetry_unsigned_integer(telemetry_type(btf, params[2].type), 4))
+		goto unsupported;
+	if (count == 3 && telemetry_pointer(telemetry_type(btf, params[1].type))) {
+		layout->kind = BPF_TELEMETRY_TRAMPOLINE_DIRECT3;
+		layout->result_slot = 3;
+		return (0);
+	}
+	if (!telemetry_bpfptr(btf, params[1].type) || (count == 5 &&
+	    (!telemetry_bpfptr(btf, params[3].type) ||
+	    !telemetry_unsigned_integer(telemetry_type(btf, params[4].type), 4))))
+		goto unsupported;
+	layout->kind = count == 3 ? BPF_TELEMETRY_TRAMPOLINE_DIRECT_BPF_PTR3 :
+	    BPF_TELEMETRY_TRAMPOLINE_DIRECT_BPF_PTR5;
+	layout->result_slot = count == 3 ? 4 : 7;
+	return (0);
+
+unsupported:
+	errno = EOPNOTSUPP;
+	return (-1);
+}
