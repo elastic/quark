@@ -147,6 +147,7 @@ EEBPF_INCLUDES:= -Ielastic-ebpf/GPL/Events -Ielastic-ebpf/contrib/vmlinux/$(ARCH
 
 # LIBQUARK
 LIBQUARK_DEPS:= $(wildcard *.h)
+LIBQUARK_DEPS:= $(filter-out quark-test.h, $(LIBQUARK_DEPS))
 LIBQUARK_DEPS:= $(filter-out nova_skel.h, $(LIBQUARK_DEPS))
 LIBQUARK_DEPS:= $(filter-out bpf_probes_skel.h, $(LIBQUARK_DEPS))
 LIBQUARK_DEPS:= $(filter-out manpages.h, $(LIBQUARK_DEPS))
@@ -516,10 +517,13 @@ quark-btf: quark-btf.c manpages.h $(LIBQUARK_TARGET)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
 
-quark-test: quark-test.c manpages.h $(LIBQUARK_TARGET)
+QUARK_TEST_SRCS= quark-test.c bpf-call-stack-test.c
+QUARK_TEST_DEPS= quark-test.h elastic-ebpf/GPL/Events/BpfCallStack.h
+
+quark-test: $(QUARK_TEST_SRCS) $(QUARK_TEST_DEPS) manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
-		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
+		-o $@ $(QUARK_TEST_SRCS) $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
 
 quark-mon-static: quark-mon.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
@@ -533,11 +537,11 @@ quark-btf-static: quark-btf.c manpages.h $(LIBQUARK_STATIC_BIG)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DSTATIC $(CDIAGFLAGS) \
 		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
-quark-test-static: quark-test.c manpages.h $(LIBQUARK_STATIC_BIG)
+quark-test-static: $(QUARK_TEST_SRCS) $(QUARK_TEST_DEPS) manpages.h $(LIBQUARK_STATIC_BIG)
 	$(call msg,CC,$@)
 	$(call assert_no_syslib)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -DSTATIC $(CDIAGFLAGS) \
-		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
+		-static -o $@ $(QUARK_TEST_SRCS) $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
 
 quark-bin.tar.gz: $(TARBALL_FILES)
 	$(call msg,RM,quark-bin)
