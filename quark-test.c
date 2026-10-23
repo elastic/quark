@@ -9,6 +9,7 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/shm.h>
 #include <sys/socket.h>
@@ -4476,6 +4477,234 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* Fixed uapi bit, absent from older system headers in SYSLIB builds. */
+#define TB_LOAD_COMMON_ATTRS (1U << 16)
+#define TB_LOAD_MAX 24
+struct bpf_load_expected {
+	s64 ret;
+	u32 id;
+	u32 type;
+	u32 insn_cnt;
+	u32 flags;
+	u32 attach_type;
+	int attrs;
+	int no_object;
+	char name[BPF_OBJ_NAME_LEN];
+};
+struct bpf_load_results {
+	u32 count;
+	struct bpf_load_expected call[TB_LOAD_MAX];
+};
+
+static void
+bpf_load_attr(union bpf_attr *attr, const struct bpf_insn *insns,
+    u32 insn_cnt, const char *name)
+{
+	bzero(attr, sizeof(*attr));
+	attr->prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+	attr->insn_cnt = insn_cnt;
+	attr->insns = (u64)(uintptr_t)insns;
+	attr->license = (u64)(uintptr_t)"GPL";
+	strlcpy(attr->prog_name, name, sizeof(attr->prog_name));
+}
+
+/* Store the kernel's result, independently queried ID, and expected attrs. */
+static void
+bpf_load_result(struct bpf_load_results *results, int fd, int saved_errno,
+    const union bpf_attr *attr, int attrs, int no_object)
+{
+	struct bpf_load_expected *expected;
+	struct bpf_prog_info info;
+	u32 len;
+
+	assert(results->count < TB_LOAD_MAX);
+	expected = &results->call[results->count++];
+	expected->ret = fd == -1 ? -saved_errno : fd;
+	expected->attrs = attrs;
+	expected->no_object = no_object;
+	if (attrs) {
+		expected->type = attr->prog_type;
+		expected->insn_cnt = attr->insn_cnt;
+		expected->flags = attr->prog_flags;
+		expected->attach_type = attr->expected_attach_type;
+		strlcpy(expected->name, attr->prog_name, sizeof(expected->name));
+	}
+	if (fd >= 0) {
+		bzero(&info, sizeof(info));
+		len = sizeof(info);
+		if (bpf_prog_get_info_by_fd(fd, &info, &len) != 0)
+			err(1, "bpf_prog_get_info_by_fd");
+		assert(info.id != 0);
+		assert(info.type == expected->type);
+		assert(!strcmp((char *)info.name, expected->name));
+		expected->id = info.id;
+		close(fd);
+	}
+}
+
+/* Raw calls avoid libbpf feature probes and verifier retries. */
+static void
+bpf_load_call(struct bpf_load_results *results, u32 cmd,
+    const union bpf_attr *uattr, u32 size, const union bpf_attr *expected,
+    int attrs, int no_object)
+{
+	int fd, saved_errno;
+
+	fd = syscall(SYS_bpf, cmd, uattr, size, NULL, 0U);
+	saved_errno = errno;
+	bpf_load_result(results, fd, saved_errno, expected, attrs, no_object);
+}
+
+static void
+bpf_load_child(struct bpf_load_results *results)
+{
+	const struct bpf_insn insns[] = {
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 0 },
+		{ .code = BPF_JMP | BPF_EXIT },
+	};
+	struct rlimit old_limit, limit;
+	union bpf_attr attr, short_attr;
+	void *uattr;
+	char *oversize;
+	char path[] = "/tmp/quark-load-attr.XXXXXX";
+	int fd, saved_errno, fillers[64], nfill;
+	long pagesize;
+
+	/* fd zero is a successful result too. The child never reads stdin. */
+	close(STDIN_FILENO);
+	bpf_load_attr(&attr, insns, nitems(insns), "quark_t_load0");
+	bpf_load_call(results, BPF_PROG_LOAD, &attr, sizeof(attr), &attr, 1, 0);
+	assert(results->call[results->count - 1].ret == STDIN_FILENO);
+
+	/* Invalid addresses and oversize attributes fail before validation. */
+	bpf_load_call(results, BPF_PROG_LOAD, (void *)(uintptr_t)-1,
+	    sizeof(attr), &attr, 0, 1);
+	assert(results->call[results->count - 1].ret == -EFAULT);
+	pagesize = sysconf(_SC_PAGESIZE);
+	assert(pagesize > 0 && pagesize < INT_MAX);
+	oversize = calloc(1, (size_t)pagesize + 1);
+	if (oversize == NULL)
+		err(1, "calloc");
+	bpf_load_call(results, BPF_PROG_LOAD, (void *)oversize,
+	    (u32)pagesize + 1, &attr, 0, 1);
+	assert(results->call[results->count - 1].ret == -E2BIG);
+	free(oversize);
+	/* A later success must not inherit or lose either failure's state. */
+	bpf_load_attr(&attr, insns, nitems(insns), "quark_t_after");
+	bpf_load_call(results, BPF_PROG_LOAD, &attr, sizeof(attr), &attr, 1, 0);
+	assert(results->call[results->count - 1].ret >= 0);
+
+	/* Bytes after size must be zero, even when caller memory has a name. */
+	bpf_load_attr(&attr, insns, nitems(insns), "quark_t_hidden");
+	short_attr = attr;
+	short_attr.prog_name[0] = 0;
+	bpf_load_call(results, BPF_PROG_LOAD, &attr,
+	    offsetof(union bpf_attr, log_level), &short_attr, 1, 0);
+	assert(results->call[results->count - 1].ret >= 0);
+
+	/* An exit without initializing r0 is rejected by the verifier. */
+	bpf_load_attr(&attr, &insns[1], 1, "quark_t_bad");
+	bpf_load_call(results, BPF_PROG_LOAD, &attr, sizeof(attr), &attr, 1, 1);
+	assert(results->call[results->count - 1].ret < 0);
+
+	/* The kernel copy must fault in an untouched file-backed attribute. */
+	bpf_load_attr(&attr, insns, nitems(insns), "quark_t_fault");
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (unlink(path) == -1 ||
+	    qwrite(fd, &attr, sizeof(attr)) == -1)
+		err(1, "write attr");
+	/* Newer LOAD paths also copy verifier metadata back into the attr. */
+	uattr = mmap(NULL, sizeof(attr), PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+	if (uattr == MAP_FAILED)
+		err(1, "mmap attr");
+	close(fd);
+	bpf_load_call(results, BPF_PROG_LOAD, uattr, sizeof(attr), &attr, 1, 0);
+	assert(results->call[results->count - 1].ret >= 0);
+	if (munmap(uattr, sizeof(attr)) == -1)
+		err(1, "munmap attr");
+
+	/* Old kernels reject the flag; the attempted base command remains. */
+	bpf_load_attr(&attr, insns, nitems(insns), "quark_t_common");
+	fd = syscall(SYS_bpf, BPF_PROG_LOAD | TB_LOAD_COMMON_ATTRS, &attr,
+	    sizeof(attr), NULL, 0U);
+	saved_errno = errno;
+	assert(fd >= 0 || saved_errno == EINVAL);
+	bpf_load_result(results, fd, saved_errno, &attr, 1, fd == -1);
+
+	/* Program verification can succeed before fd allocation fails. */
+	if (getrlimit(RLIMIT_NOFILE, &old_limit) == -1)
+		err(1, "getrlimit");
+	limit = old_limit;
+	if (limit.rlim_cur > nitems(fillers))
+		limit.rlim_cur = nitems(fillers);
+	if (setrlimit(RLIMIT_NOFILE, &limit) == -1)
+		err(1, "setrlimit");
+	for (nfill = 0; nfill < (int)nitems(fillers); nfill++) {
+		fillers[nfill] = open("/dev/null", O_RDONLY);
+		if (fillers[nfill] == -1)
+			break;
+	}
+	assert(nfill < (int)nitems(fillers) && errno == EMFILE);
+	bpf_load_attr(&attr, insns, nitems(insns), "quark_t_nofd");
+	bpf_load_call(results, BPF_PROG_LOAD, &attr, sizeof(attr), &attr, 1, 1);
+	assert(results->call[results->count - 1].ret == -EMFILE);
+	while (nfill > 0)
+		close(fillers[--nfill]);
+	if (setrlimit(RLIMIT_NOFILE, &old_limit) == -1)
+		err(1, "restore rlimit");
+
+	/* Keep a successful non-LOAD operation among the fixture calls. */
+	bzero(&attr, sizeof(attr));
+	attr.map_type = BPF_MAP_TYPE_HASH;
+	attr.key_size = attr.value_size = sizeof(u32);
+	attr.max_entries = 1;
+	fd = syscall(SYS_bpf, BPF_MAP_CREATE, &attr, sizeof(attr));
+	assert(fd >= 0);
+	close(fd);
+}
+
+static pid_t
+bpf_load_run(struct bpf_load_results *results)
+{
+	pid_t child;
+	int fds[2], status;
+
+	if (pipe(fds) == -1 || (child = fork()) == -1)
+		err(1, "load pipe/fork");
+	if (child == 0) {
+		close(fds[0]);
+		bzero(results, sizeof(*results));
+		bpf_load_child(results);
+		if (qwrite(fds[1], results, sizeof(*results)) == -1)
+			err(1, "write load results");
+		_exit(0);
+	}
+	close(fds[1]);
+	if (qread(fds[0], results, sizeof(*results)) != sizeof(*results))
+		errx(1, "child did not report load results");
+	close(fds[0]);
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid load");
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	assert(results->count > 0 && results->count <= TB_LOAD_MAX);
+	return (child);
+}
+
+/* Exercise kernel LOAD outcomes without a telemetry queue. */
+static int
+t_bpf_load_fixture(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct bpf_load_results results;
+
+	if (in_valgrind) {
+		warnx("%s: skipping raw BPF fixture under valgrind", __func__);
+		return (0);
+	}
+	bpf_load_run(&results);
+	return (0);
+}
+
 static int
 t_nova(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -5071,6 +5300,7 @@ struct test all_tests[] = {
 	T_EBPF(t_trusted_pid),
 	T_EBPF(t_trusted_map_rdonly),
 	T_EBPF(t_map_freeze),
+	T_EBPF(t_bpf_load_fixture),
 	T_NOVA(t_nova),		/* XXX temporary XXX */
 	{ NULL,	NULL, 0, 0 }
 };
