@@ -5043,6 +5043,7 @@ struct test all_tests[] = {
 	T_KPROBE(t_stats),
 	T(t_backend_flags),
 	T(t_bpf_call_stack),
+	T(t_bpf_telemetry),
 	T(t_pod_get),
 	T(t_pod_create),
 	T(t_pod_dump),
