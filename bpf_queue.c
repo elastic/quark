@@ -1275,6 +1275,82 @@ bpf_maps_freeze(struct bpf_probes *p)
 	}
 }
 
+static struct bpf_program *
+bpf_boundary_program(struct bpf_probes *p, enum bpf_telemetry_abi abi)
+{
+	switch (abi) {
+	case BPF_TELEMETRY_ABI_DIRECT:
+		return (p->progs.bpf_call_enter_direct);
+	case BPF_TELEMETRY_ABI_X86_NATIVE:
+	case BPF_TELEMETRY_ABI_ARM64_WRAPPER:
+		return (p->progs.bpf_call_enter_native);
+#if defined(__x86_64__)
+	case BPF_TELEMETRY_ABI_X86_COMPAT:
+		return (p->progs.bpf_call_enter_compat);
+#endif
+	default:
+		return (NULL);
+	}
+}
+
+static int
+bpf_telemetry_prepare(struct bpf_queue *bqq, struct btf *btf)
+{
+	struct bpf_probes *p = bqq->probes;
+	struct bpf_program *entry;
+	size_t i;
+
+	if (bpf_telemetry_select_boundaries(btf, bqq->bpf_boundary,
+	    nitems(bqq->bpf_boundary), &bqq->bpf_boundary_count) == -1) {
+		qwarn("QQ_BPF: required operation/security hooks unavailable");
+		return (-1);
+	}
+	for (i = 0; i < bqq->bpf_boundary_count; i++) {
+		entry = bpf_boundary_program(p, bqq->bpf_boundary[i].abi);
+		if (entry == NULL)
+			return (errno = EOPNOTSUPP, -1);
+		bpf_program__set_autoload(entry, true);
+		bpf_program__set_autoattach(entry, false);
+		qdebugx("BPF operation boundary %s", bqq->bpf_boundary[i].symbol);
+	}
+	bpf_program__set_autoload(p->progs.bpf_call_exit, true);
+	bpf_program__set_autoattach(p->progs.bpf_call_exit, false);
+	bpf_program__set_autoload(p->progs.bpf_load__security, true);
+	bpf_program__set_autoload(p->progs.bpf_load__prog, true);
+	bpf_program__set_autoload(p->progs.bpf_call_task_exit, true);
+	return (0);
+}
+
+static int
+bpf_telemetry_attach(struct bpf_queue *bqq)
+{
+	struct bpf_telemetry_boundary *boundary;
+	size_t i;
+	long error;
+
+	for (i = 0; i < bqq->bpf_boundary_count; i++) {
+		boundary = &bqq->bpf_boundary[i];
+		/* Arm the return before the entry to avoid stranded startup frames. */
+		if (bpf_telemetry_retprobe_attach(&bqq->bpf_return[i],
+		    bqq->probes->progs.bpf_call_exit, boundary->symbol, 4096) == -1) {
+			qwarn("QQ_BPF: required return hook %s", boundary->symbol);
+			return (-1);
+		}
+		bqq->bpf_entry[i] = bpf_program__attach_kprobe(
+		    bpf_boundary_program(bqq->probes, boundary->abi), false,
+		    boundary->symbol);
+		error = libbpf_get_error(bqq->bpf_entry[i]);
+		if (bqq->bpf_entry[i] == NULL || error != 0) {
+			bqq->bpf_entry[i] = NULL;
+			if (error != 0)
+				errno = (int)-error;
+			qwarn("QQ_BPF: required entry hook %s", boundary->symbol);
+			return (-1);
+		}
+	}
+	return (0);
+}
+
 static int
 bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 {
@@ -1282,9 +1358,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	struct bpf_queue		*bqq;
 	struct bpf_probes		*p;
 	struct bpf_program		*prog;
-	int				 cgroup_fd, i, ncpu, off, ringbuf_fd;
+	int				 cgroup_fd, i, ncpu, off, ringbuf_fd, saved_errno;
 	u32				 ringbuf_size;
 	char				*cgroup_umount;
+	const char			*btf_path;
 	struct bpf_prog_skeleton	*ps;
 	struct btf			*btf;
 	struct epoll_event		 ev;
@@ -1309,9 +1386,15 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	/*
 	 * BTF used for relocations
 	 */
-	btf = btf__load_vmlinux_btf();
+	btf_path = getenv("QUARK_BTF_PATH");
+	btf = btf_path ? btf__parse(btf_path, NULL) : btf__load_vmlinux_btf();
+	if (libbpf_get_error(btf) != 0) {
+		errno = (int)-libbpf_get_error(btf);
+		btf = NULL;
+	}
 	if (btf == NULL) {
-		qwarn("btf__load_vmlinux_btf");
+		qwarn("load kernel BTF%s%s", btf_path ? " from " : "",
+		    btf_path ? btf_path : "");
 		goto fail;
 	}
 
@@ -1527,8 +1610,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
 
-	/* Keep the producer and its state map dormant until activation. */
-	if (bpf_map__set_autocreate(p->maps.bpf_calls, false) != 0) {
+	if (qq->flags & QQ_BPF) {
+		if (bpf_telemetry_prepare(bqq, btf) == -1)
+			goto fail;
+	} else if (bpf_map__set_autocreate(p->maps.bpf_calls, false) != 0) {
 		qwarn("bpf_map__set_autocreate bpf_calls");
 		goto fail;
 	}
@@ -1665,6 +1750,9 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		goto fail;
 	}
 
+	if ((qq->flags & QQ_BPF) && bpf_telemetry_attach(bqq) == -1)
+		goto fail;
+
 	bqq->ringbuf = ring_buffer__new(bpf_map__fd(p->maps.ringbuf),
 	    bpf_ringbuf_cb, qq, NULL);
 	if (bqq->ringbuf == NULL) {
@@ -1692,6 +1780,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	return (0);
 fail:
+	saved_errno = errno;
 	if (cgroup_fd != -1) {
 		close(cgroup_fd);
 		cgroup_fd = -1;
@@ -1701,6 +1790,7 @@ fail:
 		btf__free(btf);
 
 	bpf_queue_close(qq);
+	errno = saved_errno;
 
 	return (-1);
 }
@@ -1810,9 +1900,15 @@ static void
 bpf_queue_close(struct quark_queue *qq)
 {
 	struct bpf_queue	*bqq = qq->queue_be;
+	size_t i;
+	int saved_errno = errno;
 
 	if (bqq == NULL)
 		return;
+	for (i = 0; i < nitems(bqq->bpf_entry); i++) {
+		bpf_link__destroy(bqq->bpf_entry[i]);
+		bpf_telemetry_retprobe_detach(bqq->bpf_return[i]);
+	}
 	if (bqq->probes != NULL) {
 		bpf_probes__destroy(bqq->probes);
 		bqq->probes = NULL;
@@ -1832,6 +1928,7 @@ bpf_queue_close(struct quark_queue *qq)
 		bqq->ringbuf = NULL;
 	}
 	free(bqq);
+	errno = saved_errno;
 	bqq = NULL;
 	qq->queue_be = NULL;
 }
