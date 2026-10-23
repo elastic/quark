@@ -4744,6 +4744,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	    backends != QQ_NOVA)
 		return (errno = EINVAL, -1);
 
+	if ((qa->flags & QQ_BPF) && backends != QQ_EBPF)
+		return (errno = EINVAL, -1);
+
 	if (qa->max_length <= 0 ||
 	    qa->cache_grace_time < 0 ||
 	    qa->hold_time < 10)
