@@ -37,7 +37,10 @@ struct bpf_queue {
 	struct ring_buffer	*ringbuf;
 	struct bpf_telemetry_boundary bpf_boundary[2];
 	size_t bpf_boundary_count;
+	int bpf_trampoline;
+	struct bpf_program *bpf_fexit_program[2];
 	struct bpf_link *bpf_entry[2];
+	struct bpf_link *bpf_exit[2];
 	struct bpf_telemetry_retprobe *bpf_return[2];
 };
 
@@ -1294,7 +1297,57 @@ bpf_boundary_program(struct bpf_probes *p, enum bpf_telemetry_abi abi)
 }
 
 static int
-bpf_telemetry_prepare(struct bpf_queue *bqq, struct btf *btf)
+bpf_trampoline_prepare(struct bpf_queue *bqq, struct btf *btf, size_t i)
+{
+	struct bpf_telemetry_boundary *boundary = &bqq->bpf_boundary[i];
+	struct bpf_telemetry_trampoline_layout layout;
+	struct bpf_probes *p = bqq->probes;
+	struct bpf_program *entry = p->progs.bpf_call_fentry;
+	struct bpf_program *exit;
+
+	if (bpf_telemetry_trampoline_layout(btf, boundary, &layout) == -1) {
+		qwarn("BPF trampoline signature %s", boundary->symbol);
+		return (-1);
+	}
+	switch (layout.result_slot) {
+	case 1:
+		exit = p->progs.bpf_call_fexit1;
+		break;
+	case 3:
+		exit = p->progs.bpf_call_fexit3;
+		break;
+	case 4:
+		exit = p->progs.bpf_call_fexit4;
+		break;
+	case 7:
+		exit = p->progs.bpf_call_fexit7;
+		break;
+	default:
+		return (errno = EOPNOTSUPP, -1);
+	}
+#if defined(__x86_64__)
+	if (boundary->abi == BPF_TELEMETRY_ABI_X86_COMPAT) {
+		entry = p->progs.bpf_call_fentry_compat;
+		exit = p->progs.bpf_call_fexit_compat;
+	}
+#endif
+	if (boundary->abi != BPF_TELEMETRY_ABI_X86_COMPAT)
+		p->rodata->bpf_trampoline_wrapper =
+		    boundary->abi != BPF_TELEMETRY_ABI_DIRECT;
+	bqq->bpf_fexit_program[i] = exit;
+	if (bpf_program__set_attach_target(entry, 0, boundary->symbol) != 0 ||
+	    bpf_program__set_attach_target(exit, 0, boundary->symbol) != 0)
+		return (-1);
+	bpf_program__set_autoload(entry, true);
+	bpf_program__set_autoload(exit, true);
+	/* Attach the pair manually, return first, as for the kprobe adapter. */
+	bpf_program__set_autoattach(entry, false);
+	bpf_program__set_autoattach(exit, false);
+	return (0);
+}
+
+static int
+bpf_telemetry_prepare(struct bpf_queue *bqq, struct btf *btf, int trampoline)
 {
 	struct bpf_probes *p = bqq->probes;
 	struct bpf_program *entry;
@@ -1305,18 +1358,30 @@ bpf_telemetry_prepare(struct bpf_queue *bqq, struct btf *btf)
 		qwarn("QQ_BPF: required operation/security hooks unavailable");
 		return (-1);
 	}
+	bqq->bpf_trampoline = trampoline;
 	for (i = 0; i < bqq->bpf_boundary_count; i++) {
+		qdebugx("BPF operation boundary %s (%s)", bqq->bpf_boundary[i].symbol,
+		    trampoline ? "fentry/fexit" : "kprobe/kretprobe");
+		if (trampoline) {
+			if (bpf_trampoline_prepare(bqq, btf, i) == -1)
+				return (-1);
+			continue;
+		}
 		entry = bpf_boundary_program(p, bqq->bpf_boundary[i].abi);
 		if (entry == NULL)
 			return (errno = EOPNOTSUPP, -1);
 		bpf_program__set_autoload(entry, true);
 		bpf_program__set_autoattach(entry, false);
-		qdebugx("BPF operation boundary %s", bqq->bpf_boundary[i].symbol);
 	}
-	bpf_program__set_autoload(p->progs.bpf_call_exit, true);
-	bpf_program__set_autoattach(p->progs.bpf_call_exit, false);
-	bpf_program__set_autoload(p->progs.bpf_load__security, true);
-	bpf_program__set_autoload(p->progs.bpf_load__prog, true);
+	if (trampoline) {
+		bpf_program__set_autoload(p->progs.bpf_load_fentry_security, true);
+		bpf_program__set_autoload(p->progs.bpf_load_fentry_prog, true);
+	} else {
+		bpf_program__set_autoload(p->progs.bpf_call_exit, true);
+		bpf_program__set_autoattach(p->progs.bpf_call_exit, false);
+		bpf_program__set_autoload(p->progs.bpf_load__security, true);
+		bpf_program__set_autoload(p->progs.bpf_load__prog, true);
+	}
 	bpf_program__set_autoload(p->progs.bpf_call_task_exit, true);
 	return (0);
 }
@@ -1325,20 +1390,40 @@ static int
 bpf_telemetry_attach(struct bpf_queue *bqq)
 {
 	struct bpf_telemetry_boundary *boundary;
+	struct bpf_program *entry, *exit;
 	size_t i;
 	long error;
 
 	for (i = 0; i < bqq->bpf_boundary_count; i++) {
 		boundary = &bqq->bpf_boundary[i];
 		/* Arm the return before the entry to avoid stranded startup frames. */
-		if (bpf_telemetry_retprobe_attach(&bqq->bpf_return[i],
-		    bqq->probes->progs.bpf_call_exit, boundary->symbol, 4096) == -1) {
-			qwarn("QQ_BPF: required return hook %s", boundary->symbol);
-			return (-1);
+		if (bqq->bpf_trampoline) {
+			entry = bqq->probes->progs.bpf_call_fentry;
+			exit = bqq->bpf_fexit_program[i];
+#if defined(__x86_64__)
+			if (boundary->abi == BPF_TELEMETRY_ABI_X86_COMPAT)
+				entry = bqq->probes->progs.bpf_call_fentry_compat;
+#endif
+			bqq->bpf_exit[i] = bpf_program__attach_trace(exit);
+			error = libbpf_get_error(bqq->bpf_exit[i]);
+			if (bqq->bpf_exit[i] == NULL || error != 0) {
+				bqq->bpf_exit[i] = NULL;
+				if (error != 0)
+					errno = (int)-error;
+				qwarn("QQ_BPF: required fexit hook %s", boundary->symbol);
+				return (-1);
+			}
+			bqq->bpf_entry[i] = bpf_program__attach_trace(entry);
+		} else {
+			if (bpf_telemetry_retprobe_attach(&bqq->bpf_return[i],
+			    bqq->probes->progs.bpf_call_exit, boundary->symbol, 4096) == -1) {
+				qwarn("QQ_BPF: required return hook %s", boundary->symbol);
+				return (-1);
+			}
+			bqq->bpf_entry[i] = bpf_program__attach_kprobe(
+			    bpf_boundary_program(bqq->probes, boundary->abi), false,
+			    boundary->symbol);
 		}
-		bqq->bpf_entry[i] = bpf_program__attach_kprobe(
-		    bpf_boundary_program(bqq->probes, boundary->abi), false,
-		    boundary->symbol);
 		error = libbpf_get_error(bqq->bpf_entry[i]);
 		if (bqq->bpf_entry[i] == NULL || error != 0) {
 			bqq->bpf_entry[i] = NULL;
@@ -1352,7 +1437,7 @@ bpf_telemetry_attach(struct bpf_queue *bqq)
 }
 
 static int
-bpf_queue_open1(struct quark_queue *qq, int use_fentry)
+bpf_queue_open1(struct quark_queue *qq, int use_fentry, int bpf_fentry)
 {
 	int				 harden;
 	struct bpf_queue		*bqq;
@@ -1611,7 +1696,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.module_load, 1);
 
 	if (qq->flags & QQ_BPF) {
-		if (bpf_telemetry_prepare(bqq, btf) == -1)
+		if (bpf_telemetry_prepare(bqq, btf, bpf_fentry) == -1)
 			goto fail;
 	} else if (bpf_map__set_autocreate(p->maps.bpf_calls, false) != 0) {
 		qwarn("bpf_map__set_autocreate bpf_calls");
@@ -1798,25 +1883,39 @@ fail:
 int
 bpf_queue_open(struct quark_queue *qq)
 {
+	const char *adapter;
+	int bpf_fentry = 1, forced = 0;
+
 	if ((qq->flags & QQ_EBPF) == 0)
 		return (errno = ENOTSUP, -1);
 
-	/*
-	 * QUARK_BPF_KPROBE skips fentry and loads only the kprobe programs.
-	 * Tests use it to exercise the kprobe fallback on kernels where fentry
-	 * works.
-	 */
+	/* Diagnostic override: a forced adapter must never silently fall back. */
+	adapter = (qq->flags & QQ_BPF) ? getenv("QUARK_BPF_ADAPTER") : NULL;
+	if (adapter != NULL && strcmp(adapter, "auto") != 0) {
+		forced = 1;
+		if (strcmp(adapter, "kprobe") == 0)
+			bpf_fentry = 0;
+		else if (strcmp(adapter, "trampoline") != 0)
+			return (errno = EINVAL, -1);
+	}
 	if (getenv("QUARK_BPF_KPROBE") != NULL) {
+		if (forced && bpf_fentry)
+			return (errno = EINVAL, -1);
 		qdebugx("QUARK_BPF_KPROBE is set, not trying fentry");
-		return (bpf_queue_open1(qq, 0));
+		return (bpf_queue_open1(qq, 0, 0));
 	}
-
-	if (bpf_queue_open1(qq, 1) == -1) {
-		qwarn("bpf_queue_open failed with fentry, trying kprobe");
-		return (bpf_queue_open1(qq, 0));
-	}
-
-	return (0);
+	if (bpf_queue_open1(qq, 1, bpf_fentry) == 0)
+		return (0);
+	qwarn("bpf_queue_open failed with fentry, trying other probes as kprobes");
+	/* Preserve BPF trampolines when an unrelated fentry hook is unsupported. */
+	if (bpf_queue_open1(qq, 0, bpf_fentry) == 0)
+		return (0);
+	if (!(qq->flags & QQ_BPF) || forced)
+		return (-1);
+	qwarn("BPF trampolines unavailable, trying kprobe/kretprobe adapter");
+	if (bpf_queue_open1(qq, 1, 0) == 0)
+		return (0);
+	return (bpf_queue_open1(qq, 0, 0));
 }
 
 static int
@@ -1877,7 +1976,7 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	qq->stats.lost = lost;
 	qq->stats.bpf_state_lost = state_lost;
 	qq->stats.bpf_metadata_lost = metadata_lost;
-	for (i = 0; (size_t)i < bqq->bpf_boundary_count; i++) {
+	for (i = 0; !bqq->bpf_trampoline && (size_t)i < bqq->bpf_boundary_count; i++) {
 		if (bpf_telemetry_retprobe_missed(bqq->bpf_return[i], &missed) == -1) {
 			qwarn("BPF telemetry return-probe statistics unavailable");
 			goto fail;
@@ -1885,7 +1984,8 @@ bpf_queue_update_stats(struct quark_queue *qq)
 		total_missed += missed;
 	}
 	qq->stats.bpf_retprobe_missed = total_missed;
-	qq->stats.bpf_retprobe_stats_valid = bqq->bpf_boundary_count != 0;
+	qq->stats.bpf_retprobe_stats_valid =
+	    bqq->bpf_boundary_count != 0 && !bqq->bpf_trampoline;
 	free(pcpu_ees);
 
 	return (0);
@@ -1907,6 +2007,7 @@ bpf_queue_close(struct quark_queue *qq)
 		return;
 	for (i = 0; i < nitems(bqq->bpf_entry); i++) {
 		bpf_link__destroy(bqq->bpf_entry[i]);
+		bpf_link__destroy(bqq->bpf_exit[i]);
 		bpf_telemetry_retprobe_detach(bqq->bpf_return[i]);
 	}
 	if (bqq->probes != NULL) {
