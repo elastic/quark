@@ -19,12 +19,26 @@
 #include <bpf/btf.h>
 
 #include "quark.h"
+#include "bpf_telemetry.h"
+#include "bpf_telemetry_retprobe.h"
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
+
+#ifdef HAVE_STATIC_ASSERT
+/* bpf object kinds and names are copied straight from the probe */
+static_assert(QUARK_BPF_PROG == EBPF_BPF_KIND_PROG, "bpf kinds drifted");
+static_assert(QUARK_BPF_VALID_ATTR == EBPF_BPF_VALID_ATTR, "bpf validity drifted");
+static_assert(QUARK_BPF_VALID_OBJECT == EBPF_BPF_VALID_OBJECT, "bpf validity drifted");
+static_assert(QUARK_BPF_NAME_LEN == EBPF_BPF_NAME_LEN, "bpf names drifted");
+#endif
 
 struct bpf_queue {
 	struct bpf_probes	*probes;
 	struct ring_buffer	*ringbuf;
+	struct bpf_telemetry_boundary bpf_boundary[2];
+	size_t bpf_boundary_count;
+	struct bpf_link *bpf_entry[2];
+	struct bpf_telemetry_retprobe *bpf_return[2];
 };
 
 static int	bpf_queue_populate(struct quark_queue *);
@@ -725,6 +739,35 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 				break;
 			}
 		}
+
+		break;
+	}
+	case EBPF_EVENT_PROCESS_BPF: {
+		struct ebpf_process_bpf_event	*bpf;
+		struct quark_bpf		*qbpf;
+
+		bpf = (struct ebpf_process_bpf_event *)ev;
+		if ((raw = raw_event_alloc(RAW_BPF)) == NULL)
+			goto bad;
+
+		raw->pid = bpf->pids.tgid;
+		raw->time = ev->ts;
+
+		qbpf = &raw->bpf.quark_bpf;
+		qbpf->start_time_ns = bpf->pids.start_time_ns;
+		qbpf->tgid = bpf->pids.tgid;
+		qbpf->ret = bpf->ret;
+		qbpf->cmd = bpf->cmd;
+		qbpf->kind = bpf->kind;
+		qbpf->id = bpf->id;
+		qbpf->tid = bpf->pids.tid;
+		qbpf->valid = bpf->valid;
+		qbpf->type = bpf->type;
+		qbpf->attach_type = bpf->attach_type;
+		qbpf->flags = bpf->flags;
+		qbpf->insn_cnt = bpf->insn_cnt;
+		/* A failed load can contain a non-terminated requested name. */
+		memcpy(qbpf->name, bpf->name, sizeof(qbpf->name) - 1);
 
 		break;
 	}
@@ -1704,9 +1747,11 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	struct bpf_queue	*bqq  = qq->queue_be;
 	struct ebpf_event_stats	*pcpu_ees;
 	u32			 zero = 0;
-	u64			 lost;
+	u64			 lost, state_lost, metadata_lost, total_missed;
+	uint64_t		 missed;
 	int			 i, num_cpus;
 
+	qq->stats.bpf_retprobe_stats_valid = 0;
 	if ((num_cpus = libbpf_num_possible_cpus()) <= 0) {
 		qwarnx("bad libbpf_num_possible_cpus: %d", num_cpus);
 		return (-1);
@@ -1727,9 +1772,24 @@ bpf_queue_update_stats(struct quark_queue *qq)
 		goto fail;
 	}
 
-	for (i = 0, lost = 0; i < num_cpus; i++)
+	state_lost = metadata_lost = lost = total_missed = 0;
+	for (i = 0; i < num_cpus; i++) {
 		lost += pcpu_ees[i].lost;
+		state_lost += pcpu_ees[i].bpf_state_lost;
+		metadata_lost += pcpu_ees[i].bpf_metadata_lost;
+	}
 	qq->stats.lost = lost;
+	qq->stats.bpf_state_lost = state_lost;
+	qq->stats.bpf_metadata_lost = metadata_lost;
+	for (i = 0; (size_t)i < bqq->bpf_boundary_count; i++) {
+		if (bpf_telemetry_retprobe_missed(bqq->bpf_return[i], &missed) == -1) {
+			qwarn("BPF telemetry return-probe statistics unavailable");
+			goto fail;
+		}
+		total_missed += missed;
+	}
+	qq->stats.bpf_retprobe_missed = total_missed;
+	qq->stats.bpf_retprobe_stats_valid = bqq->bpf_boundary_count != 0;
 	free(pcpu_ees);
 
 	return (0);
