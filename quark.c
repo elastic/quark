@@ -39,6 +39,17 @@
 
 #include <cjson/cJSON.h>
 
+#include <bpf/libbpf.h>
+
+/* libbpf names types from 1.0 on, an older SYSLIB one gets numbers */
+#if LIBBPF_MAJOR_VERSION >= 1
+#define bpf_prog_type_name(_t)		libbpf_bpf_prog_type_str(_t)
+#define bpf_attach_type_name(_t)	libbpf_bpf_attach_type_str(_t)
+#else
+#define bpf_prog_type_name(_t)		((const char *)NULL)
+#define bpf_attach_type_name(_t)	((const char *)NULL)
+#endif
+
 #include "quark.h"
 
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
@@ -206,6 +217,7 @@ raw_event_alloc(int type)
 	case RAW_FILE:		/* caller allocates */
 	case RAW_PTRACE:	/* nada */
 	case RAW_MPROTECT:	/* nada */
+	case RAW_BPF:		/* nada */
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
@@ -248,6 +260,8 @@ raw_event_free(struct raw_event *raw)
 		break;
 	case RAW_MPROTECT:
 		free(raw->mprotect.quark_mprotect.path);
+		break;
+	case RAW_BPF:		/* nada */
 		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
@@ -468,6 +482,7 @@ event_storage_clear(struct quark_queue *qq)
 	bzero(&qq->event_storage.ptrace, sizeof(qq->event_storage.ptrace));
 	free(qq->event_storage.mprotect.path);
 	bzero(&qq->event_storage.mprotect, sizeof(qq->event_storage.mprotect));
+	bzero(&qq->event_storage.bpf, sizeof(qq->event_storage.bpf));
 	if (qq->event_storage.module_load != NULL) {
 		free(qq->event_storage.module_load->name);
 		free(qq->event_storage.module_load->version);
@@ -1872,6 +1887,8 @@ event_type_str(u64 event)
 		return "GETPID";
 	case QUARK_EV_MPROTECT:
 		return "MPROTECT";
+	case QUARK_EV_BPF:
+		return "BPF";
 	default:
 		return "?";
 	}
@@ -2233,6 +2250,27 @@ mprotect_prot_str(u64 prot, char *buf, size_t len)
 	buf[n] = 0;
 }
 
+static const char *
+bpf_cmd_str(u32 cmd)
+{
+	return (cmd == 5 ? "PROG_LOAD" : "?");
+}
+
+static const char *
+bpf_type_str(const struct quark_bpf *bpf, char *buf, size_t len)
+{
+	const char *s;
+
+	if (!(bpf->valid & (QUARK_BPF_VALID_ATTR | QUARK_BPF_VALID_OBJECT)))
+		return (NULL);
+	s = bpf_prog_type_name(bpf->type);
+	if (s == NULL) {
+		(void)snprintf(buf, len, "%u", bpf->type);
+		s = buf;
+	}
+	return (s);
+}
+
 #define P(...)						\
 	do {						\
 		if (fprintf(f, __VA_ARGS__) < 0)	\
@@ -2260,6 +2298,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	const struct quark_ptrace	*ptrace;
 	const struct quark_module_load	*qml;
 	const struct quark_mprotect	*mprotect;
+	const struct quark_bpf		*bpf;
+	const char			*bs;
+	char				 bbuf[16];
 	char				 prev_prot[4], req_prot[4];
 	char				 effective_prot[4];
 	int				 pid;
@@ -2381,6 +2422,33 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    mprotect->dev_major, mprotect->dev_minor);
 		if (mprotect->path != NULL)
 			PF(fl, "path=%s\n", mprotect->path);
+	}
+
+	if (qev->events & QUARK_EV_BPF) {
+		fl = "BPF";
+
+		bpf = &qev->bpf;
+		PF(fl, "cmd=%s(%u) ret=%lld tgid=%u tid=%u valid=0x%x",
+		    bpf_cmd_str(bpf->cmd), bpf->cmd, (long long)bpf->ret,
+		    bpf->tgid, bpf->tid, bpf->valid);
+		if (bpf->valid & QUARK_BPF_VALID_OBJECT)
+			P(" prog=%u", bpf->id);
+		if ((bs = bpf_type_str(bpf, bbuf, sizeof(bbuf))) != NULL)
+			P(" type=%s", bs);
+		if (bpf->name[0])
+			P(" name=%s", bpf->name);
+		if (bpf->insn_cnt)
+			P(" insns=%u", bpf->insn_cnt);
+		if ((bpf->valid & QUARK_BPF_VALID_ATTR) && bpf->attach_type) {
+			bs = bpf_attach_type_name(bpf->attach_type);
+			if (bs != NULL)
+				P(" attach_type=%s", bs);
+			else
+				P(" attach_type=%u", bpf->attach_type);
+		}
+		if (bpf->flags)
+			P(" flags=0x%x", bpf->flags);
+		P("\n");
 	}
 
 	if (qp == NULL)
@@ -5288,6 +5356,20 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 }
 
 static struct quark_event *
+raw_event_bpf(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_BPF;
+	qev->process = quark_process_lookup(qq, raw->pid);
+	qev->bpf = raw->bpf.quark_bpf;
+
+	return (qev);
+}
+
+static struct quark_event *
 raw_event_mprotect(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
@@ -5762,6 +5844,9 @@ quark_queue_get_event1(struct quark_queue *qq)
 			break;
 		case RAW_MPROTECT:
 			qev = raw_event_mprotect(qq, raw);
+			break;
+		case RAW_BPF:
+			qev = raw_event_bpf(qq, raw);
 			break;
 		case RAW_MODULE_LOAD:
 			qev = raw_event_module_load(qq, raw);
