@@ -1527,6 +1527,12 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	if (qq->flags & QQ_MODULE_LOAD)
 		bpf_program__set_autoload(p->progs.module_load, 1);
 
+	/* Keep the producer and its state map dormant until activation. */
+	if (bpf_map__set_autocreate(p->maps.bpf_calls, false) != 0) {
+		qwarn("bpf_map__set_autocreate bpf_calls");
+		goto fail;
+	}
+
 	if (qq->flags & QQ_MPROTECT) {
 		if (use_fentry)
 			bpf_program__set_autoload(
