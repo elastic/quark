@@ -10,7 +10,10 @@
 struct btf;
 
 enum bpf_telemetry_abi {
-	BPF_TELEMETRY_ABI_DIRECT = 0
+	BPF_TELEMETRY_ABI_DIRECT = 0,
+	BPF_TELEMETRY_ABI_X86_NATIVE = 1,
+	BPF_TELEMETRY_ABI_X86_COMPAT = 2,
+	BPF_TELEMETRY_ABI_ARM64_WRAPPER = 3
 };
 
 struct bpf_telemetry_boundary {
