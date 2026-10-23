@@ -4479,6 +4479,9 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 
 /* Fixed uapi bit, absent from older system headers in SYSLIB builds. */
 #define TB_LOAD_COMMON_ATTRS (1U << 16)
+#define TB_LOAD_SYSCALL 31
+#define TB_LOAD_SYS_BPF 166
+#define TB_LOAD_SLEEPABLE (1U << 4)
 #define TB_LOAD_MAX 24
 struct bpf_load_expected {
 	s64 ret;
@@ -4555,8 +4558,180 @@ bpf_load_call(struct bpf_load_results *results, u32 cmd,
 	bpf_load_result(results, fd, saved_errno, expected, attrs, no_object);
 }
 
+#ifdef __x86_64__
+/* A 64-bit process can enter the real ia32 syscall ABI through int $0x80. */
+static int
+bpf_load_compat(union bpf_attr *attr, u32 size)
+{
+	long ret;
+
+	__asm__ volatile("int $0x80"
+	    : "=a" (ret)
+	    : "0" (357), "b" (BPF_PROG_LOAD), "c" (attr), "d" (size),
+	      "S" (0), "D" (0)
+	    : "r8", "r9", "r10", "r11", "memory", "cc");
+	/* Compat errors occupy a signed 32-bit return register. */
+	if ((int)ret < 0) {
+		errno = -(int)ret;
+		return (-1);
+	}
+	return ((int)ret);
+}
+#endif
+
+/*
+ * Probe basic SYSCALL-program support before running the child. Once
+ * supported, a broken nested loader must fail the test instead of skipping.
+ */
+static int
+bpf_load_have_syscall(void)
+{
+	const struct bpf_insn insns[] = {
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 0 },
+		{ .code = BPF_JMP | BPF_EXIT },
+	};
+	union bpf_attr attr;
+	int fd;
+
+	bpf_load_attr(&attr, insns, nitems(insns), "quark_t_probe");
+	attr.prog_type = TB_LOAD_SYSCALL;
+	attr.prog_flags = TB_LOAD_SLEEPABLE;
+	fd = syscall(SYS_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
+	if (fd >= 0) {
+		close(fd);
+		return (1);
+	}
+	if (errno != EINVAL && errno != EOPNOTSUPP)
+		err(1, "probe syscall program support");
+	warnx("%s: no SYSCALL programs, skipping nested loads", __func__);
+	return (0);
+}
+
+#define TB_LOAD_INSN(_code, _dst, _src, _off, _imm) \
+	((struct bpf_insn){ .code = (_code), .dst_reg = (_dst), \
+	.src_reg = (_src), .off = (short)(_off), .imm = (int)(_imm) })
+
 static void
-bpf_load_child(struct bpf_load_results *results)
+bpf_load_store64(struct bpf_insn *code, u32 *n, int off, u64 value)
+{
+	code[(*n)++] = TB_LOAD_INSN(BPF_LD | BPF_DW | BPF_IMM, 1, 0, 0,
+	    (u32)value);
+	code[(*n)++] = TB_LOAD_INSN(0, 0, 0, 0, value >> 32);
+	code[(*n)++] = TB_LOAD_INSN(BPF_STX | BPF_DW | BPF_MEM, 10, 1, off, 0);
+}
+
+/* Two distinct successful inner loads, then a rejection, under one test run. */
+static void
+bpf_load_nested(struct bpf_load_results *results)
+{
+	const struct bpf_insn inner[] = {
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 0 },
+		{ .code = BPF_JMP | BPF_EXIT },
+	};
+	const char names[3][BPF_OBJ_NAME_LEN] = {
+		"quark_t_inner1", "quark_t_inner2", "quark_t_inbad"
+	};
+	struct bpf_insn code[128];
+	union bpf_attr attr;
+	char log[16384];
+	s64 ret[3];
+	u64 word;
+	u32 n;
+	int i, j, run, fd, runfd, saved_errno;
+	const int attr_off = -256, insns_off = -32, license_off = -40;
+
+	assert(sizeof(attr) <= 192);
+	n = 0;
+	/* Save the test context across helper calls and clear the whole attr. */
+	code[n++] = TB_LOAD_INSN(BPF_ALU64 | BPF_MOV | BPF_X, 6, 1, 0, 0);
+	for (i = 0; i < (int)sizeof(attr); i += sizeof(u64))
+		code[n++] = TB_LOAD_INSN(BPF_ST | BPF_DW | BPF_MEM,
+		    10, 0, attr_off + i, 0);
+	for (i = 0; i < (int)nitems(inner); i++) {
+		memcpy(&word, &inner[i], sizeof(word));
+		bpf_load_store64(code, &n, insns_off + i * sizeof(word), word);
+	}
+	code[n++] = TB_LOAD_INSN(BPF_ST | BPF_W | BPF_MEM,
+	    10, 0, license_off, 'G' | 'P' << 8 | 'L' << 16);
+	code[n++] = TB_LOAD_INSN(BPF_ST | BPF_W | BPF_MEM,
+	    10, 0, attr_off + offsetof(union bpf_attr, prog_type),
+	    BPF_PROG_TYPE_SOCKET_FILTER);
+	/* Point the inner attr at kernel stack memory, never caller memory. */
+	code[n++] = TB_LOAD_INSN(BPF_ALU64 | BPF_MOV | BPF_X, 1, 10, 0, 0);
+	code[n++] = TB_LOAD_INSN(BPF_ALU64 | BPF_ADD | BPF_K, 1, 0, 0, insns_off);
+	code[n++] = TB_LOAD_INSN(BPF_STX | BPF_DW | BPF_MEM,
+	    10, 1, attr_off + offsetof(union bpf_attr, insns), 0);
+	code[n++] = TB_LOAD_INSN(BPF_ALU64 | BPF_MOV | BPF_X, 1, 10, 0, 0);
+	code[n++] = TB_LOAD_INSN(BPF_ALU64 | BPF_ADD | BPF_K, 1, 0, 0, license_off);
+	code[n++] = TB_LOAD_INSN(BPF_STX | BPF_DW | BPF_MEM,
+	    10, 1, attr_off + offsetof(union bpf_attr, license), 0);
+	for (i = 0; i < (int)nitems(ret); i++) {
+		for (j = 0; j < (int)sizeof(names[i]); j += sizeof(word)) {
+			memcpy(&word, &names[i][j], sizeof(word));
+			bpf_load_store64(code, &n,
+			    attr_off + offsetof(union bpf_attr, prog_name) + j, word);
+		}
+		code[n++] = TB_LOAD_INSN(BPF_ST | BPF_W | BPF_MEM, 10, 0,
+		    attr_off + offsetof(union bpf_attr, insn_cnt), i == 2 ? 1 : 2);
+		code[n++] = TB_LOAD_INSN(BPF_ALU64 | BPF_MOV | BPF_K,
+		    1, 0, 0, BPF_PROG_LOAD);
+		code[n++] = TB_LOAD_INSN(BPF_ALU64 | BPF_MOV | BPF_X, 2, 10, 0, 0);
+		code[n++] = TB_LOAD_INSN(BPF_ALU64 | BPF_ADD | BPF_K,
+		    2, 0, 0, attr_off);
+		code[n++] = TB_LOAD_INSN(BPF_ALU64 | BPF_MOV | BPF_K,
+		    3, 0, 0, sizeof(attr));
+		code[n++] = TB_LOAD_INSN(BPF_JMP | BPF_CALL, 0, 0, 0, TB_LOAD_SYS_BPF);
+		code[n++] = TB_LOAD_INSN(BPF_STX | BPF_DW | BPF_MEM,
+		    6, 0, i * sizeof(ret[0]), 0);
+	}
+	/* Both the syscall result (0) and program result (123) differ from IDs. */
+	code[n++] = TB_LOAD_INSN(BPF_ALU64 | BPF_MOV | BPF_K, 0, 0, 0, 123);
+	code[n++] = TB_LOAD_INSN(BPF_JMP | BPF_EXIT, 0, 0, 0, 0);
+	assert(n <= nitems(code));
+	bpf_load_attr(&attr, code, n, "quark_t_loader");
+	attr.prog_type = TB_LOAD_SYSCALL;
+	attr.prog_flags = TB_LOAD_SLEEPABLE;
+	bzero(log, sizeof(log));
+	attr.log_buf = (u64)(uintptr_t)log;
+	attr.log_size = sizeof(log);
+	attr.log_level = 1;
+	fd = syscall(SYS_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
+	saved_errno = errno;
+	if (fd == -1)
+		errx(1, "load nested syscall program: %s\n%s",
+		    strerror(saved_errno), log);
+	if ((runfd = dup(fd)) == -1)
+		err(1, "dup syscall program");
+	bpf_load_result(results, fd, saved_errno, &attr, 1, 0);
+	/* Repeat the nested operations from the same task. */
+	for (run = 0; run < 2; run++) {
+		bzero(&attr, sizeof(attr));
+		bzero(ret, sizeof(ret));
+		attr.test.prog_fd = runfd;
+		attr.test.ctx_in = (u64)(uintptr_t)ret;
+		attr.test.ctx_size_in = sizeof(ret);
+		if (syscall(SYS_bpf, BPF_PROG_TEST_RUN, &attr, sizeof(attr)) != 0)
+			err(1, "run nested syscall program");
+		assert(attr.test.retval == 123 && ret[0] >= 0 && ret[1] >= 0 && ret[2] < 0);
+		for (i = 0; i < (int)nitems(ret); i++) {
+			bpf_load_attr(&attr, inner, i == 2 ? 1 : 2, names[i]);
+			fd = ret[i] < 0 ? -1 : (int)ret[i];
+			bpf_load_result(results, fd, ret[i] < 0 ? -(int)ret[i] : 0,
+			    &attr, 1, i == 2);
+		}
+		assert(results->call[results->count - 3].id !=
+		    results->call[results->count - 2].id);
+	}
+	close(runfd);
+	/* Follow the nested operations with an ordinary successful load. */
+	bpf_load_attr(&attr, inner, nitems(inner), "quark_t_postnest");
+	bpf_load_call(results, BPF_PROG_LOAD, &attr, sizeof(attr), &attr, 1, 0);
+	assert(results->call[results->count - 1].ret >= 0);
+}
+#undef TB_LOAD_INSN
+
+static void
+bpf_load_child(struct bpf_load_results *results, int have_syscall)
 {
 	const struct bpf_insn insns[] = {
 		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 0 },
@@ -4654,6 +4829,30 @@ bpf_load_child(struct bpf_load_results *results)
 	if (setrlimit(RLIMIT_NOFILE, &old_limit) == -1)
 		err(1, "restore rlimit");
 
+#ifdef __x86_64__
+	/* Every embedded pointer as well as the attr must fit the ia32 ABI. */
+	uattr = mmap(NULL, (size_t)pagesize, PROT_READ | PROT_WRITE,
+	    MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
+	if (uattr == MAP_FAILED)
+		err(1, "mmap compat attr");
+	memcpy((char *)uattr + sizeof(attr), insns, sizeof(insns));
+	memcpy((char *)uattr + sizeof(attr) + sizeof(insns), "GPL", 4);
+	bpf_load_attr(uattr, (void *)((char *)uattr + sizeof(attr)),
+	    nitems(insns), "quark_t_compat");
+	((union bpf_attr *)uattr)->license = (u64)(uintptr_t)((char *)uattr +
+	    sizeof(attr) + sizeof(insns));
+	fd = bpf_load_compat(uattr, sizeof(attr));
+	saved_errno = errno;
+	if (fd == -1 && saved_errno == ENOSYS)
+		warnx("%s: ia32 ABI unavailable, skipping compat load", __func__);
+	else {
+		assert(fd >= 0);
+		bpf_load_result(results, fd, saved_errno, uattr, 1, 0);
+	}
+	if (munmap(uattr, (size_t)pagesize) == -1)
+		err(1, "munmap compat attr");
+#endif
+
 	/* Keep a successful non-LOAD operation among the fixture calls. */
 	bzero(&attr, sizeof(attr));
 	attr.map_type = BPF_MAP_TYPE_HASH;
@@ -4662,10 +4861,12 @@ bpf_load_child(struct bpf_load_results *results)
 	fd = syscall(SYS_bpf, BPF_MAP_CREATE, &attr, sizeof(attr));
 	assert(fd >= 0);
 	close(fd);
+	if (have_syscall)
+		bpf_load_nested(results);
 }
 
 static pid_t
-bpf_load_run(struct bpf_load_results *results)
+bpf_load_run(struct bpf_load_results *results, int have_syscall)
 {
 	pid_t child;
 	int fds[2], status;
@@ -4675,7 +4876,7 @@ bpf_load_run(struct bpf_load_results *results)
 	if (child == 0) {
 		close(fds[0]);
 		bzero(results, sizeof(*results));
-		bpf_load_child(results);
+		bpf_load_child(results, have_syscall);
 		if (qwrite(fds[1], results, sizeof(*results)) == -1)
 			err(1, "write load results");
 		_exit(0);
@@ -4701,7 +4902,7 @@ t_bpf_load_fixture(const struct test *t, struct quark_queue_attr *qa)
 		warnx("%s: skipping raw BPF fixture under valgrind", __func__);
 		return (0);
 	}
-	bpf_load_run(&results);
+	bpf_load_run(&results, bpf_load_have_syscall());
 	return (0);
 }
 
