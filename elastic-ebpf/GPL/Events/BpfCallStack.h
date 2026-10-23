@@ -35,12 +35,13 @@ bpf_call_push(struct ebpf_bpf_call_stack *stack, __u64 sp, __u32 *dropped)
 #ifdef __clang__
 #pragma unroll
 #endif
-    for (int i = 0; i < EBPF_BPF_CALL_DEPTH; i++) {
-        if (depth == 0)
+    // Constant indices after unrolling keep each map read verifier-bounded.
+    for (int i = EBPF_BPF_CALL_DEPTH - 1; i >= 0; i--) {
+        if ((__u32)i >= depth)
+            continue;
+        if (stack->sp[i] > sp)
             break;
-        if (stack->sp[depth - 1] > sp)
-            break;
-        depth--;
+        depth = (__u32)i;
         (*dropped)++;
     }
 

@@ -3414,12 +3414,14 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 #define TB_LOAD_SYSCALL 31
 #define TB_LOAD_SYS_BPF 166
 #define TB_LOAD_SLEEPABLE (1U << 4)
-#define TB_LOAD_MAX 16
+#define TB_LOAD_MAX 24
 struct bpf_load_expected {
 	s64 ret;
 	u32 id;
 	u32 type;
 	u32 insn_cnt;
+	u32 flags;
+	u32 attach_type;
 	int attrs;
 	int no_object;
 	char name[QUARK_BPF_NAME_LEN];
@@ -3458,6 +3460,8 @@ bpf_load_result(struct bpf_load_results *results, int fd, int saved_errno,
 	if (attrs) {
 		expected->type = attr->prog_type;
 		expected->insn_cnt = attr->insn_cnt;
+		expected->flags = attr->prog_flags;
+		expected->attach_type = attr->expected_attach_type;
 		strlcpy(expected->name, attr->prog_name, sizeof(expected->name));
 	}
 	if (fd >= 0) {
@@ -3563,7 +3567,7 @@ bpf_load_nested(struct bpf_load_results *results)
 	s64 ret[3];
 	u64 word;
 	u32 n;
-	int i, j, fd, runfd, saved_errno;
+	int i, j, run, fd, runfd, saved_errno;
 	const int attr_off = -256, insns_off = -32, license_off = -40;
 
 	assert(sizeof(attr) <= 192);
@@ -3629,21 +3633,24 @@ bpf_load_nested(struct bpf_load_results *results)
 	if ((runfd = dup(fd)) == -1)
 		err(1, "dup syscall program");
 	bpf_load_result(results, fd, saved_errno, &attr, 1, 0);
-	bzero(&attr, sizeof(attr));
-	bzero(ret, sizeof(ret));
-	attr.test.prog_fd = runfd;
-	attr.test.ctx_in = (u64)(uintptr_t)ret;
-	attr.test.ctx_size_in = sizeof(ret);
-	if (syscall(SYS_bpf, BPF_PROG_TEST_RUN, &attr, sizeof(attr)) != 0)
-		err(1, "run nested syscall program");
-	assert(attr.test.retval == 123 && ret[0] >= 0 && ret[1] >= 0 && ret[2] < 0);
-	close(runfd);
-	for (i = 0; i < (int)nitems(ret); i++) {
-		bpf_load_attr(&attr, inner, i == 2 ? 1 : 2, names[i]);
-		fd = ret[i] < 0 ? -1 : (int)ret[i];
-		bpf_load_result(results, fd, ret[i] < 0 ? -(int)ret[i] : 0,
-		    &attr, 1, i == 2);
+	/* Repeat from the same task to catch stale nested adapter state. */
+	for (run = 0; run < 2; run++) {
+		bzero(&attr, sizeof(attr));
+		bzero(ret, sizeof(ret));
+		attr.test.prog_fd = runfd;
+		attr.test.ctx_in = (u64)(uintptr_t)ret;
+		attr.test.ctx_size_in = sizeof(ret);
+		if (syscall(SYS_bpf, BPF_PROG_TEST_RUN, &attr, sizeof(attr)) != 0)
+			err(1, "run nested syscall program");
+		assert(attr.test.retval == 123 && ret[0] >= 0 && ret[1] >= 0 && ret[2] < 0);
+		for (i = 0; i < (int)nitems(ret); i++) {
+			bpf_load_attr(&attr, inner, i == 2 ? 1 : 2, names[i]);
+			fd = ret[i] < 0 ? -1 : (int)ret[i];
+			bpf_load_result(results, fd, ret[i] < 0 ? -(int)ret[i] : 0,
+			    &attr, 1, i == 2);
+		}
 	}
+	close(runfd);
 	/* The ignored outer return must leave ordinary call matching intact. */
 	bpf_load_attr(&attr, inner, nitems(inner), "quark_t_postnest");
 	bpf_load_call(results, BPF_PROG_LOAD, &attr, sizeof(attr), &attr, 1, 0);
@@ -3711,9 +3718,10 @@ bpf_load_child(struct bpf_load_results *results, int have_syscall)
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
 	if (unlink(path) == -1 ||
-	    qwrite(fd, &attr, sizeof(attr)) != (ssize_t)sizeof(attr))
+	    qwrite(fd, &attr, sizeof(attr)) == -1)
 		err(1, "write attr");
-	uattr = mmap(NULL, sizeof(attr), PROT_READ, MAP_PRIVATE, fd, 0);
+	/* Newer LOAD paths also copy verifier metadata back into the attr. */
+	uattr = mmap(NULL, sizeof(attr), PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
 	if (uattr == MAP_FAILED)
 		err(1, "mmap attr");
 	close(fd);
@@ -3728,7 +3736,7 @@ bpf_load_child(struct bpf_load_results *results, int have_syscall)
 	    sizeof(attr), NULL, 0U);
 	saved_errno = errno;
 	assert(fd >= 0 || saved_errno == EINVAL);
-	bpf_load_result(results, fd, saved_errno, &attr, fd >= 0, fd == -1);
+	bpf_load_result(results, fd, saved_errno, &attr, 1, fd == -1);
 
 	/*
 	 * security_bpf_prog runs before allocating the returned fd. Its
@@ -3749,7 +3757,7 @@ bpf_load_child(struct bpf_load_results *results, int have_syscall)
 	}
 	assert(nfill < (int)nitems(fillers) && errno == EMFILE);
 	bpf_load_attr(&attr, insns, nitems(insns), "quark_t_nofd");
-	bpf_load_call(results, BPF_PROG_LOAD, &attr, sizeof(attr), &attr, 1, 0);
+	bpf_load_call(results, BPF_PROG_LOAD, &attr, sizeof(attr), &attr, 1, 1);
 	assert(results->call[results->count - 1].ret == -EMFILE);
 	while (nfill > 0)
 		close(fillers[--nfill]);
@@ -3801,6 +3809,7 @@ t_bpf_load(const struct test *t, struct quark_queue_attr *qa)
 		{ .code = BPF_JMP | BPF_EXIT },
 	};
 	struct quark_queue qq;
+	struct quark_queue_stats stats;
 	struct bpf_load_results results;
 	const struct bpf_load_expected *expected;
 	const struct quark_event *qev;
@@ -3841,7 +3850,7 @@ t_bpf_load(const struct test *t, struct quark_queue_attr *qa)
 	}
 	close(fds[0]);
 	assert(!quark_queue_trusted_pid_add(&qq, trusted));
-	if (qwrite(fds[1], "x", 1) != 1)
+	if (qwrite(fds[1], "x", 1) == -1)
 		err(1, "write trusted");
 	close(fds[1]);
 	if (waitpid(trusted, &status, 0) == -1)
@@ -3854,7 +3863,7 @@ t_bpf_load(const struct test *t, struct quark_queue_attr *qa)
 		close(fds[0]);
 		bzero(&results, sizeof(results));
 		bpf_load_child(&results, have_syscall);
-		if (qwrite(fds[1], &results, sizeof(results)) != sizeof(results))
+		if (qwrite(fds[1], &results, sizeof(results)) == -1)
 			err(1, "write load results");
 		_exit(0);
 	}
@@ -3904,7 +3913,14 @@ t_bpf_load(const struct test *t, struct quark_queue_attr *qa)
 			assert(bpf->valid & QUARK_BPF_VALID_ATTR);
 			assert(bpf->type == expected->type);
 			assert(bpf->insn_cnt == expected->insn_cnt);
+			assert(bpf->flags == expected->flags);
+			assert(bpf->attach_type == expected->attach_type);
 			assert(!strcmp(bpf->name, expected->name));
+		} else {
+			assert(!(bpf->valid & QUARK_BPF_VALID_ATTR));
+			assert(bpf->type == 0 && bpf->insn_cnt == 0);
+			assert(bpf->flags == 0 && bpf->attach_type == 0);
+			assert(bpf->name[0] == 0);
 		}
 		if (expected->ret >= 0) {
 			assert(bpf->valid & QUARK_BPF_VALID_OBJECT);
@@ -3917,6 +3933,10 @@ t_bpf_load(const struct test *t, struct quark_queue_attr *qa)
 		if (seen == results.count)
 			complete = now;
 	}
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.bpf_state_lost == 0);
+	assert(stats.bpf_metadata_lost == 0);
+	assert(stats.bpf_retprobe_missed == 0);
 	quark_queue_close(&qq);
 	return (0);
 }

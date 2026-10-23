@@ -126,10 +126,11 @@ static struct ebpf_bpf_call *bpf_call__current(void)
 
     if (!calls || calls->blocked_sp)
         return NULL;
-    depth = calls->stack.depth;
-    if (!depth || depth > EBPF_BPF_CALL_DEPTH)
+    // Check the index after subtraction, including wraparound from depth 0.
+    depth = calls->stack.depth - 1;
+    if (depth >= EBPF_BPF_CALL_DEPTH)
         return NULL;
-    return &calls->call[depth - 1];
+    return &calls->call[depth];
 }
 
 SEC("kprobe/security_bpf")
