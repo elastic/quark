@@ -133,8 +133,7 @@ static struct ebpf_bpf_call *bpf_call__current(void)
     return &calls->call[depth];
 }
 
-SEC("kprobe/security_bpf")
-int BPF_KPROBE(bpf_load__security, u32 cmd, const void *attr)
+static int bpf_load_security(u32 cmd, const void *attr)
 {
     struct ebpf_bpf_call *call;
     struct ebpf_bpf_load_attr a = {};
@@ -164,8 +163,7 @@ out:
     return 0;
 }
 
-SEC("kprobe/security_bpf_prog")
-int BPF_KPROBE(bpf_load__prog, const struct bpf_prog *prog)
+static int bpf_load_prog(const struct bpf_prog *prog)
 {
     struct ebpf_bpf_call *call;
 
@@ -184,6 +182,30 @@ int BPF_KPROBE(bpf_load__prog, const struct bpf_prog *prog)
     }
     preempt_enable();
     return 0;
+}
+
+SEC("kprobe/security_bpf")
+int BPF_KPROBE(bpf_load__security, u32 cmd, const void *attr)
+{
+    return bpf_load_security(cmd, attr);
+}
+
+SEC("fentry/security_bpf")
+int BPF_PROG(bpf_load_fentry_security, u32 cmd, const void *attr)
+{
+    return bpf_load_security(cmd, attr);
+}
+
+SEC("kprobe/security_bpf_prog")
+int BPF_KPROBE(bpf_load__prog, const struct bpf_prog *prog)
+{
+    return bpf_load_prog(prog);
+}
+
+SEC("fentry/security_bpf_prog")
+int BPF_PROG(bpf_load_fentry_prog, const struct bpf_prog *prog)
+{
+    return bpf_load_prog(prog);
 }
 
 static int bpf_call__exit(u64 sp, s32 ret)
@@ -252,6 +274,111 @@ out:
         bpf_map_delete_elem(&bpf_calls, &task);
     return 0;
 }
+
+/*
+ * x86/arm64 trampolines pass the same saved-argument array to fentry/fexit.
+ * Its address is an opaque kernel-stack position for this invocation, so the
+ * existing matcher also handles skipped exits during trampoline replacement.
+ * Never export or dereference the saved address after a callback returns.
+ */
+static u64 bpf_trampoline_position(const void *ctx, bool entry)
+{
+    u64 position = ebpf_ptr_to_scalar(ctx);
+
+    if (!position) {
+        u64 task = bpf_get_current_pid_tgid();
+        struct ebpf_bpf_calls *calls = bpf_map_lookup_elem(&bpf_calls, &task);
+
+        // A failed inner key must not leave its parent's capture exposed.
+        bpf_capture_lost((calls ? calls->stack.depth : 0) + (entry ? 1 : 0), false);
+        if (calls)
+            bpf_map_delete_elem(&bpf_calls, &task);
+    }
+    return position;
+}
+
+const volatile bool bpf_trampoline_wrapper = false;
+
+// Older BTF can declare the wrapper's pt_regs argument only as a forward
+// declaration, and the verifier then rejects a direct load of ctx[0].
+static __always_inline u64 bpf_trampoline_arg0(u64 *ctx)
+{
+    u64 arg = 0;
+
+    bpf_probe_read_kernel(&arg, sizeof(arg), ctx);
+    return arg;
+}
+
+SEC("fentry")
+int bpf_call_fentry(u64 *ctx)
+{
+    u64 arg0 = bpf_trampoline_arg0(ctx);
+    u32 cmd  = arg0;
+    u64 position;
+
+    if (bpf_trampoline_wrapper) {
+        const struct pt_regs *regs = (const void *)arg0;
+#if defined(__TARGET_ARCH_x86)
+        cmd = BPF_CORE_READ(regs, di);
+#elif defined(__TARGET_ARCH_arm64)
+        cmd = BPF_CORE_READ(regs, regs[0]);
+#endif
+    }
+    preempt_disable();
+    position = bpf_trampoline_position(ctx, true);
+    if (position)
+        bpf_call__enter(position, cmd);
+    preempt_enable();
+    return 0;
+}
+
+static __always_inline int bpf_trampoline_exit(u64 *ctx, s32 ret)
+{
+    u64 position;
+
+    preempt_disable();
+    position = bpf_trampoline_position(ctx, false);
+    if (position)
+        bpf_call__exit(position, ret);
+    preempt_enable();
+    return 0;
+}
+
+// Each variant uses a fixed context offset, as required by the verifier.
+SEC("fexit")
+int bpf_call_fexit1(u64 *ctx) { return bpf_trampoline_exit(ctx, (s32)ctx[1]); }
+
+SEC("fexit")
+int bpf_call_fexit3(u64 *ctx) { return bpf_trampoline_exit(ctx, (s32)ctx[3]); }
+
+SEC("fexit")
+int bpf_call_fexit4(u64 *ctx) { return bpf_trampoline_exit(ctx, (s32)ctx[4]); }
+
+SEC("fexit")
+int bpf_call_fexit7(u64 *ctx) { return bpf_trampoline_exit(ctx, (s32)ctx[7]); }
+
+#if defined(__TARGET_ARCH_x86)
+SEC("fentry")
+int bpf_call_fentry_compat(u64 *ctx)
+{
+    const struct pt_regs *regs = (const void *)bpf_trampoline_arg0(ctx);
+    u32 cmd = BPF_CORE_READ(regs, bx);
+    u64 position;
+
+    preempt_disable();
+    position = bpf_trampoline_position(ctx, true);
+    if (position)
+        bpf_call__enter(position, cmd);
+    preempt_enable();
+    return 0;
+}
+
+SEC("fexit")
+int bpf_call_fexit_compat(u64 *ctx)
+{
+    return bpf_trampoline_exit(ctx, (s32)ctx[1]);
+}
+#endif
 
 // These boundary probes are attached manually to one selected dispatcher, or
 // to the legacy native/compat wrappers. Never attach both strategies.
