@@ -2628,6 +2628,78 @@ test_process_event(struct quark_queue *qq, u32 pid, const char *cgroup)
 	return ((struct quark_process *)qev->process);
 }
 
+/* Raw BPF events retain actor identity without a process-cache entry. */
+static int
+t_bpf_event(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue qq;
+	struct quark_bpf expected, empty = {0};
+	const struct quark_event *event;
+	struct quark_process *process;
+	struct raw_event *raw;
+	char *text;
+	size_t length;
+	FILE *stream;
+	int i;
+
+	for (i = 0; i < 3; i++) {
+		quark_queue_init_bare(&qq);
+		process = i == 0 ? NULL : test_process_event(&qq, 12345, "/");
+		bzero(&expected, sizeof(expected));
+		expected.start_time_ns = 987654321;
+		expected.tgid = 12345;
+		expected.tid = 12346;
+		expected.cmd = BPF_PROG_LOAD;
+		expected.ret = i == 0 ? 0 : -EINVAL;
+		if (i < 2) {
+			expected.valid = QUARK_BPF_VALID_ATTR;
+			expected.type = i == 0 ? BPF_PROG_TYPE_SOCKET_FILTER : UINT32_MAX;
+			expected.insn_cnt = 2;
+			expected.attach_type = UINT32_MAX;
+			expected.flags = 0x80;
+			strlcpy(expected.name, "test_load", sizeof(expected.name));
+		}
+		if (i == 0) {
+			expected.valid |= QUARK_BPF_VALID_OBJECT;
+			expected.kind = QUARK_BPF_PROG;
+			expected.id = 71;
+		}
+		raw = raw_event_alloc(RAW_BPF);
+		assert(raw != NULL);
+		raw->pid = expected.tgid;
+		raw->time = 123;
+		raw->bpf.quark_bpf = expected;
+		assert(raw_event_insert(&qq, raw) == 0);
+		event = quark_queue_get_event(&qq);
+		assert(event != NULL && event->events == QUARK_EV_BPF);
+		assert(event->process == process && event->time == 123);
+		assert(!memcmp(&event->bpf, &expected, sizeof(expected)));
+		text = NULL;
+		length = 0;
+		stream = open_memstream(&text, &length);
+		assert(stream != NULL);
+		assert(quark_event_dump(event, stream) == (process == NULL ? -1 : 0));
+		assert(fclose(stream) == 0);
+		assert(strstr(text, "cmd=PROG_LOAD(5)") != NULL);
+		assert(strstr(text, "tgid=12345 tid=12346") != NULL);
+		assert((strstr(text, "prog=71") != NULL) == (i == 0));
+		assert((strstr(text, "name=test_load") != NULL) == (i < 2));
+		assert((strstr(text, "insns=2") != NULL) == (i < 2));
+		if (i == 1) {
+			assert(strstr(text, "ret=-22") != NULL);
+			assert(strstr(text, "type=4294967295") != NULL);
+			assert(strstr(text, "attach_type=4294967295") != NULL);
+		}
+		if (i == 2)
+			assert(strstr(text, " type=") == NULL);
+		free(text);
+		assert(quark_queue_get_event(&qq) == NULL);
+		assert(!memcmp(&qq.event_storage.bpf, &empty, sizeof(empty)));
+		quark_queue_close(&qq);
+	}
+	return (0);
+}
+
 static struct quark_process *
 test_raw_task_event(struct quark_queue *qq, int type, u32 pid,
     const char *cgroup)
@@ -5475,6 +5547,7 @@ struct test all_tests[] = {
 	T(t_bpf_call_stack),
 	T(t_bpf_telemetry),
 	T(t_bpf_retprobe),
+	T(t_bpf_event),
 	T(t_pod_get),
 	T(t_pod_create),
 	T(t_pod_dump),

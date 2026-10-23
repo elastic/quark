@@ -80,6 +80,59 @@ life, file-backed attempts once per protection transition per file per process
 life.
 It describes an attempt and does not assert that the protection change was
 committed.
+.It Dv QUARK_EV_BPF
+A
+.Dv BPF_PROG_LOAD
+attempt, reported with its actual operation result in
+.Em bpf.ret
+(a nonnegative fd, including zero, or negative errno).
+.Em cmd
+is the command with the
+.Dv BPF_COMMON_ATTRS
+bit removed.
+The process identifies the actor when available in the process cache.
+.Em bpf.tgid ,
+.Em bpf.tid
+and
+.Em bpf.start_time_ns
+retain its host process ID, invoking thread ID and process start time even
+when the process cache has no entry.
+The start time uses CLOCK_MONOTONIC.
+.Pp
+.Em valid
+indicates which metadata was captured.
+.Dv QUARK_BPF_VALID_ATTR
+means that
+.Em type ,
+.Em insn_cnt ,
+.Em attach_type ,
+.Em flags
+and
+.Em name
+were copied from the kernel's zero-filled attributes at
+.Fn security_bpf .
+These describe the requested program type, instruction count, expected attach
+type, program flags and name.
+The instruction count precedes verifier rewriting.
+An attempt that fails before the security check has no valid attributes;
+zero values alone do not indicate availability.
+.Pp
+.Dv QUARK_BPF_VALID_OBJECT
+means that a referenced program was observed after ID allocation and the
+operation subsequently succeeded.
+.Em kind
+is then
+.Dv QUARK_BPF_PROG ,
+.Em id
+is its kernel ID and
+.Em type
+is its observed program type.
+Identity is captured before fd installation, without looking up the returned
+fd through the process's fd table.
+A failed operation has no valid object identity, including failure to install
+the fd after verification.
+A successful event without valid identity indicates capture loss; consult
+.Xr quark_queue_get_stats 3 .
 .El
 .Pp
 It's important to note that
