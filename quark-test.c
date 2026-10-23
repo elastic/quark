@@ -3160,6 +3160,8 @@ t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
 		QQ_EBPF | QQ_NOVA,
 		QQ_KPROBE | QQ_NOVA,
 		QQ_EBPF | QQ_KPROBE | QQ_NOVA,
+		QQ_BPF | QQ_KPROBE,
+		QQ_BPF | QQ_NOVA,
 	};
 
 	quark_queue_default_attr(&attr);
@@ -4978,6 +4980,128 @@ t_bpf_load_fixture(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* LOAD metadata/results, copied attrs, failures, and trust selection. */
+static int
+t_bpf_load(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct bpf_insn insns[] = {
+		{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = 0 },
+		{ .code = BPF_JMP | BPF_EXIT },
+	};
+	struct quark_queue qq;
+	struct quark_queue_stats stats;
+	struct bpf_load_results results;
+	const struct bpf_load_expected *expected;
+	const struct quark_event *qev;
+	const struct quark_bpf *bpf;
+	u64 start, now, complete;
+	union bpf_attr attr;
+	pid_t child, trusted;
+	u32 seen, pid;
+	int fd, fds[2], status, have_syscall;
+	char c;
+
+	if (in_valgrind) {
+		warnx("%s: skipping raw compat/syscall fixture under valgrind", __func__);
+		return (0);
+	}
+
+	qa->flags |= QQ_BPF;
+	qa->hold_time = 10;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	have_syscall = bpf_load_have_syscall();
+
+	/* The consumer and an explicitly trusted loader must remain silent. */
+	bpf_load_attr(&attr, insns, nitems(insns), "quark_t_consume");
+	fd = syscall(SYS_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
+	assert(fd >= 0);
+	close(fd);
+	if (pipe(fds) == -1 || (trusted = fork()) == -1)
+		err(1, "trusted pipe/fork");
+	if (trusted == 0) {
+		close(fds[1]);
+		if (qread(fds[0], &c, 1) != 1)
+			_exit(1);
+		close(fds[0]);
+		bpf_load_attr(&attr, insns, nitems(insns), "quark_t_trusted");
+		fd = syscall(SYS_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
+		_exit(fd == -1);
+	}
+	close(fds[0]);
+	assert(!quark_queue_trusted_pid_add(&qq, trusted));
+	if (qwrite(fds[1], "x", 1) == -1)
+		err(1, "write trusted");
+	close(fds[1]);
+	if (waitpid(trusted, &status, 0) == -1)
+		err(1, "waitpid trusted");
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+	child = bpf_load_run(&results, have_syscall);
+
+	seen = 0;
+	complete = 0;
+	start = ns_clock();
+	for (;;) {
+		now = ns_clock();
+		if (now - start >= 5 * NS_PER_S)
+			errx(1, "load timeout: want %u seen %u", results.count, seen);
+		/* Drain a quiet tail too, catching duplicate or suppressed calls. */
+		if (seen == results.count && now - complete >=
+		    NS_PER_S / 2)
+			break;
+		qev = quark_queue_get_event(&qq);
+		if (qev == NULL) {
+			if (quark_queue_block(&qq) == -1)
+				err(1, "quark_queue_block");
+			continue;
+		}
+		if (!(qev->events & QUARK_EV_BPF))
+			continue;
+		pid = qev->bpf.tgid;
+		if (pid == (u32)getpid() || pid == (u32)trusted)
+			errx(1, "suppressed loader pid %u emitted BPF telemetry", pid);
+		if (pid != (u32)child)
+			continue;
+		bpf = &qev->bpf;
+		assert(bpf->cmd == BPF_PROG_LOAD);
+		assert(bpf->tgid == (u32)child && bpf->tid == (u32)child);
+		assert(bpf->start_time_ns != 0);
+		assert(seen < results.count);
+		expected = &results.call[seen++];
+		assert(bpf->ret == expected->ret);
+		if (expected->attrs) {
+			assert(bpf->valid & QUARK_BPF_VALID_ATTR);
+			assert(bpf->type == expected->type);
+			assert(bpf->insn_cnt == expected->insn_cnt);
+			assert(bpf->flags == expected->flags);
+			assert(bpf->attach_type == expected->attach_type);
+			assert(!strcmp(bpf->name, expected->name));
+		} else {
+			assert(!(bpf->valid & QUARK_BPF_VALID_ATTR));
+			assert(bpf->type == 0 && bpf->insn_cnt == 0);
+			assert(bpf->flags == 0 && bpf->attach_type == 0);
+			assert(bpf->name[0] == 0);
+		}
+		if (expected->ret >= 0) {
+			assert(bpf->valid & QUARK_BPF_VALID_OBJECT);
+			assert(bpf->kind == QUARK_BPF_PROG);
+			assert(bpf->id == expected->id);
+		} else if (expected->no_object) {
+			assert(!(bpf->valid & QUARK_BPF_VALID_OBJECT));
+			assert(bpf->kind == 0 && bpf->id == 0);
+		}
+		if (seen == results.count)
+			complete = now;
+	}
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.bpf_state_lost == 0);
+	assert(stats.bpf_metadata_lost == 0);
+	assert(stats.bpf_retprobe_missed == 0);
+	quark_queue_close(&qq);
+	return (0);
+}
+
 static int
 t_nova(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -5574,6 +5698,7 @@ struct test all_tests[] = {
 	T_EBPF(t_trusted_pid),
 	T_EBPF(t_trusted_map_rdonly),
 	T_EBPF(t_map_freeze),
+	T_EBPF(t_bpf_load),
 	T_EBPF(t_bpf_load_fixture),
 	T_NOVA(t_nova),		/* XXX temporary XXX */
 	{ NULL,	NULL, 0, 0 }

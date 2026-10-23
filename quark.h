@@ -981,6 +981,7 @@ struct quark_queue_attr {
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
 #define QQ_MPROTECT		(1 << 15)
+#define QQ_BPF			(1 << 16)
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */

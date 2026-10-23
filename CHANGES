@@ -246,3 +246,12 @@ Changes from 0.10 to 0.11
     process without a known container matches neither. Like event.scope,
     both fields are only supported by the ebpf backend, the kprobe and
     nova backends reject them with ENOTSUP.
+  o Added BPF_PROG_LOAD events (QUARK_EV_BPF, QQ_BPF, -a on quark-mon),
+    EBPF only. Events report the actual operation result, kernel-copied
+    request metadata and successful program identity captured while the
+    program is referenced, before installing the fd. Native, compat and
+    in-kernel operations use a common boundary where available, with
+    separate state for nested calls and explicit capture-loss counters.
+    Required hook failures fail initialization. Consumer and trusted-pid
+    suppression apply at operation entry. Further lifecycle commands and
+    helper metadata will be added in subsequent changes.
