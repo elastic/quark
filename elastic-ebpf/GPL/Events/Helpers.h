@@ -99,50 +99,48 @@ static __always_inline u64 ebpf_ptr_to_scalar(const void *ptr)
     })
 
 /*
- *  Reads the specified argument from struct pt_regs without dereferencing it. Note that
- *  we first have to read the value in struct pt_regs into a volatile temporary (_dst).
- *  Without this, LLVM can generate code like the following, which will fail to verify:
+ * Reads argument `arg` of `func` from the struct pt_regs of a kprobe, the
+ * kprobe counterpart of FUNC_ARG_READ(). Which register holds the argument is
+ * only known at load time (probe_fill_relos()), hence the switch.
  *
- *  r3 = 8                      # The register value we want to read is at offset 8 in the context
- *  r2 = r1                     # r1 = ctx pointer
- *  r2 += r3                    # Increment ctx ptr to register value we're interested in
- *  r3 = *(u64 *)(r2 +0)        # Dereference it (fail)
- *  dereference of modified ctx ptr R2 off=8 disallowed
+ * The register is read with bpf_probe_read_kernel(), PT_REGS_PARMn_CORE(),
+ * not loaded from the context. The verifier only accepts a context load with
+ * the offset in the load instruction itself, and clang 20 and 21 (not 19 and
+ * older) merge the five loads of the switch into one load from the context
+ * plus the offset the switch picked:
  *
- *  The verifier disallows dereferencing the context pointer when it's been
- *  modified. This will often happen as an inlining optimization if dst is
- *  immediately passed into a function. We instead want code like the following
- *  to be generated:
+ *  r1 = 96                     # offset of the register, picked by the switch
+ *  r6 += r1                    # r6 = ctx
+ *  r1 = *(u64 *)(r6 +0)
+ *  dereference of modified ctx ptr R6 off=96 disallowed
  *
- *  r2 = r1                     # r1 = ctx pointer
- *  r3 = *(u64 *)(r2 + 8)       # Dereference it, putting the increment in the dereference insn
- *  ...pass r3 to a function
+ * The source argument of bpf_probe_read_kernel() is ARG_ANYTHING, so the
+ * verifier accepts any register contents there. The old approach needed clang
+ * to emit a specific instruction shape, and the volatile temporary stopped
+ * forcing it with clang 20.
  */
 #define FUNC_ARG_READ_PTREGS(dst, func, arg)                                                       \
     ({                                                                                             \
         int ret = 0;                                                                               \
-        volatile typeof(dst) _dst;                                                                 \
         switch (arg__##func##__##arg##__) {                                                        \
         case 0:                                                                                    \
-            _dst = (typeof(dst))PT_REGS_PARM1(ctx);                                                \
+            dst = (typeof(dst))PT_REGS_PARM1_CORE(ctx);                                            \
             break;                                                                                 \
         case 1:                                                                                    \
-            _dst = (typeof(dst))PT_REGS_PARM2(ctx);                                                \
+            dst = (typeof(dst))PT_REGS_PARM2_CORE(ctx);                                            \
             break;                                                                                 \
         case 2:                                                                                    \
-            _dst = (typeof(dst))PT_REGS_PARM3(ctx);                                                \
+            dst = (typeof(dst))PT_REGS_PARM3_CORE(ctx);                                            \
             break;                                                                                 \
         case 3:                                                                                    \
-            _dst = (typeof(dst))PT_REGS_PARM4(ctx);                                                \
+            dst = (typeof(dst))PT_REGS_PARM4_CORE(ctx);                                            \
             break;                                                                                 \
         case 4:                                                                                    \
-            _dst = (typeof(dst))PT_REGS_PARM5(ctx);                                                \
+            dst = (typeof(dst))PT_REGS_PARM5_CORE(ctx);                                            \
             break;                                                                                 \
         default:                                                                                   \
             ret = -1;                                                                              \
         };                                                                                         \
-        dst = _dst;                                                                                \
-        barrier();                                                                                 \
         ret;                                                                                       \
     })
 
