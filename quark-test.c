@@ -44,6 +44,7 @@
 #include <unistd.h>
 
 #include "quark.h"
+#include "quark-test.h"
 
 /* For bypass tests */
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
@@ -5207,6 +5208,7 @@ struct test all_tests[] = {
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
 	T(t_backend_flags),
+	T(t_bpf_call_stack),
 	T(t_pod_get),
 	T(t_pod_create),
 	T(t_pod_dump),
