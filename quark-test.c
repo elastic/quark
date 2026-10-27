@@ -847,6 +847,24 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * Open a queue with all the flags that select BPF programs, so that all the
+ * programs load. No other test sets QQ_PTRACE, QQ_MODULE_LOAD or QQ_GETPID.
+ */
+static int
+t_probe_all(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+
+	qa->flags |= QQ_SOCK_CONN | QQ_DNS | QQ_FILE | QQ_SHM | QQ_TTY |
+	    QQ_PTRACE | QQ_MODULE_LOAD | QQ_GETPID | QQ_MPROTECT;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
  * CI boxes are small, so quark_queue_open() only allocates the 4 MiB
  * floor. Create a 64 MiB ringbuf so RLIMIT_MEMLOCK / memcg accounting
  * is exercised on every kernel we test.
@@ -4997,6 +5015,7 @@ t_container_get(const struct test *t, struct quark_queue_attr *qa)
 #define S(_x)		#_x
 struct test all_tests[] = {
 	T_EBPF(t_probe),
+	T_EBPF(t_probe_all),
 	T_EBPF(t_ringbuf_max),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
