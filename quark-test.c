@@ -429,7 +429,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-1bktv] [-x test] [tests ...]\n",
+	fprintf(stderr, "usage: %s [-1bKktv] [-x test] [tests ...]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -l\n",
 	    program_invocation_short_name);
@@ -5462,7 +5462,7 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "1bhklntvVx:")) != -1) {
+	while ((ch = getopt(argc, argv, "1bhKklntvVx:")) != -1) {
 		switch (ch) {
 		case '1':
 			noforkflag = 1;
@@ -5476,6 +5476,10 @@ main(int argc, char *argv[])
 			else
 				usage();
 			break;	/* NOTREACHED */
+		case 'K':
+			if (setenv("QUARK_BPF_KPROBE", "1", 1) == -1)
+				err(1, "setenv");
+			break;
 		case 'k':
 			kflag = 1;
 			break;
