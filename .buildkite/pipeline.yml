@@ -128,6 +128,17 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
+  - label: "quark-test on fedora 32 (ebpf kprobe fallback)"
+    key: test_fedora_32_kprobe_fallback
+    command: "./.buildkite/runtest_distro.sh fedora 32 -b -K"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
   - label: "quark-test on fedora 33"
     key: test_fedora_33
     command: "./.buildkite/runtest_distro.sh fedora 33"
@@ -296,6 +307,17 @@ steps:
   - label: "quark-test on rhel 8"
     key: test_rhel_8
     command: "./.buildkite/runtest_distro.sh rhel 8"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on rhel 8 (ebpf kprobe fallback)"
+    key: test_rhel_8_kprobe_fallback
+    command: "./.buildkite/runtest_distro.sh rhel 8 -b -K"
     depends_on:
       - make_docker
     agents:
@@ -538,6 +560,17 @@ steps:
   - label: "quark-test on ubuntu 26.04"
     key: test_ubuntu_26_04
     command: "./.buildkite/runtest_distro.sh ubuntu 26.04"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on ubuntu 26.04 (ebpf kprobe fallback)"
+    key: test_ubuntu_26_04_kprobe_fallback
+    command: "./.buildkite/runtest_distro.sh ubuntu 26.04 -b -K"
     depends_on:
       - make_docker
     agents:
