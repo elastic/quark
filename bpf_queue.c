@@ -22,6 +22,11 @@
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 
+/* Names watched by the file access probe, the public cap is the map size */
+#define FILE_ACCESS_ANCHORS_MAX_ENTRIES	QUARK_FILE_ACCESS_NAMES_MAX
+_Static_assert(QUARK_FILE_ACCESS_NAME_MAX == EBPF_FILE_ACCESS_NAME_MAX,
+    "quark.h and EbpfEventProto.h disagree on the file access name size");
+
 struct bpf_queue {
 	struct bpf_probes	*probes;
 	struct ring_buffer	*ringbuf;
@@ -1273,8 +1278,9 @@ bpf_map_harden_supported(void)
 }
 
 /*
- * Everything but the trusted map and the ring buffer is written only by the
- * probes: state, scratch space, dedup and attribution tables. Freeze them so
+ * Everything but the trusted map, the file access anchors and the ring
+ * buffer is written only by the probes: state, scratch space, dedup and
+ * attribution tables. Freeze them so
  * no process can plant or erase our state through bpf(2); a stranger could
  * otherwise pre-mark its own mprotect transitions as seen, or poison socket
  * attribution. libbpf freezes its own .rodata already, skip the internal
@@ -1294,6 +1300,7 @@ bpf_maps_freeze(struct bpf_probes *p)
 
 	bpf_object__for_each_map(m, p->obj) {
 		if (m == p->maps.elastic_ebpf_events_trusted_pids ||
+		    m == p->maps.elastic_ebpf_file_access_anchors ||
 		    m == p->maps.ringbuf || bpf_map__is_internal(m) ||
 		    !bpf_map__autocreate(m))
 			continue;
@@ -1412,8 +1419,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		    (btf_number_of_params(btf, "do_renameat2") == -1);
 
 		/*
-		 * The do_filp_open() return is shared with the file access
-		 * events, the file event side of it is behind this flag.
+		 * The do_filp_open() return is shared with QQ_FILE_ACCESS,
+		 * the file event side of it is behind this flag.
 		 */
 		p->rodata->file_events_enabled = 1;
 
@@ -1513,14 +1520,45 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			goto fail;
 	}
 
-	/*
-	 * Nothing sets file_access_enabled, so the verifier prunes the file
-	 * access branch of the open probe and its maps are not created.
-	 */
-	if (bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_anchors, 0) != 0 ||
-	    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0) {
-		qwarn("bpf_map__set_autocreate file_access");
-		goto fail;
+	if (qq->flags & QQ_FILE_ACCESS) {
+		int filp_open_renamed =
+		    (btf_number_of_params(btf, "do_filp_open") == -1);
+
+		/*
+		 * Shares the do_filp_open() return with the file create
+		 * event; the entry kprobe is only needed to carry the
+		 * arguments to a kretprobe.
+		 */
+		if (use_fentry) {
+			if (filp_open_renamed)
+				bpf_program__set_autoload(p->progs.fexit__do_file_open, 1);
+			else
+				bpf_program__set_autoload(p->progs.fexit__do_filp_open, 1);
+		} else {
+			if (filp_open_renamed) {
+				bpf_program__set_autoload(p->progs.kprobe__do_file_open, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__do_file_open, 1);
+			} else {
+				bpf_program__set_autoload(p->progs.kprobe__do_filp_open, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__do_filp_open, 1);
+			}
+		}
+		/*
+		 * Turns on the branch in the always loaded open probe; the
+		 * maps are only sized (and created) here, see the else.
+		 */
+		p->rodata->file_access_enabled = 1;
+		if (bpf_map__set_max_entries(p->maps.elastic_ebpf_file_access_anchors,
+		    FILE_ACCESS_ANCHORS_MAX_ENTRIES) != 0) {
+			qwarn("bpf_map__set_max_entries file_access_anchors");
+			goto fail;
+		}
+	} else {
+		if (bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_anchors, 0) != 0 ||
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0) {
+			qwarn("bpf_map__set_autocreate file_access");
+			goto fail;
+		}
 	}
 
 	if (qq->flags & QQ_DNS) {
@@ -1624,13 +1662,20 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 * BPF writer, ours or a stranger's; a root process can still update it
 	 * through bpf(2), but can't smuggle a writer in as BPF code. The init
 	 * buffer is only ever copied from, by anyone, so it gets the flag too
-	 * and is frozen below.
+	 * and is frozen below. The file access anchors are the trusted map's
+	 * case again: filled through quark_queue_file_access_name_add(3),
+	 * only looked up by the probes.
 	 */
 	harden = bpf_map_harden_supported();
 	if (harden & BPF_HARDEN_RDONLY_PROG) {
 		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_events_trusted_pids,
 		    BPF_F_RDONLY_PROG) != 0) {
 			qwarn("bpf_map__set_map_flags trusted_pids");
+			goto fail;
+		}
+		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_file_access_anchors,
+		    BPF_F_RDONLY_PROG) != 0) {
+			qwarn("bpf_map__set_map_flags file_access_anchors");
 			goto fail;
 		}
 		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_events_init_buffer,
@@ -1904,6 +1949,59 @@ quark_queue_trusted_pid_add(struct quark_queue *qq, u32 pid)
 	v = 1;
 	if (bpf_map__update_elem(m, &pid, sizeof(pid),
 	    &v, sizeof(v), BPF_ANY) < 0)
+		return (-1);
+
+	return (0);
+}
+
+static struct bpf_map *
+file_access_anchors_map(struct quark_queue *qq)
+{
+	struct bpf_probes	*p;
+	struct bpf_map		*m;
+
+	if (!(qq->flags & QQ_FILE_ACCESS))
+		return (errno = EINVAL, NULL);
+	if ((p = quark_get_bpf_probes(qq)) == NULL)
+		return (NULL);
+	if ((m = p->maps.elastic_ebpf_file_access_anchors) == NULL)
+		return (errno = EINVAL, NULL);
+
+	return (m);
+}
+
+/*
+ * Roles accumulate: a name added as a leaf and then as a parent matches both.
+ * The name is one path component, the probe compares exactly that.
+ */
+int
+quark_queue_file_access_name_add(struct quark_queue *qq, const char *name,
+    int roles)
+{
+	struct bpf_map			*m;
+	struct ebpf_file_access_name	 k;
+	u32				 v, cur;
+	size_t				 len;
+
+	if (name == NULL || roles == 0 ||
+	    (roles & ~(QUARK_FILE_ACCESS_NAME_LEAF|QUARK_FILE_ACCESS_NAME_PARENT)))
+		return (errno = EINVAL, -1);
+	len = strlen(name);
+	if (len == 0 || len >= sizeof(k.name) || strchr(name, '/') != NULL)
+		return (errno = EINVAL, -1);
+	if ((m = file_access_anchors_map(qq)) == NULL)
+		return (-1);
+	bzero(&k, sizeof(k));
+	memcpy(k.name, name, len);
+	v = 0;
+	if (roles & QUARK_FILE_ACCESS_NAME_LEAF)
+		v |= EBPF_FILE_ACCESS_ANCHOR_LEAF;
+	if (roles & QUARK_FILE_ACCESS_NAME_PARENT)
+		v |= EBPF_FILE_ACCESS_ANCHOR_PARENT;
+	if (bpf_map__lookup_elem(m, &k, sizeof(k), &cur, sizeof(cur), 0) == 0)
+		v |= cur;
+	if (bpf_map__update_elem(m, &k, sizeof(k), &v, sizeof(v),
+	    BPF_ANY) < 0)
 		return (-1);
 
 	return (0);

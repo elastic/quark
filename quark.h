@@ -162,6 +162,8 @@ int			 bpf_queue_open(struct quark_queue *);
 struct bpf_probes	*quark_get_bpf_probes(struct quark_queue *);
 int			 quark_queue_trusted_pid_add(struct quark_queue *, u32);
 int			 quark_queue_trusted_pid_reset(struct quark_queue *);
+int			 quark_queue_file_access_name_add(struct quark_queue *,
+			     const char *, int);
 
 /* kprobe_queue.c */
 int			 kprobe_queue_open(struct quark_queue *);
@@ -421,8 +423,17 @@ struct raw_file {
 
 /*
  * A successful open(2) family call on a file whose name matched one of the
- * file access anchors.
+ * anchors given to quark_queue_file_access_name_add(3).
  */
+/*
+ * Roles for quark_queue_file_access_name_add(3), name is a file or a
+ * directory; a directory covers up to three levels below it.
+ */
+#define QUARK_FILE_ACCESS_NAME_LEAF	(1 << 0)
+#define QUARK_FILE_ACCESS_NAME_PARENT	(1 << 1)
+#define QUARK_FILE_ACCESS_NAME_MAX	64		/* including NUL */
+#define QUARK_FILE_ACCESS_NAMES_MAX	1024		/* registered at once */
+
 struct quark_file_access {
 	const char	*path;		/* resolved path */
 	const char	*sym_target;	/* NULL or symlink target */
@@ -973,6 +984,7 @@ struct quark_queue_attr {
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
 #define QQ_MPROTECT		(1 << 15)
+#define QQ_FILE_ACCESS		(1 << 16)	/* experimental */
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */

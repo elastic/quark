@@ -416,11 +416,11 @@ out:
 /*
  * The code executing on do_filp_open()'s return, do_filp_open__exit(),
  * feeds two event families: file events (QQ_FILE) take the create, memfd and
- * shmem opens from it whilst file access events take the anchored opens.
- * Each family runs only behind its own gate, so a queue never emits the
- * events of a family it did not ask for and never pays for its bookkeeping.
- * Both gates are rodata, set by bpf_queue_open1(), so the verifier prunes the
- * one that is off.
+ * shmem opens from it whilst file access events (QQ_FILE_ACCESS) take the
+ * anchored opens. Either flag loads the probe but each family runs only
+ * behind its own gate, so a queue with one flag never emits the other's
+ * events and never pays for its bookkeeping. Both gates are rodata, set
+ * by bpf_queue_open1(), so the verifier prunes the one that is off.
  */
 const volatile bool file_events_enabled = false;
 const volatile bool file_access_enabled = false;
