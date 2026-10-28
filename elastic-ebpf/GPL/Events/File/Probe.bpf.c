@@ -619,7 +619,7 @@ static int do_filp_open__exit(int dfd, struct filename *pathname, const struct o
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    // op is NULL under a kretprobe, which does not see the arguments; f_flags
+    // op is NULL on a kretprobe kernel when the entry state was missed; f_flags
     // is then the fallback, and do_dentry_open() has already stripped
     // O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC from it, so such an open is reported
     // without them.
@@ -741,10 +741,65 @@ int BPF_PROG(fexit__do_filp_open,
     return do_filp_open__exit(dfd, pathname, op, ret);
 }
 
+// Without fexit the arguments are gone by the time we see the return; the
+// entry kprobe below keeps them, and is only loaded when file access events
+// are wanted since the create event does not need them.
+static int do_filp_open__enter(int dfd, struct filename *pathname, const struct open_flags *op)
+{
+    struct ebpf_events_state state = {};
+
+    // Same exclusion as the exit side, which is the only reader of this state
+    if (ebpf_events_is_trusted_pid())
+        return 0;
+    state.filp_open.dfd      = dfd;
+    state.filp_open.pathname = pathname;
+    state.filp_open.op       = op;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_FILP_OPEN, &state);
+
+    return 0;
+}
+
+SEC("kprobe/do_filp_open")
+int BPF_KPROBE(kprobe__do_filp_open, int dfd, struct filename *pathname, const struct open_flags *op)
+{
+    int r;
+
+    preempt_disable();
+    r = do_filp_open__enter(dfd, pathname, op);
+    preempt_enable();
+
+    return r;
+}
+
+static int do_filp_open__kretprobe(struct file *ret)
+{
+    struct ebpf_events_state *state    = NULL;
+    int                       dfd      = 0;
+    struct filename          *pathname = NULL;
+    const struct open_flags  *op       = NULL;
+    int                       r;
+
+    // The entry kprobe that keeps the arguments is loaded only with the file
+    // access events; the file events alone would pay a lookup per open for a
+    // state nothing sets.
+    if (file_access_enabled)
+        state = ebpf_events_state__get(EBPF_EVENTS_STATE_FILP_OPEN);
+    if (state != NULL) {
+        dfd      = state->filp_open.dfd;
+        pathname = state->filp_open.pathname;
+        op       = state->filp_open.op;
+    }
+    r = do_filp_open__exit(dfd, pathname, op, ret);
+    if (state != NULL)
+        ebpf_events_state__del(EBPF_EVENTS_STATE_FILP_OPEN);
+
+    return r;
+}
+
 SEC("kretprobe/do_filp_open")
 int BPF_KRETPROBE(kretprobe__do_filp_open, struct file *ret)
 {
-    return do_filp_open__exit(0, NULL, NULL, ret);
+    return do_filp_open__kretprobe(ret);
 }
 
 SEC("fexit/do_file_open")
@@ -757,10 +812,22 @@ int BPF_PROG(fexit__do_file_open,
     return do_filp_open__exit(dfd, pathname, op, ret);
 }
 
+SEC("kprobe/do_file_open")
+int BPF_KPROBE(kprobe__do_file_open, int dfd, struct filename *pathname, const struct open_flags *op)
+{
+    int r;
+
+    preempt_disable();
+    r = do_filp_open__enter(dfd, pathname, op);
+    preempt_enable();
+
+    return r;
+}
+
 SEC("kretprobe/do_file_open")
 int BPF_KRETPROBE(kretprobe__do_file_open, struct file *ret)
 {
-    return do_filp_open__exit(0, NULL, NULL, ret);
+    return do_filp_open__kretprobe(ret);
 }
 
 static int do_renameat2__enter()
