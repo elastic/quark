@@ -47,6 +47,7 @@ enum ebpf_event_type {
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
     EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
     EBPF_EVENT_PROCESS_MPROTECT             = (1 << 22),
+    EBPF_EVENT_PROCESS_VM_ACCESS            = (1 << 24),
 };
 
 struct ebpf_event_header {
@@ -371,6 +372,43 @@ struct ebpf_process_ptrace_event {
     int64_t request;
     uint64_t addr;
     uint64_t data;
+} __attribute__((packed));
+
+#define EBPF_PROCESS_VM_SNAPSHOT_MAX 8
+
+enum ebpf_process_vm_snapshot_status {
+    EBPF_PROCESS_VM_SNAPSHOT_COMPLETE,
+    EBPF_PROCESS_VM_SNAPSHOT_UNREADABLE,
+    EBPF_PROCESS_VM_SNAPSHOT_TRUNCATED,
+    EBPF_PROCESS_VM_SNAPSHOT_OVERFLOW,
+    EBPF_PROCESS_VM_SNAPSHOT_INVALID,
+};
+
+enum ebpf_process_vm_access_operation {
+    EBPF_PROCESS_VM_ACCESS_READ  = 1,
+    EBPF_PROCESS_VM_ACCESS_WRITE = 2,
+};
+
+struct ebpf_process_vm_access_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    uint32_t target_pid;
+    uint32_t operation;
+    uint64_t target_start_time_ns;
+    uint64_t local_iovcnt;
+    uint64_t remote_iovcnt;
+    uint64_t first_remote_addr;
+    uint64_t first_remote_len;
+    int64_t ret;
+    int32_t requested_pid;
+    uint32_t caller_pidns;
+    uint64_t flags;
+    uint64_t local_capacity;
+    uint64_t remote_capacity;
+    uint32_t local_snapshot_status;
+    uint32_t remote_snapshot_status;
+    uint32_t first_remote_valid;
+    uint32_t target_resolved;
 } __attribute__((packed));
 
 struct ebpf_process_load_module_event {
