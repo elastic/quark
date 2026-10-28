@@ -209,6 +209,9 @@ A
 rule never matches a file access event; the names are the only filter on the
 file itself.
 .Pp
+Each event is reported once per process, file and access class (read, write,
+exec, path-only), a repeat within the same process is suppressed in the kernel.
+A new process, including a forked child, is reported again.
 Opens by the process that owns the queue are never reported.
 .Sh RETURN VALUES
 Zero on success, -1 otherwise and

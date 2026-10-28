@@ -26,6 +26,8 @@
 #define FILE_ACCESS_ANCHORS_MAX_ENTRIES	QUARK_FILE_ACCESS_NAMES_MAX
 _Static_assert(QUARK_FILE_ACCESS_NAME_MAX == EBPF_FILE_ACCESS_NAME_MAX,
     "quark.h and EbpfEventProto.h disagree on the file access name size");
+/* Files and failed names with a reported access, per process */
+#define FILE_ACCESS_SEEN_MAX_ENTRIES	16384
 
 struct bpf_queue {
 	struct bpf_probes	*probes;
@@ -1553,8 +1555,14 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			qwarn("bpf_map__set_max_entries file_access_anchors");
 			goto fail;
 		}
+		if (bpf_map__set_max_entries(p->maps.elastic_ebpf_file_access_file_seen,
+		    FILE_ACCESS_SEEN_MAX_ENTRIES) != 0) {
+			qwarn("bpf_map__set_max_entries file_access_file_seen");
+			goto fail;
+		}
 	} else {
 		if (bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_anchors, 0) != 0 ||
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_file_seen, 0) != 0 ||
 		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0) {
 			qwarn("bpf_map__set_autocreate file_access");
 			goto fail;

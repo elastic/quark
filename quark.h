@@ -423,7 +423,8 @@ struct raw_file {
 
 /*
  * A successful open(2) family call on a file whose name matched one of the
- * anchors given to quark_queue_file_access_name_add(3).
+ * anchors given to quark_queue_file_access_name_add(3). One event per
+ * process life, file and access class (read, write, exec, path only).
  */
 /*
  * Roles for quark_queue_file_access_name_add(3), name is a file or a

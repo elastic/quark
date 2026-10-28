@@ -230,7 +230,8 @@ Changes from 0.10 to 0.11
     quark_event{} gets a file_access member.
     The probe reports the open of any file whose name, or one of
     its three nearest directories, was registered through
-    quark_queue_file_access_name_add(3).
+    quark_queue_file_access_name_add(3). Events are deduplicated in
+    the kernel per process life, file and access class.
     Experimental, only supported by the eBPF backend.
   o An executable mprotect() transition now counts as reported only once
     its event is written to the ring buffer. A transition whose event was
