@@ -429,7 +429,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-1bktv] [-x test] [tests ...]\n",
+	fprintf(stderr, "usage: %s [-1bKktv] [-x test] [tests ...]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -l\n",
 	    program_invocation_short_name);
@@ -839,6 +839,24 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue	 qq;
 
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Open a queue with all the flags that select BPF programs, so that all the
+ * programs load. No other test sets QQ_PTRACE, QQ_MODULE_LOAD or QQ_GETPID.
+ */
+static int
+t_probe_all(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+
+	qa->flags |= QQ_SOCK_CONN | QQ_DNS | QQ_FILE | QQ_SHM | QQ_TTY |
+	    QQ_PTRACE | QQ_MODULE_LOAD | QQ_GETPID | QQ_MPROTECT;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "%s: quark_queue_open", t->name);
 	quark_queue_close(&qq);
@@ -5162,6 +5180,7 @@ t_container_get(const struct test *t, struct quark_queue_attr *qa)
 #define S(_x)		#_x
 struct test all_tests[] = {
 	T_EBPF(t_probe),
+	T_EBPF(t_probe_all),
 	T_EBPF(t_ringbuf_max),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
@@ -5209,6 +5228,7 @@ struct test all_tests[] = {
 	T_KPROBE(t_stats),
 	T(t_backend_flags),
 	T(t_bpf_call_stack),
+	T(t_bpf_telemetry),
 	T(t_pod_get),
 	T(t_pod_create),
 	T(t_pod_dump),
@@ -5627,7 +5647,7 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "1bhklntvVx:")) != -1) {
+	while ((ch = getopt(argc, argv, "1bhKklntvVx:")) != -1) {
 		switch (ch) {
 		case '1':
 			noforkflag = 1;
@@ -5641,6 +5661,10 @@ main(int argc, char *argv[])
 			else
 				usage();
 			break;	/* NOTREACHED */
+		case 'K':
+			if (setenv("QUARK_BPF_KPROBE", "1", 1) == -1)
+				err(1, "setenv");
+			break;
 		case 'k':
 			kflag = 1;
 			break;
