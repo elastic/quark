@@ -2,6 +2,7 @@
 /* Copyright (c) 2024-2026 Elastic NV */
 
 #include <asm/termbits.h>
+#include <linux/magic.h>
 #include <linux/perf_event.h>
 
 #include <sys/ioctl.h>
@@ -16,6 +17,7 @@
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
+#include <sys/vfs.h>
 #include <sys/wait.h>
 
 #include <bpf/bpf.h>
@@ -2133,6 +2135,137 @@ t_file_access_with_file(const struct test *t, struct quark_queue_attr *qa)
 
 	return (0);
 }
+
+/*
+ * A directory on a filesystem that hands a freed inode number to the next
+ * file it creates (ext4, xfs) and tells the two apart through i_generation.
+ * tmpfs and ramfs count up and never reuse, and /tmp is one of those on the
+ * CI initramfs and on recent Ubuntu, so the test would pass without
+ * exercising anything there. overlayfs reuses (the number is the upper
+ * filesystem's) but leaves i_generation zero, the known gap documented in
+ * Dedup.h, so the test would fail there for a reason it does not test.
+ * Returns 0 when no candidate qualifies, with dir set to /tmp.
+ */
+static int
+reusing_fs_dir(char *dir, size_t dirsz)
+{
+	static const char	*candidates[] = { "/var/tmp", "/tmp", "/" };
+	struct statfs		 sfs;
+	size_t			 i;
+
+	for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+		if (statfs(candidates[i], &sfs) == -1)
+			continue;
+		if (sfs.f_type == TMPFS_MAGIC || sfs.f_type == RAMFS_MAGIC ||
+		    sfs.f_type == OVERLAYFS_SUPER_MAGIC)
+			continue;
+		snprintf(dir, dirsz, "%s/quark-test-fa.XXXXXX", candidates[i]);
+		return (1);
+	}
+	snprintf(dir, dirsz, "/tmp/quark-test-fa.XXXXXX");
+
+	return (0);
+}
+
+/*
+ * The dedup key must tell apart two files that share (device, inode number).
+ * On a filesystem that reuses freed numbers, unlinking old and creating new
+ * in the same directory usually gives new the number of old: a different
+ * file, under a different name, that must be reported. Each attempt that
+ * does not reuse a number already claimed by this process is reported
+ * normally and the next one tries again; the test warns rather than pass
+ * vacuously if no attempt reused one.
+ */
+#define INODE_REUSE_ATTEMPTS 16
+static int
+t_file_access_inode_reuse(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct stat			 st;
+	ino_t				 claimed[INODE_REUSE_ATTEMPTS];
+	char				 dir[64], anchor[128];
+	char				 sentinel[PATH_MAX];
+	char				 old[PATH_MAX], new[PATH_MAX];
+	int				 fd, i, j, nclaimed, reused;
+
+	if (!reusing_fs_dir(dir, sizeof(dir)))
+		warnx("%s: no filesystem here reuses inode numbers, the reuse "
+		    "is not exercised", __func__);
+
+	qa->flags |= QQ_FILE_ACCESS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-anchor",
+	    QUARK_FILE_ACCESS_NAME_PARENT));
+
+	if (file_access_in_child(&qq))
+		return (0);
+
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	snprintf(anchor, sizeof(anchor), "%s/quark-test-anchor", dir);
+	if (mkdir(anchor, 0700) == -1)
+		err(1, "mkdir");
+	/* Created now, read later: its read class is unclaimed */
+	snprintf(sentinel, sizeof(sentinel), "%s/sentinel", anchor);
+	if ((fd = open(sentinel, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+	assert_next_access_path(&qq, sentinel);
+
+	reused = 0;
+	nclaimed = 0;
+	for (i = 0; i < INODE_REUSE_ATTEMPTS && !reused; i++) {
+		/* The create of old claims the write class of its inode */
+		snprintf(old, sizeof(old), "%s/old-%d", anchor, i);
+		if ((fd = open(old, O_WRONLY|O_CREAT, 0600)) == -1)
+			err(1, "open");
+		if (fstat(fd, &st) == -1)
+			err(1, "fstat");
+		close(fd);
+		assert_next_access_path(&qq, old);
+		claimed[nclaimed++] = st.st_ino;
+		if (unlink(old) == -1)
+			err(1, "unlink");
+
+		snprintf(new, sizeof(new), "%s/new-%d", anchor, i);
+		if ((fd = open(new, O_WRONLY|O_CREAT, 0600)) == -1)
+			err(1, "open");
+		if (fstat(fd, &st) == -1)
+			err(1, "fstat");
+		close(fd);
+		for (j = 0; j < nclaimed; j++)
+			if (claimed[j] == st.st_ino)
+				reused = 1;
+		/*
+		 * new must be reported, then the read of the sentinel; with
+		 * new suppressed, the sentinel would come first.
+		 */
+		if (reused) {
+			if ((fd = open(sentinel, O_RDONLY)) == -1)
+				err(1, "open");
+			close(fd);
+			assert_next_access_path(&qq, new);
+			assert_next_access_path(&qq, sentinel);
+		} else
+			assert_next_access_path(&qq, new);
+		if (unlink(new) == -1)
+			err(1, "unlink");
+	}
+	if (!reused)
+		warnx("%s: no inode number reused in %d attempts, the reuse is"
+		    " not exercised", __func__, INODE_REUSE_ATTEMPTS);
+
+	(void)unlink(sentinel);
+	(void)rmdir(anchor);
+	(void)rmdir(dir);
+
+	quark_queue_close(&qq);
+
+	_exit(0);
+}
+#undef INODE_REUSE_ATTEMPTS
 
 static int
 t_memfd(const struct test *t, struct quark_queue_attr *qa)
@@ -5764,6 +5897,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_file_access),
 	T_EBPF(t_file_access_with_file),
+	T_EBPF(t_file_access_inode_reuse),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_detached_mount_exec),

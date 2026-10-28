@@ -467,10 +467,11 @@ struct file_access_seen_key {
 
 /*
  * Access classes already reported for a (process life, file), one entry per
- * (tgid, device, inode, generation) so a second watched file is reported
- * again. A class is claimed only once its event is in the ring buffer. Stale
- * entries never suppress, see Dedup.h; LRU eviction, procfs inode churn and a
- * full ring buffer cost a duplicate, never a lost event.
+ * (tgid, device, inode, i_generation, anchor generation) so a second watched
+ * file is reported again, including one that took over a freed inode number.
+ * A class is claimed only once its event is in the ring buffer. Stale entries
+ * never suppress, see Dedup.h; LRU eviction, procfs inode churn and a full
+ * ring buffer cost a duplicate, never a lost event.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -626,11 +627,13 @@ static __attribute__((noinline)) bool file_access__match(struct file_access_scra
     if (!file_access_anchored(&scratch->key, de))
         return false;
 
-    task                         = (struct task_struct *)bpf_get_current_task();
-    scratch->file_key.file.tgid  = BPF_CORE_READ(task, tgid);
-    scratch->file_key.file.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
-    scratch->file_key.file.inode = BPF_CORE_READ(de, d_inode, i_ino);
-    scratch->file_key.generation = generation;
+    task                                = (struct task_struct *)bpf_get_current_task();
+    scratch->file_key.file.tgid         = BPF_CORE_READ(task, tgid);
+    scratch->file_key.file.dev          = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
+    scratch->file_key.file.inode        = BPF_CORE_READ(de, d_inode, i_ino);
+    scratch->file_key.file.i_generation = BPF_CORE_READ(de, d_inode, i_generation);
+    scratch->file_key.file.pad          = 0;
+    scratch->file_key.generation        = generation;
 
     return !ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
                              &scratch->fresh, task, file_access_class(open_flags));
