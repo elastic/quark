@@ -47,6 +47,7 @@ enum ebpf_event_type {
     EBPF_EVENT_NETWORK_DNS_PKT              = (1 << 20),
     EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
     EBPF_EVENT_PROCESS_MPROTECT             = (1 << 22),
+    EBPF_EVENT_FILE_ACCESS                  = (1 << 23),
 };
 
 struct ebpf_event_header {
@@ -230,6 +231,20 @@ struct ebpf_file_modify_event {
     char comm[TASK_COMM_LEN];
 
     // Variable length fields: path, symlink_target_path, pids_ss_cgroup_path
+    struct ebpf_varlen_fields_start vl_fields;
+} __attribute__((packed));
+
+struct ebpf_file_access_event {
+    struct ebpf_event_header hdr;
+    struct ebpf_pid_info pids;
+    struct ebpf_cred_info creds;
+    struct ebpf_file_info finfo;
+    uint32_t mntns;
+    char comm[TASK_COMM_LEN];
+    uint32_t open_flags; // O_* the kernel used (open_flags.open_flag), before do_dentry_open strips
+    uint32_t fmode;      // file.f_mode
+
+    // Variable length fields: path, symlink_target_path
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 
