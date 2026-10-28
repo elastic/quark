@@ -1607,6 +1607,34 @@ assert_next_access_path(struct quark_queue *qq, const char *path)
 		errx(1, "expected %s, got %s", path, qev->file_access->path);
 }
 
+/*
+ * The probe skips the consumer's own opens, and the consumer is the process
+ * that opened the queue, so a file access test can't trigger from the
+ * process holding the queue. Fork once the queue is open and the names are
+ * in: the child inherits the queue, runs the rest of the test as an
+ * ordinary process draining its own events, and exits; the parent waits,
+ * closes its copy and reports the child's status. Returns 1 in the parent,
+ * with the test over, and 0 in the child, which must _exit() when done.
+ */
+static int
+file_access_in_child(struct quark_queue *qq)
+{
+	pid_t	child;
+	int	status;
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0)
+		return (0);
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	quark_queue_close(qq);
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "file access child didn't exit cleanly");
+
+	return (1);
+}
+
 static int
 t_file_access(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -1620,6 +1648,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	char				 noexec[PATH_MAX];
 	char				 deep[PATH_MAX], toodeep[PATH_MAX];
 	char				 symlink_path[PATH_MAX], chardev[PATH_MAX];
+	char				 consumer_file[PATH_MAX];
 	int				 fd;
 
 	qa->flags |= QQ_FILE_ACCESS;
@@ -1654,8 +1683,22 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	    dir);
 	snprintf(other, sizeof(other), "%s/plain", dir);
 	snprintf(noexec, sizeof(noexec), "%s/quark-test-noexec", dir);
+	snprintf(consumer_file, sizeof(consumer_file),
+	    "%s/quark-test-anchor/consumer", dir);
 	if (mkdir(parent_dir, 0700) == -1)
 		err(1, "mkdir");
+
+	/*
+	 * An anchored create by the consumer itself, before the child's
+	 * first one: it must not be reported, which the child checks by
+	 * taking the first file access event of any pid.
+	 */
+	if ((fd = open(consumer_file, O_WRONLY|O_CREAT, 0600)) == -1)
+		err(1, "open");
+	close(fd);
+
+	if (file_access_in_child(&qq))
+		return (0);
 
 	if ((fd = open(leaf, O_WRONLY|O_CREAT|O_TRUNC, 0600)) == -1)
 		err(1, "open");
@@ -1672,8 +1715,16 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "open");
 	close(fd);
 
-	/* Creating the leaf, with O_CREAT|O_TRUNC */
-	qev = drain_file_access(&qq);
+	/*
+	 * Creating the leaf, with O_CREAT|O_TRUNC. The first file access
+	 * event from anyone, so the consumer's create of consumer_file just
+	 * before it was skipped.
+	 */
+	for (;;) {
+		qev = drain_any(&qq);
+		if (qev->events & QUARK_EV_FILE_ACCESS)
+			break;
+	}
 	assert(qev->events == QUARK_EV_FILE_ACCESS);
 	assert(qev->process != NULL);
 	assert(qev->process->pid == (u32)getpid());
@@ -1771,6 +1822,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	(void)unlink(toodeep);
 	(void)unlink(symlink_path);
 	(void)unlink(chardev);
+	(void)unlink(consumer_file);
 	snprintf(other, sizeof(other), "%s/plain", dir);
 	(void)unlink(other);
 	snprintf(other, sizeof(other), "%s/quark-test-anchor/a/b/c", dir);
@@ -1786,7 +1838,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 
 	quark_queue_close(&qq);
 
-	return (0);
+	_exit(0);
 }
 
 static int
