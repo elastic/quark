@@ -440,15 +440,41 @@ struct {
 } elastic_ebpf_file_access_anchors SEC(".maps");
 
 /*
+ * A reset of the names (quark_queue_file_access_name_reset(3)) must also
+ * forget which accesses were already reported, so that once names are
+ * registered again the first access of each process to each file is
+ * reported again. The seen map cannot be cleared for that: it is frozen
+ * against userspace writes. Instead this counter, the generation of the
+ * name set, is part of the seen key: userspace increments it on every
+ * reset, an entry claimed under generation N is never looked up under N+1,
+ * and LRU eviction reclaims it in time. Only one entry, written by userspace,
+ * so not frozen itself. Read once per open in file_access__match(), before
+ * the anchor walk; see there for why that order matters.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, u32);
+    __type(value, u64);
+    __uint(max_entries, 1);
+} elastic_ebpf_file_access_generation SEC(".maps");
+
+// (process life, file) the dedup entries are kept by, and the generation of
+// the anchor set the entry was claimed under.
+struct file_access_seen_key {
+    struct ebpf_dedup_file_key file;
+    u64 generation;
+};
+
+/*
  * Access classes already reported for a (process life, file), one entry per
- * (tgid, device, inode) so a second watched file is reported again. A class
- * is claimed only once its event is in the ring buffer. Stale entries never
- * suppress, see Dedup.h; LRU eviction, procfs inode churn and a full ring
- * buffer cost a duplicate, never a lost event.
+ * (tgid, device, inode, generation) so a second watched file is reported
+ * again. A class is claimed only once its event is in the ring buffer. Stale
+ * entries never suppress, see Dedup.h; LRU eviction, procfs inode churn and a
+ * full ring buffer cost a duplicate, never a lost event.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, struct ebpf_dedup_file_key);
+    __type(key, struct file_access_seen_key);
     __type(value, struct ebpf_dedup_seen);
     __uint(max_entries, 0); // sized by userspace, see bpf_queue_open1()
 } elastic_ebpf_file_access_file_seen SEC(".maps");
@@ -480,7 +506,7 @@ struct {
 
 struct file_access_scratch {
     struct ebpf_file_access_name key;
-    struct ebpf_dedup_file_key file_key;
+    struct file_access_seen_key file_key;
     struct ebpf_dedup_seen fresh;
     struct path path;
 };
@@ -495,6 +521,17 @@ struct {
     __type(value, struct file_access_scratch);
     __uint(max_entries, 1);
 } elastic_ebpf_file_access_scratch SEC(".maps");
+
+// The generation of the anchor set in force, for the dedup keys.
+static __always_inline u64 file_access_generation(void)
+{
+    u64 *generation;
+    u32  zero = 0;
+
+    generation = bpf_map_lookup_elem(&elastic_ebpf_file_access_generation, &zero);
+
+    return generation != NULL ? *generation : 0;
+}
 
 static u64 file_access_class(u32 open_flags)
 {
@@ -577,16 +614,23 @@ static __attribute__((noinline)) bool file_access__match(struct file_access_scra
 {
     struct task_struct *task;
     struct dentry      *de;
+    u64                 generation;
 
+    // The generation is read before the names: a reset deletes the names and
+    // bumps the generation after, so a name found here was in force under the
+    // generation read here, never under a later one. An array lookup the
+    // verifier inlines, a few instructions per open.
+    generation    = file_access_generation();
     scratch->path = BPF_CORE_READ(f, f_path);
     de            = scratch->path.dentry;
     if (!file_access_anchored(&scratch->key, de))
         return false;
 
-    task                    = (struct task_struct *)bpf_get_current_task();
-    scratch->file_key.tgid  = BPF_CORE_READ(task, tgid);
-    scratch->file_key.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
-    scratch->file_key.inode = BPF_CORE_READ(de, d_inode, i_ino);
+    task                         = (struct task_struct *)bpf_get_current_task();
+    scratch->file_key.file.tgid  = BPF_CORE_READ(task, tgid);
+    scratch->file_key.file.dev   = BPF_CORE_READ(de, d_inode, i_sb, s_dev);
+    scratch->file_key.file.inode = BPF_CORE_READ(de, d_inode, i_ino);
+    scratch->file_key.generation = generation;
 
     return !ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, &scratch->file_key,
                              &scratch->fresh, task, file_access_class(open_flags));

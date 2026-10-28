@@ -213,6 +213,14 @@ Each event is reported once per process, file and access class (read, write,
 exec, path-only), a repeat within the same process is suppressed in the kernel.
 A new process, including a forked child, is reported again.
 Opens by the process that owns the queue are never reported.
+.Pp
+.Ft int
+.Fn quark_queue_file_access_name_reset "struct quark_queue *qq"
+.Pp
+Removes every registered name, after which nothing is reported.
+Also forgets what was already reported: once names are registered again, the
+first access of each process to each matching file is reported again, even if
+the same access was reported under the old names.
 .Sh RETURN VALUES
 Zero on success, -1 otherwise and
 .Va errno
@@ -223,6 +231,8 @@ the internal state is cleared up and a
 .Xr quark_queue_close 3
 should NOT be issued; a failed
 .Fn quark_queue_file_access_name_add
+or
+.Fn quark_queue_file_access_name_reset
 leaves the queue usable.
 .Sh ENVIRONMENT
 .Bl -tag -width Ds

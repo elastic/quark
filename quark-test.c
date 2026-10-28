@@ -1998,6 +1998,34 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 		warnx("%s: skipping the ring buffer flood under valgrind",
 		    __func__);
 
+	/*
+	 * A reset forgets the names and what was reported under them: with
+	 * no names, the O_PATH open of the leaf is not reported; once the
+	 * leaf is registered again, its read, long claimed, is reported
+	 * again, and is the next event.
+	 * Skipped under valgrind for the same libbpf false positive as
+	 * t_trusted_pid: bpf_map_get_next_key() memsets bpf_attr short of
+	 * flags and takes a NULL first key.
+	 */
+	if (!in_valgrind) {
+		assert(!quark_queue_file_access_name_reset(&qq));
+		if ((fd = open(leaf, O_PATH)) == -1)
+			err(1, "open");
+		close(fd);
+		assert(!quark_queue_file_access_name_add(&qq,
+		    "quark-test-secret", QUARK_FILE_ACCESS_NAME_LEAF));
+		if ((fd = open(leaf, O_RDONLY)) == -1)
+			err(1, "open");
+		close(fd);
+		qev = drain_file_access(&qq);
+		qfa = qev->file_access;
+		assert(!strcmp(qfa->path, leaf));
+		assert((qfa->open_flags & O_ACCMODE) == O_RDONLY);
+		assert(!(qfa->open_flags & O_PATH));
+		assert(!quark_queue_file_access_name_reset(&qq));
+	} else
+		warnx("%s: skipping the name reset under valgrind", __func__);
+
 	while (nflood-- > 0) {
 		snprintf(other, sizeof(other), "%s/quark-test-anchor/a/%d", dir,
 		    nflood);
