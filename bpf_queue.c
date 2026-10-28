@@ -1411,6 +1411,12 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		int renameat2_renamed =
 		    (btf_number_of_params(btf, "do_renameat2") == -1);
 
+		/*
+		 * The do_filp_open() return is shared with the file access
+		 * events, the file event side of it is behind this flag.
+		 */
+		p->rodata->file_events_enabled = 1;
+
 		if (use_fentry) {
 			if (renameat2_renamed) {
 				bpf_program__set_autoload(p->progs.fentry__filename_renameat2, 1);
@@ -1505,6 +1511,16 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		if (relo_param(btf, &p->rodata->arg__do_truncate__filp__,
 		    "do_truncate", "filp") == -1)
 			goto fail;
+	}
+
+	/*
+	 * Nothing sets file_access_enabled, so the verifier prunes the file
+	 * access branch of the open probe and its maps are not created.
+	 */
+	if (bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_anchors, 0) != 0 ||
+	    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0) {
+		qwarn("bpf_map__set_autocreate file_access");
+		goto fail;
 	}
 
 	if (qq->flags & QQ_DNS) {
