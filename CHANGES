@@ -226,8 +226,8 @@ Changes from 0.9 to 0.10
 
 Changes from 0.10 to 0.11
 ~~~~~~~~~~~~~~~~~~~~~~~~~
-  o Added file access events (QUARK_EV_FILE_ACCESS, QQ_FILE_ACCESS),
-    quark_event{} gets a file_access member.
+  o Added file access events (QUARK_EV_FILE_ACCESS, QQ_FILE_ACCESS,
+    -a on quark-mon), quark_event{} gets a file_access member.
     The probe reports the open of any file whose name, or one of
     its three nearest directories, was registered through
     quark_queue_file_access_name_add(3). Events are deduplicated in
