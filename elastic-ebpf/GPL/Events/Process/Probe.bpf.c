@@ -65,29 +65,30 @@ static u32 mprotect_transition_id(u64 prev_prot, u64 effective_prot, u64 file_ba
 }
 
 // Returns true if the transition was already reported for this process life.
-// Best effort: the bit is claimed with a plain read-test-write since an atomic
-// or needs Linux 5.12 and -mcpu=v3, and the entry is created with BPF_NOEXIST
-// so a racing thread can't clobber bits already set. Two threads of one
-// process racing on the same transition can both report, and any map failure
-// reports, so the failure mode is a duplicate event, never a lost one.
-static bool mprotect_seen__test_and_set(u32 tgid, u32 id)
+// Checking does not claim the bit: a failed event write must remain retryable.
+static bool mprotect_seen__test(u32 tgid, u32 id)
+{
+    u64  bit  = 1ULL << (id & 63);
+    u64 *seen = bpf_map_lookup_elem(&mprotect_seen, &tgid);
+
+    return seen != NULL && (*seen & bit);
+}
+
+// Called only after a successful event write. Best effort: a plain OR keeps
+// compatibility with kernels before 5.12, and BPF_NOEXIST prevents a racing
+// insertion from overwriting bits already set. Lost races or map failures
+// can cause duplicates, but never suppress an event that was not written.
+static void mprotect_seen__set(u32 tgid, u32 id)
 {
     u64  bit  = 1ULL << (id & 63);
     u64 *seen = bpf_map_lookup_elem(&mprotect_seen, &tgid);
 
     if (seen == NULL) {
-        u64 zero = 0;
-
-        bpf_map_update_elem(&mprotect_seen, &tgid, &zero, BPF_NOEXIST);
+        bpf_map_update_elem(&mprotect_seen, &tgid, &bit, BPF_NOEXIST);
         seen = bpf_map_lookup_elem(&mprotect_seen, &tgid);
-        if (seen == NULL)
-            return false;
     }
-    if (*seen & bit)
-        return true;
-    *seen |= bit;
-
-    return false;
+    if (seen != NULL)
+        *seen |= bit;
 }
 
 static void mprotect_seen__clear(u32 tgid)
@@ -153,37 +154,40 @@ static u64 mprotect_exec_id(const struct task_struct *task)
     return exec_id;
 }
 
-// Same contract as mprotect_seen__test_and_set(), per file. Best effort with
+// Same contract as mprotect_seen__test(), per file. Returns true if the
+// transition was already reported for this file and process life. Otherwise
+// fresh receives the value that records it, for mprotect_file_seen__set() to
+// store once the event is out.
+static bool mprotect_file_seen__test(const struct mprotect_file_key *key,
+                                     struct mprotect_file_seen *fresh,
+                                     const struct task_struct *task, u32 id)
+{
+    struct mprotect_file_seen *seen;
+
+    fresh->start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
+    fresh->exec_id       = mprotect_exec_id(task);
+    fresh->bits          = 1ULL << (id & 63);
+    seen                 = bpf_map_lookup_elem(&mprotect_file_seen, key);
+
+    return seen != NULL && seen->start_time_ns == fresh->start_time_ns &&
+           seen->exec_id == fresh->exec_id && (seen->bits & fresh->bits);
+}
+
+// Same contract as mprotect_seen__set(), per file: records the bit prepared by
+// mprotect_file_seen__test() in place when the entry still belongs to this
+// process life, replacing a missing or stale one otherwise. Best effort with
 // the same plain read-test-write, and a lost race on a fresh or stale entry
 // overwrites it, so the failure mode is a duplicate event, never a lost one.
-static bool mprotect_file_seen__test_and_set(const struct task_struct *task, u32 tgid, u32 dev,
-                                             u64 inode, u32 id)
+static void mprotect_file_seen__set(const struct mprotect_file_key *key,
+                                    const struct mprotect_file_seen *fresh)
 {
-    struct mprotect_file_key key = {
-        .tgid  = tgid,
-        .dev   = dev,
-        .inode = inode,
-    };
-    u64 start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
-    u64 exec_id       = mprotect_exec_id(task);
-    u64 bit           = 1ULL << (id & 63);
+    struct mprotect_file_seen *seen = bpf_map_lookup_elem(&mprotect_file_seen, key);
 
-    struct mprotect_file_seen *seen = bpf_map_lookup_elem(&mprotect_file_seen, &key);
-    if (seen == NULL || seen->start_time_ns != start_time_ns || seen->exec_id != exec_id) {
-        struct mprotect_file_seen fresh = {
-            .start_time_ns = start_time_ns,
-            .exec_id       = exec_id,
-            .bits          = bit,
-        };
-
-        bpf_map_update_elem(&mprotect_file_seen, &key, &fresh, BPF_ANY);
-        return false;
-    }
-    if (seen->bits & bit)
-        return true;
-    seen->bits |= bit;
-
-    return false;
+    if (seen != NULL && seen->start_time_ns == fresh->start_time_ns &&
+        seen->exec_id == fresh->exec_id)
+        seen->bits |= fresh->bits;
+    else
+        bpf_map_update_elem(&mprotect_file_seen, key, fresh, BPF_ANY);
 }
 
 SEC("tp_btf/sched_process_fork")
@@ -680,8 +684,17 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     // transition per file for file-backed ones.
     u32 tgid = bpf_get_current_pid_tgid() >> 32;
     u32 id   = mprotect_transition_id(prev_prot, effective_prot, file != NULL);
-    if (file ? mprotect_file_seen__test_and_set(task, tgid, dev, inode, id)
-             : mprotect_seen__test_and_set(tgid, id))
+    struct mprotect_file_key file_key = {
+        .tgid  = tgid,
+        .dev   = dev,
+        .inode = inode,
+    };
+    // Older verifiers can lose the correlation between the two file checks.
+    // Keep fresh initialized even on the anonymous path.
+    struct mprotect_file_seen fresh = {};
+
+    if (file ? mprotect_file_seen__test(&file_key, &fresh, task, id)
+             : mprotect_seen__test(tgid, id))
         goto out;
 
     struct ebpf_process_mprotect_event *event = get_zeroed_event_buffer(sizeof(*event));
@@ -716,7 +729,13 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
         ebpf_vl_field__set_size(&event->vl_fields, field, size);
     }
 
-    ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+    // A full ring buffer must not consume this transition for the process life.
+    if (ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0) == 0) {
+        if (file)
+            mprotect_file_seen__set(&file_key, &fresh);
+        else
+            mprotect_seen__set(tgid, id);
+    }
 
 out:
     return 0;

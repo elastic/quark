@@ -226,6 +226,12 @@ Changes from 0.9 to 0.10
 
 Changes from 0.10 to 0.11
 ~~~~~~~~~~~~~~~~~~~~~~~~~
+  o An executable mprotect() transition now counts as reported only once
+    its event is written to the ring buffer. A transition whose event was
+    dropped because the ring buffer was full is reported on its next
+    occurrence instead of being suppressed for the rest of the process
+    life. While the ring buffer stays full, every dropped attempt counts
+    in quark_queue_stats.lost.
   o The rule DSL learned the event.scope container field. It matches
     events from a process in a Kubernetes container, so "pass on
     event.scope container" followed by "drop on any" keeps only container
