@@ -383,7 +383,7 @@ main(int argc, char *argv[])
 	if (quark_verbose)
 		fprintf(stderr, "using %s for backend\n", fetch_backend(qq));
 
-	/* A trailing slash makes the name a parent anchor, see quark(7) */
+	/* A trailing slash makes the name a parent anchor, see quark-mon(8) */
 	for (i = 0; i < naccess; i++) {
 		char	 name[QUARK_FILE_ACCESS_NAME_MAX];
 		size_t	 len;
