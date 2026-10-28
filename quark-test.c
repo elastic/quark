@@ -1841,6 +1841,81 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	_exit(0);
 }
 
+/*
+ * QQ_FILE and QQ_FILE_ACCESS together, as endpoint runs them: both branches
+ * of the shared do_filp_open() probe are then live in the same program and
+ * their frames count against the same 512 byte verifier stack limit, which
+ * t_file_access alone does not exercise. Creating an anchored file must
+ * yield both events.
+ *
+ * Unlike the other file access tests, the child only creates the file and
+ * the queue owner drains: make test-valgrind runs every test in one process
+ * with --child-silent-after-fork=yes and the fd leak check only sees that
+ * process, so this keeps the file access event parsing under both.
+ */
+static int
+t_file_access_with_file(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	char				 dir[] = "/tmp/quark-test-fa.XXXXXX";
+	char				 leaf[PATH_MAX];
+	pid_t				 child;
+	int				 fd, status, got_access, got_file;
+
+	qa->flags |= QQ_FILE | QQ_FILE_ACCESS;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	assert(!quark_queue_file_access_name_add(&qq, "quark-test-secret",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	snprintf(leaf, sizeof(leaf), "%s/quark-test-secret", dir);
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0) {
+		if ((fd = open(leaf, O_WRONLY|O_CREAT, 0600)) == -1)
+			err(1, "open");
+		close(fd);
+		_exit(0);
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "file access child didn't exit cleanly");
+
+	/*
+	 * The two events may come in either order and the file event is
+	 * aggregated, so collect until both have been seen.
+	 */
+	got_access = got_file = 0;
+	while (!got_access || !got_file) {
+		qev = drain_for_pid(&qq, child);
+		if (qev->events & QUARK_EV_FILE_ACCESS) {
+			assert(qev->file_access != NULL);
+			assert(!strcmp(qev->file_access->path, leaf));
+			assert(qev->file_access->open_flags & O_CREAT);
+			got_access = 1;
+		}
+		if (qev->events & QUARK_EV_FILE) {
+			assert(qev->file != NULL);
+			assert(!strcmp(qev->file->path, leaf));
+			assert(qev->file->op_mask & QUARK_FILE_OP_CREATE);
+			got_file = 1;
+		}
+	}
+
+	(void)unlink(leaf);
+	(void)rmdir(dir);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_memfd(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -5470,6 +5545,7 @@ struct test all_tests[] = {
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_file_access),
+	T_EBPF(t_file_access_with_file),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_detached_mount_exec),
