@@ -108,6 +108,7 @@ struct test_fs {
 };
 
 static void test_fs_tmpfs(struct test_fs *);
+static int test_fs_create(const char *);
 
 static int
 test_fs_open(struct test_fs *fs)
@@ -2242,6 +2243,223 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 
 	quark_queue_close(&qq);
 
+	return (0);
+}
+
+/* Classes share a process life, so a misclassified exec cannot look fresh. */
+static int
+t_file_access_classes(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct test_fs fs;
+	struct quark_queue qq;
+	const struct quark_file_access *access;
+	const int flags[] = { O_RDONLY, O_WRONLY, O_PATH };
+	char dir[128], path[160], marker[160], executable[160];
+	char *binary;
+	size_t size, i;
+	pid_t child;
+	int fd, before_nfd, status;
+
+	test_fs_tmpfs(&fs);
+	snprintf(dir, sizeof(dir), "%s/quark-test-anchor", fs.dir);
+	snprintf(path, sizeof(path), "%s/invalid-executable", dir);
+	snprintf(executable, sizeof(executable), "%s/exec-helper", dir);
+	assert(mkdir(dir, 0700) == 0);
+	fd = test_fs_create(path);
+	assert(fchmod(fd, 0700) == 0 && close(fd) == 0);
+	binary = load_file_path_nostat("/proc/self/exe", &size);
+	assert(binary != NULL);
+	fd = open(executable, O_WRONLY | O_CREAT | O_EXCL, 0700);
+	assert(fd != -1 && qwrite(fd, binary, size) == 0);
+	assert(close(fd) == 0);
+	free(binary);
+	before_nfd = num_open_fd();
+	qa->flags |= QQ_FILE_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(quark_queue_file_access_name_add(&qq, "quark-test-anchor",
+	    QUARK_FILE_ACCESS_NAME_PARENT) == 0);
+	if (file_access_in_child(&qq)) {
+		test_fs_close(&fs);
+		return (0);
+	}
+
+	for (i = 0; i < nitems(flags); i++) {
+		file_access_open(path, flags[i]);
+		access = drain_file_access(&qq)->file_access;
+		assert(!strcmp(access->path, path));
+		assert((access->open_flags & (O_ACCMODE | O_PATH)) == (u32)flags[i]);
+		file_access_open(path, flags[i]);
+		if (flags[i] == O_WRONLY)
+			file_access_open(path, O_RDWR); /* Same WRITE class. */
+		snprintf(marker, sizeof(marker), "%s/class-%zu", dir, i);
+		file_access_open(marker, O_WRONLY | O_CREAT | O_EXCL);
+		assert_next_access_path(&qq, marker);
+		assert(unlink(marker) == 0);
+	}
+
+	/* Valgrind may reject an invalid image before the kernel's exec open. */
+	if (!in_valgrind) {
+		snprintf(marker, sizeof(marker), "%s/exec-sentinel", dir);
+		execl(path, "invalid", (char *)NULL);
+		assert(errno == ENOEXEC);
+		file_access_open(marker, O_WRONLY | O_CREAT | O_EXCL);
+		access = drain_file_access(&qq)->file_access;
+		assert(!strcmp(access->path, path));
+		assert(access->open_flags & 0x20); /* __FMODE_EXEC */
+		assert_next_access_path(&qq, marker);
+		execl(path, "invalid", (char *)NULL);
+		assert(errno == ENOEXEC);
+		file_access_open(marker, O_RDONLY);
+		assert_next_access_path(&qq, marker);
+		assert(unlink(marker) == 0);
+	} else
+		warnx("%s: invalid-image exec check skipped under valgrind", t->name);
+
+	/* A child claims READ, execs, then reports READ again with the same PID. */
+	assert((child = fork()) != -1);
+	if (child == 0) {
+		file_access_open(path, O_RDONLY);
+		file_access_open(executable, O_RDONLY);
+		execl(executable, "quark-test", "--file-access-read", path, (char *)NULL);
+		err(1, "execl");
+	}
+	assert(waitpid(child, &status, 0) == child);
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	access = drain_file_access_pid(&qq, child)->file_access;
+	assert(!strcmp(access->path, path));
+	access = drain_file_access_pid(&qq, child)->file_access;
+	assert(!strcmp(access->path, executable));
+	assert(!(access->open_flags & 0x20));
+	access = drain_file_access_pid(&qq, child)->file_access;
+	assert(!strcmp(access->path, executable));
+	assert(access->open_flags & 0x20);
+	access = drain_file_access_pid(&qq, child)->file_access;
+	assert(!strcmp(access->path, path));
+	assert(!(access->open_flags & (O_ACCMODE | O_PATH | 0x20)));
+	assert(unlink(path) == 0 && unlink(executable) == 0 && rmdir(dir) == 0);
+	file_access_child_done(&qq, before_nfd);
+	return (0);
+}
+
+static int
+t_file_access_paths(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct test_fs fs;
+	struct quark_queue qq;
+	char dir[128], path[160], alias[160], bound[160], renamed[160];
+	char marker[160], longpath[257], ramdir[160], rampath[192];
+	size_t len, prefix;
+	int before_nfd;
+
+	test_fs_tmpfs(&fs);
+	snprintf(dir, sizeof(dir), "%s/quark-test-anchor", fs.dir);
+	snprintf(path, sizeof(path), "%s/object", dir);
+	snprintf(alias, sizeof(alias), "%s/hardlink", dir);
+	snprintf(bound, sizeof(bound), "%s/bind", dir);
+	snprintf(renamed, sizeof(renamed), "%s/renamed", dir);
+	snprintf(marker, sizeof(marker), "%s/sentinel", dir);
+	assert(mkdir(dir, 0700) == 0);
+	assert(close(test_fs_create(path)) == 0);
+	assert(link(path, alias) == 0);
+	assert(close(test_fs_create(bound)) == 0);
+	before_nfd = num_open_fd();
+	qa->flags |= QQ_FILE_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(quark_queue_file_access_name_add(&qq, "quark-test-anchor",
+	    QUARK_FILE_ACCESS_NAME_PARENT) == 0);
+	assert(quark_queue_file_access_name_add(&qq, "bypass",
+	    QUARK_FILE_ACCESS_NAME_LEAF) == 0);
+	if (file_access_in_child(&qq)) {
+		test_fs_close(&fs);
+		return (0);
+	}
+
+	file_access_open(path, O_RDONLY);
+	assert_next_access_path(&qq, path);
+	file_access_open(alias, O_RDONLY);
+	assert_next_access_path(&qq, alias);
+	assert(mount(path, bound, NULL, MS_BIND, NULL) == 0);
+	file_access_open(bound, O_RDONLY);
+	assert_next_access_path(&qq, bound);
+	assert(rename(alias, renamed) == 0);
+	file_access_open(renamed, O_RDONLY);
+	assert_next_access_path(&qq, renamed);
+	file_access_open(path, O_RDONLY);
+	file_access_open(bound, O_RDONLY);
+	file_access_open(renamed, O_RDONLY);
+	file_access_open(marker, O_WRONLY | O_CREAT | O_EXCL);
+	assert_next_access_path(&qq, marker); /* All three repeats were suppressed. */
+	assert(unlink(marker) == 0 && umount(bound) == 0);
+
+	/* A 256-byte key holds 255 path bytes plus NUL; longer paths bypass it. */
+	prefix = strlen(dir);
+	for (len = 255; len <= 256; len++) {
+		snprintf(marker, sizeof(marker), "%s/length-%zu", dir, len);
+		memcpy(longpath, dir, prefix);
+		longpath[prefix] = '/';
+		memset(longpath + prefix + 1, 'x', len - prefix - 1);
+		longpath[len] = 0;
+		file_access_open(longpath, O_WRONLY | O_CREAT | O_EXCL);
+		assert_next_access_path(&qq, longpath);
+		file_access_open(longpath, O_RDONLY);
+		assert_next_access_path(&qq, longpath);
+		file_access_open(longpath, O_RDONLY);
+		file_access_open(marker, O_WRONLY | O_CREAT | O_EXCL);
+		if (len == 256)
+			assert_next_access_path(&qq, longpath);
+		assert_next_access_path(&qq, marker);
+		assert(unlink(longpath) == 0 && unlink(marker) == 0);
+	}
+
+	/* No stable file generation on ramfs: report each access, including repeats. */
+	snprintf(ramdir, sizeof(ramdir), "%s/ramfs", dir);
+	snprintf(rampath, sizeof(rampath), "%s/bypass", ramdir);
+	assert(mkdir(ramdir, 0700) == 0);
+	assert(mount("ramfs", ramdir, "ramfs", MS_NODEV | MS_NOSUID, NULL) == 0);
+	file_access_open(rampath, O_WRONLY | O_CREAT | O_EXCL);
+	assert_next_access_path(&qq, rampath);
+	file_access_open(rampath, O_RDONLY);
+	assert_next_access_path(&qq, rampath);
+	file_access_open(rampath, O_RDONLY);
+	assert_next_access_path(&qq, rampath);
+	assert(unlink(rampath) == 0 && umount(ramdir) == 0 && rmdir(ramdir) == 0);
+
+	/* Overlay is optional on kernels which ship its driver as a module. */
+	{
+		const char *names[] = { "lower", "upper", "work", "overlay" };
+		char dirs[4][160], lower[192], merged[192], work[192], options[1024];
+		size_t i;
+
+		for (i = 0; i < nitems(names); i++) {
+			snprintf(dirs[i], sizeof(dirs[i]), "%s/%s", dir, names[i]);
+			assert(mkdir(dirs[i], 0700) == 0);
+		}
+		snprintf(lower, sizeof(lower), "%s/bypass", dirs[0]);
+		snprintf(merged, sizeof(merged), "%s/bypass", dirs[3]);
+		file_access_open(lower, O_WRONLY | O_CREAT | O_EXCL);
+		assert_next_access_path(&qq, lower);
+		snprintf(options, sizeof(options), "lowerdir=%s,upperdir=%s,workdir=%s,index=off",
+		    dirs[0], dirs[1], dirs[2]);
+		if (mount("overlay", dirs[3], "overlay", 0, options) == -1) {
+			if (errno != ENODEV)
+				err(1, "overlay test filesystem");
+			warnx("%s: overlay driver unavailable; ramfs bypass was checked", t->name);
+		} else {
+			file_access_open(merged, O_RDONLY);
+			assert_next_access_path(&qq, merged);
+			file_access_open(merged, O_RDONLY);
+			assert_next_access_path(&qq, merged);
+			assert(umount(dirs[3]) == 0);
+		}
+		assert(unlink(lower) == 0);
+		snprintf(work, sizeof(work), "%s/work", dirs[2]);
+		assert(rmdir(work) == 0 || errno == ENOENT);
+		for (i = 0; i < nitems(names); i++)
+			assert(rmdir(dirs[i]) == 0);
+	}
+	assert(unlink(path) == 0 && unlink(renamed) == 0 && unlink(bound) == 0);
+	assert(rmdir(dir) == 0);
+	file_access_child_done(&qq, before_nfd);
 	return (0);
 }
 
@@ -6128,6 +6346,8 @@ struct test all_tests[] = {
 	T_EBPF(t_file_access_names),
 	T_EBPF(t_file_access_name_limits),
 	T_EBPF(t_file_bypass),
+	T_EBPF(t_file_access_classes),
+	T_EBPF(t_file_access_paths),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_detached_mount_exec),
@@ -6584,6 +6804,12 @@ main(int argc, char *argv[])
 {
 	int			 ch, failed, x;
 	struct sigaction	 sigact;
+
+	/* Private exec target for the same-PID file-access image test. */
+	if (argc == 3 && !strcmp(argv[1], "--file-access-read")) {
+		file_access_open(argv[2], O_RDONLY);
+		return (0);
+	}
 
 	fancy_tty = probe_fancy_tty();
 	in_valgrind = getenv("VALGRIND") != NULL;
