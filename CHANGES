@@ -274,6 +274,9 @@ Changes from 0.11 to 0.12
     Repeated access classes are suppressed for the same process image,
     file lifetime, complete resolved path and mount namespace. Unsupported
     filesystem identities and paths longer than 255 bytes can report repeats.
+    quark_queue_file_access_name_reset(3) clears the registered names and
+    permits new reports after names are added again. Events already in
+    progress or in the queue can still refer to the previous name set.
   o File-backed executable mprotect() transitions use the inode generation
     on ext2, ext3, ext4, XFS and tmpfs when it is nonzero. A new file that
     reuses an inode number with a different generation is reported again.
