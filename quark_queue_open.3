@@ -175,6 +175,14 @@ is set.
 In the case of an error, the internal state is cleared up and a
 .Xr quark_queue_close 3
 should NOT be issued.
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev QUARK_BPF_KPROBE
+The EBPF backend attaches to kernel functions with fentry, and uses kprobes
+if fentry fails.
+If set, the EBPF backend attaches with kprobes and does not try fentry.
+Use it to test the kprobe fallback on kernels where fentry works.
+.El
 .Sh SEE ALSO
 .Xr quark_event_dump 3 ,
 .Xr quark_process_lookup 3 ,

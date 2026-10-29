@@ -1662,6 +1662,16 @@ bpf_queue_open(struct quark_queue *qq)
 	if ((qq->flags & QQ_EBPF) == 0)
 		return (errno = ENOTSUP, -1);
 
+	/*
+	 * QUARK_BPF_KPROBE skips fentry and loads only the kprobe programs.
+	 * Tests use it to exercise the kprobe fallback on kernels where fentry
+	 * works.
+	 */
+	if (getenv("QUARK_BPF_KPROBE") != NULL) {
+		qdebugx("QUARK_BPF_KPROBE is set, not trying fentry");
+		return (bpf_queue_open1(qq, 0));
+	}
+
 	if (bpf_queue_open1(qq, 1) == -1) {
 		qwarn("bpf_queue_open failed with fentry, trying kprobe");
 		return (bpf_queue_open1(qq, 0));

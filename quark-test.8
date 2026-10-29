@@ -6,7 +6,7 @@
 .Nd quark's test utility
 .Sh SYNOPSIS
 .Nm quark-test
-.Op Fl 1bktv
+.Op Fl 1bKktv
 .Op Fl x Ar test
 .Op Ar tests ...
 .Nm quark-test
@@ -41,6 +41,12 @@ Run only EBPF tests.
 Display this manpage.
 .It Fl k
 Run only KPROBE tests.
+.It Fl K
+Make the EBPF backend use its kprobe fallback and not fentry.
+This sets
+.Ev QUARK_BPF_KPROBE ,
+see
+.Xr quark_queue_open 3 .
 .It Fl l
 Prints all available tests on stdout.
 .It Fl n

@@ -128,6 +128,17 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
+  - label: "quark-test on fedora 32 (ebpf kprobe fallback)"
+    key: test_fedora_32_kprobe_fallback
+    command: "./.buildkite/runtest_distro.sh fedora 32 -b -K"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
   - label: "quark-test on fedora 33"
     key: test_fedora_33
     command: "./.buildkite/runtest_distro.sh fedora 33"
@@ -304,6 +315,17 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
+  - label: "quark-test on rhel 8 (ebpf kprobe fallback)"
+    key: test_rhel_8_kprobe_fallback
+    command: "./.buildkite/runtest_distro.sh rhel 8 -b -K"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
   - label: "quark-test on rhel 8.3 (no bpf)"
     key: test_rhel_8_3
     command: "./.buildkite/runtest_distro.sh rhel 8.3 -k"
@@ -328,7 +350,7 @@ steps:
 
   - label: "quark-test on rhel 8.5 (no file)"
     key: test_rhel_8_5
-    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change"
+    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
     depends_on:
       - make_docker
     agents:
@@ -339,7 +361,7 @@ steps:
 
   - label: "quark-test on rhel 8.6 (no file)"
     key: test_rhel_8_6
-    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change"
+    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
     depends_on:
       - make_docker
     agents:
@@ -350,7 +372,7 @@ steps:
 
   - label: "quark-test on rhel 8.7 (no file)"
     key: test_rhel_8_7
-    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change"
+    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
     depends_on:
       - make_docker
     agents:
@@ -538,6 +560,17 @@ steps:
   - label: "quark-test on ubuntu 26.04"
     key: test_ubuntu_26_04
     command: "./.buildkite/runtest_distro.sh ubuntu 26.04"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on ubuntu 26.04 (ebpf kprobe fallback)"
+    key: test_ubuntu_26_04_kprobe_fallback
+    command: "./.buildkite/runtest_distro.sh ubuntu 26.04 -b -K"
     depends_on:
       - make_docker
     agents:
