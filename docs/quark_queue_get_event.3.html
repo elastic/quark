@@ -92,10 +92,13 @@
       <dt id="QUARK_EV_FILE_ACCESS"><a class="permalink" href="#QUARK_EV_FILE_ACCESS"><code class="Dv">QUARK_EV_FILE_ACCESS</code></a></dt>
       <dd>The
           <a class="permalink" href="#file_access"><i class="Em" id="file_access">file_access</i></a>
-          member describes a successful file open. The file must match a
+          member describes a successful file open. It reports each access class
+          once for the same process image, file lifetime, resolved path and
+          mount namespace when the identity can be cached. The file must match a
           registered leaf name or one of up to three source directory names. See
-          <a class="Xr" href="quark_queue_file_access_name_add.3.html">quark_queue_file_access_name_add(3)</a>.
-          It contains the resolved path, inode, size, mode, file owner IDs, open
+          <a class="Xr" href="quark_queue_file_access_name_add.3.html">quark_queue_file_access_name_add(3)</a>
+          for the classes and the conditions that permit repeated reports. It
+          contains the resolved path, inode, size, mode, file owner IDs, open
           flags and kernel file mode. The
           <a class="permalink" href="#sym_target"><i class="Em" id="sym_target">sym_target</i></a>
           field contains the inline symlink target when available; otherwise it

@@ -88,10 +88,13 @@ committed.
 The
 .Em file_access
 member describes a successful file open.
+It reports each access class once for the same process image, file lifetime,
+resolved path and mount namespace when the identity can be cached.
 The file must match a registered leaf name or one of up to three source
 directory names.
 See
-.Xr quark_queue_file_access_name_add 3 .
+.Xr quark_queue_file_access_name_add 3
+for the classes and the conditions that permit repeated reports.
 It contains the resolved path, inode, size, mode, file owner IDs, open flags
 and kernel file mode.
 The

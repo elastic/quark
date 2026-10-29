@@ -67,6 +67,23 @@ Registers <var class="Fa">name</var>, a single path component without slashes
     are not reported. A forked child is reported, even if it inherits the queue.
     The exclusion ends when the original process exits; a later process with the
     same PID is reported.</p>
+<p class="Pp">Repeated opens are suppressed for each access class, process
+    image, file lifetime, resolved path and mount namespace. The classes are
+    read, write, execute and <code class="Dv">O_PATH</code>. Write includes
+    write mode and <code class="Dv">O_CREAT</code>,
+    <code class="Dv">O_TRUNC</code> or <code class="Dv">O_APPEND</code>.
+    <code class="Dv">O_PATH</code> takes precedence over execute, which takes
+    precedence over write. A successful exec starts a new process image. If the
+    kernel does not expose its exec ID, suppression can continue across exec.
+    Inode numbers with a new generation, hard links with different paths,
+    renames to a new path, and different visible bind-mount paths are reported
+    again.</p>
+<p class="Pp">Suppression requires ext2, ext3, ext4, XFS or tmpfs, a nonzero
+    inode generation, and a complete absolute path of at most 255 bytes. Other
+    identities or paths can report repeats. The cache holds at most 16384
+    entries. Eviction and concurrent opens can also cause repeats. An open
+    counts as reported only after its event enters the ring buffer. If that
+    buffer is full, the next matching open can try again.</p>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
   VALUES</a></h1>

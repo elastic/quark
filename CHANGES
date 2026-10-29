@@ -230,6 +230,9 @@ Changes from 0.10 to 0.11
     quark_queue_file_access_name_add(3), with QQ_FILE_ACCESS.
     QUARK_EV_FILE_ACCESS reports successful opens that match those names.
     quark_event{} gets a file_access member.
+    Repeated access classes are suppressed for the same process image,
+    file lifetime, complete resolved path and mount namespace. Unsupported
+    filesystem identities and paths longer than 255 bytes can report repeats.
   o File-backed executable mprotect() transitions are now deduplicated
     per file lifetime rather than per inode number, so a new file that
     reuses a freed inode number within the process life is reported

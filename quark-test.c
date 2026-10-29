@@ -2033,23 +2033,26 @@ t_file_access_with_file(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_file_access_smoke(const struct test *t, struct quark_queue_attr *qa)
 {
+	struct test_fs fs;
 	struct quark_queue qq;
 	const struct quark_event *qev;
-	char dir[] = "/tmp/quark-fa-smoke.XXXXXX", path[PATH_MAX];
+	char path[PATH_MAX];
 	pid_t child;
-	int fd, status;
+	int status;
 
-	assert(mkdtemp(dir) != NULL);
-	snprintf(path, sizeof(path), "%s/secret", dir);
-	qa->flags |= QQ_FILE_ACCESS;
+	test_fs_tmpfs(&fs);
+	snprintf(path, sizeof(path), "%s/secret", fs.dir);
+	qa->flags |= QQ_FILE_ACCESS | QQ_GETPID;
 	assert(quark_queue_open(&qq, qa) == 0);
 	assert(quark_queue_file_access_name_add(&qq, "secret",
 	    QUARK_FILE_ACCESS_NAME_LEAF) == 0);
 	assert((child = fork()) != -1);
 	if (child == 0) {
-		fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0600);
-		assert(fd != -1);
-		close(fd);
+		file_access_open(path, O_CREAT | O_RDWR | O_TRUNC);
+		file_access_open(path, O_WRONLY); /* Same write class. */
+		file_access_open(path, O_RDONLY); /* First read class. */
+		file_access_open(path, O_RDONLY); /* Same read class. */
+		(void)syscall(SYS_getpid);
 		_exit(0);
 	}
 	qev = drain_file_access_pid(&qq, child);
@@ -2057,10 +2060,19 @@ t_file_access_smoke(const struct test *t, struct quark_queue_attr *qa)
 	assert((qev->file_access->open_flags & O_ACCMODE) == O_RDWR);
 	assert((qev->file_access->open_flags & (O_CREAT | O_TRUNC)) ==
 	    (O_CREAT | O_TRUNC));
+	qev = drain_file_access_pid(&qq, child);
+	assert(!strcmp(qev->file_access->path, path));
+	assert((qev->file_access->open_flags & O_ACCMODE) == O_RDONLY);
+	do {
+		qev = drain_for_pid(&qq, child);
+	} while (!(qev->events & (QUARK_EV_FILE_ACCESS | QUARK_EV_GETPID)));
+	assert(qev->events & QUARK_EV_GETPID);
+	assert(!(qev->events & QUARK_EV_FILE_ACCESS));
 	assert(waitpid(child, &status, 0) == child);
 	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 	quark_queue_close(&qq);
-	assert(unlink(path) == 0 && rmdir(dir) == 0);
+	assert(unlink(path) == 0);
+	test_fs_close(&fs);
 	return (0);
 }
 
