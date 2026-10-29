@@ -4988,6 +4988,14 @@ quark_can_aggregate_file(struct quark_queue *qq,
 	if (pf->inode != cf->inode)
 		return (0);
 	/*
+	 * The inode alone is not an identity: hard links share one, and
+	 * inode numbers repeat across filesystems. raw_event_file() keeps the
+	 * path of the last aggregated event, so merging across paths would
+	 * report an operation on one path as if it happened on the other.
+	 */
+	if (strcmp(pf->path, cf->path) != 0)
+		return (0);
+	/*
 	 * raw_event_file() keeps the mode from the last aggregated event.  Keep
 	 * executable state transitions separate so file.exec_change cannot miss
 	 * a transient executable mode.

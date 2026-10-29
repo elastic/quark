@@ -1419,6 +1419,110 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static void
+assert_file_path(const struct quark_file *qf, const char *want)
+{
+	if (qf->path == NULL)
+		errx(1, "file event has no path, want %s", want);
+	if (strcmp(qf->path, want) != 0)
+		errx(1, "file event path is %s, want %s", qf->path, want);
+}
+
+static void
+drain_file_event(struct quark_queue *qq, u64 inode, u32 op_mask,
+    u32 change_mask, const char *path)
+{
+	const struct quark_event	*qev;
+	const struct quark_file		*qf;
+
+	qev = drain_for_pid(qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->inode == inode);
+	if (qf->op_mask != op_mask)
+		errx(1, "file event op_mask is 0x%x, want 0x%x (path %s)",
+		    qf->op_mask, op_mask, qf->path);
+	if (qf->change_mask != change_mask)
+		errx(1, "file event change_mask is 0x%x, want 0x%x (path %s)",
+		    qf->change_mask, change_mask, qf->path);
+	assert_file_path(qf, path);
+}
+
+/*
+ * Operations on the same inode through different paths must not aggregate,
+ * otherwise an operation on one path is reported under the path of its hard
+ * link.
+ */
+static int
+t_file_hardlink(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct stat			 st;
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	char				 link_path[sizeof(path) + 5];
+	int				 fd, link_fd;
+
+	qa->flags |= QQ_FILE;
+
+	/*
+	 * Create the file and its link before the probes are loaded. On 4.18
+	 * kernels the create probe keys off fsnotify(FS_CREATE), which
+	 * link(2) also raises, and the stale state would turn the open of
+	 * the link below into a spurious create.
+	 */
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+	if (snprintf(link_path, sizeof(link_path), "%s.link", path) >=
+	    (int)sizeof(link_path))
+		errx(1, "link_path too long");
+	if (link(path, link_path) == -1)
+		err(1, "link");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd = open(path, O_WRONLY)) == -1)
+		err(1, "open");
+	if ((link_fd = open(link_path, O_WRONLY)) == -1)
+		err(1, "open");
+
+	/*
+	 * Nothing is drained until all operations are queued, so each pair of
+	 * consecutive operations has the chance to aggregate:
+	 *   write(path)  -> write(link)   path to link
+	 *   write(link)  -> write(path)   link to path
+	 *   write(path)  -> unlink(link)  write, then remove through the link
+	 * Without the path check all four merge into one event under the
+	 * link path.
+	 */
+	assert(write(fd, "1", 1) == 1);
+	assert(write(link_fd, "2", 1) == 1);
+	assert(write(fd, "3", 1) == 1);
+	close(fd);
+	close(link_fd);
+	if (unlink(link_path) == -1)
+		err(1, "unlink");
+
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, link_path);
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, link_path);
+
+	if (unlink(path) == -1)
+		err(1, "unlink");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /*
  * A failed unlink(2) must not leave stale probe state behind that hides a
  * subsequent rename(2) on the same thread.
@@ -5212,6 +5316,7 @@ struct test all_tests[] = {
 	T_EBPF(t_exit_tgid),
 	T_KPROBE(t_exit_tgid),
 	T_EBPF(t_file),
+	T_EBPF(t_file_hardlink),
 	T_EBPF(t_file_bad_unlink_rename),
 	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
