@@ -78,6 +78,9 @@ For example:
 won't aggregate two
 .Xr exec 3
 events, otherwise we would lose the effects of the first one.
+File events only aggregate when they refer to the same inode through the same
+path, so operations on a hard link stay separate from operations on the file's
+other names.
 These rules will be exposed and configurable in the future.
 .It Em BUFFERING
 For aggregation and ordering to work,

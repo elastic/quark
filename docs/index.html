@@ -96,8 +96,10 @@ $ ls -1 /tmp | wc -l</pre>
       be aggregated, and only events of the same pid are aggregated. For
       example: <code class="Nm">quark</code> won't aggregate two
       <a class="Xr" href="https://linux.die.net/man/3/exec">exec(3)</a> events, otherwise we would
-      lose the effects of the first one. These rules will be exposed and
-      configurable in the future.</dd>
+      lose the effects of the first one. File events only aggregate when they
+      refer to the same inode through the same path, so operations on a hard
+      link stay separate from operations on the file's other names. These rules
+      will be exposed and configurable in the future.</dd>
   <dt id="BUFFERING"><a class="permalink" href="#BUFFERING"><i class="Em">BUFFERING</i></a></dt>
   <dd>For aggregation and ordering to work, <code class="Nm">quark</code> needs
       to be able to buffer events, this means holding them before presenting
@@ -130,7 +132,9 @@ $ ls -1 /tmp | wc -l</pre>
       <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>.
       This cache keeps soon-to-be-purged elements for a little while so that you
       can still lookup a process that just exited. The table is initialized by
-      scraping <span class="Pa">/proc</span>.</dd>
+      scraping <span class="Pa">/proc</span>. Process lookup and iteration try
+      to link each returned process to matching container metadata that is
+      currently in the queue.</dd>
   <dt id="TRANSPARENCY"><a class="permalink" href="#TRANSPARENCY"><i class="Em">TRANSPARENCY</i></a></dt>
   <dd><code class="Nm">quark</code> tries to be as transparent as possible about
       what it knows, there are counters for lost events, and each piece of
@@ -459,7 +463,7 @@ main(void)
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">September 1, 2026</td>
+    <td class="foot-date">October 29, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

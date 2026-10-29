@@ -71,7 +71,7 @@ The library tries to give as much context for an event as possible. Depending on
 
 [*PROCESS CACHE*](#PROCESS)
 
-An internal cache of processes is kept that can be looked up via [quark\_process\_lookup(3)](https://elastic.github.io/quark/quark_process_lookup.3.html). This cache keeps soon-to-be-purged elements for a little while so that you can still lookup a process that just exited. The table is initialized by scraping /proc.
+An internal cache of processes is kept that can be looked up via [quark\_process\_lookup(3)](https://elastic.github.io/quark/quark_process_lookup.3.html). This cache keeps soon-to-be-purged elements for a little while so that you can still lookup a process that just exited. The table is initialized by scraping /proc. Process lookup and iteration try to link each returned process to matching container metadata that is currently in the queue.
 
 [*TRANSPARENCY*](#TRANSPARENCY)
 
