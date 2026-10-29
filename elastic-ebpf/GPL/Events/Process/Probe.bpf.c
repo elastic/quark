@@ -313,6 +313,9 @@ static int disassociate_ctty__enter(int on_exit)
     if (!on_exit || is_kernel_thread(task))
         return 0;
 
+    // Last-thread exit precedes PID reuse. Record it even if output fails.
+    file_access_consumer_exit();
+
     // do_exit calls disassociate_ctty(1) only when the whole thread group is
     // dead, so this runs exactly once per process; drop its dedup state so a
     // recycled tgid does not inherit (and suppress) old transitions.

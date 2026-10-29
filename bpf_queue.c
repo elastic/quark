@@ -1539,7 +1539,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			goto fail;
 	} else {
 		if (bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_anchors, 0) != 0 ||
-		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0)
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0 ||
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_owner_exited, 0) != 0)
 			goto fail;
 	}
 
