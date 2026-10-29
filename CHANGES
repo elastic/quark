@@ -267,6 +267,12 @@ Changes from 0.10 to 0.11
 
 Changes from 0.11 to 0.12
 ~~~~~~~~~~~~~~~~~~~~~~~~~
+  o File-backed executable mprotect() transitions use the inode generation
+    on ext2, ext3, ext4, XFS and tmpfs when it is nonzero. A new file that
+    reuses an inode number with a different generation is reported again.
+    Without a usable generation, mprotect keeps device-and-inode deduplication.
+    Repeats are suppressed, but a new file with a reused inode number can
+    still have its first event suppressed. Unreadable identities are not cached.
   o DNS events now cover IPv6. The packet in quark_packet{} starts at
     the IPv4 or IPv6 header as it was on the wire, extension headers
     included, regardless of the socket family: an IPv4 datagram on a
