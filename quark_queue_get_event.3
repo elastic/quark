@@ -84,6 +84,30 @@ Other filesystems, or an unavailable identity, can report repeats.
 A file with a reused inode number and a new generation is reported again.
 It describes an attempt and does not assert that the protection change was
 committed.
+.It Dv QUARK_EV_FILE_ACCESS
+The
+.Em file_access
+member describes a successful file open.
+It contains the resolved path, inode, size, mode, file owner IDs, open flags
+and kernel file mode.
+The
+.Em sym_target
+field contains the inline symlink target when available; otherwise it is
+.Dv NULL .
+The
+.Em pid
+field always identifies the opener, including when
+.Em process
+is
+.Dv NULL
+because the process is not in the cache.
+The payload remains valid until the next event call or queue close.
+ECS output uses action
+.Dq file-opened
+and stores the raw flags in
+.Dq file.Ext.open_flags
+and
+.Dq file.Ext.fmode .
 .El
 .Pp
 It's important to note that
