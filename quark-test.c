@@ -3,6 +3,8 @@
 
 #include <asm/termbits.h>
 #include <linux/perf_event.h>
+#include <linux/loop.h>
+#include <linux/magic.h>
 
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
@@ -13,10 +15,13 @@
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+
+#include <linux/fs.h>
 
 #include <bpf/bpf.h>
 #include <cjson/cJSON.h>
@@ -96,6 +101,180 @@ static int	tflag;		/* listen to the tracepipe */
 static int	fancy_tty;
 static int	status_linelen = STATUS_LINELEN_MIN;
 static int	in_valgrind;
+
+static const char *
+test_fs_image(void)
+{
+	const char *image = getenv("QUARK_TEST_FS_IMAGE");
+
+	if (image != NULL)
+		return (image);
+	return (getenv("QUARK_INITRAMFS") != NULL ?
+	    "/quark-test.ext4" : "quark-test.ext4");
+}
+
+/* A private ext4 mount for tests which must exercise inode-number reuse. */
+struct test_fs {
+	char	dir[64];
+	int	loop_fd;
+};
+
+static int
+test_fs_open(struct test_fs *fs)
+{
+	struct loop_info64	 info = { .lo_flags = LO_FLAGS_AUTOCLEAR };
+	const char		*image = test_fs_image(), *step;
+	char			 device[64], attach[96], buf[8192];
+	char			 tmp[] = "/tmp/quark-test-image.XXXXXX";
+	ssize_t			 n;
+	int			 fd = -1, srcfd = -1, ctl = -1;
+	int			 bound = 0, number, saved;
+
+	bzero(fs, sizeof(*fs));
+	fs->loop_fd = -1;
+	step = image;
+	if ((srcfd = open(image, O_RDONLY | O_CLOEXEC)) == -1)
+		goto fail;
+	step = "temporary image";
+	if ((fd = mkstemp(tmp)) == -1)
+		goto fail;
+	if (unlink(tmp) == -1)
+		goto fail;
+	tmp[0] = '\0';
+	if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1)
+		goto fail;
+	step = "copy test filesystem image";
+	while ((n = qread(srcfd, buf, sizeof(buf))) > 0) {
+		if (qwrite(fd, buf, (size_t)n) == -1)
+			goto fail;
+	}
+	if (n == -1)
+		goto fail;
+	close(srcfd);
+	srcfd = -1;
+	/*
+	 * A failed test must not leave a mount in its parent's namespace.
+	 * With -1, a successful unshare also changes the runner's namespace.
+	 * Later tests keep that namespace, even if the rest of setup fails.
+	 */
+	step = "private mount namespace";
+	if (unshare(CLONE_NEWNS) == -1 ||
+	    mount(NULL, "/", "", MS_REC | MS_PRIVATE, NULL) == -1)
+		goto fail;
+	step = "/dev/loop-control";
+	if ((ctl = open("/dev/loop-control", O_RDWR | O_CLOEXEC)) == -1)
+		goto fail;
+	if ((number = ioctl(ctl, LOOP_CTL_GET_FREE)) == -1)
+		goto fail;
+	snprintf(device, sizeof(device), "/dev/loop%d", number);
+	step = device;
+	if ((fs->loop_fd = open(device, O_RDWR | O_CLOEXEC)) == -1)
+		goto fail;
+	/* GET_FREE does not reserve the device; attachment can fail with EBUSY. */
+	snprintf(attach, sizeof(attach), "attach selected loop device %s", device);
+	step = attach;
+	if (ioctl(fs->loop_fd, LOOP_SET_FD, fd) == -1)
+		goto fail;
+	bound = 1;
+	step = device;
+	if (ioctl(fs->loop_fd, LOOP_SET_STATUS64, &info) == -1)
+		goto fail;
+	strlcpy(fs->dir, "/tmp/quark-test-fs.XXXXXX", sizeof(fs->dir));
+	step = fs->dir;
+	if (mkdtemp(fs->dir) == NULL)
+		goto fail;
+	step = "ext4 mount";
+	if (mount(device, fs->dir, "ext4", MS_NODEV | MS_NOSUID, NULL) == -1)
+		goto fail;
+	close(ctl);
+	close(fd);
+	return (0);
+
+fail:
+	saved = errno;
+	if (fs->loop_fd != -1) {
+		if (bound)
+			(void)ioctl(fs->loop_fd, LOOP_CLR_FD, 0);
+		close(fs->loop_fd);
+	}
+	if (ctl != -1)
+		close(ctl);
+	if (fd != -1) {
+		close(fd);
+		if (tmp[0] != '\0')
+			(void)unlink(tmp);
+	}
+	if (srcfd != -1)
+		close(srcfd);
+	if (fs->dir[0] != '\0')
+		(void)rmdir(fs->dir);
+	errno = saved;
+	if (getenv("QUARK_TEST_FS_REQUIRED") != NULL)
+		err(1, "required ext4 test filesystem %s: %s", image, step);
+	warn("SKIP: optional ext4 test filesystem %s: %s", image, step);
+	return (-1);
+}
+
+static void
+test_fs_close(struct test_fs *fs)
+{
+	if (umount(fs->dir) == -1)
+		err(1, "umount test filesystem");
+	if (ioctl(fs->loop_fd, LOOP_CLR_FD, 0) == -1 ||
+	    close(fs->loop_fd) == -1 || rmdir(fs->dir) == -1)
+		err(1, "close test filesystem");
+}
+
+static int
+t_test_fs(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct test_fs	fs;
+	struct statfs	sfs;
+	struct stat	st;
+	const char	*image = test_fs_image();
+	char		*before, *after;
+	char		path[128];
+	size_t		before_size, after_size;
+	int		fd, generation;
+
+	before = load_file_path_nostat(image, &before_size);
+	if (test_fs_open(&fs) == -1) {
+		free(before);
+		return (0);
+	}
+	assert(before != NULL);
+	if (statfs(fs.dir, &sfs) == -1)
+		err(1, "statfs");
+	assert(sfs.f_type == EXT4_SUPER_MAGIC);
+	snprintf(path, sizeof(path), "%s/smoke", fs.dir);
+	if ((fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600)) == -1 ||
+	    ftruncate(fd, 4096) == -1 || fstat(fd, &st) == -1 ||
+	    ioctl(fd, FS_IOC_GETVERSION, &generation) == -1)
+		err(1, "test filesystem smoke");
+	assert(st.st_size == 4096 && st.st_ino != 0);
+	if (close(fd) == -1 || unlink(path) == -1)
+		err(1, "remove smoke file");
+	/* Leave data in this copy to check that the next copy starts clean. */
+	snprintf(path, sizeof(path), "%s/left-in-copy", fs.dir);
+	if ((fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600)) == -1 ||
+	    qwrite(fd, PATTERN, sizeof(PATTERN) - 1) == -1 || close(fd) == -1)
+		err(1, "write isolation marker");
+	test_fs_close(&fs);
+	assert(access(fs.dir, F_OK) == -1 && errno == ENOENT);
+
+	if (test_fs_open(&fs) == -1)
+		errx(1, "reopen test filesystem");
+	snprintf(path, sizeof(path), "%s/left-in-copy", fs.dir);
+	assert(access(path, F_OK) == -1 && errno == ENOENT);
+	test_fs_close(&fs);
+	assert(access(fs.dir, F_OK) == -1 && errno == ENOENT);
+	after = load_file_path_nostat(image, &after_size);
+	assert(after != NULL && before_size == after_size);
+	assert(memcmp(before, after, before_size) == 0);
+	free(before);
+	free(after);
+	return (0);
+}
 
 static int
 probe_fancy_tty(void)
@@ -5733,6 +5912,7 @@ t_container_get(const struct test *t, struct quark_queue_attr *qa)
 #define T_NOVA(_x)	{ S(_x), _x, QQ_NOVA, 0 }
 #define S(_x)		#_x
 struct test all_tests[] = {
+	T(t_test_fs),
 	T_EBPF(t_probe),
 	T_EBPF(t_probe_all),
 	T_EBPF(t_ringbuf_max),
