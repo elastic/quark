@@ -19,6 +19,8 @@ bin="$1"
 cmdline="$*"
 
 function qemu {
+	# The initramfs stays in RAM, and t_ringbuf_max needs 64 MiB beside it.
+	mem=512M
 	case "$(file -b "$kernel" | awk '{print $3}')" in
 	x86)
 		kvm=""
@@ -26,7 +28,7 @@ function qemu {
 			kvm="-enable-kvm"
 		fi
 		qemu-system-x86_64						\
-			-m 256M							\
+			-m $mem							\
 			-initrd "$initramfs"					\
 			-kernel "$kernel"					\
 			-nographic						\
@@ -35,7 +37,7 @@ function qemu {
 		;;
 	ARM64)
 		qemu-system-aarch64						\
-			-m 256M							\
+			-m $mem							\
 			-machine virt						\
 			-cpu cortex-a57						\
 			-initrd "$initramfs"					\

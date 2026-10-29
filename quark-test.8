@@ -68,6 +68,22 @@ Exclude
 .Ar test
 from the run, can be specified multiple times.
 .El
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev QUARK_TEST_FS_IMAGE
+Path to a writable ext4 test image, made by
+.Dq make quark-test.ext4 .
+The default is
+.Pa quark-test.ext4
+in the current directory, or
+.Pa /quark-test.ext4
+in the kernel test guest.
+The tests mount the image through a loop device in a private mount namespace.
+.It Ev QUARK_TEST_FS_REQUIRED
+If set, failure to set up the test filesystem is an error.
+Otherwise, tests that require it print an explicit skip message.
+Set this variable for kernel runs which must exercise inode reuse.
+.El
 .Sh EXIT STATUS
 .Nm
 exits with the number of failed tests, or non-zero if

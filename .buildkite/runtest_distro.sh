@@ -37,7 +37,9 @@ sudo kvm-ok
 case "$DISTRO" in
 fedora)		sudo ./krun-fedora.sh initramfs.gz "$DISTROVER" quark-test $@;;
 rhel)		sudo ./krun-rhel.sh initramfs.gz "$DISTROVER" quark-test $@;;
-ubuntu)		sudo ./krun-ubuntu.sh initramfs.gz "$DISTROVER" quark-test $@;;
+# Only Ubuntu kernels build in loop, which the ext4 fixture needs. The guest
+# kernel passes unknown NAME=value parameters to init as environment.
+ubuntu)		sudo ./krun-ubuntu.sh initramfs.gz "$DISTROVER" quark-test QUARK_TEST_FS_REQUIRED=1 $@;;
 archlinux)	sudo ./krun-archlinux.sh initramfs.gz quark-test $@;;
 *)		echo bad distribution "$DISTROVER" 1>&2;;
 esac

@@ -5,6 +5,7 @@ SUDO?= sudo
 GO?= go
 CLANG?= clang
 BPFTOOL?= bpftool
+MKE2FS?= mke2fs
 BPF_ARCH?= bpf # Zig cc calls this bpfel
 DOCKER?= docker
 CLANG_MINVER:= 17 # 16 will produce broken probes
@@ -463,8 +464,9 @@ test-kernel: initramfs.gz
 # loading these BTF modules, making valgrind spit thousands of false
 # positives.
 #
-test-valgrind: quark-test
+test-valgrind: quark-test quark-test.ext4
 	$(SUDO) VALGRIND=1 QUARK_BTF_PATH=/sys/kernel/btf/vmlinux	\
+		QUARK_TEST_FS_REQUIRED=1				\
 		valgrind						\
 		--trace-children=no					\
 		--child-silent-after-fork=yes				\
@@ -485,7 +487,17 @@ initramfs:
 	echo "VERSION_CODENAME=\"iota\"" >> initramfs/etc/os-release
 	echo "PRETTY_NAME=\"Quark kernel testing initramfs\"" >> initramfs/etc/os-release
 
-initramfs.gz: init quark-mon-static quark-btf-static quark-test-static true initramfs
+# Use only features available on the oldest kernel guests. No host mount.
+# Guests keep the image in RAM for the whole run, so keep it small.
+# Without a journal ext4 delays inode number reuse. mke2fs only adds one
+# to filesystems of at least 2048 blocks, hence the 1 KiB blocks.
+quark-test.ext4:
+	truncate -s 4M $@
+	$(MKE2FS) -q -F -t ext4 -b 1024 -m 0 \
+	    -O none,has_journal,extent,filetype,sparse_super,large_file,uninit_bg,dir_index,extra_isize \
+	    -E lazy_itable_init=0,lazy_journal_init=0 $@ || { rm -f $@; exit 1; }
+
+initramfs.gz: init quark-mon-static quark-btf-static quark-test-static true initramfs quark-test.ext4
 	$(call assert_no_syslib)
 	cp init initramfs/
 	cp quark-mon-static initramfs/quark-mon
@@ -493,6 +505,7 @@ initramfs.gz: init quark-mon-static quark-btf-static quark-test-static true init
 	cp quark-test-static initramfs/quark-test
 	cp quark-test-static initramfs/quark-test
 	cp true initramfs/bin
+	cp quark-test.ext4 initramfs/
 	cd initramfs && find . -print0 | cpio -0 -ov --format=newc | gzip -9 > ../$@
 
 init: init.c
@@ -666,7 +679,7 @@ clean-all: clean
 	$(call msg,CLEAN-ALL)
 	$(Q)rm -f $(SVGS)
 	$(Q)rm -rf include
-	$(Q)rm -f initramfs.gz
+	$(Q)rm -f initramfs.gz quark-test.ext4
 	$(Q)make -C $(LIBBPF_SRC) clean NO_PKG_CONFIG=y
 	$(Q)make -C $(ELFTOOLCHAIN_SRC)/libelf clean
 	$(Q)test -f $(ZLIB_SRC)/Makefile && make -C $(ZLIB_SRC) clean || true
