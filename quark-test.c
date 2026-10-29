@@ -2533,6 +2533,94 @@ t_file_access_inode_reuse(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* A lost report must leave its class unclaimed, independently of name reset. */
+static int
+t_file_access_retry(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct test_fs fs;
+	struct quark_queue qq;
+	struct quark_queue_stats stats;
+	const struct quark_event *qev;
+	const struct quark_file_access *access;
+	struct timespec start, now;
+	char dir[128], filler[160], target[192], sentinel[160];
+	u64 lost;
+	int before_nfd, nflood, idle;
+
+	if (in_valgrind) {
+		warnx("%s: ring saturation skipped under valgrind", t->name);
+		return (0);
+	}
+	test_fs_tmpfs(&fs);
+	snprintf(dir, sizeof(dir), "%s/quark-test-anchor", fs.dir);
+	snprintf(target, sizeof(target), "%s/target-longer-than-every-filler", dir);
+	snprintf(sentinel, sizeof(sentinel), "%s/sentinel", dir);
+	assert(mkdir(dir, 0700) == 0);
+	assert(close(test_fs_create(target)) == 0);
+	assert(close(test_fs_create(sentinel)) == 0);
+	before_nfd = num_open_fd();
+	qa->flags |= QQ_FILE_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(quark_queue_file_access_name_add(&qq, "quark-test-anchor",
+	    QUARK_FILE_ACCESS_NAME_PARENT) == 0);
+	if (file_access_in_child(&qq)) {
+		test_fs_close(&fs);
+		return (0);
+	}
+
+	/* Every filler is shorter than target and has a fresh inode/path key. */
+	quark_queue_get_stats(&qq, &stats);
+	lost = stats.lost;
+	for (nflood = 0; stats.lost == lost; nflood++) {
+		if (nflood == 200000)
+			errx(1, "could not fill the file-access ring buffer");
+		snprintf(filler, sizeof(filler), "%s/filler-%d", dir, nflood);
+		file_access_open(filler, O_WRONLY | O_CREAT | O_EXCL);
+		file_access_open(filler, O_PATH);
+		if ((nflood & 255) == 255)
+			quark_queue_get_stats(&qq, &stats);
+	}
+	lost = stats.lost;
+	file_access_open(target, O_RDONLY);
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.lost > lost);
+
+	/* Check that the target really was lost while draining the filler records. */
+	assert(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+	for (idle = 0; idle < 20;) {
+		assert(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+		if (now.tv_sec - start.tv_sec > 30)
+			errx(1, "file-access flood did not drain");
+		if ((qev = quark_queue_get_event(&qq)) != NULL) {
+			if (qev->events & QUARK_EV_FILE_ACCESS) {
+				access = qev->file_access;
+				if (!strcmp(access->path, target))
+					errx(1, "target access was delivered, not lost");
+			}
+			idle = 0;
+			continue;
+		}
+		assert(quark_queue_block(&qq) == 0);
+		idle++;
+	}
+	file_access_open(target, O_RDONLY);
+	access = drain_file_access(&qq)->file_access;
+	assert(!strcmp(access->path, target));
+	assert((access->open_flags & O_ACCMODE) == O_RDONLY);
+	assert(!(access->open_flags & O_PATH));
+	file_access_open(target, O_RDONLY);
+	file_access_open(sentinel, O_RDONLY);
+	assert_next_access_path(&qq, sentinel); /* Successful retry claims READ. */
+
+	while (nflood-- > 0) {
+		snprintf(filler, sizeof(filler), "%s/filler-%d", dir, nflood);
+		assert(unlink(filler) == 0);
+	}
+	assert(unlink(target) == 0 && unlink(sentinel) == 0 && rmdir(dir) == 0);
+	file_access_child_done(&qq, before_nfd);
+	return (0);
+}
+
 static int
 t_memfd(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -6419,6 +6507,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_access_classes),
 	T_EBPF(t_file_access_paths),
 	T_EBPF(t_file_access_inode_reuse),
+	T_EBPF(t_file_access_retry),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_detached_mount_exec),
