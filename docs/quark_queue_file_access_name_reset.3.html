@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="mandoc.css" type="text/css" media="all"/>
+  <title>QUARK_QUEUE_FILE_ACCESS_NAME_RESET(3)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">QUARK_QUEUE_FILE_ACCESS_NAME_RESET(3)</td>
+    <td class="head-vol">Library Functions Manual</td>
+    <td class="head-rtitle">QUARK_QUEUE_FILE_ACCESS_NAME_RESET(3)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">quark_queue_file_access_name_reset</code>
+    &#x2014; <span class="Nd">clear file access names and start a new report
+    generation</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<p class="Pp"><code class="In">#include
+  &lt;<a class="In">quark.h</a>&gt;</code></p>
+<p class="Pp"><var class="Ft">int</var>
+  <br/>
+  <code class="Fn">quark_queue_file_access_name_reset</code>(<var class="Fa" style="white-space: nowrap;">struct
+    quark_queue *qq</var>);</p>
+</section>
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+Removes all file access names from a queue opened with
+  <code class="Dv">QQ_FILE_ACCESS</code> and starts a new generation for
+  repeated-open suppression. After a successful reset, add the replacement names
+  with
+  <a class="Xr" href="quark_queue_file_access_name_add.3.html">quark_queue_file_access_name_add(3)</a>.
+  A process can then report an access class again, including a class reported
+  before the reset for the same file and path.
+<p class="Pp">Reset and addition are separate operations. Opens while the name
+    set is empty are not reported. An open already in progress, or an event
+    already in the queue, can still refer to the previous name set. Reset does
+    not remove queued events.</p>
+<p class="Pp">As with other operations on a queue, the caller must serialize
+    reset and name addition, including calls from processes that inherit the
+    queue. An error can leave only some names removed. The queue remains usable;
+    retry reset before adding replacement names.</p>
+<section class="Sh">
+<h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
+  VALUES</a></h1>
+<p class="Pp">Zero on success, -1 on error with <var class="Va">errno</var>
+  set.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="ERRORS"><a class="permalink" href="#ERRORS">ERRORS</a></h1>
+<dl class="Bl-tag">
+  <dt id="EINVAL"><a class="permalink" href="#EINVAL"><code class="Er">EINVAL</code></a></dt>
+  <dd>The queue does not have <code class="Dv">QQ_FILE_ACCESS</code> with the
+      eBPF backend.</dd>
+  <dt id="EOVERFLOW"><a class="permalink" href="#EOVERFLOW"><code class="Er">EOVERFLOW</code></a></dt>
+  <dd>The generation reached its maximum value. The names remain unchanged.</dd>
+</dl>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr" href="quark_queue_file_access_name_add.3.html">quark_queue_file_access_name_add(3)</a>,
+    <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
+    <a class="Xr" href="quark.7.html">quark(7)</a></p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">October 30, 2026</td>
+    <td class="foot-os">Linux</td>
+  </tr>
+</table>
+</body>
+</html>

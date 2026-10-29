@@ -2621,6 +2621,74 @@ t_file_access_retry(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* A fresh queue keeps reset coverage independent of ring saturation or eviction. */
+static int
+t_file_access_reset(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct test_fs fs;
+	struct quark_queue qq;
+	const struct quark_file_access *access;
+	char dir[128], path[160], before[160], after[160], name[64];
+	int before_nfd, i;
+
+	test_fs_tmpfs(&fs);
+	snprintf(dir, sizeof(dir), "%s/quark-test-anchor", fs.dir);
+	snprintf(path, sizeof(path), "%s/target", dir);
+	snprintf(before, sizeof(before), "%s/before", dir);
+	snprintf(after, sizeof(after), "%s/after", dir);
+	assert(mkdir(dir, 0700) == 0);
+	assert(close(test_fs_create(path)) == 0);
+	assert(close(test_fs_create(before)) == 0);
+	assert(close(test_fs_create(after)) == 0);
+	before_nfd = num_open_fd();
+	qa->flags |= QQ_FILE_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(quark_queue_file_access_name_add(&qq, "quark-test-anchor",
+	    QUARK_FILE_ACCESS_NAME_PARENT) == 0);
+	/* A full table also requires reset to delete the old anchor keys. */
+	for (i = 1; i < QUARK_FILE_ACCESS_NAMES_MAX; i++) {
+		snprintf(name, sizeof(name), "unused-%d", i);
+		assert(quark_queue_file_access_name_add(&qq, name,
+		    QUARK_FILE_ACCESS_NAME_LEAF) == 0);
+	}
+	if (file_access_in_child(&qq)) {
+		test_fs_close(&fs);
+		return (0);
+	}
+
+	file_access_open(path, O_RDONLY);
+	assert_next_access_path(&qq, path);
+	file_access_open(path, O_RDONLY);
+	file_access_open(before, O_RDONLY);
+	assert_next_access_path(&qq, before); /* Prove READ is still suppressed. */
+
+	/* libbpf's NULL get-next-key has the same Valgrind issue as trusted_pid. */
+	if (!in_valgrind) {
+		assert(quark_queue_file_access_name_reset(&qq) == 0);
+		file_access_open(path, O_PATH); /* No registered names: no event. */
+		assert(quark_queue_file_access_name_add(&qq, "quark-test-anchor",
+		    QUARK_FILE_ACCESS_NAME_PARENT) == 0);
+		file_access_open(path, O_RDONLY);
+		file_access_open(after, O_RDONLY);
+		access = drain_file_access(&qq)->file_access;
+		assert(!strcmp(access->path, path));
+		assert(!(access->open_flags & (O_ACCMODE | O_PATH | 0x20)));
+		assert_next_access_path(&qq, after);
+		file_access_open(path, O_RDONLY);
+		file_access_open(after, O_PATH);
+		assert_next_access_path(&qq, after); /* New-generation repeat suppresses. */
+		assert(quark_queue_file_access_name_reset(&qq) == 0);
+		assert(quark_queue_file_access_name_reset(&qq) == 0); /* Empty set. */
+	} else
+		warnx("%s: reset skipped for libbpf get-next-key Valgrind false positive",
+		    t->name);
+
+	assert(unlink(path) == 0 && unlink(before) == 0 && unlink(after) == 0);
+	assert(rmdir(dir) == 0);
+	file_access_child_done(&qq, before_nfd);
+	return (0);
+}
+
 static int
 t_memfd(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -6508,6 +6576,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_access_paths),
 	T_EBPF(t_file_access_inode_reuse),
 	T_EBPF(t_file_access_retry),
+	T_EBPF(t_file_access_reset),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_detached_mount_exec),

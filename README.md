@@ -304,6 +304,10 @@ open a queue to receive events, initial library call.
 
 register a leaf or parent name for file access events.
 
+[quark\_queue\_file\_access\_name\_reset(3)](https://elastic.github.io/quark/quark_queue_file_access_name_reset.3.html)
+
+clear file access names and permit new reports after names are added again.
+
 [quark\_queue\_default\_attr(3)](https://elastic.github.io/quark/quark_queue_default_attr.3.html)
 
 get default attributes of [quark\_queue\_open(3)](https://elastic.github.io/quark/quark_queue_open.3.html).

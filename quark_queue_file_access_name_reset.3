@@ -1,0 +1,48 @@
+.Dd $Mdocdate$
+.Dt QUARK_QUEUE_FILE_ACCESS_NAME_RESET 3
+.Os
+.Sh NAME
+.Nm quark_queue_file_access_name_reset
+.Nd clear file access names and start a new report generation
+.Sh SYNOPSIS
+.In quark.h
+.Ft int
+.Fn quark_queue_file_access_name_reset "struct quark_queue *qq"
+.Sh DESCRIPTION
+Removes all file access names from a queue opened with
+.Dv QQ_FILE_ACCESS
+and starts a new generation for repeated-open suppression.
+After a successful reset, add the replacement names with
+.Xr quark_queue_file_access_name_add 3 .
+A process can then report an access class again, including a class reported
+before the reset for the same file and path.
+.Pp
+Reset and addition are separate operations.
+Opens while the name set is empty are not reported.
+An open already in progress, or an event already in the queue, can still
+refer to the previous name set.
+Reset does not remove queued events.
+.Pp
+As with other operations on a queue, the caller must serialize reset and
+name addition, including calls from processes that inherit the queue.
+An error can leave only some names removed.
+The queue remains usable; retry reset before adding replacement names.
+.Sh RETURN VALUES
+Zero on success, -1 on error with
+.Va errno
+set.
+.Sh ERRORS
+.Bl -tag -width Er
+.It Er EINVAL
+The queue does not have
+.Dv QQ_FILE_ACCESS
+with the eBPF backend.
+.It Er EOVERFLOW
+The generation reached its maximum value.
+The names remain unchanged.
+.El
+.Sh SEE ALSO
+.Xr quark_queue_file_access_name_add 3 ,
+.Xr quark_queue_get_event 3 ,
+.Xr quark_queue_open 3 ,
+.Xr quark 7

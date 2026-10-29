@@ -40,7 +40,10 @@ Registers <var class="Fa">name</var>, a single path component without slashes
   file called <var class="Fa">name</var>, and
   <code class="Dv">QUARK_FILE_ACCESS_NAME_PARENT</code>, which reports opens of
   any file whose directory, or one of the two directories above it, is called
-  <var class="Fa">name</var>. Registering an existing name adds to its roles. At
+  <var class="Fa">name</var>. Registering an existing name adds to its roles.
+  Call
+  <a class="Xr" href="quark_queue_file_access_name_reset.3.html">quark_queue_file_access_name_reset(3)</a>
+  to remove all names and permit new reports after names are added again. At
   most <code class="Dv">QUARK_FILE_ACCESS_NAMES_MAX</code> distinct names can be
   registered at once; one more fails with <code class="Er">E2BIG</code>. The
   names match the leaf and up to three source directories. A user with a list of
@@ -105,7 +108,8 @@ Registers <var class="Fa">name</var>, a single path component without slashes
 <section class="Sh">
 <h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
   ALSO</a></h1>
-<p class="Pp"><a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
+<p class="Pp"><a class="Xr" href="quark_queue_file_access_name_reset.3.html">quark_queue_file_access_name_reset(3)</a>,
+    <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
     <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
     <a class="Xr" href="quark.7.html">quark(7)</a></p>
 </section>
