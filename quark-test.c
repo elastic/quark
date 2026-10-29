@@ -5180,6 +5180,132 @@ t_pod_remove(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_file_access_format(const struct test *t, struct quark_queue_attr *qa)
+{
+	const char		*paths[] = { "/first", "/second", "/pending" };
+	struct quark_file_access	*owned[nitems(paths)];
+	struct quark_queue	 qq;
+	struct quark_process	*process;
+	struct raw_event	*raw;
+	const struct quark_event	*event;
+	size_t			 i, len;
+	int			 cached;
+
+	for (cached = 0; cached < 2; cached++) {
+		quark_queue_init_bare(&qq);
+		process = cached ? test_process_event(&qq, 4242, "") : NULL;
+		for (i = 0; i < nitems(paths); i++) {
+			raw = raw_event_alloc(RAW_FILE_ACCESS);
+			assert(raw != NULL);
+			raw->pid = 4242;
+			raw->time = i + 1;
+			len = strlen(paths[i]) + 1;
+			owned[i] = calloc(1, sizeof(*owned[i]) + len);
+			assert(owned[i] != NULL);
+			memcpy(owned[i]->storage, paths[i], len);
+			owned[i]->path = owned[i]->storage;
+			owned[i]->inode = 100 + i;
+			raw->file_access.quark_file_access = owned[i];
+			assert(raw_event_insert(&qq, raw) == 0);
+		}
+		/* Each raw payload transfers separately; these do not aggregate. */
+		for (i = 0; i < 2; i++) {
+			event = quark_queue_get_event(&qq);
+			assert(event != NULL);
+			assert(event->events == QUARK_EV_FILE_ACCESS);
+			assert(event->time == i + 1);
+			assert(event->process == process);
+			assert(event->file_access == owned[i]);
+			assert(event->file_access->pid == 4242);
+			assert(event->file_access->inode == 100 + i);
+			assert(!strcmp(event->file_access->path, paths[i]));
+		}
+		/* Close frees both the last delivered payload and the pending raw. */
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+static int
+t_file_access_output(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct {
+		u32		 flags;
+		const char	*text;
+	} cases[] = {
+		{ O_RDONLY, "R" },
+		{ O_WRONLY, "W" },
+		{ O_RDWR, "RW" },
+		{ O_PATH, "P" },
+		{ O_PATH | O_WRONLY, "P" },
+		{ O_RDWR | O_CREAT | O_TRUNC | O_APPEND, "RWCTA" },
+		{ 0x20, "RX" }, /* __FMODE_EXEC */
+	};
+	struct quark_process	 process = { .pid = 4242, .comm = "opener" };
+	struct quark_file_access	 access = {
+		.path = "/watched/secret", .pid = 4242, .inode = ~0ULL,
+		.size = 4097, .uid = 123, .gid = 456,
+	};
+	struct quark_event	 event = {
+		.events = QUARK_EV_FILE_ACCESS, .file_access = &access,
+	};
+	struct quark_queue	 qq;
+	char			 expected[512], *text, *ecs;
+	size_t			 i, text_len, ecs_len;
+	FILE			*stream;
+	cJSON			*json, *file, *proc;
+
+	quark_queue_init_bare(&qq);
+	for (i = 0; i < nitems(cases); i++) {
+		event.process = i & 1 ? &process : NULL;
+		access.open_flags = cases[i].flags;
+		access.fmode = 0x40 + i;
+		access.sym_target = cases[i].flags & O_PATH ? "../target" : NULL;
+		access.mode = access.sym_target ? S_IFLNK | 0777 : S_IFREG | 0640;
+		text = ecs = NULL;
+		text_len = ecs_len = 0;
+		stream = open_memstream(&text, &text_len);
+		assert(stream != NULL);
+		assert(quark_event_dump(&event, stream) == 0);
+		assert(fclose(stream) == 0);
+		assert(strstr(text, "->4242 (FILE_ACCESS)\n") != NULL);
+		snprintf(expected, sizeof(expected), "access=%s open_flags=0%o\n",
+		    cases[i].text, cases[i].flags);
+		assert(strstr(text, expected) != NULL);
+		assert(strstr(text, "path=/watched/secret\n") != NULL);
+		assert((strstr(text, "sym_target=../target\n") != NULL) ==
+		    (access.sym_target != NULL));
+
+		assert(quark_event_to_ecs(&qq, &event, &ecs, &ecs_len) == 0);
+		assert(strstr(ecs, "\"action\":\"file-opened\"") != NULL);
+		json = cJSON_Parse(ecs);
+		assert(json != NULL);
+		proc = cJSON_GetObjectItemCaseSensitive(json, "process");
+		assert(cJSON_IsObject(proc));
+		assert(cJSON_GetObjectItemCaseSensitive(proc, "pid")->valueint == 4242);
+		assert(cJSON_HasObjectItem(proc, "name") == (event.process != NULL));
+		snprintf(expected, sizeof(expected), "{\"path\":\"/watched/secret\","
+		    "\"inode\":\"18446744073709551615\",\"size\":4097,"
+		    "\"uid\":123,\"gid\":456,\"mode\":\"0%o\",%s"
+		    "\"Ext\":{\"open_flags\":%u,\"fmode\":%u}}", access.mode,
+		    access.sym_target ? "\"target_path\":\"../target\"," : "",
+		    access.open_flags, access.fmode);
+		file = cJSON_Parse(expected);
+		assert(file != NULL);
+		assert(cJSON_Compare(cJSON_GetObjectItemCaseSensitive(json, "file"),
+		    file, 1));
+		cJSON_Delete(file);
+		cJSON_Delete(json);
+		free(ecs);
+		free(text);
+	}
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
 t_container_dump(const struct test *t, struct quark_queue_attr *qa)
 {
 	const struct {
@@ -5589,6 +5715,8 @@ struct test all_tests[] = {
 	T(t_pod_create),
 	T(t_pod_dump),
 	T(t_container_dump),
+	T(t_file_access_format),
+	T(t_file_access_output),
 	T(t_container_get),
 	T(t_container_create),
 	T(t_pod_remove),
