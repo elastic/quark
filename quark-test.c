@@ -1402,6 +1402,15 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static void
+assert_file_path(const struct quark_file *qf, const char *want)
+{
+	if (qf->path == NULL)
+		errx(1, "file event has no path, want %s", want);
+	if (strcmp(qf->path, want) != 0)
+		errx(1, "file event path is %s, want %s", qf->path, want);
+}
+
 /*
  * Operations on the same inode through different paths must not aggregate,
  * otherwise a write to one path is reported under the path of its hard
@@ -1452,8 +1461,7 @@ t_file_hardlink(const struct test *t, struct quark_queue_attr *qa)
 	assert(qf != NULL);
 	assert(qf->inode == st.st_ino);
 	assert(qf->op_mask & QUARK_FILE_OP_CREATE);
-	assert(qf->path != NULL);
-	assert(!strcmp(qf->path, path));
+	assert_file_path(qf, path);
 
 	qev = drain_for_pid(&qq, getpid());
 	assert(qev->events == QUARK_EV_FILE);
@@ -1462,8 +1470,7 @@ t_file_hardlink(const struct test *t, struct quark_queue_attr *qa)
 	assert(qf->inode == st.st_ino);
 	assert(qf->op_mask == QUARK_FILE_OP_MODIFY);
 	assert(qf->change_mask == QUARK_FILE_CH_CONTENT);
-	assert(qf->path != NULL);
-	assert(!strcmp(qf->path, link_path));
+	assert_file_path(qf, link_path);
 
 	/* Removing the link is reported under the link path as well. */
 	if (unlink(link_path) == -1)
@@ -1474,8 +1481,7 @@ t_file_hardlink(const struct test *t, struct quark_queue_attr *qa)
 	assert(qf != NULL);
 	assert(qf->inode == st.st_ino);
 	assert(qf->op_mask == QUARK_FILE_OP_REMOVE);
-	assert(qf->path != NULL);
-	assert(!strcmp(qf->path, link_path));
+	assert_file_path(qf, link_path);
 
 	if (unlink(path) == -1)
 		err(1, "unlink");
