@@ -120,6 +120,10 @@
           <a class="permalink" href="#security_file_mprotect"><code class="Fn" id="security_file_mprotect">security_file_mprotect</code></a>()
           check and does not imply that the protection change was
         committed.</dd>
+      <dt id="QQ_FILE_ACCESS"><a class="permalink" href="#QQ_FILE_ACCESS"><code class="Dv">QQ_FILE_ACCESS</code></a></dt>
+      <dd>Enable file access events (EBPF backend only, experimental). Nothing
+          is reported until names are registered with
+          <a class="Xr" href="quark_queue_file_access_name_add.3.html">quark_queue_file_access_name_add(3)</a>.</dd>
     </dl>
   </dd>
   <dt id="max_length"><a class="permalink" href="#max_length"><i class="Em">max_length</i></a></dt>
@@ -152,9 +156,12 @@
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
   VALUES</a></h1>
 <p class="Pp">Zero on success, -1 otherwise and <var class="Va">errno</var> is
-    set. In the case of an error, the internal state is cleared up and a
-    <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>
-    should NOT be issued.</p>
+    set. In the case of an error from
+    <code class="Fn">quark_queue_open</code>(), the internal state is cleared up
+    and a <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>
+    should NOT be issued; a failed
+    <code class="Fn">quark_queue_file_access_name_add</code>() leaves the queue
+    usable.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="ENVIRONMENT"><a class="permalink" href="#ENVIRONMENT">ENVIRONMENT</a></h1>
@@ -185,7 +192,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 6, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

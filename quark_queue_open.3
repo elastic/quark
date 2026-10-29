@@ -123,6 +123,10 @@ Enable EBPF-only executable mprotect attempt events.
 Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
+.It Dv QQ_FILE_ACCESS
+Enable file access events (EBPF backend only, experimental).
+Nothing is reported until names are registered with
+.Xr quark_queue_file_access_name_add 3 .
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.
@@ -156,9 +160,13 @@ Details are described in
 Zero on success, -1 otherwise and
 .Va errno
 is set.
-In the case of an error, the internal state is cleared up and a
+In the case of an error from
+.Fn quark_queue_open ,
+the internal state is cleared up and a
 .Xr quark_queue_close 3
-should NOT be issued.
+should NOT be issued; a failed
+.Fn quark_queue_file_access_name_add
+leaves the queue usable.
 .Sh ENVIRONMENT
 .Bl -tag -width Ds
 .It Ev QUARK_BPF_KPROBE
