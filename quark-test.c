@@ -53,8 +53,9 @@
 #include "manpages.h"
 
 #define PATTERN		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
-#define STATUS_LINELEN	32
 #define MAXTESTS	512
+
+#define STATUS_LINELEN_MIN	32
 
 struct udphdr {
 	u16 source;
@@ -92,6 +93,7 @@ static int	kflag;		/* run kprobe tests */
 static int	nflag;		/* run nova tests */
 static int	tflag;		/* listen to the tracepipe */
 static int	fancy_tty;
+static int	status_linelen = STATUS_LINELEN_MIN;
 static int	in_valgrind;
 
 static int
@@ -157,6 +159,21 @@ backend_of_attr(struct quark_queue_attr *qa)
 		errx(1, "bad flags");
 
 	return (be);
+}
+
+static const char *
+backend_name(int be)
+{
+	switch (be) {
+	case QQ_EBPF:
+		return ("ebpf");
+	case QQ_KPROBE:
+		return ("kprobe");
+	case QQ_NOVA:
+		return ("nova");
+	default:
+		return ("unknown");
+	}
 }
 
 static void
@@ -5450,15 +5467,10 @@ run_test(struct progress *progress, struct test *t, struct quark_queue_attr *qa)
 	be = backend_of_attr(qa);
 
 	linepos = printf("%s", t->name);
-	if (be != -1) {
-		linepos += printf(" @ %s",
-		    be == QQ_EBPF ? "ebpf" :
-		    be == QQ_KPROBE ? "kprobe" :
-		    be == QQ_NOVA ? "nova" :
-		    "unknown");
-	}
+	if (be != -1)
+		linepos += printf(" @ %s", backend_name(be));
 
-	while (++linepos < STATUS_LINELEN)
+	while (++linepos < status_linelen)
 		putchar('.');
 
 	fflush(stdout);
@@ -5730,6 +5742,26 @@ run_tests(int argc, char *argv[])
 	return (failed);
 }
 
+/*
+ * Size the status line so the longest "name @ backend" still gets a few
+ * dots before ok/failed.
+ */
+static void
+status_linelen_init(void)
+{
+	struct test	*t;
+	int		 len;
+
+	for (t = all_tests; t->name != NULL; t++) {
+		len = strlen(t->name);
+		if (t->backend != 0)
+			len += strlen(" @ ") + strlen(backend_name(t->backend));
+		len += 4;	/* at least three dots */
+		if (len > status_linelen)
+			status_linelen = len;
+	}
+}
+
 static void
 sigint_handler(int sig)
 {
@@ -5745,6 +5777,7 @@ main(int argc, char *argv[])
 
 	fancy_tty = probe_fancy_tty();
 	in_valgrind = getenv("VALGRIND") != NULL;
+	status_linelen_init();
 
 	if (argc == 2 &&
 	    (!strcmp(argv[1], "--help") ||
