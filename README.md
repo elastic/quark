@@ -48,7 +48,7 @@ The first tree is basically a priority queue, ordered by the time of the event. 
 
 [*AGGREGATION*](#AGGREGATION)
 
-quark buffers and aggregates related events that happened close enough. The common case is generating a single event for the triple: [fork(2)](https://linux.die.net/man/2/fork), [exec(3)](https://linux.die.net/man/3/exec), [exit(3)](https://linux.die.net/man/3/exit). There are rules on what can be aggregated, and only events of the same pid are aggregated. For example: quark won't aggregate two [exec(3)](https://linux.die.net/man/3/exec) events, otherwise we would lose the effects of the first one. These rules will be exposed and configurable in the future.
+quark buffers and aggregates related events that happened close enough. The common case is generating a single event for the triple: [fork(2)](https://linux.die.net/man/2/fork), [exec(3)](https://linux.die.net/man/3/exec), [exit(3)](https://linux.die.net/man/3/exit). There are rules on what can be aggregated, and only events of the same pid are aggregated. For example: quark won't aggregate two [exec(3)](https://linux.die.net/man/3/exec) events, otherwise we would lose the effects of the first one. File events only aggregate when they refer to the same inode through the same path, so operations on a hard link stay separate from operations on the file's other names. These rules will be exposed and configurable in the future.
 
 [*BUFFERING*](#BUFFERING)
 

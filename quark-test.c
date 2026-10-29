@@ -1403,6 +1403,89 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * Operations on the same inode through different paths must not aggregate,
+ * otherwise a write to one path is reported under the path of its hard
+ * link.
+ */
+static int
+t_file_hardlink(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	struct quark_file		*qf;
+	struct stat			 st;
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	char				 link_path[sizeof(path) + 5];
+	int				 fd, link_fd;
+
+	qa->flags |= QQ_FILE;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	if (snprintf(link_path, sizeof(link_path), "%s.link", path) >=
+	    (int)sizeof(link_path))
+		errx(1, "link_path too long");
+	if (link(path, link_path) == -1)
+		err(1, "link");
+	if ((link_fd = open(link_path, O_WRONLY)) == -1)
+		err(1, "open");
+
+	/* First write through the original path, then through the link. */
+	assert(write(fd, "1", 1) == 1);
+	assert(write(link_fd, "2", 1) == 1);
+	close(fd);
+	close(link_fd);
+
+	/*
+	 * The create and the first write share the path and aggregate.
+	 * The write through the link must generate its own event under the
+	 * link path, and not fold into the first one.
+	 */
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->inode == st.st_ino);
+	assert(qf->op_mask & QUARK_FILE_OP_CREATE);
+	assert(qf->path != NULL);
+	assert(!strcmp(qf->path, path));
+
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->inode == st.st_ino);
+	assert(qf->op_mask == QUARK_FILE_OP_MODIFY);
+	assert(qf->change_mask == QUARK_FILE_CH_CONTENT);
+	assert(qf->path != NULL);
+	assert(!strcmp(qf->path, link_path));
+
+	/* Removing the link is reported under the link path as well. */
+	if (unlink(link_path) == -1)
+		err(1, "unlink");
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->inode == st.st_ino);
+	assert(qf->op_mask == QUARK_FILE_OP_REMOVE);
+	assert(qf->path != NULL);
+	assert(!strcmp(qf->path, link_path));
+
+	if (unlink(path) == -1)
+		err(1, "unlink");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
  * A failed unlink(2) must not leave stale probe state behind that hides a
  * subsequent rename(2) on the same thread.
  */
@@ -5195,6 +5278,7 @@ struct test all_tests[] = {
 	T_EBPF(t_exit_tgid),
 	T_KPROBE(t_exit_tgid),
 	T_EBPF(t_file),
+	T_EBPF(t_file_hardlink),
 	T_EBPF(t_file_bad_unlink_rename),
 	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
