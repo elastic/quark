@@ -415,6 +415,27 @@ out:
 
 // Runs with preemption enabled, see prepare_and_send_file_event(); nothing
 // here but that call touches per-cpu state.
+/* Userspace registers source-dentry names; probes only read this map. */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct ebpf_file_access_name);
+    __type(value, u32);
+    __uint(max_entries, 0); // sized by bpf_queue_open1()
+} elastic_ebpf_file_access_anchors SEC(".maps");
+
+struct file_access_scratch {
+    struct ebpf_file_access_name key;
+    struct path path;
+};
+
+// Keep the name and path out of the shared open probe's 512-byte stack.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, u32);
+    __type(value, struct file_access_scratch);
+    __uint(max_entries, 1);
+} elastic_ebpf_file_access_scratch SEC(".maps");
+
 static int do_filp_open__exit(struct file *f)
 {
     /*

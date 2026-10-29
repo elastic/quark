@@ -1788,6 +1788,21 @@ t_bypass(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_file_access_names(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue qq;
+
+	qa->flags |= QQ_FILE_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(quark_queue_file_access_name_add(&qq, "secret",
+	    QUARK_FILE_ACCESS_NAME_LEAF) == 0);
+	assert(quark_queue_file_access_name_add(&qq, "private",
+	    QUARK_FILE_ACCESS_NAME_PARENT) == 0);
+	quark_queue_close(&qq);
+	return (0);
+}
+
+static int
 t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
@@ -5679,6 +5694,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_bad_unlink_rename),
 	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
+	T_EBPF(t_file_access_names),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
