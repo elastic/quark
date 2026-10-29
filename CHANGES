@@ -226,6 +226,13 @@ Changes from 0.9 to 0.10
 
 Changes from 0.10 to 0.11
 ~~~~~~~~~~~~~~~~~~~~~~~~~
+  o File-backed executable mprotect() transitions are now deduplicated
+    per file lifetime rather than per inode number, so a new file that
+    reuses a freed inode number within the process life is reported
+    instead of suppressed. Only files on ext2, ext3, ext4, XFS and tmpfs
+    with a nonzero inode generation are deduplicated. On other filesystems,
+    such as btrfs, NFS, FUSE and squashfs, every such transition is
+    reported.
   o File events only aggregate when they share both inode and path. A
     write to a file followed by a write to, or an unlink of, one of its
     hard links from the same process used to merge into one event that

@@ -71,6 +71,24 @@
       <dd>Process exited.</dd>
       <dt id="QUARK_EV_SETPROCTITLE"><a class="permalink" href="#QUARK_EV_SETPROCTITLE"><code class="Dv">QUARK_EV_SETPROCTITLE</code></a></dt>
       <dd>Process changed its name (COMM).</dd>
+      <dt id="QUARK_EV_MPROTECT"><a class="permalink" href="#QUARK_EV_MPROTECT"><code class="Dv">QUARK_EV_MPROTECT</code></a></dt>
+      <dd>An executable protection attempt reached the kernel's
+          <a class="permalink" href="#security_file_mprotect"><code class="Fn" id="security_file_mprotect">security_file_mprotect</code></a>()
+          check. The
+          <a class="permalink" href="#mprotect"><i class="Em" id="mprotect">mprotect</i></a>
+          member contains the VMA bounds, normalized previous protection,
+          userspace-requested and kernel-adjusted protection, and backing-file
+          identity. For file-backed mappings,
+          <a class="permalink" href="#path"><i class="Em" id="path">path</i></a>
+          is the mount-namespace relative path of the backing file; it is
+          <code class="Dv">NULL</code> for anonymous mappings. Anonymous
+          attempts are reported once per protection transition per process life.
+          File-backed attempts are reported once per protection transition, file
+          and process life on ext2, ext3, ext4, XFS and tmpfs. The file identity
+          includes its inode number and generation. Other filesystems, or an
+          unavailable identity, can report repeats. A file with a reused inode
+          number and a new generation is reported again. It describes an attempt
+          and does not assert that the protection change was committed.</dd>
     </dl>
     <p class="Pp">It's important to note that <i class="Em">events</i> is what
         triggered the event, not what is known about the process.</p>
@@ -201,7 +219,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">September 1, 2026</td>
+    <td class="foot-date">October 30, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

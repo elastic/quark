@@ -19,8 +19,8 @@
 /*
  * Once per process life deduplication shared by the probes that report a
  * transition rather than every call (mprotect). A map keyed by
- * the caller's choice, usually (tgid, device, inode), holds the bits already
- * reported for that key together with the process start time and
+ * the caller's choice, usually (tgid, device, inode, generation), holds the
+ * bits already reported for that key together with the process start time and
  * self_exec_id, which the kernel bumps on every exec and never reuses within
  * a process life; an entry left behind by a dead process (recycled tgid) or
  * by a previous program image no longer matches and is simply claimed anew,
@@ -33,7 +33,33 @@ struct ebpf_dedup_file_key {
     u32 tgid;
     u32 dev;
     u64 inode;
+    u32 i_generation;
+    u32 pad; // every key byte participates in map lookup
 };
+
+// Cache only filesystem identities whose inode generation distinguishes reuse.
+// ext2/3/4 share one magic. XFS and tmpfs also supply this generation. Other
+// filesystems need more identity: btrfs has subvolume roots, NFS file handles,
+// and FUSE node IDs. Overlayfs does not copy the real inode's generation.
+// Unknown or unreadable identities bypass dedup, so they can add reports.
+// Values are from include/uapi/linux/magic.h.
+static __always_inline bool ebpf_dedup_file_key__fill(struct ebpf_dedup_file_key *key,
+                                                       const struct inode *inode, u32 tgid)
+{
+    struct super_block *sb;
+    unsigned long magic;
+
+    __builtin_memset(key, 0, sizeof(*key));
+    key->tgid = tgid;
+    if (!inode || BPF_CORE_READ_INTO(&sb, inode, i_sb) || !sb ||
+        BPF_CORE_READ_INTO(&key->dev, sb, s_dev) ||
+        BPF_CORE_READ_INTO(&key->inode, inode, i_ino) ||
+        BPF_CORE_READ_INTO(&key->i_generation, inode, i_generation) ||
+        BPF_CORE_READ_INTO(&magic, sb, s_magic) || !key->i_generation)
+        return false;
+
+    return magic == 0xef53 || magic == 0x58465342 || magic == 0x01021994;
+}
 
 struct ebpf_dedup_seen {
     u64 start_time_ns;
