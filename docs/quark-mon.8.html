@@ -25,7 +25,8 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-mon</code></td>
-    <td>[<code class="Fl">-BbDEeFGgHhkMNnSsTtv</code>]
+    <td>[<code class="Fl">-BbDEeFGgHhkMNnSsTtuv</code>]
+      [<code class="Fl">-a</code> <var class="Ar">name</var>]
       [<code class="Fl">-C</code> <var class="Ar">filename</var>]
       [<code class="Fl">-K</code> <var class="Ar">kubeconfig</var>]
       [<code class="Fl">-l</code> <var class="Ar">maxlength</var>]
@@ -49,16 +50,35 @@
   </tr>
 </table>
 </section>
+<h1 class="Sh">TABLE OF CONTENTS</h1>
+<ul class="Bl-compact">
+  <li><a href="#DESCRIPTION">DESCRIPTION</a></li>
+  <li><a href="#BACKEND_SELECTION">BACKEND SELECTION</a></li>
+  <li><a href="#CONTAINER_SCOPE">CONTAINER SCOPE</a></li>
+  <li><a href="#EXIT_STATUS">EXIT STATUS</a></li>
+  <li><a href="#EXAMPLES">EXAMPLES</a></li>
+  <li><a href="#SEE_ALSO">SEE ALSO</a></li>
+</ul>
+<section class="Sh">
 <h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
-The <code class="Nm">quark-mon</code> program listens to all incoming
-  <a class="Xr" href="quark.7.html">quark(7)</a> events and prints them to
-  stdout, the output format used is the one in
-  <a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>.
+<p class="Pp">The <code class="Nm">quark-mon</code> program listens to all
+    incoming <a class="Xr" href="quark.7.html">quark(7)</a> events and prints
+    them to stdout, the output format used is the one in
+    <a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>.</p>
 <p class="Pp">The main utility is for testing and debugging quark, it's also a
     good introduction to the code base. <code class="Nm">quark-mon</code> runs
     until a SIGINT is received.</p>
 <p class="Pp">The options are as follows:</p>
 <dl class="Bl-tag">
+  <dt id="a"><a class="permalink" href="#a"><code class="Fl">-a</code></a>
+    <var class="Ar">name</var></dt>
+  <dd>Enable file access events (EBPF backend only, experimental) and report
+      opens of files named <var class="Ar">name</var>. Use one path component
+      for <var class="Ar">name</var>. The component must contain 1 to 63 bytes
+      and no slash. If <var class="Ar">name</var> ends in a slash it is a
+      directory name instead, and opens of any file up to three levels below a
+      directory of that name are reported. This final slash does not count in
+      the 63-byte limit. This option can be given up to 64 times.</dd>
   <dt id="B"><a class="permalink" href="#B"><code class="Fl">-B</code></a></dt>
   <dd>Test bypass mode, where EBPF events are passed up directly without any
       processing. A
@@ -144,18 +164,41 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
   <dt id="r"><a class="permalink" href="#r"><code class="Fl">-r</code></a>
     <var class="Ar">rulefile</var></dt>
   <dd>Read rules from <var class="Ar">rulefile</var>, use <i class="Em">-</i>
-      for stdin.</dd>
+      for stdin. See <a class="Sx" href="#CONTAINER_SCOPE">CONTAINER SCOPE</a>
+      for the &#x201C;event.scope&#x201D; field. The &#x201C;pod.name&#x201D;
+      field matches events from a process in a container that belongs to the
+      named Kubernetes pod. A single &#x2018;*&#x2019; wildcard is accepted, as
+      in &#x201C;pod.name nginx-*&#x201D;. The &#x201C;container.image&#x201D;
+      field matches events from a process in a container whose image reference
+      matches the given string. The image reference is compared exactly as
+      Kubernetes reports it, or as given to the container API, as in
+      &#x201C;container.image docker.io/library/nginx:1.25&#x201D;. A single
+      &#x2018;*&#x2019; wildcard is accepted, so &#x201C;container.image
+      */nginx:1.25&#x201D; matches that image from any registry, and
+      &#x201C;container.image quay.io/*&#x201D; matches every image from that
+      registry. Both fields require container metadata, from quark-kube-talker,
+      see <code class="Fl">-K</code>, or from the container API of the library.
+      An event without a process, or from a process whose container is unknown,
+      matches neither field. Like &#x201C;event.scope&#x201D;, these fields are
+      only supported by the EBPF backend.</dd>
   <dt id="T"><a class="permalink" href="#T"><code class="Fl">-T</code></a></dt>
   <dd>Enable ptrace event tracing.</dd>
   <dt id="t"><a class="permalink" href="#t"><code class="Fl">-t</code></a></dt>
   <dd>Don't supress thread events, this is only useful for debugging and will
       likely be zapped in the future.</dd>
+  <dt id="u"><a class="permalink" href="#u"><code class="Fl">-u</code></a></dt>
+  <dd>Enable executable mprotect attempt events (EBPF only). One event is
+      emitted for every VMA that reaches the
+      <a class="permalink" href="#security_file_mprotect"><code class="Fn" id="security_file_mprotect">security_file_mprotect</code></a>()
+      check with effective execute permission. The event does not assert that
+      the protection change ultimately succeeded.</dd>
   <dt id="v"><a class="permalink" href="#v"><code class="Fl">-v</code></a></dt>
   <dd>Increase verbosity, can be specified multiple times for more
     verbosity.</dd>
   <dt id="V"><a class="permalink" href="#V"><code class="Fl">-V</code></a></dt>
   <dd>Print version and exit.</dd>
 </dl>
+</section>
 <section class="Sh">
 <h1 class="Sh" id="BACKEND_SELECTION"><a class="permalink" href="#BACKEND_SELECTION">BACKEND
   SELECTION</a></h1>
@@ -164,6 +207,34 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
     <code class="Fl">-b</code>, <code class="Fl">-k</code> or
     <code class="Fl">-n</code> may be passed, there is no fallback between
     backends.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="CONTAINER_SCOPE"><a class="permalink" href="#CONTAINER_SCOPE">CONTAINER
+  SCOPE</a></h1>
+<p class="Pp">The &#x201C;event.scope container&#x201D; rule field matches
+    events from a process in a Kubernetes container. To keep only container
+    events on a Kubernetes node, use:</p>
+<div class="Bd Pp Bd-indent Li">
+<pre>pass on event.scope container
+drop on any</pre>
+</div>
+<p class="Pp">A container is recognized only when the last component of the
+    process cgroup is a container scope of the systemd cgroup driver, like
+    <span class="Pa">cri-containerd-&lt;id&gt;.scope</span> or
+    <span class="Pa">crio-&lt;id&gt;.scope</span>. This is the kubeadm default
+    since Kubernetes 1.22. The following are not recognized as containers, and
+    the rules above drop their events:</p>
+<ul class="Bl-bullet">
+  <li>All containers on a node that uses the cgroupfs driver, like
+      <span class="Pa">/kubepods/burstable/pod&lt;uid&gt;/&lt;id&gt;</span>.</li>
+  <li>A process in a nested cgroup of a container, like
+      <span class="Pa">cri-containerd-&lt;id&gt;.scope/init.scope</span>.</li>
+  <li>An event without a process, or from a process with an unknown cgroup.</li>
+</ul>
+<p class="Pp">Containers outside Kubernetes are not a supported use case. The
+    field is only supported by the EBPF backend. The kprobe backend does not
+    report the cgroup of new processes, so it rejects the field, and so does the
+    NOVA backend.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="EXIT_STATUS"><a class="permalink" href="#EXIT_STATUS">EXIT
@@ -222,7 +293,7 @@ The <code class="Nm">quark-mon</code> program listens to all incoming
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">September 1, 2026</td>
+    <td class="foot-date">October 30, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
