@@ -1460,7 +1460,7 @@ t_file_hardlink(const struct test *t, struct quark_queue_attr *qa)
 	close(fd);
 	close(link_fd);
 
-        /* First event should report the original path */
+	/* First event should report the original path */
 	qev = drain_for_pid(&qq, getpid());
 	assert(qev->events == QUARK_EV_FILE);
 	qf = qev->file;
@@ -1470,7 +1470,7 @@ t_file_hardlink(const struct test *t, struct quark_queue_attr *qa)
 	assert(qf->change_mask == QUARK_FILE_CH_CONTENT);
 	assert_file_path(qf, path);
 
-        /* Second event should report the link path */
+	/* Second event should report the link path */
 	qev = drain_for_pid(&qq, getpid());
 	assert(qev->events == QUARK_EV_FILE);
 	qf = qev->file;
