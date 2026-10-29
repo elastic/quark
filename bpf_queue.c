@@ -33,6 +33,7 @@ static_assert(QUARK_BPF_NAME_LEN == EBPF_BPF_NAME_LEN, "bpf names drifted");
 
 /* Names watched by the file access probe, the public cap is the map size */
 #define FILE_ACCESS_ANCHORS_MAX_ENTRIES	QUARK_FILE_ACCESS_NAMES_MAX
+#define FILE_ACCESS_SEEN_MAX_ENTRIES	16384
 _Static_assert(QUARK_FILE_ACCESS_NAME_MAX == EBPF_FILE_ACCESS_NAME_MAX,
     "quark.h and EbpfEventProto.h disagree on the file access name size");
 
@@ -1575,12 +1576,15 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		}
 		p->rodata->file_access_enabled = 1;
 		if (bpf_map__set_max_entries(p->maps.elastic_ebpf_file_access_anchors,
-		    FILE_ACCESS_ANCHORS_MAX_ENTRIES) != 0)
+		    FILE_ACCESS_ANCHORS_MAX_ENTRIES) != 0 ||
+		    bpf_map__set_max_entries(p->maps.elastic_ebpf_file_access_file_seen,
+		    FILE_ACCESS_SEEN_MAX_ENTRIES) != 0)
 			goto fail;
 	} else {
 		if (bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_anchors, 0) != 0 ||
 		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0 ||
-		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_owner_exited, 0) != 0)
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_owner_exited, 0) != 0 ||
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_file_seen, 0) != 0)
 			goto fail;
 	}
 
