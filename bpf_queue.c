@@ -1409,6 +1409,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	}
 
 	if (qq->flags & QQ_FILE) {
+		p->rodata->file_events_enabled = 1;
 		int use_fsnotify =
 		    (btf_number_of_params_of_ptr(btf, "inode_operations", "atomic_open") == 6);
 		int unlink_renamed =
@@ -1516,6 +1517,20 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	}
 
 	if (qq->flags & QQ_FILE_ACCESS) {
+		int renamed = btf_number_of_params(btf, "do_filp_open") == -1;
+
+		if (use_fentry) {
+			if (renamed)
+				bpf_program__set_autoload(p->progs.fexit__do_file_open, 1);
+			else
+				bpf_program__set_autoload(p->progs.fexit__do_filp_open, 1);
+		} else {
+			if (renamed)
+				bpf_program__set_autoload(p->progs.kretprobe__do_file_open, 1);
+			else
+				bpf_program__set_autoload(p->progs.kretprobe__do_filp_open, 1);
+		}
+		p->rodata->file_access_enabled = 1;
 		if (bpf_map__set_max_entries(p->maps.elastic_ebpf_file_access_anchors,
 		    FILE_ACCESS_ANCHORS_MAX_ENTRIES) != 0)
 			goto fail;
