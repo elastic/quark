@@ -1960,6 +1960,76 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* The shared open hook must preserve both records and their metadata. */
+static int
+t_file_access_with_file(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue qq;
+	const struct quark_event *qev;
+	struct stat st;
+	struct timespec start, now;
+	char dir[] = "/tmp/quark-test-fa-both.XXXXXX", leaf[PATH_MAX];
+	pid_t child;
+	int status, got_access = 0, got_file = 0;
+
+	assert(mkdtemp(dir) != NULL);
+	snprintf(leaf, sizeof(leaf), "%s/secret", dir);
+	qa->flags |= QQ_FILE | QQ_FILE_ACCESS;
+	qa->hold_time = 10;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(!quark_queue_file_access_name_add(&qq, "secret",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+	assert((child = fork()) != -1);
+	if (child == 0) {
+		file_access_open(leaf, O_WRONLY | O_CREAT | O_TRUNC);
+		_exit(0);
+	}
+	assert(waitpid(child, &status, 0) == child);
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	assert(stat(leaf, &st) == 0);
+
+	/* Drain for a full second, well beyond the aggregation hold time.
+	 * Do not stop on the first pair: a later duplicate must fail too. */
+	assert(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+	for (;;) {
+		qev = quark_queue_get_event(&qq);
+		if (qev != NULL && qev->process != NULL &&
+		    qev->process->pid == (u32)child) {
+			if (qev->events & QUARK_EV_FILE_ACCESS) {
+				const struct quark_file_access *a = qev->file_access;
+
+				assert(++got_access == 1 && a != NULL);
+				assert(!strcmp(a->path, leaf));
+				assert(a->inode == st.st_ino && a->size == (u64)st.st_size);
+				assert(a->mode == st.st_mode);
+				assert(a->uid == st.st_uid && a->gid == st.st_gid);
+				assert((a->open_flags & (O_CREAT | O_TRUNC)) ==
+				    (O_CREAT | O_TRUNC));
+			}
+			if (qev->events & QUARK_EV_FILE) {
+				const struct quark_file *f = qev->file;
+
+				assert(++got_file == 1 && f != NULL);
+				assert(!strcmp(f->path, leaf));
+				assert(f->inode == st.st_ino && f->size == (u64)st.st_size);
+				assert(f->mode == st.st_mode);
+				assert(f->uid == st.st_uid && f->gid == st.st_gid);
+				assert(f->op_mask == QUARK_FILE_OP_CREATE);
+			}
+		}
+		assert(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+		if ((now.tv_sec - start.tv_sec) * 1000 +
+		    (now.tv_nsec - start.tv_nsec) / 1000000 >= 1000)
+			break;
+		if (qev == NULL)
+			msleep(1);
+	}
+	assert(got_access == 1 && got_file == 1);
+	quark_queue_close(&qq);
+	assert(unlink(leaf) == 0 && rmdir(dir) == 0);
+	return (0);
+}
+
 static int
 t_file_access_smoke(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -5950,6 +6020,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_access),
+	T_EBPF(t_file_access_with_file),
 	T_EBPF(t_file_access_smoke),
 	T_EBPF(t_file_access_names),
 	T_EBPF(t_file_access_name_limits),
