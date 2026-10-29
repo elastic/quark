@@ -1803,6 +1803,54 @@ t_file_access_names(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_file_access_name_limits(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue qq;
+	const int leaf = QUARK_FILE_ACCESS_NAME_LEAF;
+	const int parent = QUARK_FILE_ACCESS_NAME_PARENT;
+	char name[QUARK_FILE_ACCESS_NAME_MAX + 1];
+	struct { const char *name; int roles; } bad[] = {
+		{ NULL, leaf }, { "", leaf }, { "valid", 0 },
+		{ "valid", leaf | 0x80 }, { "a/b", leaf }, { "/", parent }
+	};
+	size_t i;
+
+	/* A valid name cannot be added to an ordinary eBPF queue. */
+	assert(quark_queue_open(&qq, qa) == 0);
+	errno = 0;
+	assert(quark_queue_file_access_name_add(&qq, "valid", leaf) == -1);
+	assert(errno == EINVAL);
+	quark_queue_close(&qq);
+	qa->flags |= QQ_FILE_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	for (i = 0; i < nitems(bad); i++) {
+		errno = 0;
+		assert(quark_queue_file_access_name_add(&qq,
+		    bad[i].name, bad[i].roles) == -1);
+		assert(errno == EINVAL);
+	}
+	memset(name, 'n', sizeof(name));
+	name[QUARK_FILE_ACCESS_NAME_MAX] = 0;
+	errno = 0;
+	assert(quark_queue_file_access_name_add(&qq, name, leaf) == -1);
+	assert(errno == EINVAL);
+	name[QUARK_FILE_ACCESS_NAME_MAX - 1] = 0;
+	assert(quark_queue_file_access_name_add(&qq, name, parent) == 0);
+	for (i = 1; i < QUARK_FILE_ACCESS_NAMES_MAX; i++) {
+		snprintf(name, sizeof(name), "name-%zu", i);
+		assert(quark_queue_file_access_name_add(&qq, name, parent) == 0);
+	}
+	errno = 0;
+	assert(quark_queue_file_access_name_add(&qq, "one-too-many", leaf) == -1);
+	assert(errno == E2BIG);
+	/* Updating roles does not allocate another entry, even at capacity. */
+	assert(quark_queue_file_access_name_add(&qq, "name-1", leaf) == 0);
+	assert(quark_queue_file_access_name_add(&qq, "name-1", parent) == 0);
+	quark_queue_close(&qq);
+	return (0);
+}
+
+static int
 t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
@@ -5695,6 +5743,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_access_names),
+	T_EBPF(t_file_access_name_limits),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
