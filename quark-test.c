@@ -1411,17 +1411,36 @@ assert_file_path(const struct quark_file *qf, const char *want)
 		errx(1, "file event path is %s, want %s", qf->path, want);
 }
 
+static void
+drain_file_event(struct quark_queue *qq, u64 inode, u32 op_mask,
+    u32 change_mask, const char *path)
+{
+	const struct quark_event	*qev;
+	const struct quark_file		*qf;
+
+	qev = drain_for_pid(qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->inode == inode);
+	if (qf->op_mask != op_mask)
+		errx(1, "file event op_mask is 0x%x, want 0x%x (path %s)",
+		    qf->op_mask, op_mask, qf->path);
+	if (qf->change_mask != change_mask)
+		errx(1, "file event change_mask is 0x%x, want 0x%x (path %s)",
+		    qf->change_mask, change_mask, qf->path);
+	assert_file_path(qf, path);
+}
+
 /*
  * Operations on the same inode through different paths must not aggregate,
- * otherwise a write to one path is reported under the path of its hard
+ * otherwise an operation on one path is reported under the path of its hard
  * link.
  */
 static int
 t_file_hardlink(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
-	const struct quark_event	*qev;
-	struct quark_file		*qf;
 	struct stat			 st;
 	char				 path[] = "/tmp/quark-test.XXXXXX";
 	char				 link_path[sizeof(path) + 5];
@@ -1454,42 +1473,30 @@ t_file_hardlink(const struct test *t, struct quark_queue_attr *qa)
 	if ((link_fd = open(link_path, O_WRONLY)) == -1)
 		err(1, "open");
 
-	/* First, write through the original path, then through the link. */
+	/*
+	 * Nothing is drained until all operations are queued, so each pair of
+	 * consecutive operations has the chance to aggregate:
+	 *   write(path)  -> write(link)   path to link
+	 *   write(link)  -> write(path)   link to path
+	 *   write(path)  -> unlink(link)  write, then remove through the link
+	 * Without the path check all four merge into one event under the
+	 * link path.
+	 */
 	assert(write(fd, "1", 1) == 1);
 	assert(write(link_fd, "2", 1) == 1);
+	assert(write(fd, "3", 1) == 1);
 	close(fd);
 	close(link_fd);
-
-	/* First event should report the original path */
-	qev = drain_for_pid(&qq, getpid());
-	assert(qev->events == QUARK_EV_FILE);
-	qf = qev->file;
-	assert(qf != NULL);
-	assert(qf->inode == st.st_ino);
-	assert(qf->op_mask == QUARK_FILE_OP_MODIFY);
-	assert(qf->change_mask == QUARK_FILE_CH_CONTENT);
-	assert_file_path(qf, path);
-
-	/* Second event should report the link path */
-	qev = drain_for_pid(&qq, getpid());
-	assert(qev->events == QUARK_EV_FILE);
-	qf = qev->file;
-	assert(qf != NULL);
-	assert(qf->inode == st.st_ino);
-	assert(qf->op_mask == QUARK_FILE_OP_MODIFY);
-	assert(qf->change_mask == QUARK_FILE_CH_CONTENT);
-	assert_file_path(qf, link_path);
-
-	/* Removing the link is reported under the link path as well. */
 	if (unlink(link_path) == -1)
 		err(1, "unlink");
-	qev = drain_for_pid(&qq, getpid());
-	assert(qev->events == QUARK_EV_FILE);
-	qf = qev->file;
-	assert(qf != NULL);
-	assert(qf->inode == st.st_ino);
-	assert(qf->op_mask == QUARK_FILE_OP_REMOVE);
-	assert_file_path(qf, link_path);
+
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, link_path);
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, link_path);
 
 	if (unlink(path) == -1)
 		err(1, "unlink");
