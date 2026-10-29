@@ -1429,40 +1429,48 @@ t_file_hardlink(const struct test *t, struct quark_queue_attr *qa)
 
 	qa->flags |= QQ_FILE;
 
-	if (quark_queue_open(&qq, qa) != 0)
-		err(1, "quark_queue_open");
-
+	/*
+	 * Create the file and its link before the probes are loaded. On 4.18
+	 * kernels the create probe keys off fsnotify(FS_CREATE), which
+	 * link(2) also raises, and the stale state would turn the open of
+	 * the link below into a spurious create.
+	 */
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
 	if (fstat(fd, &st) == -1)
 		err(1, "fstat");
+	close(fd);
 	if (snprintf(link_path, sizeof(link_path), "%s.link", path) >=
 	    (int)sizeof(link_path))
 		errx(1, "link_path too long");
 	if (link(path, link_path) == -1)
 		err(1, "link");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd = open(path, O_WRONLY)) == -1)
+		err(1, "open");
 	if ((link_fd = open(link_path, O_WRONLY)) == -1)
 		err(1, "open");
 
-	/* First write through the original path, then through the link. */
+	/* First, write through the original path, then through the link. */
 	assert(write(fd, "1", 1) == 1);
 	assert(write(link_fd, "2", 1) == 1);
 	close(fd);
 	close(link_fd);
 
-	/*
-	 * The create and the first write share the path and aggregate.
-	 * The write through the link must generate its own event under the
-	 * link path, and not fold into the first one.
-	 */
+        /* First event should report the original path */
 	qev = drain_for_pid(&qq, getpid());
 	assert(qev->events == QUARK_EV_FILE);
 	qf = qev->file;
 	assert(qf != NULL);
 	assert(qf->inode == st.st_ino);
-	assert(qf->op_mask & QUARK_FILE_OP_CREATE);
+	assert(qf->op_mask == QUARK_FILE_OP_MODIFY);
+	assert(qf->change_mask == QUARK_FILE_CH_CONTENT);
 	assert_file_path(qf, path);
 
+        /* Second event should report the link path */
 	qev = drain_for_pid(&qq, getpid());
 	assert(qev->events == QUARK_EV_FILE);
 	qf = qev->file;
