@@ -245,6 +245,7 @@ struct ebpf_file_modify_event {
 
 struct ebpf_file_access_name {
     char name[EBPF_FILE_ACCESS_NAME_MAX];
+    uint64_t generation; // names from a previous reset cannot match
 } __attribute__((packed));
 
 // Value of the anchor map, which roles a name is allowed to match in.

@@ -1279,7 +1279,7 @@ bpf_map_harden_supported(void)
 }
 
 /*
- * Everything but the trusted map, the file access anchors and the ring
+ * Everything but the trusted map, the file access configuration and the ring
  * buffer is written only by the probes: state, scratch space, dedup and
  * attribution tables. Freeze them so
  * no process can plant or erase our state through bpf(2); a stranger could
@@ -1302,6 +1302,7 @@ bpf_maps_freeze(struct bpf_probes *p)
 	bpf_object__for_each_map(m, p->obj) {
 		if (m == p->maps.elastic_ebpf_events_trusted_pids ||
 		    m == p->maps.elastic_ebpf_file_access_anchors ||
+		    m == p->maps.elastic_ebpf_file_access_generation ||
 		    m == p->maps.ringbuf || bpf_map__is_internal(m) ||
 		    !bpf_map__autocreate(m))
 			continue;
@@ -1543,6 +1544,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	} else {
 		if (bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_anchors, 0) != 0 ||
 		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_scratch, 0) != 0 ||
+		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_generation, 0) != 0 ||
 		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_owner_exited, 0) != 0 ||
 		    bpf_map__set_autocreate(p->maps.elastic_ebpf_file_access_file_seen, 0) != 0)
 			goto fail;
@@ -1649,7 +1651,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 * BPF writer, ours or a stranger's; a root process can still update it
 	 * through bpf(2), but can't smuggle a writer in as BPF code. The init
 	 * buffer is only ever copied from, by anyone, so it gets the flag too
-	 * and is frozen below. The file access anchors are the trusted map's
+	 * and is frozen below. The file access configuration is the trusted map's
 	 * case again: filled through quark_queue_file_access_name_add(3),
 	 * only looked up by the probes.
 	 */
@@ -1663,6 +1665,11 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_file_access_anchors,
 		    BPF_F_RDONLY_PROG) != 0) {
 			qwarn("bpf_map__set_map_flags file_access_anchors");
+			goto fail;
+		}
+		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_file_access_generation,
+		    BPF_F_RDONLY_PROG) != 0) {
+			qwarn("bpf_map__set_map_flags file_access_generation");
 			goto fail;
 		}
 		if (bpf_map__set_map_flags(p->maps.elastic_ebpf_events_init_buffer,
@@ -1958,6 +1965,45 @@ file_access_anchors_map(struct quark_queue *qq)
 }
 
 /*
+ * Clear the names before publishing the new generation. A probe samples
+ * the generation once and uses it in both anchor and seen keys. Even if it
+ * sees a stale anchor, that anchor cannot match a new-generation key.
+ * In-flight opens can still report under the old generation.
+ */
+int
+quark_queue_file_access_name_reset(struct quark_queue *qq)
+{
+	struct bpf_probes		*p;
+	struct bpf_map			*m, *gm;
+	struct ebpf_file_access_name	 k;
+	u64				 generation;
+	u32				 zero = 0;
+	int				 r;
+
+	if ((m = file_access_anchors_map(qq)) == NULL)
+		return (-1);
+	p = quark_get_bpf_probes(qq);
+	gm = p->maps.elastic_ebpf_file_access_generation;
+	if (bpf_map__lookup_elem(gm, &zero, sizeof(zero), &generation,
+	    sizeof(generation), 0) != 0)
+		return (-1);
+	if (generation == UINT64_MAX)
+		return (errno = EOVERFLOW, -1);
+	while ((r = bpf_map__get_next_key(m, NULL, &k, sizeof(k))) == 0) {
+		if (bpf_map__delete_elem(m, &k, sizeof(k), 0) != 0)
+			return (-1);
+	}
+	if (r != -ENOENT)
+		return (-1);
+	generation++;
+	if (bpf_map__update_elem(gm, &zero, sizeof(zero), &generation,
+	    sizeof(generation), BPF_ANY) != 0)
+		return (-1);
+
+	return (0);
+}
+
+/*
  * Roles accumulate: a name added as a leaf and then as a parent matches both.
  * The name is one path component, the probe compares exactly that.
  */
@@ -1965,9 +2011,11 @@ int
 quark_queue_file_access_name_add(struct quark_queue *qq, const char *name,
     int roles)
 {
+	struct bpf_probes		*p;
 	struct bpf_map			*m;
 	struct ebpf_file_access_name	 k;
-	u32				 v, cur;
+	u64				 generation;
+	u32				 v, cur, zero = 0;
 	size_t				 len;
 
 	if (name == NULL || roles == 0 ||
@@ -1978,8 +2026,13 @@ quark_queue_file_access_name_add(struct quark_queue *qq, const char *name,
 		return (errno = EINVAL, -1);
 	if ((m = file_access_anchors_map(qq)) == NULL)
 		return (-1);
+	p = quark_get_bpf_probes(qq);
+	if (bpf_map__lookup_elem(p->maps.elastic_ebpf_file_access_generation,
+	    &zero, sizeof(zero), &generation, sizeof(generation), 0) != 0)
+		return (-1);
 	bzero(&k, sizeof(k));
 	memcpy(k.name, name, len);
+	k.generation = generation;
 	v = 0;
 	if (roles & QUARK_FILE_ACCESS_NAME_LEAF)
 		v |= EBPF_FILE_ACCESS_ANCHOR_LEAF;

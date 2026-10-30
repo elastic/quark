@@ -433,6 +433,15 @@ struct {
     __uint(max_entries, 0); // sized by bpf_queue_open1()
 } elastic_ebpf_file_access_anchors SEC(".maps");
 
+// Userspace increments this when it clears the anchor set. Qualify both
+// anchor and seen keys, so a new generation cannot match a stale anchor.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, u32);
+    __type(value, u64);
+    __uint(max_entries, 1);
+} elastic_ebpf_file_access_generation SEC(".maps");
+
 // Keep the complete visible path in the key. Inode-only keys suppress a
 // first open through another hard link, bind mount or renamed path. Longer
 // or incomplete paths bypass dedup rather than sharing a truncated key.
@@ -443,6 +452,7 @@ struct file_access_seen_key {
     u32 mntns;
     u32 pad;
     char path[FILE_ACCESS_DEDUP_PATH_MAX];
+    u64 generation;
 };
 
 struct {
@@ -502,7 +512,7 @@ static __always_inline u32 file_access_anchor(struct ebpf_file_access_name *key,
 {
     u32 *roles;
 
-    __builtin_memset(key, 0, sizeof(*key));
+    __builtin_memset(key->name, 0, sizeof(key->name));
     if (bpf_probe_read_kernel_str(key->name, sizeof(key->name), name) <= 0)
         return 0;
     roles = bpf_map_lookup_elem(&elastic_ebpf_file_access_anchors, key);
@@ -567,7 +577,14 @@ static __attribute__((noinline)) bool file_access__match(struct file_access_scra
                                                          struct file *f)
 {
     struct dentry *de;
+    u32 zero = 0;
+    u64 *generation;
 
+    generation = bpf_map_lookup_elem(&elastic_ebpf_file_access_generation, &zero);
+    if (generation == NULL)
+        return false;
+    scratch->key.generation = *generation;
+    scratch->seen_key.generation = scratch->key.generation;
     scratch->path = BPF_CORE_READ(f, f_path);
     de            = scratch->path.dentry;
 
