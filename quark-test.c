@@ -107,6 +107,8 @@ struct test_fs {
 	int	loop_fd;
 };
 
+static void test_fs_tmpfs(struct test_fs *);
+
 static int
 test_fs_open(struct test_fs *fs)
 {
@@ -1799,6 +1801,162 @@ drain_file_access_pid(struct quark_queue *qq, pid_t pid)
 		if (qev->events & QUARK_EV_FILE_ACCESS)
 			return (qev);
 	}
+}
+
+static const struct quark_event *
+drain_file_access(struct quark_queue *qq)
+{
+	return (drain_file_access_pid(qq, getpid()));
+}
+
+static void
+assert_next_access_path(struct quark_queue *qq, const char *path)
+{
+	const struct quark_event *qev = drain_file_access(qq);
+
+	assert(qev->file_access != NULL);
+	if (strcmp(qev->file_access->path, path))
+		errx(1, "expected access %s, got %s", path, qev->file_access->path);
+}
+
+/* Keep a single trigger process for tests that later exercise dedup. */
+static int
+file_access_in_child(struct quark_queue *qq)
+{
+	pid_t child;
+	int status;
+
+	assert((child = fork()) != -1);
+	if (child == 0)
+		return (0);
+	assert(waitpid(child, &status, 0) == child);
+	quark_queue_close(qq);
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	return (1);
+}
+
+static void
+file_access_child_done(struct quark_queue *qq, int before_nfd)
+{
+	quark_queue_close(qq);
+	if (num_open_fd() != before_nfd) {
+		dump_open_fd(stderr);
+		errx(1, "file access child leaked descriptors");
+	}
+	_exit(0);
+}
+
+static void
+file_access_open(const char *path, int flags)
+{
+	int fd = open(path, flags, 0600);
+
+	if (fd == -1)
+		err(1, "open %s", path);
+	assert(close(fd) == 0);
+}
+
+static int
+t_file_access(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct test_fs fs;
+	struct quark_queue qq;
+	const struct quark_file_access *access;
+	struct stat st;
+	char leaf[PATH_MAX], parent[PATH_MAX], path[PATH_MAX], sentinel[PATH_MAX];
+	char plain[PATH_MAX], target[PATH_MAX];
+	int before_nfd, i;
+	const char *dirs[] = { "anchor", "roles", "roles/secret", "both",
+	    "visible", "anchor/a", "anchor/a/b", "anchor/a/b/c" };
+
+	test_fs_tmpfs(&fs);
+	for (i = 0; i < (int)nitems(dirs); i++) {
+		snprintf(path, sizeof(path), "%s/%s", fs.dir, dirs[i]);
+		assert(mkdir(path, 0700) == 0);
+	}
+	snprintf(leaf, sizeof(leaf), "%s/secret", fs.dir);
+	snprintf(parent, sizeof(parent), "%s/anchor/plain", fs.dir);
+	snprintf(plain, sizeof(plain), "%s/plain", fs.dir);
+	snprintf(target, sizeof(target), "%s/visible/secret", fs.dir);
+	file_access_open(target, O_CREAT | O_WRONLY);
+	before_nfd = num_open_fd();
+	qa->flags |= QQ_FILE_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(!quark_queue_file_access_name_add(&qq, "secret",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+	assert(!quark_queue_file_access_name_add(&qq, "anchor",
+	    QUARK_FILE_ACCESS_NAME_PARENT));
+	assert(!quark_queue_file_access_name_add(&qq, "both",
+	    QUARK_FILE_ACCESS_NAME_PARENT));
+	if (file_access_in_child(&qq)) {
+		test_fs_close(&fs);
+		return (0);
+	}
+
+	file_access_open(leaf, O_CREAT | O_WRONLY | O_TRUNC);
+	assert(stat(leaf, &st) == 0);
+	access = drain_file_access(&qq)->file_access;
+	assert(!strcmp(access->path, leaf));
+	assert(access->inode == st.st_ino && access->mode == st.st_mode);
+	assert(access->uid == st.st_uid && access->gid == st.st_gid);
+	assert((access->open_flags & O_ACCMODE) == O_WRONLY);
+	file_access_open(plain, O_CREAT | O_WRONLY); /* No anchor. */
+	file_access_open(parent, O_CREAT | O_WRONLY);
+	assert_next_access_path(&qq, parent);
+
+	snprintf(path, sizeof(path), "%s/anchor/link", fs.dir);
+	assert(symlink("target", path) == 0);
+	file_access_open(path, O_PATH | O_NOFOLLOW);
+	access = drain_file_access(&qq)->file_access;
+	assert(!strcmp(access->path, path) && S_ISLNK(access->mode));
+	assert(access->sym_target && !strcmp(access->sym_target, "target"));
+	snprintf(path, sizeof(path), "%s/anchor/chardev", fs.dir);
+	assert(mknod(path, S_IFCHR | 0600, makedev(1, 3)) == 0);
+	file_access_open(path, O_PATH);
+	access = drain_file_access(&qq)->file_access;
+	assert(!strcmp(access->path, path) && S_ISCHR(access->mode));
+	assert(access->sym_target == NULL);
+
+	/* Three source ancestors match; a fourth does not. */
+	snprintf(path, sizeof(path), "%s/anchor/a/b/deep", fs.dir);
+	file_access_open(path, O_CREAT | O_WRONLY);
+	assert_next_access_path(&qq, path);
+	snprintf(path, sizeof(path), "%s/anchor/a/b/c/too-deep", fs.dir);
+	file_access_open(path, O_CREAT | O_WRONLY);
+	snprintf(sentinel, sizeof(sentinel), "%s/anchor/depth-check", fs.dir);
+	file_access_open(sentinel, O_CREAT | O_WRONLY);
+	assert_next_access_path(&qq, sentinel);
+
+	/* LEAF does not match a directory; PARENT does not match a leaf. */
+	snprintf(path, sizeof(path), "%s/roles/secret/hidden", fs.dir);
+	file_access_open(path, O_CREAT | O_WRONLY);
+	snprintf(path, sizeof(path), "%s/roles/anchor", fs.dir);
+	file_access_open(path, O_CREAT | O_WRONLY);
+	snprintf(sentinel, sizeof(sentinel), "%s/anchor/role-check", fs.dir);
+	file_access_open(sentinel, O_CREAT | O_WRONLY);
+	assert_next_access_path(&qq, sentinel);
+
+	snprintf(path, sizeof(path), "%s/both/first", fs.dir);
+	file_access_open(path, O_CREAT | O_WRONLY);
+	assert_next_access_path(&qq, path);
+	assert(!quark_queue_file_access_name_add(&qq, "both",
+	    QUARK_FILE_ACCESS_NAME_LEAF));
+	snprintf(path, sizeof(path), "%s/roles/both", fs.dir);
+	file_access_open(path, O_CREAT | O_WRONLY);
+	assert_next_access_path(&qq, path);
+	snprintf(path, sizeof(path), "%s/both/second", fs.dir);
+	file_access_open(path, O_CREAT | O_WRONLY);
+	assert_next_access_path(&qq, path); /* Original PARENT role remains. */
+
+	/* The visible bind name is secret; its source name is plain. */
+	assert(mount(plain, target, NULL, MS_BIND, NULL) == 0);
+	file_access_open(target, O_RDONLY);
+	snprintf(sentinel, sizeof(sentinel), "%s/anchor/mount-check", fs.dir);
+	file_access_open(sentinel, O_CREAT | O_WRONLY);
+	assert_next_access_path(&qq, sentinel);
+	assert(umount(target) == 0);
+	file_access_child_done(&qq, before_nfd);
+	return (0);
 }
 
 static int
@@ -5788,6 +5946,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_bad_unlink_rename),
 	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
+	T_EBPF(t_file_access),
 	T_EBPF(t_file_access_smoke),
 	T_EBPF(t_file_access_names),
 	T_EBPF(t_file_access_name_limits),

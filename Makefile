@@ -464,10 +464,13 @@ test-kernel: initramfs.gz
 # loading these BTF modules, making valgrind spit thousands of false
 # positives.
 #
+# Disable the debugger so Valgrind-private FDs do not change after fork.
 test-valgrind: quark-test quark-test.ext4
 	$(SUDO) VALGRIND=1 QUARK_BTF_PATH=/sys/kernel/btf/vmlinux	\
 		QUARK_TEST_FS_REQUIRED=1				\
 		valgrind						\
+		--vgdb=no						\
+		--suppressions=.buildkite/valgrind-file-access.supp	\
 		--trace-children=no					\
 		--child-silent-after-fork=yes				\
 		--leak-check=full					\
@@ -475,6 +478,15 @@ test-valgrind: quark-test quark-test.ext4
 		./quark-test -1						\
 		2>&1
 # | grep -v "^--.*WARNING: unhandled eBPF command"
+
+# These tests decode events in forked queue holders. Keep their diagnostics.
+test-valgrind-file-access: quark-test quark-test.ext4
+	$(SUDO) VALGRIND=1 QUARK_BTF_PATH=/sys/kernel/btf/vmlinux \
+		QUARK_TEST_FS_REQUIRED=1 \
+		valgrind --vgdb=no --trace-children=no --child-silent-after-fork=no \
+		--suppressions=.buildkite/valgrind-file-access.supp \
+		--leak-check=full --error-exitcode=1 ./quark-test -1 -b \
+		$$(./quark-test -l | sed -n '/^t_file_access/p' | sort -u)
 
 initramfs:
 	mkdir -p initramfs/bin
@@ -708,7 +720,8 @@ clean-docs:
 	test			\
 	test-go			\
 	test-kernel		\
-	test-valgrind
+	test-valgrind		\
+	test-valgrind-file-access
 
 .NOTPARALLEL:			\
 	clean			\
@@ -725,6 +738,7 @@ clean-docs:
 	test			\
 	test-go			\
 	test-kernel		\
-	test-valgrind
+	test-valgrind		\
+	test-valgrind-file-access
 
 .SUFFIXES:
