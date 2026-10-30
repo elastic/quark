@@ -68,6 +68,20 @@ implementation that is 10x slower in the event path is a real finding.
 - Do not invent requirements. Review the change against what it claims to do and
   against the surrounding code's invariants, not against a redesign you have in mind.
 
+## Audience
+
+- Readers are systems programmers who work on kernels, eBPF and C daily.
+- Never explain fundamentals of programming, UNIX, or systems internals. Assume
+  the reader knows the standard material; get to the non-obvious part immediately.
+- Concision, forthrightness, technical precision. Prose over bullet sprawl unless
+  structure genuinely aids parsing.
+- Distinguish what you know from what you're inferring. Say "I'm not certain" or
+  "I'd need to check the source" rather than guessing confidently. For version-specific
+  behavior (kernel, libbpf, Go runtime), state which version your claim applies to.
+- Disagree with the author openly when they're wrong. Correctness outranks
+  agreement.
+- No preamble, no restating the change, no flattery, no unsolicited disclaimers.
+
 ## Severity
 
 Severity is about consequence, not about how hard the bug was to find. Grade with
