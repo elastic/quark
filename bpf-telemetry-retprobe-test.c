@@ -45,17 +45,51 @@ static int test_destroy(struct bpf_link *);
 
 enum failure_mode {
 	OK, OPEN_FAIL, CREATE_FAIL, SHORT_WRITE, DELETE_FAIL,
-	ID_FAIL, PROFILE_FAIL, PERF_FAIL, ATTACH_FAIL, PROFILE_MISSING
+	ID_FAIL, PROFILE_FAIL, PERF_FAIL, ATTACH_FAIL, PROFILE_MISSING,
+	SWEEP_CREATE, SWEEP_OPEN, SWEEP_ALL, RECHECK_FAIL, PERF_RECHECK_FAIL
 };
 static enum failure_mode failure;
-static char commands[32][512];
+static char commands[64][512];
 static unsigned int command_count, warning_count;
+static unsigned int id_reads, attach_calls;
+static int recheck_errno;
 static char fake_program;
 static int last_directory = -1, last_command = -1;
 static int last_perf = -1, last_auxiliary = -1;
 static struct test_link { int fd; bool alive; } links[8];
 static unsigned int link_count;
 static const char *special_event;
+/* Another consumer's sweep: removed events, a listing and an event in use. */
+static char swept[8][64];
+static unsigned int swept_count;
+static const char *listing = "";
+static const char *busy_event;
+static int swept_perf = -1;
+
+static void
+sweep_last_create(void)
+{
+	char group[64];
+	unsigned int i = command_count;
+
+	while (i > 0 && commands[i - 1][0] != 'r')
+		i--;
+	assert(i > 0 && swept_count < nitems(swept));
+	assert(sscanf(commands[i - 1], "r%*u:%63[^/]/%63s", group,
+	    swept[swept_count]) == 2);
+	swept_count++;
+}
+
+static bool
+was_swept(const char *text)
+{
+	unsigned int i;
+
+	for (i = 0; i < swept_count; i++)
+		if (strstr(text, swept[i]) != NULL)
+			return (true);
+	return (false);
+}
 
 static int
 text_fd(const char *value)
@@ -86,8 +120,15 @@ test_openat(int directory, const char *path, int flags, ...)
 	unsigned int i;
 
 	assert(directory >= 0);
-	if (strncmp(path, "events/", 7) == 0)
+	if (strncmp(path, "events/", 7) == 0) {
+		id_reads++;
+		if ((failure == RECHECK_FAIL || failure == PERF_RECHECK_FAIL) &&
+		    id_reads == 2)
+			return (errno = recheck_errno, -1);
+		if (was_swept(path))
+			return (errno = ENOENT, -1);
 		return (failure == ID_FAIL ? (errno = EACCES, -1) : text_fd("123\n"));
+	}
 	if (strcmp(path, "kprobe_profile") == 0) {
 		if (failure == PROFILE_FAIL)
 			return (errno = EACCES, -1);
@@ -101,6 +142,8 @@ test_openat(int directory, const char *path, int flags, ...)
 		return (text_fd(profile));
 	}
 	assert(strcmp(path, "kprobe_events") == 0);
+	if ((flags & O_ACCMODE) == O_RDONLY)
+		return (text_fd(listing));
 	assert((flags & O_APPEND) && !(flags & O_TRUNC));
 	return (last_command = open("/dev/null", O_WRONLY | O_CLOEXEC));
 }
@@ -119,6 +162,13 @@ test_write(int fd, const void *buffer, size_t length)
 		return (errno = EINVAL, -1);
 	if (failure == SHORT_WRITE)
 		return ((ssize_t)length - 1);
+	if (command[0] == '-' && was_swept(command))
+		return (errno = ENOENT, -1);
+	if (command[0] == '-' && busy_event != NULL && strstr(command, busy_event))
+		return (errno = EBUSY, -1);
+	if (command[0] == 'r' && (failure == SWEEP_ALL ||
+	    (failure == SWEEP_CREATE && swept_count == 0)))
+		sweep_last_create();
 	return ((ssize_t)length);
 }
 
@@ -135,15 +185,24 @@ test_syscall(long number, ...)
 	assert(va_arg(args, int) == -1 && va_arg(args, int) == 0);
 	assert(va_arg(args, int) == -1 && va_arg(args, int) == PERF_FLAG_FD_CLOEXEC);
 	va_end(args);
-	if (failure == PERF_FAIL)
+	if (failure == PERF_FAIL || failure == PERF_RECHECK_FAIL)
 		return (errno = EPERM, -1);
-	return (last_perf = open("/dev/null", O_RDONLY | O_CLOEXEC));
+	last_perf = open("/dev/null", O_RDONLY | O_CLOEXEC);
+	if (failure == SWEEP_OPEN && swept_count == 0) {
+		/* The id was reused; a high fd lets the test check closure. */
+		assert((swept_perf = fcntl(last_perf, F_DUPFD_CLOEXEC, 512)) != -1);
+		close(last_perf);
+		last_perf = swept_perf;
+		sweep_last_create();
+	}
+	return (last_perf);
 }
 
 static struct bpf_link *
 test_attach(const struct bpf_program *program, int fd,
     const struct bpf_perf_event_opts *opts)
 {
+	attach_calls++;
 	assert(program != NULL && fd >= 0 && opts->sz == sizeof(*opts));
 	assert(opts->force_ioctl_attach);
 	if (failure == ATTACH_FAIL)
@@ -266,6 +325,107 @@ test_attachments(void)
 	assert(warning_count == 1); /* Only the deliberate resource-removal failure. */
 }
 
+static void
+test_cleanup(void)
+{
+	struct bpf_telemetry_retprobe *probe = NULL;
+	struct bpf_program *program = (struct bpf_program *)&fake_program;
+	unsigned int before, warnings = warning_count;
+
+	listing = "p:kprobes/other do_sys_open\n"
+	    "r:quark_bpf_1_00000000000000aa/ret_1_00000000000000aa __sys_bpf\n"
+	    "r4096:quark_bpf_2_00000000000000bb/ret_2_00000000000000bb __sys_bpf\n"
+	    "r4096:quark_bpf_3_00000000000000cc/ret_3_00000000000000cc __sys_bpf\n"
+	    "p:quark_bpf_4_00000000000000dd/entry __sys_bpf\n"
+	    "r:other/ret_5 __sys_bpf\n";
+	busy_event = "ret_3_00000000000000cc";
+	before = command_count;
+	assert(bpf_telemetry_retprobe_create(&probe, "__sys_bpf", 4096) == 0);
+	assert(command_count == before + 4 && commands[before + 3][0] == 'r');
+	assert(!strcmp(commands[before],
+	    "-:quark_bpf_1_00000000000000aa/ret_1_00000000000000aa\n"));
+	assert(!strcmp(commands[before + 1],
+	    "-:quark_bpf_2_00000000000000bb/ret_2_00000000000000bb\n"));
+	assert(!strcmp(commands[before + 2],
+	    "-:quark_bpf_3_00000000000000cc/ret_3_00000000000000cc\n"));
+	bpf_telemetry_retprobe_detach(probe);
+	listing = "";
+	busy_event = NULL;
+
+	failure = SWEEP_CREATE;
+	swept_count = 0;
+	before = command_count;
+	assert(bpf_telemetry_retprobe_attach(&probe, program, "__sys_bpf", 4096) == 0);
+	assert(command_count == before + 3 && commands[before][0] == 'r' &&
+	    strstr(commands[before + 1], swept[0]) != NULL &&
+	    strstr(commands[before + 2], probe->event) != NULL);
+	bpf_telemetry_retprobe_detach(probe);
+
+	failure = SWEEP_OPEN;
+	swept_count = 0;
+	before = command_count;
+	assert(bpf_telemetry_retprobe_attach(&probe, program, "__sys_bpf", 4096) == 0);
+	assert(command_count == before + 3 && commands[before][0] == 'r' &&
+	    strstr(commands[before + 1], swept[0]) != NULL &&
+	    strstr(commands[before + 2], probe->event) != NULL);
+	assert(fcntl(swept_perf, F_GETFD) == -1 && errno == EBADF);
+	bpf_telemetry_retprobe_detach(probe);
+
+	failure = SWEEP_ALL;
+	swept_count = 0;
+	before = command_count;
+	assert(bpf_telemetry_retprobe_attach(&probe, program, "__sys_bpf", 4096) == -1 &&
+	    probe == NULL && errno == ENOENT);
+	assert(command_count == before + 2 * RETPROBE_ATTEMPTS &&
+	    swept_count == RETPROBE_ATTEMPTS);
+	assert(warning_count == warnings);
+	failure = OK;
+	swept_count = 0;
+}
+
+static void
+test_recheck_failures(void)
+{
+	struct bpf_telemetry_retprobe *probe = NULL;
+	struct bpf_program *program = (struct bpf_program *)&fake_program;
+	const int errors[] = { EMFILE, EACCES, EIO };
+	unsigned int i, before, attached = attach_calls, warnings = warning_count;
+
+	/* All earlier probes are detached; record only these new attempts. */
+	command_count = 0;
+	failure = RECHECK_FAIL;
+	for (i = 0; i < nitems(errors); i++) {
+		id_reads = 0;
+		recheck_errno = errors[i];
+		before = command_count;
+		assert(bpf_telemetry_retprobe_attach(&probe, program, "__sys_bpf", 4096) == -1 &&
+		    probe == NULL && errno == errors[i]);
+		assert(id_reads == 2 && attach_calls == attached);
+		assert(command_count == before + 2 && commands[before][0] == 'r' &&
+		    commands[before + 1][0] == '-');
+		assert(fcntl(last_perf, F_GETFD) == -1 && errno == EBADF);
+		assert(fcntl(last_directory, F_GETFD) == -1 && errno == EBADF);
+		assert(fcntl(last_command, F_GETFD) == -1 && errno == EBADF);
+		assert(fcntl(last_auxiliary, F_GETFD) == -1 && errno == EBADF);
+	}
+	/* If perf open failed too, retain its error instead of the recheck's. */
+	failure = PERF_RECHECK_FAIL;
+	id_reads = 0;
+	last_perf = -1;
+	recheck_errno = EMFILE;
+	before = command_count;
+	assert(bpf_telemetry_retprobe_attach(&probe, program, "__sys_bpf", 4096) == -1 &&
+	    probe == NULL && errno == EPERM);
+	assert(id_reads == 2 && attach_calls == attached && last_perf == -1);
+	assert(command_count == before + 2 && commands[before][0] == 'r' &&
+	    commands[before + 1][0] == '-');
+	assert(fcntl(last_directory, F_GETFD) == -1 && errno == EBADF);
+	assert(fcntl(last_command, F_GETFD) == -1 && errno == EBADF);
+	assert(fcntl(last_auxiliary, F_GETFD) == -1 && errno == EBADF);
+	assert(warning_count == warnings);
+	failure = OK;
+}
+
 int
 t_bpf_telemetry_retprobe(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -276,11 +436,19 @@ t_bpf_telemetry_retprobe(const struct test *t, struct quark_queue_attr *qa)
 	/* The runner can call the test again without forking. */
 	failure = OK;
 	command_count = warning_count = link_count = 0;
+	id_reads = attach_calls = 0;
+	recheck_errno = 0;
 	last_directory = last_command = last_perf = last_auxiliary = -1;
 	memset(links, 0, sizeof(links));
 	special_event = NULL;
+	swept_count = 0;
+	listing = "";
+	busy_event = NULL;
+	swept_perf = -1;
 	test_resources();
 	test_attachments();
+	test_cleanup();
+	test_recheck_failures();
 	for (i = 0; i < link_count; i++)
 		assert(!links[i].alive);
 	return (0);
