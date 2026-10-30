@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="mandoc.css" type="text/css" media="all"/>
+  <title>QUARK_QUEUE_FILE_ACCESS_NAME_ADD(3)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">QUARK_QUEUE_FILE_ACCESS_NAME_ADD(3)</td>
+    <td class="head-vol">Library Functions Manual</td>
+    <td class="head-rtitle">QUARK_QUEUE_FILE_ACCESS_NAME_ADD(3)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">quark_queue_file_access_name_add</code> &#x2014;
+    <span class="Nd">register a file access name</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<p class="Pp"><code class="In">#include
+  &lt;<a class="In">quark.h</a>&gt;</code></p>
+<p class="Pp"><var class="Ft">int</var>
+  <br/>
+  <code class="Fn">quark_queue_file_access_name_add</code>(<var class="Fa" style="white-space: nowrap;">struct
+    quark_queue *qq</var>, <var class="Fa" style="white-space: nowrap;">const
+    char *name</var>, <var class="Fa" style="white-space: nowrap;">int
+    roles</var>);</p>
+</section>
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+Registers <var class="Fa">name</var>, a single path component without slashes
+  and shorter than <code class="Dv">QUARK_FILE_ACCESS_NAME_MAX</code>, as a name
+  of interest on a queue opened with <code class="Dv">QQ_FILE_ACCESS</code>.
+  <var class="Fa">roles</var> is a bitmask of
+  <code class="Dv">QUARK_FILE_ACCESS_NAME_LEAF</code>, which reports opens of a
+  file called <var class="Fa">name</var>, and
+  <code class="Dv">QUARK_FILE_ACCESS_NAME_PARENT</code>, which reports opens of
+  any file whose directory, or one of the two directories above it, is called
+  <var class="Fa">name</var>. Registering an existing name adds to its roles. At
+  most <code class="Dv">QUARK_FILE_ACCESS_NAMES_MAX</code> distinct names can be
+  registered at once; one more fails with <code class="Er">E2BIG</code>. The
+  names match the leaf and up to three source directories. A user with a list of
+  full paths registers the leaf of each and filters the resolved path in the
+  resulting <var class="Vt">quark_file_access</var> itself. The components are
+  those of the file on its filesystem, not of the mount it was reached through:
+  a file under a bind mount is matched against the directories it has on the
+  underlying filesystem, and the walk stops at the root of that filesystem. A
+  mount-point parent name does not match if it exists only in the mount path. A
+  file bind mount can also have a different visible leaf name. A component
+  longer than <code class="Dv">QUARK_FILE_ACCESS_NAME_MAX</code> - 1 bytes
+  matches a registered name equal to its first
+  <code class="Dv">QUARK_FILE_ACCESS_NAME_MAX</code> - 1 bytes. The
+  <a class="permalink" href="#ruleset"><i class="Em" id="ruleset">ruleset</i></a>
+  of <var class="Vt">quark_queue_attr</var> applies to file access events
+  through their process, as to any other event: a rule on process fields, or
+  &#x201C;drop on any&#x201D;, drops them. A
+  <a class="permalink" href="#file.path"><i class="Em" id="file.path">file.path</i></a>
+  rule never matches a file access event; the names are the only filter on the
+  file itself.
+<section class="Sh">
+<h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
+  VALUES</a></h1>
+<p class="Pp">Zero on success, -1 on error with <var class="Va">errno</var> set.
+    An error leaves the queue usable.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="ERRORS"><a class="permalink" href="#ERRORS">ERRORS</a></h1>
+<dl class="Bl-tag">
+  <dt id="EINVAL"><a class="permalink" href="#EINVAL"><code class="Er">EINVAL</code></a></dt>
+  <dd>The name is NULL, empty, contains a slash, or has 64 or more bytes; the
+      roles are zero or contain unknown bits; or the queue does not have
+      <code class="Dv">QQ_FILE_ACCESS</code> with the eBPF backend.</dd>
+  <dt id="E2BIG"><a class="permalink" href="#E2BIG"><code class="Er">E2BIG</code></a></dt>
+  <dd>The map already has <code class="Dv">QUARK_FILE_ACCESS_NAMES_MAX</code>
+      distinct names and the new name is not present.</dd>
+</dl>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
+    <a class="Xr" href="quark.7.html">quark(7)</a></p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">October 30, 2026</td>
+    <td class="foot-os">Linux</td>
+  </tr>
+</table>
+</body>
+</html>
