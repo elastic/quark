@@ -1432,6 +1432,8 @@ bpf_telemetry_attach(struct bpf_queue *bqq)
 			qwarn("QQ_BPF: required entry hook %s", boundary->symbol);
 			return (-1);
 		}
+		qwarnx("SCRATCH: %s attached via %s", boundary->symbol,
+		    bqq->bpf_trampoline ? "fentry/fexit" : "kprobe/kretprobe");
 	}
 	return (0);
 }
