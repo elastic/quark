@@ -25,7 +25,7 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-test</code></td>
-    <td>[<code class="Fl">-1bktv</code>] [<code class="Fl">-x</code>
+    <td>[<code class="Fl">-1bKktv</code>] [<code class="Fl">-x</code>
       <var class="Ar">test</var>] [<var class="Ar">tests ...</var>]</td>
   </tr>
 </table>
@@ -72,8 +72,14 @@ The <code class="Nm">quark-test</code> program runs tests for
   <dd>Display this manpage.</dd>
   <dt id="k"><a class="permalink" href="#k"><code class="Fl">-k</code></a></dt>
   <dd>Run only KPROBE tests.</dd>
+  <dt id="K"><a class="permalink" href="#K"><code class="Fl">-K</code></a></dt>
+  <dd>Make the EBPF backend use its kprobe fallback and not fentry. This sets
+      <code class="Ev">QUARK_BPF_KPROBE</code>, see
+      <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</dd>
   <dt id="l"><a class="permalink" href="#l"><code class="Fl">-l</code></a></dt>
   <dd>Prints all available tests on stdout.</dd>
+  <dt id="n"><a class="permalink" href="#n"><code class="Fl">-n</code></a></dt>
+  <dd>Run only NOVA tests.</dd>
   <dt id="t"><a class="permalink" href="#t"><code class="Fl">-t</code></a></dt>
   <dd>Print out the contents of
       <span class="Pa">/sys/kernel/tracing/trace_pipe</span> during the test.
@@ -89,6 +95,22 @@ The <code class="Nm">quark-test</code> program runs tests for
   <dd>Exclude <var class="Ar">test</var> from the run, can be specified multiple
       times.</dd>
 </dl>
+<section class="Sh">
+<h1 class="Sh" id="ENVIRONMENT"><a class="permalink" href="#ENVIRONMENT">ENVIRONMENT</a></h1>
+<dl class="Bl-tag">
+  <dt id="QUARK_TEST_FS_IMAGE"><a class="permalink" href="#QUARK_TEST_FS_IMAGE"><code class="Ev">QUARK_TEST_FS_IMAGE</code></a></dt>
+  <dd>Path to a writable ext4 test image, made by &#x201C;make
+      quark-test.ext4&#x201D;. The default is
+      <span class="Pa">quark-test.ext4</span> in the current directory, or
+      <span class="Pa">/quark-test.ext4</span> in the kernel test guest. The
+      tests mount the image through a loop device in a private mount
+    namespace.</dd>
+  <dt id="QUARK_TEST_FS_REQUIRED"><a class="permalink" href="#QUARK_TEST_FS_REQUIRED"><code class="Ev">QUARK_TEST_FS_REQUIRED</code></a></dt>
+  <dd>If set, failure to set up the test filesystem is an error. Otherwise,
+      tests that require it print an explicit skip message. Set this variable
+      for kernel runs which must exercise inode reuse.</dd>
+</dl>
+</section>
 <section class="Sh">
 <h1 class="Sh" id="EXIT_STATUS"><a class="permalink" href="#EXIT_STATUS">EXIT
   STATUS</a></h1>
@@ -128,7 +150,7 @@ failed tests 0</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">March 3, 2026</td>
+    <td class="foot-date">October 30, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

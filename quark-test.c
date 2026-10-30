@@ -3,6 +3,8 @@
 
 #include <asm/termbits.h>
 #include <linux/perf_event.h>
+#include <linux/loop.h>
+#include <linux/magic.h>
 
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
@@ -13,10 +15,13 @@
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+
+#include <linux/fs.h>
 
 #include <bpf/bpf.h>
 #include <cjson/cJSON.h>
@@ -95,6 +100,111 @@ static int	tflag;		/* listen to the tracepipe */
 static int	fancy_tty;
 static int	status_linelen = STATUS_LINELEN_MIN;
 static int	in_valgrind;
+
+/* A private ext4 mount for tests which must exercise inode-number reuse. */
+struct test_fs {
+	char	dir[64];
+	int	loop_fd;
+};
+
+static int
+test_fs_open(struct test_fs *fs)
+{
+	struct loop_info64	 info = { .lo_flags = LO_FLAGS_AUTOCLEAR };
+	const char		*image = getenv("QUARK_TEST_FS_IMAGE"), *step;
+	char			 device[64];
+	int			 fd = -1, ctl = -1, number, saved;
+
+	bzero(fs, sizeof(*fs));
+	fs->loop_fd = -1;
+	if (image == NULL)
+		image = getenv("QUARK_INITRAMFS") != NULL ?
+		    "/quark-test.ext4" : "quark-test.ext4";
+	step = image;
+	if ((fd = open(image, O_RDWR | O_CLOEXEC)) == -1)
+		goto fail;
+	/* A failed test must not leave a mount in its parent's namespace. */
+	step = "private mount namespace";
+	if (unshare(CLONE_NEWNS) == -1 ||
+	    mount(NULL, "/", "", MS_REC | MS_PRIVATE, NULL) == -1)
+		goto fail;
+	step = "/dev/loop-control";
+	if ((ctl = open("/dev/loop-control", O_RDWR | O_CLOEXEC)) == -1)
+		goto fail;
+	if ((number = ioctl(ctl, LOOP_CTL_GET_FREE)) == -1)
+		goto fail;
+	snprintf(device, sizeof(device), "/dev/loop%d", number);
+	step = device;
+	if ((fs->loop_fd = open(device, O_RDWR | O_CLOEXEC)) == -1 ||
+	    ioctl(fs->loop_fd, LOOP_SET_FD, fd) == -1 ||
+	    ioctl(fs->loop_fd, LOOP_SET_STATUS64, &info) == -1)
+		goto fail;
+	strlcpy(fs->dir, "/tmp/quark-test-fs.XXXXXX", sizeof(fs->dir));
+	step = fs->dir;
+	if (mkdtemp(fs->dir) == NULL)
+		goto fail;
+	step = "ext4 mount";
+	if (mount(device, fs->dir, "ext4", MS_NODEV | MS_NOSUID, NULL) == -1)
+		goto fail;
+	close(ctl);
+	close(fd);
+	return (0);
+
+fail:
+	saved = errno;
+	if (fs->loop_fd != -1) {
+		(void)ioctl(fs->loop_fd, LOOP_CLR_FD, 0);
+		close(fs->loop_fd);
+	}
+	if (ctl != -1)
+		close(ctl);
+	if (fd != -1)
+		close(fd);
+	if (fs->dir[0] != '\0')
+		(void)rmdir(fs->dir);
+	errno = saved;
+	if (getenv("QUARK_TEST_FS_REQUIRED") != NULL)
+		err(1, "required ext4 test filesystem %s: %s", image, step);
+	warn("SKIP: optional ext4 test filesystem %s: %s", image, step);
+	return (-1);
+}
+
+static void
+test_fs_close(struct test_fs *fs)
+{
+	if (umount(fs->dir) == -1)
+		err(1, "umount test filesystem");
+	if (ioctl(fs->loop_fd, LOOP_CLR_FD, 0) == -1 ||
+	    close(fs->loop_fd) == -1 || rmdir(fs->dir) == -1)
+		err(1, "close test filesystem");
+}
+
+static int
+t_test_fs(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct test_fs	fs;
+	struct statfs	sfs;
+	struct stat	st;
+	char		path[128];
+	int		fd, generation;
+
+	if (test_fs_open(&fs) == -1)
+		return (0);
+	if (statfs(fs.dir, &sfs) == -1)
+		err(1, "statfs");
+	assert(sfs.f_type == EXT4_SUPER_MAGIC);
+	snprintf(path, sizeof(path), "%s/smoke", fs.dir);
+	if ((fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600)) == -1 ||
+	    ftruncate(fd, 4096) == -1 || fstat(fd, &st) == -1 ||
+	    ioctl(fd, FS_IOC_GETVERSION, &generation) == -1)
+		err(1, "test filesystem smoke");
+	assert(st.st_size == 4096 && st.st_ino != 0);
+	if (close(fd) == -1 || unlink(path) == -1)
+		err(1, "remove smoke file");
+	test_fs_close(&fs);
+	assert(access(fs.dir, F_OK) == -1 && errno == ENOENT);
+	return (0);
+}
 
 static int
 probe_fancy_tty(void)
@@ -5300,6 +5410,7 @@ t_container_get(const struct test *t, struct quark_queue_attr *qa)
 #define T_NOVA(_x)	{ S(_x), _x, QQ_NOVA, 0 }
 #define S(_x)		#_x
 struct test all_tests[] = {
+	T(t_test_fs),
 	T_EBPF(t_probe),
 	T_EBPF(t_probe_all),
 	T_EBPF(t_ringbuf_max),
