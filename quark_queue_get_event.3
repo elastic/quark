@@ -112,7 +112,8 @@ and stores the raw flags in
 .Dq file.Ext.open_flags
 and
 .Dq file.Ext.fmode .
-The kretprobe fallback reads file flags after the kernel has removed
+If saved entry state is missing, the kretprobe fallback reads file flags
+after the kernel has removed
 .Dv O_CREAT , O_EXCL , O_NOCTTY
 and
 .Dv O_TRUNC .

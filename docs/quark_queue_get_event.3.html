@@ -107,11 +107,12 @@
           event call or queue close. ECS output uses action
           &#x201C;file-opened&#x201D; and stores the raw flags in
           &#x201C;file.Ext.open_flags&#x201D; and
-          &#x201C;file.Ext.fmode&#x201D;. The kretprobe fallback reads file
-          flags after the kernel has removed <code class="Dv">O_CREAT</code>,
-          <code class="Dv">O_EXCL</code>, <code class="Dv">O_NOCTTY</code> and
-          <code class="Dv">O_TRUNC</code>. An absent flag on that path does not
-          prove that the caller omitted it.</dd>
+          &#x201C;file.Ext.fmode&#x201D;. If saved entry state is missing, the
+          kretprobe fallback reads file flags after the kernel has removed
+          <code class="Dv">O_CREAT</code>, <code class="Dv">O_EXCL</code>,
+          <code class="Dv">O_NOCTTY</code> and <code class="Dv">O_TRUNC</code>.
+          An absent flag on that path does not prove that the caller omitted
+        it.</dd>
     </dl>
     <p class="Pp">It's important to note that <i class="Em">events</i> is what
         triggered the event, not what is known about the process.</p>

@@ -1525,10 +1525,13 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			else
 				bpf_program__set_autoload(p->progs.fexit__do_filp_open, 1);
 		} else {
-			if (renamed)
+			if (renamed) {
+				bpf_program__set_autoload(p->progs.kprobe__do_file_open, 1);
 				bpf_program__set_autoload(p->progs.kretprobe__do_file_open, 1);
-			else
+			} else {
+				bpf_program__set_autoload(p->progs.kprobe__do_filp_open, 1);
 				bpf_program__set_autoload(p->progs.kretprobe__do_filp_open, 1);
+			}
 		}
 		p->rodata->file_access_enabled = 1;
 		if (bpf_map__set_max_entries(p->maps.elastic_ebpf_file_access_anchors,

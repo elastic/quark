@@ -1900,6 +1900,7 @@ t_file_access(const struct test *t, struct quark_queue_attr *qa)
 	assert(access->inode == st.st_ino && access->mode == st.st_mode);
 	assert(access->uid == st.st_uid && access->gid == st.st_gid);
 	assert((access->open_flags & O_ACCMODE) == O_WRONLY);
+	assert((access->open_flags & (O_CREAT | O_TRUNC)) == (O_CREAT | O_TRUNC));
 	file_access_open(plain, O_CREAT | O_WRONLY); /* No anchor. */
 	file_access_open(parent, O_CREAT | O_WRONLY);
 	assert_next_access_path(&qq, parent);
@@ -1984,6 +1985,8 @@ t_file_access_smoke(const struct test *t, struct quark_queue_attr *qa)
 	qev = drain_file_access_pid(&qq, child);
 	assert(!strcmp(qev->file_access->path, path));
 	assert((qev->file_access->open_flags & O_ACCMODE) == O_RDWR);
+	assert((qev->file_access->open_flags & (O_CREAT | O_TRUNC)) ==
+	    (O_CREAT | O_TRUNC));
 	assert(waitpid(child, &status, 0) == child);
 	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 	quark_queue_close(&qq);
