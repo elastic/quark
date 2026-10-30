@@ -88,6 +88,10 @@ committed.
 The
 .Em file_access
 member describes a successful file open.
+The file must match a registered leaf name or one of up to three source
+directory names.
+See
+.Xr quark_queue_file_access_name_add 3 .
 It contains the resolved path, inode, size, mode, file owner IDs, open flags
 and kernel file mode.
 The
@@ -108,6 +112,11 @@ and stores the raw flags in
 .Dq file.Ext.open_flags
 and
 .Dq file.Ext.fmode .
+The kretprobe fallback reads file flags after the kernel has removed
+.Dv O_CREAT , O_EXCL , O_NOCTTY
+and
+.Dv O_TRUNC .
+An absent flag on that path does not prove that the caller omitted it.
 .El
 .Pp
 It's important to note that

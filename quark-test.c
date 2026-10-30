@@ -983,7 +983,7 @@ t_probe_all(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue	 qq;
 
-	qa->flags |= QQ_SOCK_CONN | QQ_DNS | QQ_FILE | QQ_SHM | QQ_TTY |
+	qa->flags |= QQ_SOCK_CONN | QQ_DNS | QQ_FILE | QQ_FILE_ACCESS | QQ_SHM | QQ_TTY |
 	    QQ_PTRACE | QQ_MODULE_LOAD | QQ_GETPID | QQ_MPROTECT;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "%s: quark_queue_open", t->name);
@@ -1784,6 +1784,52 @@ t_bypass(const struct test *t, struct quark_queue_attr *qa)
 
 	quark_queue_close(&qq);
 
+	return (0);
+}
+
+/* Only FILE_ACCESS may use this queue's shared open hook. */
+static const struct quark_event *
+drain_file_access_pid(struct quark_queue *qq, pid_t pid)
+{
+	const struct quark_event *qev;
+
+	for (;;) {
+		qev = drain_for_pid(qq, pid);
+		assert(!(qev->events & QUARK_EV_FILE));
+		if (qev->events & QUARK_EV_FILE_ACCESS)
+			return (qev);
+	}
+}
+
+static int
+t_file_access_smoke(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue qq;
+	const struct quark_event *qev;
+	char dir[] = "/tmp/quark-fa-smoke.XXXXXX", path[PATH_MAX];
+	pid_t child;
+	int fd, status;
+
+	assert(mkdtemp(dir) != NULL);
+	snprintf(path, sizeof(path), "%s/secret", dir);
+	qa->flags |= QQ_FILE_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(quark_queue_file_access_name_add(&qq, "secret",
+	    QUARK_FILE_ACCESS_NAME_LEAF) == 0);
+	assert((child = fork()) != -1);
+	if (child == 0) {
+		fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0600);
+		assert(fd != -1);
+		close(fd);
+		_exit(0);
+	}
+	qev = drain_file_access_pid(&qq, child);
+	assert(!strcmp(qev->file_access->path, path));
+	assert((qev->file_access->open_flags & O_ACCMODE) == O_RDWR);
+	assert(waitpid(child, &status, 0) == child);
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	quark_queue_close(&qq);
+	assert(unlink(path) == 0 && rmdir(dir) == 0);
 	return (0);
 }
 
@@ -5742,6 +5788,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_bad_unlink_rename),
 	T_EBPF(t_file_rename),
 	T_EBPF(t_bypass),
+	T_EBPF(t_file_access_smoke),
 	T_EBPF(t_file_access_names),
 	T_EBPF(t_file_access_name_limits),
 	T_EBPF(t_file_bypass),
