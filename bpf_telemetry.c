@@ -177,6 +177,7 @@ telemetry_wrapper_prototype(const struct btf *btf, const char *name)
 {
 	const struct btf_type *prototype, *pointer, *regs;
 	const char *type_name;
+	int depth;
 
 	prototype = telemetry_prototype(btf, name);
 	if (prototype == NULL || btf_vlen(prototype) != 1 ||
@@ -185,11 +186,19 @@ telemetry_wrapper_prototype(const struct btf *btf, const char *name)
 	pointer = telemetry_type(btf, btf_params(prototype)[0].type);
 	if (!telemetry_pointer(pointer))
 		return (false);
-	regs = telemetry_type(btf, pointer->type);
-	if (regs == NULL || !btf_is_struct(regs))
+	/* btf__resolve_type() treats a forward declaration as void. */
+	regs = btf__type_by_id(btf, pointer->type);
+	for (depth = 0; regs != NULL && btf_is_mod(regs) && depth < 32; depth++)
+		regs = btf__type_by_id(btf, regs->type);
+	if (regs == NULL || !(btf_is_struct(regs) ||
+	    (btf_is_fwd(regs) && !btf_kflag(regs))))
 		return (false);
 	type_name = btf__name_by_offset(btf, regs->name_off);
-	return (type_name != NULL && strcmp(type_name, "pt_regs") == 0);
+	if (type_name == NULL || strcmp(type_name, "pt_regs") != 0)
+		return (false);
+	/* Older BTF deduplication can leave the wrappers on a declaration. */
+	return (btf_is_struct(regs) ||
+	    btf__find_by_name_kind(btf, "pt_regs", BTF_KIND_STRUCT) > 0);
 }
 
 static bool
