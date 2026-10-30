@@ -119,7 +119,7 @@ steps:
 
   - label: "quark-test on fedora 32"
     key: test_fedora_32
-    command: "./.buildkite/runtest_distro.sh fedora 32"
+    command: "./.buildkite/runtest_distro.sh fedora 32 -v"
     depends_on:
       - make_docker
     agents:
