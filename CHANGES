@@ -233,8 +233,10 @@ Changes from 0.10 to 0.11
     quark-mon accepts -a for a leaf name or a name with a final slash
     for a parent name. Text and ECS output include file access data.
     Repeated access classes are suppressed for the same process image,
-    file lifetime, complete resolved path and mount namespace. Unsupported
-    filesystem identities and paths longer than 255 bytes can report repeats.
+    file, complete resolved path and mount namespace. Paths longer than
+    255 bytes can report repeats. Outside ext2, ext3, ext4, XFS and tmpfs,
+    a new file at the same path with the same inode number can count as
+    already reported to a process that opened the old one.
     quark_queue_file_access_name_reset(3) clears the registered names and
     permits new reports after names are added again. Events already in
     progress or in the queue can still refer to the previous name set.

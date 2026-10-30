@@ -2367,7 +2367,7 @@ t_file_access_paths(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_queue_open(&qq, qa) == 0);
 	assert(quark_queue_file_access_name_add(&qq, "quark-test-anchor",
 	    QUARK_FILE_ACCESS_NAME_PARENT) == 0);
-	assert(quark_queue_file_access_name_add(&qq, "bypass",
+	assert(quark_queue_file_access_name_add(&qq, "no-generation",
 	    QUARK_FILE_ACCESS_NAME_LEAF) == 0);
 	if (file_access_in_child(&qq)) {
 		test_fs_close(&fs);
@@ -2411,9 +2411,10 @@ t_file_access_paths(const struct test *t, struct quark_queue_attr *qa)
 		assert(unlink(longpath) == 0 && unlink(marker) == 0);
 	}
 
-	/* No stable file generation on ramfs: report each access, including repeats. */
+	/* Ramfs has no inode generation; the path still identifies repeats. */
 	snprintf(ramdir, sizeof(ramdir), "%s/ramfs", dir);
-	snprintf(rampath, sizeof(rampath), "%s/bypass", ramdir);
+	snprintf(rampath, sizeof(rampath), "%s/no-generation", ramdir);
+	snprintf(marker, sizeof(marker), "%s/ramfs-sentinel", dir);
 	assert(mkdir(ramdir, 0700) == 0);
 	assert(mount("ramfs", ramdir, "ramfs", MS_NODEV | MS_NOSUID, NULL) == 0);
 	file_access_open(rampath, O_WRONLY | O_CREAT | O_EXCL);
@@ -2421,8 +2422,10 @@ t_file_access_paths(const struct test *t, struct quark_queue_attr *qa)
 	file_access_open(rampath, O_RDONLY);
 	assert_next_access_path(&qq, rampath);
 	file_access_open(rampath, O_RDONLY);
-	assert_next_access_path(&qq, rampath);
-	assert(unlink(rampath) == 0 && umount(ramdir) == 0 && rmdir(ramdir) == 0);
+	file_access_open(marker, O_WRONLY | O_CREAT | O_EXCL);
+	assert_next_access_path(&qq, marker); /* The repeat was suppressed. */
+	assert(unlink(rampath) == 0 && unlink(marker) == 0);
+	assert(umount(ramdir) == 0 && rmdir(ramdir) == 0);
 
 	/* Overlay is optional on kernels which ship its driver as a module. */
 	{
@@ -2434,8 +2437,9 @@ t_file_access_paths(const struct test *t, struct quark_queue_attr *qa)
 			snprintf(dirs[i], sizeof(dirs[i]), "%s/%s", dir, names[i]);
 			assert(mkdir(dirs[i], 0700) == 0);
 		}
-		snprintf(lower, sizeof(lower), "%s/bypass", dirs[0]);
-		snprintf(merged, sizeof(merged), "%s/bypass", dirs[3]);
+		snprintf(lower, sizeof(lower), "%s/no-generation", dirs[0]);
+		snprintf(merged, sizeof(merged), "%s/no-generation", dirs[3]);
+		snprintf(marker, sizeof(marker), "%s/overlay-sentinel", dir);
 		file_access_open(lower, O_WRONLY | O_CREAT | O_EXCL);
 		assert_next_access_path(&qq, lower);
 		snprintf(options, sizeof(options), "lowerdir=%s,upperdir=%s,workdir=%s,index=off",
@@ -2443,13 +2447,14 @@ t_file_access_paths(const struct test *t, struct quark_queue_attr *qa)
 		if (mount("overlay", dirs[3], "overlay", 0, options) == -1) {
 			if (errno != ENODEV)
 				err(1, "overlay test filesystem");
-			warnx("%s: overlay driver unavailable; ramfs bypass was checked", t->name);
+			warnx("%s: overlay driver unavailable; only ramfs was checked", t->name);
 		} else {
 			file_access_open(merged, O_RDONLY);
 			assert_next_access_path(&qq, merged);
 			file_access_open(merged, O_RDONLY);
-			assert_next_access_path(&qq, merged);
-			assert(umount(dirs[3]) == 0);
+			file_access_open(marker, O_WRONLY | O_CREAT | O_EXCL);
+			assert_next_access_path(&qq, marker); /* The repeat was suppressed. */
+			assert(unlink(marker) == 0 && umount(dirs[3]) == 0);
 		}
 		assert(unlink(lower) == 0);
 		snprintf(work, sizeof(work), "%s/work", dirs[2]);

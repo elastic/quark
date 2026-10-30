@@ -606,7 +606,10 @@ static __attribute__((noinline)) bool file_access__dedup(struct file_access_scra
     if (size <= 1 || size > sizeof(key->path) || path[0] != '/' || !event->mntns)
         return false;
     inode = BPF_CORE_READ(de, d_inode);
-    if (!ebpf_dedup_file_key__fill(&key->file, inode, bpf_get_current_pid_tgid() >> 32))
+    // The path keeps a reused inode number apart, so any filesystem will do.
+    // Without a reuse-safe generation, a file recreated at the same path with
+    // the same inode number counts as already reported for the process life.
+    if (!ebpf_dedup_file_key__fill(&key->file, inode, bpf_get_current_pid_tgid() >> 32, NULL))
         return false;
     key->mntns = event->mntns;
     key->pad = 0;

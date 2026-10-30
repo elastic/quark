@@ -425,8 +425,8 @@ struct raw_file {
 /*
  * A successful open(2) family call on a file whose name matched one of the
  * anchors given to quark_queue_file_access_name_add(3). Repeated access
- * classes can be suppressed for the same process image, file lifetime,
- * resolved path and mount namespace. See that manual for the limits.
+ * classes can be suppressed for the same process image, file, resolved
+ * path and mount namespace. See that manual for the limits.
  */
 /*
  * Roles for quark_queue_file_access_name_add(3), name is a file or a
