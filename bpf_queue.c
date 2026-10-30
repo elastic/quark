@@ -671,6 +671,79 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		break;
 	}
+	case EBPF_EVENT_FILE_ACCESS: {
+		struct ebpf_file_access_event	*access;
+		struct quark_file_access	*qfa;
+		const char			*path, *sym_target;
+		size_t				 path_len, sym_target_len;
+		size_t				 alloc_len, tmp_len, off;
+		u32				 dummy;
+
+		access = (struct ebpf_file_access_event *)ev;
+		if ((raw = raw_event_alloc(RAW_FILE_ACCESS)) == NULL)
+			goto bad;
+
+		raw->pid = access->pids.tgid;
+		raw->time = ev->ts;
+
+		path = sym_target = NULL;
+		path_len = sym_target_len = 0;
+
+		FOR_EACH_VARLEN_FIELD_PTR(&access->vl_fields, field, dummy) {
+			tmp_len = strlen(field->data);
+			switch (field->type) {
+			case EBPF_VL_FIELD_PATH:
+				if (tmp_len > 0) {
+					path = field->data;
+					path_len = tmp_len + 1; /* with NUL */
+				}
+				break;
+			case EBPF_VL_FIELD_SYMLINK_TARGET_PATH:
+				if (tmp_len > 0) {
+					sym_target = field->data;
+					sym_target_len = tmp_len + 1;
+				}
+				break;
+			default:
+				qwarnx("unhandled field type %d", field->type);
+				goto bad;
+			}
+		}
+
+		if (path == NULL) {
+			qwarnx("no path");
+			goto bad;
+		}
+
+		/* Same single block layout as quark_file */
+		alloc_len = sizeof(*raw->file_access.quark_file_access);
+		alloc_len += path_len + sym_target_len;
+		alloc_len++;			     /* extra NUL for paranoia */
+
+		raw->file_access.quark_file_access = calloc(1, alloc_len);
+		if (raw->file_access.quark_file_access == NULL)
+			goto bad;
+		qfa = raw->file_access.quark_file_access;
+		off = 0;
+		qfa->path = qfa->storage + off;
+		memcpy(qfa->storage + off, path, path_len);
+		off += path_len;
+		if (sym_target != NULL) {
+			qfa->sym_target = qfa->storage + off;
+			memcpy(qfa->storage + off, sym_target, sym_target_len);
+			off += sym_target_len;
+		}
+
+		qfa->inode = access->finfo.inode;
+		qfa->size = access->finfo.size;
+		qfa->mode = access->finfo.mode;
+		qfa->uid = access->finfo.uid;
+		qfa->gid = access->finfo.gid;
+		qfa->open_flags = access->open_flags;
+		qfa->fmode = access->fmode;
+
+		break;
+	}
 	case EBPF_EVENT_PROCESS_PTRACE: {
 		struct ebpf_process_ptrace_event *ptrace;
 		struct quark_ptrace *qptrace;

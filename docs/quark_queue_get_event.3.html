@@ -89,6 +89,23 @@
           unavailable identity, can report repeats. A file with a reused inode
           number and a new generation is reported again. It describes an attempt
           and does not assert that the protection change was committed.</dd>
+      <dt id="QUARK_EV_FILE_ACCESS"><a class="permalink" href="#QUARK_EV_FILE_ACCESS"><code class="Dv">QUARK_EV_FILE_ACCESS</code></a></dt>
+      <dd>The
+          <a class="permalink" href="#file_access"><i class="Em" id="file_access">file_access</i></a>
+          member describes a successful file open. It contains the resolved
+          path, inode, size, mode, file owner IDs, open flags and kernel file
+          mode. The
+          <a class="permalink" href="#sym_target"><i class="Em" id="sym_target">sym_target</i></a>
+          field contains the inline symlink target when available; otherwise it
+          is <code class="Dv">NULL</code>. The
+          <a class="permalink" href="#pid"><i class="Em" id="pid">pid</i></a>
+          field always identifies the opener, including when
+          <i class="Em">process</i> is <code class="Dv">NULL</code> because the
+          process is not in the cache. The payload remains valid until the next
+          event call or queue close. ECS output uses action
+          &#x201C;file-opened&#x201D; and stores the raw flags in
+          &#x201C;file.Ext.open_flags&#x201D; and
+          &#x201C;file.Ext.fmode&#x201D;.</dd>
     </dl>
     <p class="Pp">It's important to note that <i class="Em">events</i> is what
         triggered the event, not what is known about the process.</p>
