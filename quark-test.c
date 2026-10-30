@@ -2065,6 +2065,96 @@ t_file_access_smoke(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static int
+t_file_access_owner(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	const struct quark_event	*qev;
+	char			 dir[] = "/tmp/quark-fa-owner.XXXXXX";
+	char			 path[PATH_MAX];
+	pid_t			 owner, holder, replacement, expected;
+	int			 ready[2], resume[2], fd, status, before_nfd;
+	int			 was_subreaper = 0, reuse_pid;
+
+	before_nfd = num_open_fd();
+	reuse_pid = getenv("QUARK_INITRAMFS") != NULL;
+	assert(prctl(PR_GET_CHILD_SUBREAPER, &was_subreaper) == 0);
+	assert(prctl(PR_SET_CHILD_SUBREAPER, 1) == 0);
+	assert(mkdtemp(dir) != NULL);
+	snprintf(path, sizeof(path), "%s/secret", dir);
+	file_access_open(path, O_CREAT | O_WRONLY);
+	assert(pipe(ready) == 0 && pipe(resume) == 0);
+	alarm(30);
+	assert((owner = fork()) != -1);
+	if (owner == 0) {
+		close(ready[0]);
+		close(resume[1]);
+		qa->flags |= QQ_FILE_ACCESS;
+		assert(quark_queue_open(&qq, qa) == 0);
+		assert(quark_queue_file_access_name_add(&qq, "secret",
+		    QUARK_FILE_ACCESS_NAME_LEAF) == 0);
+		/* This open must not precede the holder's first reported open. */
+		file_access_open(path, O_RDONLY);
+		assert((holder = fork()) != -1);
+		if (holder == 0) {
+			holder = getpid();
+			file_access_open(path, O_RDONLY);
+			qev = drain_file_access_pid(&qq, -1);
+			assert(qev->process != NULL);
+			assert(qev->process->pid == (u32)holder);
+			assert(!strcmp(qev->file_access->path, path));
+			assert(write(ready[1], &holder, sizeof(holder)) ==
+			    (ssize_t)sizeof(holder));
+			close(ready[1]);
+			assert(read(resume[0], &expected, sizeof(expected)) ==
+			    (ssize_t)sizeof(expected));
+			close(resume[0]);
+			if (expected != 0) {
+				qev = drain_file_access_pid(&qq, expected);
+				assert(!strcmp(qev->file_access->path, path));
+			}
+			file_access_child_done(&qq, before_nfd);
+		}
+		close(ready[1]);
+		close(resume[0]);
+		file_access_child_done(&qq, before_nfd);
+	}
+	close(ready[1]);
+	close(resume[0]);
+	assert(read(ready[0], &holder, sizeof(holder)) == (ssize_t)sizeof(holder));
+	close(ready[0]);
+	assert(waitpid(owner, &status, 0) == owner);
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	expected = 0;
+	if (reuse_pid) {
+		/* Only the disposable guest may alter PID allocation. */
+		assert((fd = open("/proc/sys/kernel/ns_last_pid", O_WRONLY)) != -1);
+		assert(dprintf(fd, "%d\n", owner - 1) > 0);
+		close(fd);
+		assert((replacement = fork()) != -1);
+		if (replacement == 0) {
+			close(resume[1]);
+			file_access_open(path, O_RDONLY);
+			assert(num_open_fd() == before_nfd);
+			_exit(0);
+		}
+		assert(replacement == owner);
+		assert(waitpid(replacement, &status, 0) == replacement);
+		assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+		expected = replacement;
+	} else
+		warnx("PID reuse requires QUARK_INITRAMFS; owner/child checks ran");
+	assert(write(resume[1], &expected, sizeof(expected)) == (ssize_t)sizeof(expected));
+	close(resume[1]);
+	assert(waitpid(holder, &status, 0) == holder);
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	alarm(0);
+	assert(prctl(PR_SET_CHILD_SUBREAPER, was_subreaper) == 0);
+	assert(unlink(path) == 0 && rmdir(dir) == 0);
+
+	return (0);
+}
+
+static int
 t_file_access_names(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue qq;
@@ -6022,6 +6112,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_access),
 	T_EBPF(t_file_access_with_file),
 	T_EBPF(t_file_access_smoke),
+	T_EBPF(t_file_access_owner),
 	T_EBPF(t_file_access_names),
 	T_EBPF(t_file_access_name_limits),
 	T_EBPF(t_file_bypass),

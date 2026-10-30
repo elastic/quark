@@ -44,6 +44,16 @@
 #include "EbpfEventProto.h"
 
 const volatile int consumer_pid = 0;
+const volatile bool file_access_enabled = false;
+
+// This queue's opener can exit while a forked process retains its probes.
+// Keep the lifetime boundary separate from the TTY consumer predicate.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, u32);
+    __type(value, u32);
+    __uint(max_entries, 1);
+} elastic_ebpf_file_access_owner_exited SEC(".maps");
 
 #define MEMFD_STRING "memfd:"
 #define TMPFS_STRING "tmpfs"
@@ -454,6 +464,29 @@ static bool is_consumer()
 {
     int pid = bpf_get_current_pid_tgid() >> 32;
     return consumer_pid == pid;
+}
+
+static bool file_access_is_consumer()
+{
+    u32 zero = 0;
+    u32 *exited;
+
+    if (!is_consumer())
+        return false;
+    exited = bpf_map_lookup_elem(&elastic_ebpf_file_access_owner_exited, &zero);
+    return exited != NULL && !*exited;
+}
+
+static void file_access_consumer_exit()
+{
+    u32 zero = 0;
+    u32 *exited;
+
+    if (!file_access_enabled || !is_consumer())
+        return;
+    exited = bpf_map_lookup_elem(&elastic_ebpf_file_access_owner_exited, &zero);
+    if (exited != NULL)
+        *exited = 1;
 }
 
 static int strncmp(const char *s1, const char *s2, size_t n)
