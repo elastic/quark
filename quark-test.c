@@ -2463,6 +2463,76 @@ t_file_access_paths(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* Recreate the same path: a new path alone would hide a missing generation. */
+static int
+t_file_access_inode_reuse(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct test_fs fs;
+	struct quark_queue qq;
+	struct stat old, st;
+	const struct quark_file_access *access;
+	char dir[128], path[160], sentinel[160];
+	int fd, old_generation, generation, i, before_nfd;
+
+	if (test_fs_open(&fs) == -1)
+		return (0);
+	snprintf(dir, sizeof(dir), "%s/quark-test-anchor", fs.dir);
+	snprintf(path, sizeof(path), "%s/reused", dir);
+	snprintf(sentinel, sizeof(sentinel), "%s/sentinel", dir);
+	assert(mkdir(dir, 0700) == 0);
+	assert(close(test_fs_create(sentinel)) == 0);
+	before_nfd = num_open_fd();
+	qa->flags |= QQ_FILE_ACCESS;
+	assert(quark_queue_open(&qq, qa) == 0);
+	assert(quark_queue_file_access_name_add(&qq, "quark-test-anchor",
+	    QUARK_FILE_ACCESS_NAME_PARENT) == 0);
+	if (file_access_in_child(&qq)) {
+		test_fs_close(&fs);
+		return (0);
+	}
+
+	fd = test_fs_create(path);
+	assert(fstat(fd, &old) == 0);
+	assert(ioctl(fd, FS_IOC_GETVERSION, &old_generation) == 0);
+	assert(old_generation != 0 && close(fd) == 0);
+	access = drain_file_access(&qq)->file_access;
+	assert(!strcmp(access->path, path) && access->inode == old.st_ino);
+	assert((access->open_flags & O_ACCMODE) == O_RDWR);
+	file_access_open(path, O_WRONLY);
+	file_access_open(sentinel, O_RDONLY);
+	assert_next_access_path(&qq, sentinel); /* WRITE was claimed. */
+	assert(unlink(path) == 0);
+
+	/* Stay below the 16K seen-map capacity so the old key is not evicted. */
+	for (i = 0; i < 4096; i++) {
+		fd = test_fs_create(path);
+		assert(fstat(fd, &st) == 0);
+		assert(ioctl(fd, FS_IOC_GETVERSION, &generation) == 0);
+		assert(close(fd) == 0);
+		if (st.st_ino == old.st_ino && st.st_dev == old.st_dev)
+			break;
+		assert_next_access_path(&qq, path);
+		assert(unlink(path) == 0);
+	}
+	if (i == 4096)
+		errx(1, "ext4 fixture did not reuse the file-access inode number");
+	assert(generation != 0 && generation != old_generation);
+	file_access_open(sentinel, O_PATH);
+	access = drain_file_access(&qq)->file_access;
+	assert(!strcmp(access->path, path) && access->inode == old.st_ino);
+	assert((access->open_flags & O_ACCMODE) == O_RDWR);
+	assert_next_access_path(&qq, sentinel); /* The new WRITE was not lost. */
+	file_access_open(path, O_WRONLY);
+	file_access_open(sentinel, O_WRONLY);
+	assert_next_access_path(&qq, sentinel); /* New-file repeat is suppressed. */
+	fprintf(stderr, "%s: reused inode %llu, generation %u -> %u, attempt %d\n",
+	    t->name, (unsigned long long)old.st_ino,
+	    (unsigned)old_generation, (unsigned)generation, i + 1);
+	assert(unlink(path) == 0 && unlink(sentinel) == 0 && rmdir(dir) == 0);
+	file_access_child_done(&qq, before_nfd);
+	return (0);
+}
+
 static int
 t_memfd(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -6348,6 +6418,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_file_access_classes),
 	T_EBPF(t_file_access_paths),
+	T_EBPF(t_file_access_inode_reuse),
 	T_EBPF(t_memfd),
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_detached_mount_exec),
