@@ -299,14 +299,25 @@ static u64 bpf_trampoline_position(const void *ctx, bool entry)
 
 const volatile bool bpf_trampoline_wrapper = false;
 
+// Older BTF can declare the wrapper's pt_regs argument only as a forward
+// declaration, and the verifier then rejects a direct load of ctx[0].
+static __always_inline u64 bpf_trampoline_arg0(u64 *ctx)
+{
+    u64 arg = 0;
+
+    bpf_probe_read_kernel(&arg, sizeof(arg), ctx);
+    return arg;
+}
+
 SEC("fentry")
 int bpf_call_fentry(u64 *ctx)
 {
-    u32 cmd = ctx[0];
+    u64 arg0 = bpf_trampoline_arg0(ctx);
+    u32 cmd  = arg0;
     u64 position;
 
     if (bpf_trampoline_wrapper) {
-        const struct pt_regs *regs = (const void *)ctx[0];
+        const struct pt_regs *regs = (const void *)arg0;
 #if defined(__TARGET_ARCH_x86)
         cmd = BPF_CORE_READ(regs, di);
 #elif defined(__TARGET_ARCH_arm64)
@@ -350,7 +361,7 @@ int bpf_call_fexit7(u64 *ctx) { return bpf_trampoline_exit(ctx, (s32)ctx[7]); }
 SEC("fentry")
 int bpf_call_fentry_compat(u64 *ctx)
 {
-    const struct pt_regs *regs = (const void *)ctx[0];
+    const struct pt_regs *regs = (const void *)bpf_trampoline_arg0(ctx);
     u32 cmd = BPF_CORE_READ(regs, bx);
     u64 position;
 
