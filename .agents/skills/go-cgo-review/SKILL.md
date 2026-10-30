@@ -12,10 +12,17 @@ cgo call changed in the same PR, load the `c-review` skill as well.
 
 ## 1. The cgo pointer-passing rules
 
-The runtime enforces these only partially (`GODEBUG=cgocheck=1` catches some at run time,
-`cgocheck=2` more, but neither catches everything). Check them by reading:
+The rule since Go 1.21: every Go pointer C can see must point to pinned memory.
+Function arguments are pinned implicitly for the duration of the call; anything
+retained beyond that, stored in C memory, or reachable from passed Go memory needs an
+explicit `runtime.Pinner` that stays pinned for as long as C holds it (section 2).
+Strings, slices, maps, channels, funcs and interfaces can never be pinned, so C may
+never retain those. The runtime enforces this only partially (`GODEBUG=cgocheck=1`
+catches some at run time, `cgocheck=2` more, but neither catches everything). Each
+bullet below is a violation unless the pointee is pinned for the whole time C holds
+it; check them by reading:
 
-- **Go memory may be passed to C only if it contains no Go pointers.** Passing
+- **Go memory may be passed to C only if it contains no Go pointers to unpinned memory.** Passing
   `&buf[0]` for a `[]byte` is fine. Passing a pointer to a struct that itself holds a
   Go pointer, slice, string, map, chan, func, or interface is not. Look at the struct
   definition, not just the call site.
@@ -28,7 +35,7 @@ The runtime enforces these only partially (`GODEBUG=cgocheck=1` catches some at 
 - **Go code must not store Go pointers in C memory** and must not pass C memory that
   contains Go pointers back to C.
 
-The idiomatic escapes: pass an integer handle instead (`runtime/cgo.Handle`, or your
+The idiomatic escapes: pin (section 2), or pass an integer handle instead (`runtime/cgo.Handle`, or your
 own map under a mutex), and look the Go value up when the callback fires. Delete the
 handle when the C side is done with it, or it leaks forever.
 
