@@ -37,28 +37,36 @@ struct ebpf_dedup_file_key {
     u32 pad; // every key byte participates in map lookup
 };
 
-// Cache only filesystem identities whose inode generation distinguishes reuse.
+// Returns false if the identity cannot be read; unreadable identities bypass
+// dedup, so they can add reports. Unless NULL, *reuse_safe tells whether the
+// inode generation distinguishes a new file that reuses a freed inode number.
 // ext2/3/4 share one magic. XFS and tmpfs also supply this generation. Other
 // filesystems need more identity: btrfs has subvolume roots, NFS file handles,
 // and FUSE node IDs. Overlayfs does not copy the real inode's generation.
-// Unknown or unreadable identities bypass dedup, so they can add reports.
+// Keys with nothing else to tell such files apart must require reuse_safe.
 // Values are from include/uapi/linux/magic.h.
 static __always_inline bool ebpf_dedup_file_key__fill(struct ebpf_dedup_file_key *key,
-                                                       const struct inode *inode, u32 tgid)
+                                                       const struct inode *inode, u32 tgid,
+                                                       bool *reuse_safe)
 {
     struct super_block *sb;
     unsigned long magic;
 
     __builtin_memset(key, 0, sizeof(*key));
     key->tgid = tgid;
+    if (reuse_safe)
+        *reuse_safe = false;
     if (!inode || BPF_CORE_READ_INTO(&sb, inode, i_sb) || !sb ||
         BPF_CORE_READ_INTO(&key->dev, sb, s_dev) ||
         BPF_CORE_READ_INTO(&key->inode, inode, i_ino) ||
         BPF_CORE_READ_INTO(&key->i_generation, inode, i_generation) ||
-        BPF_CORE_READ_INTO(&magic, sb, s_magic) || !key->i_generation)
+        BPF_CORE_READ_INTO(&magic, sb, s_magic))
         return false;
 
-    return magic == 0xef53 || magic == 0x58465342 || magic == 0x01021994;
+    if (reuse_safe)
+        *reuse_safe = key->i_generation &&
+                      (magic == 0xef53 || magic == 0x58465342 || magic == 0x01021994);
+    return true;
 }
 
 struct ebpf_dedup_seen {

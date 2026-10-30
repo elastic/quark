@@ -612,11 +612,13 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
 
     // Anonymous transitions are per program image; file-backed ones are per
     // file identity, when the filesystem supplies a safe identity for dedup.
+    // The key has no path, so only the generation tells a reused inode apart.
     u32 tgid = bpf_get_current_pid_tgid() >> 32;
     u32 id   = mprotect_transition_id(prev_prot, effective_prot, file != NULL);
     struct ebpf_dedup_file_key file_key = {};
+    bool reuse_safe = false;
     bool cacheable = file && ebpf_dedup_file_key__fill(
-        &file_key, BPF_CORE_READ(file, f_inode), tgid);
+        &file_key, BPF_CORE_READ(file, f_inode), tgid, &reuse_safe) && reuse_safe;
     // Older verifiers can lose the correlation between the two file checks.
     // Keep fresh initialized even on the anonymous path.
     struct ebpf_dedup_seen fresh = {};

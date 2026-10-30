@@ -70,7 +70,7 @@ The exclusion ends when the original process exits; a later process with
 the same PID is reported.
 .Pp
 Repeated opens are suppressed for each access class, process image,
-file lifetime, resolved path and mount namespace.
+file, resolved path and mount namespace.
 The classes are read, write, execute and
 .Dv O_PATH .
 Write includes write mode and
@@ -82,13 +82,17 @@ or
 takes precedence over execute, which takes precedence over write.
 A successful exec starts a new process image.
 If the kernel does not expose its exec ID, suppression can continue across exec.
-Inode numbers with a new generation, hard links with different paths,
-renames to a new path, and different visible bind-mount paths are
-reported again.
+Hard links with different paths, renames to a new path, and different visible
+bind-mount paths are reported again.
+A new file that reuses a freed inode number is reported again if its path
+differs, or on ext2, ext3, ext4, XFS and tmpfs, whose nonzero inode generation
+tells the two files apart.
+On other filesystems, a new file at the same path with the same inode number
+can count as already reported.
 .Pp
-Suppression requires ext2, ext3, ext4, XFS or tmpfs, a nonzero inode generation,
-and a complete absolute path of at most 255 bytes.
-Other identities or paths can report repeats.
+Suppression requires a readable file identity and a complete absolute path of
+at most 255 bytes.
+Longer or incomplete paths can report repeats.
 The cache holds at most 16384 entries.
 Eviction and concurrent opens can also cause repeats.
 An open counts as reported only after its event enters the ring buffer.
