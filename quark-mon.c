@@ -122,7 +122,7 @@ usage(void)
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-BbDeFGgHhkLMNnSsTtuv]\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
+	fprintf(stderr, "%16c [-a name] [-C filename ] [-K kubeconfig] "
 	    "[-l maxlength] [-m maxnodes]\n", ' ');
 	fprintf(stderr, "%16c [-P ppid] "
 	    "[-r rulefile ]\n", ' ');
@@ -158,6 +158,12 @@ main(int argc, char *argv[])
 	int				 ch, maxnodes;
 	int				 do_priv_drop, do_snap;
 	int				 benchmark, lflag;
+	int				 i, naccess;
+	struct {
+		const char	*name;
+		size_t		 len;
+		int		 role;
+	} access_names[64];
 	u32				 filter_ppid;
 	struct quark_queue		*qq;
 	struct quark_queue_attr		 qa;
@@ -180,6 +186,7 @@ main(int argc, char *argv[])
 	lflag = 0;
 	benchmark = 0;
 	kube_config = NULL;
+	naccess = 0;
 	print_event = print_dump;
 
 	if (argc == 2 &&
@@ -188,10 +195,35 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
+	while ((ch = getopt(argc, argv, "a:BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
+		case 'a': {
+			size_t	len;
+			int	role = QUARK_FILE_ACCESS_NAME_LEAF;
+
+			if (optarg == NULL)
+				usage();
+			if (naccess == (int)nitems(access_names))
+				errx(1, "too many -a");
+			len = strlen(optarg);
+			if (len > 0 && optarg[len - 1] == '/') {
+				len--;
+				role = QUARK_FILE_ACCESS_NAME_PARENT;
+			}
+			if (len == 0 || memchr(optarg, '/', len) != NULL)
+				errx(1, "-a %s: use one file or directory name", optarg);
+			if (len >= QUARK_FILE_ACCESS_NAME_MAX)
+				errx(1, "-a %s: name too long (maximum %d bytes)",
+				    optarg, QUARK_FILE_ACCESS_NAME_MAX - 1);
+			access_names[naccess].name = optarg;
+			access_names[naccess].len = len;
+			access_names[naccess].role = role;
+			naccess++;
+			qa.flags |= QQ_FILE_ACCESS;
+			break;
+		}
 		case 'B':
 			qa.flags |= QQ_BYPASS;
 			break;
@@ -349,6 +381,8 @@ main(int argc, char *argv[])
 
 	if ((qa.flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA)) == 0)
 		qa.flags |= QQ_EBPF;
+	if (naccess > 0 && !(qa.flags & QQ_EBPF))
+		errx(1, "file access(a) needs the ebpf backend");
 
 	bzero(&sigact, sizeof(sigact));
 	sigact.sa_flags = SA_RESTART | SA_RESETHAND;
@@ -369,6 +403,17 @@ main(int argc, char *argv[])
 
 	if (quark_verbose)
 		fprintf(stderr, "using %s for backend\n", fetch_backend(qq));
+
+	/* Names and roles were checked before the queue was opened. */
+	for (i = 0; i < naccess; i++) {
+		char	 name[QUARK_FILE_ACCESS_NAME_MAX];
+
+		memcpy(name, access_names[i].name, access_names[i].len);
+		name[access_names[i].len] = 0;
+		if (quark_queue_file_access_name_add(qq, name,
+		    access_names[i].role) == -1)
+			err(1, "-a %s", access_names[i].name);
+	}
 
 	/* From now on we will be nobody */
 	if (do_priv_drop)

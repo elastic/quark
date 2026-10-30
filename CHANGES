@@ -230,6 +230,8 @@ Changes from 0.10 to 0.11
     quark_queue_file_access_name_add(3), with QQ_FILE_ACCESS.
     QUARK_EV_FILE_ACCESS reports successful opens that match those names.
     quark_event{} gets a file_access member.
+    quark-mon accepts -a for a leaf name or a name with a final slash
+    for a parent name. Text and ECS output include file access data.
     Repeated access classes are suppressed for the same process image,
     file lifetime, complete resolved path and mount namespace. Unsupported
     filesystem identities and paths longer than 255 bytes can report repeats.
