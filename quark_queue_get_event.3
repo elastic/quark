@@ -76,8 +76,12 @@ is the mount-namespace relative path of the backing file; it is
 .Dv NULL
 for anonymous mappings.
 Anonymous attempts are reported once per protection transition per process
-life, file-backed attempts once per protection transition per file per process
 life.
+File-backed attempts are reported once per protection transition, file and
+process life on ext2, ext3, ext4, XFS and tmpfs.
+The file identity includes its inode number and generation.
+Other filesystems, or an unavailable identity, can report repeats.
+A file with a reused inode number and a new generation is reported again.
 It describes an attempt and does not assert that the protection change was
 committed.
 .El

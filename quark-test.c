@@ -174,8 +174,9 @@ test_fs_close(struct test_fs *fs)
 {
 	if (umount(fs->dir) == -1)
 		err(1, "umount test filesystem");
-	if (ioctl(fs->loop_fd, LOOP_CLR_FD, 0) == -1 ||
-	    close(fs->loop_fd) == -1 || rmdir(fs->dir) == -1)
+	if ((fs->loop_fd != -1 &&
+	    (ioctl(fs->loop_fd, LOOP_CLR_FD, 0) == -1 ||
+	    close(fs->loop_fd) == -1)) || rmdir(fs->dir) == -1)
 		err(1, "close test filesystem");
 }
 
@@ -2130,10 +2131,37 @@ t_shmget(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* Ordinary dedup tests do not need an ext4 image or inode-number reuse. */
+static void
+test_fs_tmpfs(struct test_fs *fs)
+{
+	bzero(fs, sizeof(*fs));
+	fs->loop_fd = -1;
+	strlcpy(fs->dir, "/tmp/quark-test-fs.XXXXXX", sizeof(fs->dir));
+	if (unshare(CLONE_NEWNS) == -1 ||
+	    mount(NULL, "/", "", MS_REC | MS_PRIVATE, NULL) == -1 ||
+	    mkdtemp(fs->dir) == NULL ||
+	    mount("tmpfs", fs->dir, "tmpfs", MS_NODEV | MS_NOSUID, NULL) == -1)
+		err(1, "tmpfs test filesystem");
+}
+
+static int
+test_fs_create(const char *path)
+{
+	int fd;
+
+	if ((fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600)) == -1 ||
+	    ftruncate(fd, 4096) == -1)
+		err(1, "create test file");
+	return (fd);
+}
+
 static int
 t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
+	struct test_fs			 fs;
+	char				 path[128], path2[128];
 	const struct quark_event	*qev;
 	const struct quark_mprotect	*qmprotect;
 	void				*addr[4];
@@ -2142,7 +2170,6 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	void				*suppressed_addr;
 	const size_t			 len = 4096;
 	struct stat			 st, st2;
-	const char			*true_path;
 	int				 fd2;
 	const int			 expected[] = {
 		PROT_EXEC,
@@ -2161,6 +2188,7 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	size_t				 i, j;
 	int				 seen = 0;
 
+	test_fs_tmpfs(&fs);
 	qa->flags |= QQ_MPROTECT;
 
 	if (quark_queue_open(&qq, qa) != 0)
@@ -2231,8 +2259,8 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "mprotect");
 
 	/* File-backed attempts carry identity and a mount-ns relative path. */
-	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
-		err(1, "open");
+	snprintf(path, sizeof(path), "%s/first", fs.dir);
+	fd = test_fs_create(path);
 	if (fstat(fd, &st) == -1)
 		err(1, "fstat");
 	file_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -2253,17 +2281,8 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	assert(qmprotect->inode == (u64)st.st_ino);
 	assert(qmprotect->dev_major == (u32)major(st.st_dev));
 	assert(qmprotect->dev_minor == (u32)minor(st.st_dev));
-	{
-		char	self[PATH_MAX];
-		ssize_t	n;
-
-		n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-		if (n == -1)
-			err(1, "readlink");
-		self[n] = '\0';
-		assert(qmprotect->path != NULL);
-		assert(strcmp(qmprotect->path, self) == 0);
-	}
+	assert(qmprotect->path != NULL);
+	assert(strcmp(qmprotect->path, path) == 0);
 
 	/*
 	 * File-backed transitions are deduplicated per file. Redo the same
@@ -2276,15 +2295,11 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "mprotect");
 	if (mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
 		err(1, "mprotect");
-	if (stat("/usr/bin/true", &st2) == 0)
-		true_path = "/usr/bin/true";
-	else if (stat("/bin/true", &st2) == 0)
-		true_path = "/bin/true";
-	else
-		err(1, "no true binary");
+	snprintf(path2, sizeof(path2), "%s/second", fs.dir);
+	fd2 = test_fs_create(path2);
+	if (fstat(fd2, &st2) == -1)
+		err(1, "fstat");
 	assert(st2.st_ino != st.st_ino || st2.st_dev != st.st_dev);
-	if ((fd2 = open(true_path, O_RDONLY)) == -1)
-		err(1, "open");
 	file2_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd2, 0);
 	if (file2_addr == MAP_FAILED)
 		err(1, "mmap");
@@ -2303,7 +2318,7 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	assert(qmprotect->dev_major == (u32)major(st2.st_dev));
 	assert(qmprotect->dev_minor == (u32)minor(st2.st_dev));
 	assert(qmprotect->path != NULL);
-	assert(strcmp(qmprotect->path, true_path) == 0);
+	assert(strcmp(qmprotect->path, path2) == 0);
 
 #ifdef SYS_pkey_mprotect
 	/* The common LSM hook also observes pkey_mprotect without another probe. */
@@ -2355,6 +2370,9 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "close");
 
 	quark_queue_close(&qq);
+	if (unlink(path) == -1 || unlink(path2) == -1)
+		err(1, "unlink");
+	test_fs_close(&fs);
 
 	return (0);
 }
@@ -2363,6 +2381,8 @@ static int
 t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
+	struct test_fs			 fs;
+	char				 path[128];
 	struct quark_queue_stats		 stats;
 	const struct quark_event	*qev;
 	struct timespec			 start, now;
@@ -2383,6 +2403,7 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 		return (0);
 	}
 
+	test_fs_tmpfs(&fs);
 	qa->flags |= QQ_MPROTECT | QQ_GETPID;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
@@ -2390,8 +2411,8 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 	    -1, 0);
 	if (addr == MAP_FAILED)
 		err(1, "mmap");
-	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
-		err(1, "open");
+	snprintf(path, sizeof(path), "%s/retry", fs.dir);
+	fd = test_fs_create(path);
 	if (fstat(fd, &st) == -1)
 		err(1, "fstat");
 	file_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -2521,6 +2542,107 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 	if (close(fd) == -1)
 		err(1, "close");
 	quark_queue_close(&qq);
+	if (unlink(path) == -1)
+		err(1, "unlink");
+	test_fs_close(&fs);
+	return (0);
+}
+
+/* GETPID is an ordered sentinel for both the positive and negative case. */
+static void
+mprotect_file_transition(struct quark_queue *qq, pid_t pid, int fd,
+    const char *path, int report)
+{
+	const struct quark_event	*qev;
+	struct stat		 st;
+	void			*addr;
+	u64			 sentinel_time;
+	int			 seen = 0;
+
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	if ((addr = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED ||
+	    mprotect(addr, 4096, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect test file");
+	/* Valgrind diagnostics can leave earlier GETPID events in the queue. */
+	sentinel_time = ns_clock();
+	(void)syscall(SYS_getpid);
+	for (;;) {
+		qev = drain_for_pid(qq, pid);
+		if (qev->events & QUARK_EV_MPROTECT) {
+			assert(++seen <= report);
+			assert(qev->mprotect.file_backed);
+			assert(qev->mprotect.inode == (u64)st.st_ino);
+			assert(qev->mprotect.path != NULL);
+			assert(!strcmp(qev->mprotect.path, path));
+		}
+		if ((qev->events & QUARK_EV_GETPID) &&
+		    qev->time >= sentinel_time)
+			break;
+	}
+	assert(seen == report);
+	if (munmap(addr, 4096) == -1)
+		err(1, "munmap");
+}
+
+static int
+t_mprotect_file_identity(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct test_fs		fs;
+	struct quark_queue	qq;
+	struct stat		old, st;
+	char			path[128], ramdir[128], rampath[160];
+	const pid_t		pid = getpid();
+	int			fd, generation, old_generation, i;
+
+	if (test_fs_open(&fs) == -1)
+		return (0);
+	qa->flags |= QQ_MPROTECT | QQ_GETPID;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	snprintf(path, sizeof(path), "%s/reused", fs.dir);
+	fd = test_fs_create(path);
+	if (fstat(fd, &old) == -1 ||
+	    ioctl(fd, FS_IOC_GETVERSION, &old_generation) == -1)
+		err(1, "old inode identity");
+	mprotect_file_transition(&qq, pid, fd, path, 1);
+	mprotect_file_transition(&qq, pid, fd, path, 0);
+	if (close(fd) == -1 || unlink(path) == -1)
+		err(1, "remove old file");
+
+	/* Same path and same number: only the generation can distinguish it. */
+	for (i = 0; i < 4096; i++) {
+		fd = test_fs_create(path);
+		if (fstat(fd, &st) == -1 ||
+		    ioctl(fd, FS_IOC_GETVERSION, &generation) == -1)
+			err(1, "new inode identity");
+		if (st.st_ino == old.st_ino && st.st_dev == old.st_dev)
+			break;
+		if (close(fd) == -1 || unlink(path) == -1)
+			err(1, "remove candidate");
+	}
+	if (i == 4096)
+		errx(1, "ext4 fixture did not reuse the inode number");
+	assert(generation != old_generation);
+	mprotect_file_transition(&qq, pid, fd, path, 1);
+	mprotect_file_transition(&qq, pid, fd, path, 0);
+	if (close(fd) == -1 || unlink(path) == -1)
+		err(1, "remove replacement");
+
+	/* ramfs has no lifetime generation: every transition must be reported. */
+	snprintf(ramdir, sizeof(ramdir), "%s/ramfs", fs.dir);
+	if (mkdir(ramdir, 0700) == -1 ||
+	    mount("ramfs", ramdir, "ramfs", MS_NODEV | MS_NOSUID, NULL) == -1)
+		err(1, "ramfs");
+	snprintf(rampath, sizeof(rampath), "%s/file", ramdir);
+	fd = test_fs_create(rampath);
+	mprotect_file_transition(&qq, pid, fd, rampath, 1);
+	mprotect_file_transition(&qq, pid, fd, rampath, 1);
+	if (close(fd) == -1 || unlink(rampath) == -1 ||
+	    umount(ramdir) == -1 || rmdir(ramdir) == -1)
+		err(1, "remove ramfs");
+	quark_queue_close(&qq);
+	test_fs_close(&fs);
 	return (0);
 }
 
@@ -5439,6 +5561,7 @@ struct test all_tests[] = {
 	T_EBPF(t_shmget),
 	T_EBPF(t_mprotect),
 	T_EBPF(t_mprotect_retry),
+	T_EBPF(t_mprotect_file_identity),
 	T_EBPF(t_shm_open),
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),
