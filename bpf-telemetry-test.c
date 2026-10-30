@@ -116,7 +116,9 @@ enum fixture_defect {
 	FIXTURE_UNSIGNED_COMMAND,
 	FIXTURE_BAD_SECURITY,
 	FIXTURE_BAD_WRAPPER,
-	FIXTURE_ENUM_COMMAND
+	FIXTURE_ENUM_COMMAND,
+	FIXTURE_FWD_STRUCT,
+	FIXTURE_FWD_UNION
 };
 
 /* helper_enum: -1 missing, 0 old enum, 1 enum containing sys_bpf. */
@@ -132,6 +134,12 @@ btf_fixture(bool common, int helper_enum, enum fixture_defect defect)
 	assert((unsigned32 = btf__add_int(btf, "u32", 4, 0)) > 0);
 	assert((long64 = btf__add_int(btf, "long int", 8, BTF_INT_SIGNED)) > 0);
 	assert((regs = btf__add_struct(btf, "pt_regs", 168)) > 0);
+	/* Fedora 32's 5.11 BTF points the wrappers at a declaration. */
+	if (defect == FIXTURE_FWD_STRUCT)
+		regs = btf__add_fwd(btf, "pt_regs", BTF_FWD_STRUCT);
+	else if (defect == FIXTURE_FWD_UNION)
+		regs = btf__add_fwd(btf, "pt_regs", BTF_FWD_UNION);
+	assert(regs > 0);
 	assert((const_regs = btf__add_const(btf, regs)) > 0);
 	assert((regs_pointer = btf__add_ptr(btf, const_regs)) > 0);
 	assert((pointer = btf__add_ptr(btf, int32)) > 0);
@@ -227,6 +235,13 @@ test_selector(void)
 	    ENOSPC, NULL, 0, 0);
 	CHECK(OLD(FIXTURE_BAD_WRAPPER), SYMBOL_X86, TELEMETRY_ARCH_X86, 2,
 	    EOPNOTSUPP, NULL, 0, 0);
+	CHECK(OLD(FIXTURE_FWD_STRUCT), SYMBOL_X86 SYMBOL_COMPAT,
+	    TELEMETRY_ARCH_X86, 2, 0, "__x64_sys_bpf",
+	    BPF_TELEMETRY_ABI_X86_NATIVE, 2);
+	CHECK(OLD(FIXTURE_FWD_UNION), SYMBOL_X86, TELEMETRY_ARCH_X86, 2,
+	    EOPNOTSUPP, NULL, 0, 0);
+	CHECK(OLD(FIXTURE_FWD_STRUCT), SYMBOL_ARM64, TELEMETRY_ARCH_ARM64, 2, 0,
+	    "__arm64_sys_bpf", BPF_TELEMETRY_ABI_ARM64_WRAPPER, 1);
 	CHECK(btf_fixture(false, 1, FIXTURE_VALID), SYMBOL_X86, TELEMETRY_ARCH_X86, 2,
 	    EOPNOTSUPP, NULL, 0, 0);
 	CHECK(btf_fixture(false, -1, FIXTURE_VALID), SYMBOL_X86, TELEMETRY_ARCH_X86, 2,
