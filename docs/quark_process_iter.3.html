@@ -39,6 +39,12 @@
 <h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
 Initialize and iterate over the internal cache of processes, it can be used on
   boot up to get a list of all learned processes, or else.
+<p class="Pp" id="quark_process_iter_next">Before
+    <a class="permalink" href="#quark_process_iter_next"><code class="Fn">quark_process_iter_next</code></a>()
+    returns a process, it tries to link the process to matching container
+    metadata in the queue. This includes container metadata that was added after
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>
+    returned.</p>
 <section class="Sh">
 <h1 class="Sh" id="EXAMPLES"><a class="permalink" href="#EXAMPLES">EXAMPLES</a></h1>
 <div class="Bd Li">
@@ -75,7 +81,7 @@ while ((qp = quark_process_next(&amp;qi)) != NULL)
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">February 11, 2025</td>
+    <td class="foot-date">November 2, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
