@@ -34,6 +34,12 @@
 <h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
 <code class="Nm">quark_process_lookup</code> looks for the cached process
   referenced by <var class="Fa">pid</var>.
+<p class="Pp">Before it returns a process,
+    <code class="Nm">quark_process_lookup</code> tries to link the process to
+    matching container metadata in the queue. This includes container metadata
+    that was added after
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>
+    returned.</p>
 <p class="Pp">Quark's internal cache keeps processes that exited for a grace
     time, meaning you can still lookup them for a little while before they're
     garbage collected. At the time of this writing, this is hardcoded to 4
@@ -66,7 +72,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">December 1, 2024</td>
+    <td class="foot-date">November 2, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

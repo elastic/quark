@@ -258,3 +258,9 @@ Changes from 0.10 to 0.11
     process without a known container matches neither. Like event.scope,
     both fields are only supported by the ebpf backend, the kprobe and
     nova backends reject them with ENOTSUP.
+  o Quark now reports memfd_create events on affected Ubuntu kernels.
+  o The eBPF backend can now start with QQ_FILE when it uses the kprobe
+    fallback. Setting the QUARK_BPF_KPROBE environment variable makes the
+    backend skip fentry and attach with kprobes (quark-test -K also sets it).
+  o quark-mon now lists -E in its usage text and -L in the manual
+    synopsis. If you use -B with -t, the error now names -t.

@@ -75,11 +75,16 @@ For file-backed mappings,
 is the mount-namespace relative path of the backing file; it is
 .Dv NULL
 for anonymous mappings.
-Anonymous attempts are reported once per protection transition per process
-life, file-backed attempts once per protection transition per file per process
-life.
-It describes an attempt and does not assert that the protection change was
-committed.
+Anonymous attempts are reported once per protection transition per program
+image.
+File-backed attempts are reported once per protection transition per
+file per program image.
+A successful
+.Xr execve 2
+starts a new program image and resets this tracking, so the same process
+can report a transition again.
+The event describes an attempt and does not assert that the protection
+change was committed.
 .El
 .Pp
 It's important to note that
