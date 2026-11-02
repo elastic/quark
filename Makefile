@@ -158,6 +158,7 @@ LIBQUARK_SRCS:=			\
 	base64.c		\
 	bpf_queue.c		\
 	bpf_telemetry.c		\
+	bpf_telemetry_retprobe.c	\
 	btfhub.c		\
 	compat.c		\
 	ecs.c			\
@@ -519,7 +520,7 @@ quark-btf: quark-btf.c manpages.h $(LIBQUARK_TARGET)
 		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
 
 QUARK_TEST_SRCS= quark-test.c bpf-call-stack-test.c
-QUARK_TEST_SRCS+= bpf-telemetry-test.c
+QUARK_TEST_SRCS+= bpf-telemetry-test.c bpf-telemetry-retprobe-test.c
 QUARK_TEST_DEPS= quark-test.h elastic-ebpf/GPL/Events/BpfCallStack.h
 
 quark-test: $(QUARK_TEST_SRCS) $(QUARK_TEST_DEPS) manpages.h $(LIBQUARK_TARGET)
