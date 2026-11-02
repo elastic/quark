@@ -123,7 +123,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDeFGgHhkLMNnSsTtuv]\n",
+	fprintf(stderr, "usage: %s [-BbDEeFGgHhkLMNnSsTtuv]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
 	    "[-l maxlength] [-m maxnodes]\n", ' ');
@@ -346,7 +346,7 @@ main(int argc, char *argv[])
 		    lflag ||
 		    filter_ppid ||
 		    !do_snap)
-			errx(1, "bypass(B) cannot be used with options: CegklmPs");
+			errx(1, "bypass(B) cannot be used with options: CegklmPst");
 		qa.flags |= QQ_EBPF;
 	}
 

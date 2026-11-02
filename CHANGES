@@ -226,6 +226,12 @@ Changes from 0.9 to 0.10
 
 Changes from 0.10 to 0.11
 ~~~~~~~~~~~~~~~~~~~~~~~~~
+  o File events only aggregate when they share both inode and path. A
+    write to a file followed by a write to, or an unlink of, one of its
+    hard links from the same process used to merge into one event that
+    carried the link's path, so the operation on the original path was
+    never reported. The two are now separate events, each with its own
+    path.
   o An executable mprotect() transition now counts as reported only once
     its event is written to the ring buffer. A transition whose event was
     dropped because the ring buffer was full is reported on its next

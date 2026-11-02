@@ -797,18 +797,20 @@ static int
 open_tracing(int flags, const char *tail)
 {
 	int		 fd, head1_errno, head2_errno;
-	const char	*head1 = "/sys/kernel/debug/tracing";
-	const char	*head2 = "/sys/kernel/tracing";
+	const char	*head1 = "/sys/kernel/tracing";
+	const char	*head2 = "/sys/kernel/debug/tracing";
 	char		 path[MAXPATHLEN];
 
 	if (tail == NULL || tail[0] == '/')
 		return (errno = EINVAL, -1);
 
 	/*
-	 * NOTE: We don't use openat(2) + open(2) here deliberately, if you do
-	 * an dfd = open(/sysr/kernel/tracing, O_PATH) + openat(dfd, "kprobe_events"),
-	 * The kernel does _not_ automount tracefs, so we have to issue an open
-	 * with the full path. See https://github.com/elastic/quark/issues/179.
+	 * Open the full path on each access: an O_PATH open of the directory
+	 * does not trigger the debugfs tracing automount, so openat(2)
+	 * relative to it finds nothing.
+	 * See https://github.com/elastic/quark/issues/179.
+	 * tracefs_open() in bpf_telemetry_retprobe.c duplicates this lookup
+	 * with a held non-O_PATH descriptor; change both together.
 	 */
 
 	/* try head1 */
@@ -1465,7 +1467,7 @@ kprobe_queue_open(struct quark_queue *qq)
 	struct kprobe			*k;
 	struct kprobe_state		*ks;
 	struct epoll_event		 ev;
-	int				 i;
+	int				 i, saved_errno;
 	u64				 qid;
 	static u64			 qids;
 
@@ -1564,7 +1566,9 @@ kprobe_queue_open(struct quark_queue *qq)
 	return (0);
 
 fail:
+	saved_errno = errno;
 	kprobe_queue_close(qq);
+	errno = saved_errno;
 
 	return (-1);
 }
