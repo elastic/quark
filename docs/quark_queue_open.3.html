@@ -94,6 +94,15 @@
           are translated based on resume time and shift late by up to that
           suspend's duration. Only events in flight across the suspend are
           affected, hosts that never suspend are always exact.</dd>
+      <dt id="QQ_SYNTHETIC"><a class="permalink" href="#QQ_SYNTHETIC"><code class="Dv">QQ_SYNTHETIC</code></a></dt>
+      <dd>Use the probe-free synthetic backend intended for benchmarks and
+          tests. This backend and its public API are compiled only when
+          <code class="Ev">WITH_SYNTHETIC=1</code> is supplied to
+          <a class="Xr" href="make.1.html">make(1)</a>. It does not attach
+          probes, create transport buffers, decode events, or scrape
+          <span class="Pa">/proc</span> for existing processes. Events are
+          supplied synchronously with
+          <a class="Xr" href="quark_queue_inject.3.html">quark_queue_inject(3)</a>.</dd>
       <dt id="QQ_THREAD_EVENTS"><a class="permalink" href="#QQ_THREAD_EVENTS"><code class="Dv">QQ_THREAD_EVENTS</code></a></dt>
       <dd>Include per-thread events, instead of per-process events. This option
           will be removed in the future, but it may be useful for
@@ -138,6 +147,10 @@
         ordered by time. In case quark is overloaded, it will use a stepping
         function where <i class="Em">hold_time</i> decreases the more loaded it
         is.</p>
+    <p class="Pp">The minimum is 10 milliseconds for production backends. A
+        value of zero is additionally accepted for
+        <code class="Dv">QQ_SYNTHETIC</code> queues to permit deterministic
+        immediate draining.</p>
     <p class="Pp">Details are described in
         <a class="Xr" href="quark.7.html">quark(7)</a>.</p>
   </dd>
@@ -161,6 +174,7 @@
     <a class="Xr" href="quark_queue_get_epollfd.3.html">quark_queue_get_epollfd(3)</a>,
     <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
     <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>,
+    <a class="Xr" href="quark_queue_inject.3.html">quark_queue_inject(3)</a>,
     <a class="Xr" href="quark.7.html">quark(7)</a>,
     <a class="Xr" href="quark-btf.8.html">quark-btf(8)</a>,
     <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>,
@@ -169,7 +183,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">August 28, 2026</td>
+    <td class="foot-date">September 2, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

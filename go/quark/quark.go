@@ -373,6 +373,10 @@ type Stats struct {
 	GarbageCollections uint64
 	Stalls             uint64
 	Backend            int
+	// Length is the number of raw events held in the queue for aggregation
+	// (qq->length), compared against MaxLength to adapt the hold time.
+	Length    int
+	MaxLength int
 }
 
 const (
@@ -500,12 +504,14 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	var event Event
 
 	cev := C.quark_queue_get_event(queue.quarkQueue)
-	if cev == nil || cev.process == nil {
+	if cev == nil {
 		return event, false
 	}
 
 	event.Events = uint64(cev.events)
-	event.Process = processFromC(cev.process)
+	if cev.process != nil {
+		event.Process = processFromC(cev.process)
+	}
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)
 		event.Socket = &socket
@@ -714,6 +720,8 @@ func (queue *Queue) Stats() Stats {
 	stats.GarbageCollections = uint64(cStats.garbage_collections)
 	stats.Stalls = uint64(cStats.stalls)
 	stats.Backend = int(cStats.backend)
+	stats.Length = int(queue.quarkQueue.length)
+	stats.MaxLength = int(queue.quarkQueue.max_length)
 
 	return stats
 }
