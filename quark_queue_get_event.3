@@ -80,12 +80,11 @@ image.
 File-backed attempts are reported once per protection transition per
 file per program image.
 A successful
-.Fn execve
-starts a new program image and resets this tracking.
-The same process can report a transition again after
-.Fn execve .
-It describes an attempt and does not assert that the protection change was
-committed.
+.Xr execve 2
+starts a new program image and resets this tracking, so the same process
+can report a transition again.
+The event describes an attempt and does not assert that the protection
+change was committed.
 .El
 .Pp
 It's important to note that
