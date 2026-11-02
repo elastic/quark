@@ -43,7 +43,7 @@ DECL_FIELD_OFFSET(iov_iter, __iov);
 const volatile bool mprotect_enabled = false;
 
 /*
- * Executable mprotect transitions already reported for a process life, one
+ * Executable mprotect transitions already reported for a program image, one
  * entry per tgid. A transition id packs the previous protection (3 bits), the
  * read/write bits of the effective new protection (2 bits, execute is always
  * set by the time we get here) and whether the mapping is file backed (1 bit),
@@ -64,7 +64,7 @@ static u32 mprotect_transition_id(u64 prev_prot, u64 effective_prot, u64 file_ba
     return ((prev_prot & 0x7) << 3) | ((effective_prot & 0x3) << 1) | (file_backed & 0x1);
 }
 
-// Returns true if the transition was already reported for this process life.
+// Returns true if the transition was already reported for this program image.
 // Checking does not claim the bit: a failed event write must remain retryable.
 static bool mprotect_seen__test(u32 tgid, u32 id)
 {
@@ -155,7 +155,7 @@ static u64 mprotect_exec_id(const struct task_struct *task)
 }
 
 // Same contract as mprotect_seen__test(), per file. Returns true if the
-// transition was already reported for this file and process life. Otherwise
+// transition was already reported for this file and program image. Otherwise
 // fresh receives the value that records it, for mprotect_file_seen__set() to
 // store once the event is out.
 static bool mprotect_file_seen__test(const struct mprotect_file_key *key,
@@ -175,7 +175,7 @@ static bool mprotect_file_seen__test(const struct mprotect_file_key *key,
 
 // Same contract as mprotect_seen__set(), per file: records the bit prepared by
 // mprotect_file_seen__test() in place when the entry still belongs to this
-// process life, replacing a missing or stale one otherwise. Best effort with
+// program image, replacing a missing or stale one otherwise. Best effort with
 // the same plain read-test-write, and a lost race on a fresh or stale entry
 // overwrites it, so the failure mode is a duplicate event, never a lost one.
 static void mprotect_file_seen__set(const struct mprotect_file_key *key,
