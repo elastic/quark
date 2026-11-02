@@ -263,3 +263,5 @@ Changes from 0.10 to 0.11
   o Quark now reports memfd_create events on affected Ubuntu kernels.
   o The eBPF backend can now start with QQ_FILE when it uses the kprobe
     fallback.
+  o quark-mon now lists -E in its usage text and -L in the manual
+    synopsis. If you use -B with -t, the error now names -t.
