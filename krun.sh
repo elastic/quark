@@ -5,6 +5,8 @@ Script=${0##*/}
 function usage
 {
 	echo "usage: $Script initramfs_path kernel_path cmd_line" 1>&2
+	echo "KRUN_APPEND in the environment adds kernel parameters," 1>&2
+	echo "as in KRUN_APPEND=ipv6.disable=1" 1>&2
 	exit 1
 }
 
@@ -30,7 +32,7 @@ function qemu {
 			-initrd "$initramfs"					\
 			-kernel "$kernel"					\
 			-nographic						\
-			--append "console=ttyS0 quiet TERM=dumb $cmdline"	\
+			--append "console=ttyS0 quiet TERM=dumb ${KRUN_APPEND:-} $cmdline"	\
 			$kvm
 		;;
 	ARM64)
@@ -41,7 +43,7 @@ function qemu {
 			-initrd "$initramfs"					\
 			-kernel "$kernel"					\
 			-nographic						\
-			--append "console=ttyAMA0 quiet TERM=dumb $cmdline"
+			--append "console=ttyAMA0 quiet TERM=dumb ${KRUN_APPEND:-} $cmdline"
 		;;
 	*)
 		echo unknown kernel image arch 1>&2; exit 1;;

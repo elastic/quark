@@ -34,10 +34,14 @@ sudo apt-get -qq install -y --no-install-recommends	\
 # Make sure we can run things on KVM
 sudo kvm-ok
 
+# Extra kernel parameters for krun.sh, set by the pipeline step, as in
+# ipv6.disable=1. sudo resets the environment, so pass it explicitly.
+KRUN=(sudo env "KRUN_APPEND=${KRUN_APPEND:-}")
+
 case "$DISTRO" in
-fedora)		sudo ./krun-fedora.sh initramfs.gz "$DISTROVER" quark-test $@;;
-rhel)		sudo ./krun-rhel.sh initramfs.gz "$DISTROVER" quark-test $@;;
-ubuntu)		sudo ./krun-ubuntu.sh initramfs.gz "$DISTROVER" quark-test $@;;
-archlinux)	sudo ./krun-archlinux.sh initramfs.gz quark-test $@;;
+fedora)		"${KRUN[@]}" ./krun-fedora.sh initramfs.gz "$DISTROVER" quark-test $@;;
+rhel)		"${KRUN[@]}" ./krun-rhel.sh initramfs.gz "$DISTROVER" quark-test $@;;
+ubuntu)		"${KRUN[@]}" ./krun-ubuntu.sh initramfs.gz "$DISTROVER" quark-test $@;;
+archlinux)	"${KRUN[@]}" ./krun-archlinux.sh initramfs.gz quark-test $@;;
 *)		echo bad distribution "$DISTROVER" 1>&2;;
 esac

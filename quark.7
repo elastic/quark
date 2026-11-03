@@ -335,6 +335,16 @@ enabling targeted runs such as:
 .Bd -literal
 $ ./krun-fedora.sh initramfs.gz 41 quark-test -b t_fork_exec_exit
 .Ed
+Kernel parameters can be added through the
+.Ev KRUN_APPEND
+environment variable, which
+.Pa krun.sh
+and the wrappers append to the kernel command line.
+The CI uses it to run the suite with IPv6 disabled:
+.Bd -literal
+$ KRUN_APPEND=ipv6.disable=1 ./krun-ubuntu.sh initramfs.gz 24.04 quark-test
+.Ed
+.Pp
 These scripts require KVM access and therefore must be executed on a host
 kernel as root.
 They are unsuitable for container environments; the

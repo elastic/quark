@@ -303,10 +303,17 @@ The version number after &#x2018;initramfs.gz&#x2019; selects the Fedora, RHEL,
 <div class="Bd Pp Li">
 <pre>$ ./krun-fedora.sh initramfs.gz 41 quark-test -b t_fork_exec_exit</pre>
 </div>
-These scripts require KVM access and therefore must be executed on a host kernel
-  as root. They are unsuitable for container environments; the
-  <span class="Pa">docker</span> targets only build
-  <code class="Nm">quark</code> and do not attempt to run the test suite.
+Kernel parameters can be added through the <code class="Ev">KRUN_APPEND</code>
+  environment variable, which <span class="Pa">krun.sh</span> and the wrappers
+  append to the kernel command line. The CI uses it to run the suite with IPv6
+  disabled:
+<div class="Bd Pp Li">
+<pre>$ KRUN_APPEND=ipv6.disable=1 ./krun-ubuntu.sh initramfs.gz 24.04 quark-test</pre>
+</div>
+<p class="Pp">These scripts require KVM access and therefore must be executed on
+    a host kernel as root. They are unsuitable for container environments; the
+    <span class="Pa">docker</span> targets only build
+    <code class="Nm">quark</code> and do not attempt to run the test suite.</p>
 <p class="Pp"><i class="Em">make test-valgrind</i> runs the same suite under
     valgrind and is useful for catching memory errors, while <i class="Em">make
     test-kernel</i> cycles through a set of kernel images in kernel_images
@@ -463,7 +470,7 @@ main(void)
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 3, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

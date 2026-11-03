@@ -233,6 +233,12 @@ The version number after ‘initramfs.gz’ selects the Fedora, RHEL, or Ubuntu 
 $ ./krun-fedora.sh initramfs.gz 41 quark-test -b t_fork_exec_exit
 ```
 
+Kernel parameters can be added through the `KRUN_APPEND` environment variable, which krun.sh and the wrappers append to the kernel command line. The CI uses it to run the suite with IPv6 disabled:
+
+```
+$ KRUN_APPEND=ipv6.disable=1 ./krun-ubuntu.sh initramfs.gz 24.04 quark-test
+```
+
 These scripts require KVM access and therefore must be executed on a host kernel as root. They are unsuitable for container environments; the docker targets only build quark and do not attempt to run the test suite.
 
 *make test-valgrind* runs the same suite under valgrind and is useful for catching memory errors, while *make test-kernel* cycles through a set of kernel images in kernel\_images folder to ensure probe compatibility.
