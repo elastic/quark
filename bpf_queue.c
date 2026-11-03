@@ -1447,9 +1447,15 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.sendmsg4, 1);
 		bpf_program__set_autoload(p->progs.connect4, 1);
 		bpf_program__set_autoload(p->progs.recvmsg4, 1);
-		bpf_program__set_autoload(p->progs.sendmsg6, 1);
-		bpf_program__set_autoload(p->progs.connect6, 1);
-		bpf_program__set_autoload(p->progs.recvmsg6, 1);
+		/*
+		 * The AF_INET6 sockaddr hooks would attach fine without IPv6,
+		 * they just never run, skip them like the tcp_v6 probes above.
+		 */
+		if (ipv6_supported()) {
+			bpf_program__set_autoload(p->progs.sendmsg6, 1);
+			bpf_program__set_autoload(p->progs.connect6, 1);
+			bpf_program__set_autoload(p->progs.recvmsg6, 1);
+		}
 	}
 
 	if (qq->flags & QQ_SHM) {
@@ -1588,6 +1594,9 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		for (i = 0; i < p->skeleton->prog_cnt; i++) {
 			ps = &p->skeleton->progs[i];
 
+			/* not every cgroup program is loaded, see sendmsg6 */
+			if (!bpf_program__autoload(*ps->prog))
+				continue;
 			switch (bpf_program__get_type(*ps->prog)) {
 			case BPF_PROG_TYPE_CGROUP_DEVICE:	/* FALLTHROUGH */
 			case BPF_PROG_TYPE_CGROUP_SKB:		/* FALLTHROUGH */
