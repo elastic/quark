@@ -267,8 +267,8 @@ Changes from 0.10 to 0.11
   o DNS events now cover IPv6. The packet in quark_packet{} starts at
     the IPv4 or IPv6 header as it was on the wire, extension headers
     included, regardless of the socket family: an IPv4 datagram on a
-    dual-stack AF_INET6 socket was previously dropped on ingress and is
-    now reported. Consumers that assumed an IPv4 header at data[0] must
+    dual-stack AF_INET6 socket was previously dropped and is now
+    reported. Consumers that assumed an IPv4 header at data[0] must
     check the version nibble.
   o UDP sockets that predate quark are attributed on first use through
     the sendmsg, recvmsg and connect hooks, now for AF_INET6 as well.
@@ -279,5 +279,5 @@ Changes from 0.10 to 0.11
     so its DNS traffic stays unattributed in both directions. A UDP
     socket created after quark starts is learned on creation, so its
     traffic is captured however it is used; only the attribution can
-    lag: after fork(2) or SCM_RIGHTS passing it stays with the creating process
-    until the new owner makes one of the calls above.
+    lag: after fork(2) or SCM_RIGHTS passing it stays with the creating
+    process until the new owner makes one of the calls above.
