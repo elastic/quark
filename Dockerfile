@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y		\
 	bpftool                                         \
 	clang						\
 	cpio						\
+	e2fsprogs					\
 	gcc						\
 	golang						\
 	gcc-aarch64-linux-gnu				\

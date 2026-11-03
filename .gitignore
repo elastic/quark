@@ -38,3 +38,5 @@ zlib/Makefile
 zlib/zconf.h
 zlib/configure.log
 zlib/libz.a
+
+/quark-test.ext4

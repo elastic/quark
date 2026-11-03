@@ -35,6 +35,10 @@ The options are as follows:
 .It Fl 1
 Don't run tests in a child process, useful for debugging with gdb, strace and
 whatnot.
+Filesystem tests can change the runner's mount namespace.
+Later tests use that namespace.
+This also applies if filesystem setup fails after the namespace change and
+the run continues.
 .It Fl b
 Run only EBPF tests.
 .It Fl h
@@ -67,6 +71,24 @@ Print version and exit.
 Exclude
 .Ar test
 from the run, can be specified multiple times.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev QUARK_TEST_FS_IMAGE
+Path to an ext4 test image, made by
+.Dq make quark-test.ext4 .
+The default is
+.Pa quark-test.ext4
+in the current directory, or
+.Pa /quark-test.ext4
+in the kernel test guest.
+Each use opens the image read-only and copies it to a temporary file.
+The tests mount the copy through a loop device in a private mount namespace.
+Changes to the copy do not change the source image.
+.It Ev QUARK_TEST_FS_REQUIRED
+If set, failure to set up the test filesystem is an error.
+Otherwise, tests that require it print an explicit skip message.
+Set this variable for kernel runs which must exercise inode reuse.
 .El
 .Sh EXIT STATUS
 .Nm
