@@ -375,6 +375,12 @@ enum quark_packet_origin {
 	QUARK_PACKET_ORIGIN_DNS,
 };
 
+/*
+ * data holds the first cap_len bytes of the datagram, starting at the IPv4 or
+ * IPv6 header as it was on the wire, which for a dual-stack socket may not
+ * match the socket family. An IPv6 header may be followed by extension
+ * headers before UDP.
+ */
 struct quark_packet {
 	enum quark_packet_direction	direction;
 	enum quark_packet_origin	origin;
