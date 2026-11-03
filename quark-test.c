@@ -720,11 +720,14 @@ assert_localhost(void)
 }
 
 /*
- * Fill ss with the loopback address of af, or the wildcard if any is set, on
- * port (network byte order). Returns the sockaddr length.
+ * Fill ss with the loopback address of af on port (network byte order).
+ * With mapped set, AF_INET6 yields the IPv4 loopback as a v4-mapped address
+ * (::ffff:127.0.0.1), the way a dual-stack socket names an IPv4 peer or
+ * binds to an IPv4 address; it is ignored for AF_INET. Returns the sockaddr
+ * length.
  */
 static socklen_t
-sockaddr_local(int af, u16 port, int any, struct sockaddr_storage *ss)
+sockaddr_local(int af, u16 port, int mapped, struct sockaddr_storage *ss)
 {
 	bzero(ss, sizeof(*ss));
 
@@ -734,7 +737,7 @@ sockaddr_local(int af, u16 port, int any, struct sockaddr_storage *ss)
 
 		sin->sin_family = AF_INET;
 		sin->sin_port = port;
-		sin->sin_addr.s_addr = htonl(any ? INADDR_ANY : INADDR_LOOPBACK);
+		sin->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
 		return (sizeof(*sin));
 	}
@@ -743,7 +746,12 @@ sockaddr_local(int af, u16 port, int any, struct sockaddr_storage *ss)
 
 		sin6->sin6_family = AF_INET6;
 		sin6->sin6_port = port;
-		sin6->sin6_addr = any ? in6addr_any : in6addr_loopback;
+		if (mapped) {
+			if (inet_pton(AF_INET6, "::ffff:127.0.0.1",
+			    &sin6->sin6_addr) != 1)
+				errx(1, "inet_pton");
+		} else
+			sin6->sin6_addr = in6addr_loopback;
 
 		return (sizeof(*sin6));
 	}
@@ -791,20 +799,23 @@ have_ipv6(void)
 }
 
 /*
- * Listen on the loopback of af, or on the wildcard when any is set, which for
- * AF_INET6 also makes it a dual-stack socket that accepts IPv4.
+ * Listen on the loopback of af. With mapped set, an AF_INET6 socket is made
+ * dual-stack and bound to the v4-mapped IPv4 loopback, so it receives IPv4
+ * datagrams sent to 127.0.0.1. We bind a specific address rather than the
+ * wildcard, as a wildcard UDP bind conflicts with any other socket on the
+ * port, like a local resolver on 127.0.0.53:53.
  */
 static int
-local_listen(int af, u16 port, int type, int any)
+local_listen(int af, u16 port, int type, int mapped)
 {
 	struct sockaddr_storage	ss;
 	socklen_t		sslen;
 	int			fd;
 
-	sslen = sockaddr_local(af, ntohs(port), any, &ss);
+	sslen = sockaddr_local(af, ntohs(port), mapped, &ss);
 	if ((fd = socket(af, type, 0)) == -1)
 		err(1, "socket");
-	if (af == AF_INET6 && any) {
+	if (af == AF_INET6 && mapped) {
 		int	zero = 0;
 
 		if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero,
@@ -843,9 +854,9 @@ local_connect(int af, u16 port, int type, u16 *bound_port)
 
 /*
  * Fork a child that listens with a listen_af socket, connects to it with a
- * connect_af socket and writes PATTERN over it. When the families differ the
- * listener is a dual-stack wildcard socket, the only way to get IPv4
- * datagrams onto an AF_INET6 socket.
+ * connect_af socket and writes PATTERN over it. An AF_INET6 listener with an
+ * AF_INET sender is a dual-stack socket bound to the v4-mapped loopback, which
+ * gets IPv4 datagrams onto an AF_INET6 socket.
  */
 static pid_t
 fork_sock_write_af(int listen_af, int connect_af, u16 port, int type,
@@ -869,7 +880,7 @@ fork_sock_write_af(int listen_af, int connect_af, u16 port, int type,
 		err(1, "fork");
 	} else if (child == 0) { /* child */
 		listen_fd = local_listen(listen_af, port, type,
-		    listen_af != connect_af);
+		    listen_af == AF_INET6 && connect_af == AF_INET);
 		conn_fd = local_connect(connect_af, port, type, bound_port);
 		n = qwrite(conn_fd, PATTERN, strlen(PATTERN));
 		if (n == -1)
