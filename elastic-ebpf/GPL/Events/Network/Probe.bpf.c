@@ -305,7 +305,7 @@ int BPF_KPROBE(kprobe__tcp_close, struct sock *sk, long timeout)
 /* linux/ipv6.h, the extension headers that may precede UDP.
  * IPv6 extension headers are optional packet headers that a
  * sender can add between the fixed IPv6 base header (40 bytes)
- * and the parent protocol header (e.g. TCP, UDP).
+ * and the upper-layer header (e.g. TCP, UDP).
  */
 #define NEXTHDR_HOP     0
 #define NEXTHDR_UDP     17
@@ -427,15 +427,24 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
         cap_len = MAX_DNS_PACKET;
 
     /*
+     * The minimum below is sized for IPv4, an IPv6 datagram needs 20 more
+     * bytes before it can hold a DNS header. Kept as its own constant
+     * comparison, see the verifier notes that follow.
+     */
+    if (skb->protocol == bpf_htons(ETH_P_IPV6) &&
+        cap_len < (sizeof(struct ipv6hdr) + sizeof(udp) + 12))
+        goto ignore;
+
+    /*
      * Yes this code is weird, but it convinces old verifiers (5.10), don't
      * blame me, be sure to test 5.10 if you change it.  The minimal packet
      * should be iphlen + udphlen + 12(dns header size). Old verifiers
      * (5.10) are very sensitive here and a non constant right expression
      * (since iphlen is not constant due to options) fails. Do what we can
      * and filter the remaining bad packets in userland, same applies to
-     * ipv6. Also be careful with `if cap_len > 0`, as clang will compile it
-     * to a JNZ, which doesn't adjust umin, causing the
-     * bpf_skb_load_bytes() down below to think cap_len can be zero.
+     * ipv6 extension headers. Also be careful with `if cap_len > 0`, as
+     * clang will compile it to a JNZ, which doesn't adjust umin, causing
+     * the bpf_skb_load_bytes() down below to think cap_len can be zero.
      */
     if (cap_len >= (sizeof(struct iphdr) + sizeof(udp) + 12)) {
         event = &ctx->event;
