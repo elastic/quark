@@ -3115,14 +3115,16 @@ t_dns_v4_from_v6(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
- * Child side of t_dns_existing_af(): an unconnected sender and a listener on
- * port 53 of af. Both are created before the parent opens the queue: the
- * child reports them over ready_fd and the parent answers over go_fd once
- * the probes are attached. Then two datagrams to the listener, each received,
- * the sender's port reported over port_fd after the first.
+ * Child side of t_dns_existing_af(): a sender and a listener on port 53 of
+ * af. Both are created before the parent opens the queue: the child reports
+ * them over ready_fd and the parent answers over go_fd once the probes are
+ * attached. Then two datagrams to the listener, each received, the sender's
+ * port reported over port_fd after the first. With connected set the sender
+ * is connected after the probes attach and uses send() instead of sendto().
  */
 static void
-dns_existing_child(int af, int ready_fd, int go_fd, int port_fd)
+dns_existing_child(int af, int connected, int ready_fd, int go_fd,
+    int port_fd)
 {
 	struct sockaddr_storage	dst, ss;
 	socklen_t		dstlen, sslen;
@@ -3142,13 +3144,25 @@ dns_existing_child(int af, int ready_fd, int go_fd, int port_fd)
 	if (qread(go_fd, &c, sizeof(c)) != sizeof(c))
 		err(1, "qread go");
 
+	/*
+	 * The connect hook is the only one that can learn a connected
+	 * sender: the kernel runs the sendmsg hook on unconnected sends only,
+	 * send() on a connected socket never reaches it.
+	 */
+	if (connected &&
+	    connect(send_fd, (struct sockaddr *)&dst, dstlen) == -1)
+		err(1, "connect");
+
 	for (i = 0; i < 2; i++) {
-		n = sendto(send_fd, PATTERN, strlen(PATTERN), 0,
-		    (struct sockaddr *)&dst, dstlen);
+		if (connected)
+			n = send(send_fd, PATTERN, strlen(PATTERN), 0);
+		else
+			n = sendto(send_fd, PATTERN, strlen(PATTERN), 0,
+			    (struct sockaddr *)&dst, dstlen);
 		if (n != (ssize_t)strlen(PATTERN))
-			err(1, "sendto");
+			err(1, "send");
 		if (i == 0) {
-			/* the first sendto bound the socket */
+			/* the first send, or the connect, bound the socket */
 			sslen = sizeof(ss);
 			if (getsockname(send_fd, (struct sockaddr *)&ss,
 			    &sslen) == -1)
@@ -3177,16 +3191,20 @@ dns_existing_child(int af, int ready_fd, int go_fd, int port_fd)
 
 /*
  * Sockets that exist before quark starts are unknown to the probe, the
- * sendmsg/recvmsg/connect hooks learn them on first use. The child creates an
- * unconnected sender and a listener before the queue is opened, then:
+ * sendmsg/recvmsg/connect hooks learn them on first use. The child creates a
+ * sender and a listener before the queue is opened, then:
  * 1. sends: sendmsg learns the sender, egress is captured. The listener is
  *    still unknown, so this datagram's ingress is lost.
  * 2. receives with recvfrom: recvmsg learns the listener, see
  *    dns_existing_child() for why it must be recvfrom.
  * 3. sends again: egress and ingress are both captured.
+ * With connected set the child connects the sender before step 1 and sends
+ * with send(), so it is connect that learns the sender, see
+ * dns_existing_child().
  */
 static int
-t_dns_existing_af(const struct test *t, struct quark_queue_attr *qa, int af)
+t_dns_existing_af(const struct test *t, struct quark_queue_attr *qa, int af,
+    int connected)
 {
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
@@ -3212,7 +3230,7 @@ t_dns_existing_af(const struct test *t, struct quark_queue_attr *qa, int af)
 		close(ready[0]);
 		close(go[1]);
 		close(port[0]);
-		dns_existing_child(af, ready[1], go[0], port[1]);
+		dns_existing_child(af, connected, ready[1], go[0], port[1]);
 		exit(0);
 	}
 
@@ -3265,13 +3283,25 @@ t_dns_existing_af(const struct test *t, struct quark_queue_attr *qa, int af)
 static int
 t_dns_existing(const struct test *t, struct quark_queue_attr *qa)
 {
-	return (t_dns_existing_af(t, qa, AF_INET));
+	return (t_dns_existing_af(t, qa, AF_INET, 0));
 }
 
 static int
 t_dns6_existing(const struct test *t, struct quark_queue_attr *qa)
 {
-	return (t_dns_existing_af(t, qa, AF_INET6));
+	return (t_dns_existing_af(t, qa, AF_INET6, 0));
+}
+
+static int
+t_dns_existing_connect(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_existing_af(t, qa, AF_INET, 1));
+}
+
+static int
+t_dns6_existing_connect(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_existing_af(t, qa, AF_INET6, 1));
 }
 
 static int
@@ -5742,6 +5772,8 @@ struct test all_tests[] = {
 	T_EBPF(t_dns_v4_from_v6),
 	T_EBPF(t_dns_existing),
 	T_EBPF(t_dns6_existing),
+	T_EBPF(t_dns_existing_connect),
+	T_EBPF(t_dns6_existing_connect),
 	T_EBPF(t_cgroup_parse),
 	T(t_process_container_cache),
 	T(t_link_container_data),
