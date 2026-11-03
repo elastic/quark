@@ -613,8 +613,6 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 					old_path_len = tmp_len + 1; /* with NUL */
 				}
 				break;
-			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH: /* ignored */
-				break;
 			default:
 				qwarnx("unhandled field type %d", field->type);
 				goto bad;
