@@ -264,3 +264,23 @@ Changes from 0.10 to 0.11
     backend skip fentry and attach with kprobes (quark-test -K also sets it).
   o quark-mon now lists -E in its usage text and -L in the manual
     synopsis. If you use -B with -t, the error now names -t.
+
+Changes from 0.11 to 0.12
+~~~~~~~~~~~~~~~~~~~~~~~~~
+  o DNS events now cover IPv6. The packet in quark_packet{} starts at
+    the IPv4 or IPv6 header as it was on the wire, extension headers
+    included, regardless of the socket family: an IPv4 datagram on a
+    dual-stack AF_INET6 socket was previously dropped and is now
+    reported. Consumers that assumed an IPv4 header at data[0] must
+    check the version nibble.
+  o UDP sockets that predate quark are attributed on first use through
+    the sendmsg, recvmsg and connect hooks, now for AF_INET6 as well.
+    These hooks only run when the call carries an address: sendto(2)
+    with a destination, recvfrom(2) asking for the peer, or connect(2)
+    itself. A socket that was connected before quark started and is
+    used through send(2)/recv(2) or read(2)/write(2) never runs them,
+    so its DNS traffic stays unattributed in both directions. A UDP
+    socket created after quark starts is learned on creation, so its
+    traffic is captured however it is used; only the attribution can
+    lag: after fork(2) or SCM_RIGHTS passing it stays with the creating
+    process until the new owner makes one of the calls above.

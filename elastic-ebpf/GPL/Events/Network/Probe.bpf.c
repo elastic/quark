@@ -298,42 +298,88 @@ int BPF_KPROBE(kprobe__tcp_close, struct sock *sk, long timeout)
     return r;
 }
 
-#ifdef notyet
-/*
- * XXX naive, only handles ROUTING and DEST, untested, ipv6 needs more work to
- * be enabled.
+/* linux/if_ether.h */
+#define ETH_P_IP   0x0800
+#define ETH_P_IPV6 0x86DD
+
+/* linux/ipv6.h, the extension headers that may precede UDP.
+ * IPv6 extension headers are optional packet headers that a
+ * sender can add between the fixed IPv6 base header (40 bytes)
+ * and the upper-layer header (e.g. TCP, UDP).
  */
-static int skb_peel_nexthdr(struct __sk_buff *skb, u8 wanted)
+#define NEXTHDR_HOP     0
+#define NEXTHDR_UDP     17
+#define NEXTHDR_ROUTING 43
+#define NEXTHDR_DEST    60
+
+/*
+ * RFC 8200 recommends Hop-by-Hop, Destination Options, Routing and a second
+ * Destination Options, in that order, each at most once.
+ */
+#define MAX_IPV6_EXTHDRS 4
+
+/*
+ * Walk the IPv6 extension header chain and return the offset of the UDP
+ * header or -1 if the datagram isn't UDP / has a header we don't follow.
+ *
+ * Only Hop-by-Hop, Routing and Destination Options are followed. Real
+ * fragments are reassembled before ingress, which removes the Fragment
+ * header, and egress runs before fragmentation. An atomic fragment
+ * (deprecated in RFC 8021, Linux no longer sends them) keeps its
+ * Fragment header through delivery and is not captured.
+ */
+static int skb_ipv6_udp_offset(struct __sk_buff *skb)
 {
-    struct ipv6hdr ip6;
-    int off;
-    u16 next;
+    struct {
+        u8 nexthdr;
+        u8 hdrlen;
+    } ext;
+    u8 next;
+    u32 off;
+    int i;
 
-    off = 0;
-    if (bpf_skb_load_bytes(skb, off, &ip6, sizeof(ip6)))
+    if (bpf_skb_load_bytes(skb, offsetof(struct ipv6hdr, nexthdr), &next,
+        sizeof(next)))
         return (-1);
-    off += sizeof(ip6);
-    next = ip6.nexthdr;
+    off = sizeof(struct ipv6hdr);
 
-    for (;;) {
-        if (next == wanted)
+#pragma unroll
+    for (i = 0; i < MAX_IPV6_EXTHDRS; i++) {
+        if (next == NEXTHDR_UDP)
             return (off);
-        switch (next) {
-        case NEXTHDR_ROUTING: /* FALLTHROUGH */
-        case NEXTHDR_DEST:
-            if (bpf_skb_load_bytes(skb, off, &next, sizeof(next)))
-                return (-1);
-            off += ((next >> 8) + 1) * 8;
-            next = next & 0xff;
-            continue;
-        default:
+        if (next != NEXTHDR_HOP && next != NEXTHDR_ROUTING &&
+            next != NEXTHDR_DEST)
             return (-1);
-        }
+        if (bpf_skb_load_bytes(skb, off, &ext, sizeof(ext)))
+            return (-1);
+        next = ext.nexthdr;
+        /* hdrlen is in 8 octet units, not counting the first 8 */
+        off += ((u32)ext.hdrlen + 1) << 3;
     }
 
-    return (-1); /* NOTREACHED */
+    return (next == NEXTHDR_UDP ? (int)off : -1);
 }
-#endif
+
+/*
+ * Find the UDP header of the datagram.
+ * Returns the offset of the UDP header, -1 if this isn't UDP.
+ */
+static int skb_udp_offset(struct __sk_buff *skb)
+{
+    if (skb->protocol == bpf_htons(ETH_P_IP)) {
+        struct iphdr ip;
+
+        if (bpf_skb_load_bytes(skb, 0, &ip, sizeof(ip)))
+            return (-1);
+        if (ip.protocol != IPPROTO_UDP)
+            return (-1);
+
+        return (ip.ihl << 2);
+    } else if (skb->protocol == bpf_htons(ETH_P_IPV6))
+        return (skb_ipv6_udp_offset(skb));
+
+    return (-1);
+}
 
 /*
  * See cgroub_skb/egress, pretty please.
@@ -344,6 +390,7 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
     struct udphdr udp;
     struct bpf_sock *sk;
     u32 *tgid, cap_len;
+    int l4off;
     struct ebpf_dns_event *event;
 
     if (skb->family != AF_INET && skb->family != AF_INET6)
@@ -355,31 +402,10 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
     if (sk->protocol != IPPROTO_UDP)
         goto ignore;
 
-    if (sk->family == AF_INET) {
-        struct iphdr ip;
-
-        if (bpf_skb_load_bytes(skb, 0, &ip, sizeof(ip)))
-            goto ignore;
-        if (ip.protocol != IPPROTO_UDP)
-            goto ignore;
-        if (bpf_skb_load_bytes(skb, ip.ihl << 2, &udp, sizeof(udp)))
-            goto ignore;
-    } else {
+    if ((l4off = skb_udp_offset(skb)) < 0)
         goto ignore;
-    }
-#ifdef notyet /* ipv6 needs further work */
-    else if (sk->family == AF_INET6)
-    {
-        int t_off;
-
-        t_off = skb_peel_nexthdr(skb, NEXTHDR_UDP);
-        if (t_off == -1)
-            goto ignore;
-
-        if (bpf_skb_load_bytes(skb, t_off, &udp, sizeof(udp)))
-            goto ignore;
-    }
-#endif
+    if (bpf_skb_load_bytes(skb, l4off, &udp, sizeof(udp)))
+        goto ignore;
 
     if (bpf_ntohs(udp.dest) != 53 && bpf_ntohs(udp.source) != 53)
         goto ignore;
@@ -402,15 +428,24 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
         cap_len = MAX_DNS_PACKET;
 
     /*
+     * The minimum below is sized for IPv4, an IPv6 datagram needs 20 more
+     * bytes before it can hold a DNS header. Kept as its own constant
+     * comparison, see the verifier notes that follow.
+     */
+    if (skb->protocol == bpf_htons(ETH_P_IPV6) &&
+        cap_len < (sizeof(struct ipv6hdr) + sizeof(udp) + 12))
+        goto ignore;
+
+    /*
      * Yes this code is weird, but it convinces old verifiers (5.10), don't
      * blame me, be sure to test 5.10 if you change it.  The minimal packet
      * should be iphlen + udphlen + 12(dns header size). Old verifiers
      * (5.10) are very sensitive here and a non constant right expression
      * (since iphlen is not constant due to options) fails. Do what we can
      * and filter the remaining bad packets in userland, same applies to
-     * ipv6. Also be careful with `if cap_len > 0`, as clang will compile it
-     * to a JNZ, which doesn't adjust umin, causing the
-     * bpf_skb_load_bytes() down below to think cap_len can be zero.
+     * ipv6 extension headers. Also be careful with `if cap_len > 0`, as
+     * clang will compile it to a JNZ, which doesn't adjust umin, causing
+     * the bpf_skb_load_bytes() down below to think cap_len can be zero.
      */
     if (cap_len >= (sizeof(struct iphdr) + sizeof(udp) + 12)) {
         event = &ctx->event;
@@ -514,8 +549,7 @@ static int sk_maybe_save_tgid(struct bpf_sock *sk)
  * We save tgid again in send/recv/connect as the file descriptor might have
  * been passed to another process.
  */
-SEC("cgroup/sendmsg4")
-int sendmsg4(struct bpf_sock_addr *sa)
+static int sockaddr_hook(struct bpf_sock_addr *sa)
 {
     int r;
 
@@ -524,30 +558,42 @@ int sendmsg4(struct bpf_sock_addr *sa)
     preempt_enable();
 
     return r;
+}
+
+SEC("cgroup/sendmsg4")
+int sendmsg4(struct bpf_sock_addr *sa)
+{
+    return sockaddr_hook(sa);
 }
 
 SEC("cgroup/recvmsg4")
 int recvmsg4(struct bpf_sock_addr *sa)
 {
-    int r;
-
-    preempt_disable();
-    r = sk_maybe_save_tgid(sa->sk);
-    preempt_enable();
-
-    return r;
+    return sockaddr_hook(sa);
 }
 
 SEC("cgroup/connect4")
 int connect4(struct bpf_sock_addr *sa)
 {
-    int r;
+    return sockaddr_hook(sa);
+}
 
-    preempt_disable();
-    r = sk_maybe_save_tgid(sa->sk);
-    preempt_enable();
+SEC("cgroup/sendmsg6")
+int sendmsg6(struct bpf_sock_addr *sa)
+{
+    return sockaddr_hook(sa);
+}
 
-    return r;
+SEC("cgroup/recvmsg6")
+int recvmsg6(struct bpf_sock_addr *sa)
+{
+    return sockaddr_hook(sa);
+}
+
+SEC("cgroup/connect6")
+int connect6(struct bpf_sock_addr *sa)
+{
+    return sockaddr_hook(sa);
 }
 
 SEC("cgroup/sock_create")

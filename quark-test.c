@@ -23,6 +23,7 @@
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <netinet/ip6.h>
 #include <netinet/tcp.h>
 
 #include <arpa/inet.h>
@@ -718,20 +719,110 @@ assert_localhost(void)
 	freeifaddrs(ifa);
 }
 
-static int
-local_listen(u16 port, int type)
+/*
+ * Fill ss with the loopback address of af on port (network byte order).
+ * With mapped set, AF_INET6 yields the IPv4 loopback as a v4-mapped address
+ * (::ffff:127.0.0.1), the way a dual-stack socket names an IPv4 peer or
+ * binds to an IPv4 address; it is ignored for AF_INET. Returns the sockaddr
+ * length.
+ */
+static socklen_t
+sockaddr_local(int af, u16 port, int mapped, struct sockaddr_storage *ss)
 {
-	struct sockaddr_in	sin;
+	bzero(ss, sizeof(*ss));
+
+	switch (af) {
+	case AF_INET: {
+		struct sockaddr_in	*sin = (struct sockaddr_in *)ss;
+
+		sin->sin_family = AF_INET;
+		sin->sin_port = port;
+		sin->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+		return (sizeof(*sin));
+	}
+	case AF_INET6: {
+		struct sockaddr_in6	*sin6 = (struct sockaddr_in6 *)ss;
+
+		sin6->sin6_family = AF_INET6;
+		sin6->sin6_port = port;
+		if (mapped) {
+			if (inet_pton(AF_INET6, "::ffff:127.0.0.1",
+			    &sin6->sin6_addr) != 1)
+				errx(1, "inet_pton");
+		} else
+			sin6->sin6_addr = in6addr_loopback;
+
+		return (sizeof(*sin6));
+	}
+	default:
+		errx(1, "bad address family %d", af);
+	}
+}
+
+static u16
+sockaddr_port(struct sockaddr_storage *ss)
+{
+	switch (ss->ss_family) {
+	case AF_INET:
+		return (((struct sockaddr_in *)ss)->sin_port);
+	case AF_INET6:
+		return (((struct sockaddr_in6 *)ss)->sin6_port);
+	default:
+		errx(1, "bad address family %d", ss->ss_family);
+	}
+}
+
+/*
+ * Whether the kernel has IPv6 and ::1 on loopback, tests that need it skip
+ * otherwise instead of failing.
+ */
+static int
+have_ipv6(void)
+{
+	struct sockaddr_storage	ss;
+	socklen_t		sslen;
+	int			fd, r;
+
+	if ((fd = socket(AF_INET6, SOCK_DGRAM, 0)) == -1) {
+		if (errno == EAFNOSUPPORT)
+			return (0);
+		err(1, "socket");
+	}
+	sslen = sockaddr_local(AF_INET6, 0, 0, &ss);
+	r = bind(fd, (struct sockaddr *)&ss, sslen);
+	if (r == -1 && errno != EADDRNOTAVAIL)
+		err(1, "bind");
+	close(fd);
+
+	return (r == 0);
+}
+
+/*
+ * Listen on the loopback of af. With mapped set, an AF_INET6 socket is made
+ * dual-stack and bound to the v4-mapped IPv4 loopback, so it receives IPv4
+ * datagrams sent to 127.0.0.1. We bind a specific address rather than the
+ * wildcard, as a wildcard UDP bind conflicts with any other socket on the
+ * port, like a local resolver on 127.0.0.53:53.
+ */
+static int
+local_listen(int af, u16 port, int type, int mapped)
+{
+	struct sockaddr_storage	ss;
+	socklen_t		sslen;
 	int			fd;
 
-	bzero(&sin, sizeof(sin));
-	sin.sin_family = AF_INET;
-	sin.sin_port = ntohs(port);
-	if (inet_aton("127.0.0.1", &sin.sin_addr) != 1)
-		errx(1, "inet_aton");
-	if ((fd = socket(sin.sin_family, type, 0)) == -1)
+	sslen = sockaddr_local(af, ntohs(port), mapped, &ss);
+	if ((fd = socket(af, type, 0)) == -1)
 		err(1, "socket");
-	if (bind(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
+	if (af == AF_INET6 && mapped) {
+		int	zero = 0;
+
+		if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero,
+		    sizeof(zero)) == -1)
+			err(1, "setsockopt IPV6_V6ONLY");
+	}
+	if (bind(fd, (struct sockaddr *)&ss, sslen) == -1)
 		err(1, "bind");
 	if (type == SOCK_STREAM && listen(fd, 32) == -1)
 		err(1, "listen");
@@ -739,35 +830,75 @@ local_listen(u16 port, int type)
 	return (fd);
 }
 
+/*
+ * A 16 byte IPv6 extension header for IPV6_HOPOPTS and IPV6_DSTOPTS. The
+ * kernel fills in nexthdr; hdrlen is in 8 octet units not counting the first
+ * 8, so this is two units, which makes the probe honor hdrlen instead of
+ * assuming the minimum. Receivers reject more than 7 octets of PadN, so the
+ * body is one RFC 4727 experimental option (type 0x1e) whose action bits
+ * (00) tell the receiver to skip it.
+ */
+#define IP6OPT_EXP_1E	0x1e
+static const u8 dns_exthdr[16] = {
+	0, 1, IP6OPT_EXP_1E, 12,	/* nexthdr, hdrlen, type, len */
+};
+
+/*
+ * Connect to the loopback of af on port. With mapped set, an AF_INET6 socket
+ * is made dual-stack and connects to the v4-mapped IPv4 loopback, so it sends
+ * IPv4 datagrams. With exthdrs set, which needs AF_INET6, every datagram
+ * carries a Hop-by-Hop and a Destination Options header ahead of UDP.
+ */
 static int
-local_connect(u16 port, int type, u16 *bound_port)
+local_connect(int af, u16 port, int type, int mapped, int exthdrs,
+    u16 *bound_port)
 {
-	struct sockaddr_in	sin;
+	struct sockaddr_storage	ss;
+	socklen_t		sslen;
 	int			fd;
 
-	bzero(&sin, sizeof(sin));
-	sin.sin_family = AF_INET;
-	sin.sin_port = ntohs(port);
-	if (inet_aton("127.0.0.1", &sin.sin_addr) != 1)
-		errx(1, "inet_aton");
-	if ((fd = socket(sin.sin_family, type, 0)) == -1)
+	sslen = sockaddr_local(af, ntohs(port), mapped, &ss);
+	if ((fd = socket(af, type, 0)) == -1)
 		err(1, "socket");
-	if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
+	if (af == AF_INET6 && mapped) {
+		int	zero = 0;
+
+		if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero,
+		    sizeof(zero)) == -1)
+			err(1, "setsockopt IPV6_V6ONLY");
+	}
+	if (exthdrs) {
+		assert(af == AF_INET6);
+		if (setsockopt(fd, IPPROTO_IPV6, IPV6_HOPOPTS, dns_exthdr,
+		    sizeof(dns_exthdr)) == -1)
+			err(1, "setsockopt IPV6_HOPOPTS");
+		if (setsockopt(fd, IPPROTO_IPV6, IPV6_DSTOPTS, dns_exthdr,
+		    sizeof(dns_exthdr)) == -1)
+			err(1, "setsockopt IPV6_DSTOPTS");
+	}
+	if (connect(fd, (struct sockaddr *)&ss, sslen) == -1)
 		err(1, "connect");
 	if (bound_port != NULL) {
-		socklen_t	socklen;
-
-		socklen = sizeof(sin);
-		if (getsockname(fd, (struct sockaddr *)&sin, &socklen) == -1)
+		sslen = sizeof(ss);
+		if (getsockname(fd, (struct sockaddr *)&ss, &sslen) == -1)
 			err(1, "getsockname");
-		*bound_port = sin.sin_port;
+		*bound_port = sockaddr_port(&ss);
 	}
 
 	return (fd);
 }
 
+/*
+ * Fork a child that listens with a listen_af socket, connects to it with a
+ * connect_af socket and writes PATTERN over it. When the families differ the
+ * AF_INET6 side is a dual-stack socket on the v4-mapped loopback and the
+ * datagram is IPv4 on the wire: an AF_INET6 listener receives it from an
+ * AF_INET sender, or an AF_INET6 sender sends it to an AF_INET listener. With
+ * exthdrs the sender adds IPv6 extension headers, see local_connect().
+ */
 static pid_t
-fork_sock_write(u16 port, int type, u16 *bound_port)
+fork_sock_write_af(int listen_af, int connect_af, u16 port, int type,
+    int exthdrs, u16 *bound_port)
 {
 	pid_t	child;
 	int	status, listen_fd, conn_fd;
@@ -786,8 +917,10 @@ fork_sock_write(u16 port, int type, u16 *bound_port)
 	if ((child = fork()) == -1) {
 		err(1, "fork");
 	} else if (child == 0) { /* child */
-		listen_fd = local_listen(port, type);
-		conn_fd = local_connect(port, type, bound_port);
+		listen_fd = local_listen(listen_af, port, type,
+		    listen_af != connect_af);
+		conn_fd = local_connect(connect_af, port, type,
+		    listen_af != connect_af, exthdrs, bound_port);
 		n = qwrite(conn_fd, PATTERN, strlen(PATTERN));
 		if (n == -1)
 			err(1, "qwrite");
@@ -822,6 +955,13 @@ fork_sock_write(u16 port, int type, u16 *bound_port)
 	}
 
 	return (child);
+}
+
+static pid_t
+fork_sock_write(u16 port, int type, u16 *bound_port)
+{
+	return (fork_sock_write_af(AF_INET, AF_INET, port, type, 0,
+	    bound_port));
 }
 
 static int
@@ -2806,69 +2946,362 @@ t_stats(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Check one captured DNS datagram: loopback to loopback, to or from port 53
+ * with PATTERN as the payload. The IP family is the one on the wire, which
+ * for a dual-stack socket differs from the socket family. With exthdrs the
+ * IPv6 header is followed by the Hop-by-Hop and Destination Options headers
+ * built from dns_exthdr.
+ */
+static void
+assert_dns_packet(const struct quark_packet *packet, int af, u16 bound_port,
+    enum quark_packet_direction dir, int exthdrs)
+{
+	struct udphdr	 udp;
+	size_t		 hlen;
+
+	assert(packet != NULL);
+	assert(packet->direction == dir);
+
+	/* check the length before reading any header out of data */
+	if (af == AF_INET) {
+		assert(!exthdrs);
+		hlen = sizeof(struct iphdr);
+	} else
+		hlen = sizeof(struct ip6_hdr) +
+		    (exthdrs ? 2 * sizeof(dns_exthdr) : 0);
+	assert(packet->cap_len == hlen + sizeof(udp) + strlen(PATTERN));
+	assert(packet->orig_len == packet->cap_len);
+	/* ip */
+	if (af == AF_INET) {
+		struct iphdr	ip;
+
+		memcpy(&ip, packet->data, sizeof(ip));
+		assert(ip.version == 4);
+		assert(ip.protocol == IPPROTO_UDP);
+		assert(ip.saddr == htonl(INADDR_LOOPBACK));
+		assert(ip.daddr == htonl(INADDR_LOOPBACK));
+	} else {
+		struct ip6_hdr	ip6;
+		struct ip6_ext	ext;
+		size_t		off;
+
+		memcpy(&ip6, packet->data, sizeof(ip6));
+		assert((ip6.ip6_vfc >> 4) == 6);
+		assert(!memcmp(&ip6.ip6_src, &in6addr_loopback, 16));
+		assert(!memcmp(&ip6.ip6_dst, &in6addr_loopback, 16));
+		off = sizeof(ip6);
+		if (exthdrs) {
+			/* hop-by-hop, destination options, then udp */
+			assert(ip6.ip6_nxt == IPPROTO_HOPOPTS);
+			memcpy(&ext, packet->data + off, sizeof(ext));
+			assert(ext.ip6e_nxt == IPPROTO_DSTOPTS);
+			assert(ext.ip6e_len == dns_exthdr[1]);
+			assert(!memcmp(packet->data + off + 2, dns_exthdr + 2,
+			    sizeof(dns_exthdr) - 2));
+			off += (ext.ip6e_len + 1) * 8;
+			memcpy(&ext, packet->data + off, sizeof(ext));
+			assert(ext.ip6e_nxt == IPPROTO_UDP);
+			assert(ext.ip6e_len == dns_exthdr[1]);
+			assert(!memcmp(packet->data + off + 2, dns_exthdr + 2,
+			    sizeof(dns_exthdr) - 2));
+			off += (ext.ip6e_len + 1) * 8;
+		} else
+			assert(ip6.ip6_nxt == IPPROTO_UDP);
+		assert(off == hlen);
+	}
+	/* udp */
+	memcpy(&udp, packet->data + hlen, sizeof(udp));
+	assert(udp.dest == htons(53));
+	assert(udp.source == bound_port);
+	/* dns */
+	assert(!memcmp(packet->data + hlen + sizeof(udp), PATTERN,
+	    strlen(PATTERN)));
+}
+
+/*
+ * Send a datagram to port 53 over loopback with a listen_af listener and a
+ * connect_af sender, expect quark to capture it leaving and arriving. When the
+ * families differ the datagram is IPv4, see fork_sock_write_af(). With
+ * exthdrs the datagram carries IPv6 extension headers.
+ */
 static int
-t_dns(const struct test *t, struct quark_queue_attr *qa)
+t_dns_af(const struct test *t, struct quark_queue_attr *qa, int listen_af,
+    int connect_af, int exthdrs)
 {
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
-	struct quark_packet		*packet;
 	pid_t				 child;
-	struct iphdr			 ip;
-	struct udphdr			 udp;
 	u16				 bound_port;
+	int				 wire_af;
 
 	assert_localhost();
+
+	wire_af = listen_af == connect_af ? connect_af : AF_INET;
+
+	if ((listen_af == AF_INET6 || connect_af == AF_INET6) && !have_ipv6()) {
+		warnx("%s: no IPv6, skipping", t->name);
+		return (0);
+	}
 
 	qa->flags |= QQ_DNS;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	child = fork_sock_write(53, SOCK_DGRAM, &bound_port);
+	child = fork_sock_write_af(listen_af, connect_af, 53, SOCK_DGRAM,
+	    exthdrs, &bound_port);
 
 	/* first is the fork, no agg */
 	qev = drain_for_pid(&qq, child);
 	assert(qev->packet == NULL);
 
-	/* egress */
+	/* egress, seen on the sender socket */
 	qev = drain_for_pid(&qq, child);
-	packet = qev->packet;
-	assert(packet != NULL);
-	assert(packet->cap_len == 90);
-	assert(packet->orig_len == 90);
-	/* ip */
-	memcpy(&ip, packet->data, sizeof(ip));
-	assert(ip.protocol == IPPROTO_UDP);
-	assert(ip.saddr == htonl(INADDR_LOOPBACK));
-	assert(ip.daddr == htonl(INADDR_LOOPBACK));
-	/* udp */
-	memcpy(&udp, packet->data + sizeof(ip), sizeof(udp));
-	assert(udp.dest == htons(53));
-	assert(udp.source == bound_port);
-	/* dns  */
-	assert(!memcmp(packet->data + 28, PATTERN, packet->cap_len - 28));
+	assert_dns_packet(qev->packet, wire_af, bound_port,
+	    QUARK_PACKET_DIR_EGRESS, exthdrs);
 
-	/* ingress */
+	/* ingress, seen on the listener socket, same wire family */
 	qev = drain_for_pid(&qq, child);
-	packet = qev->packet;
-	assert(packet != NULL);
-	assert(packet->cap_len == 90);
-	assert(packet->orig_len == 90);
-	/* ip */
-	memcpy(&ip, packet->data, sizeof(ip));
-	assert(ip.protocol == IPPROTO_UDP);
-	assert(ip.saddr == htonl(INADDR_LOOPBACK));
-	assert(ip.daddr == htonl(INADDR_LOOPBACK));
-	/* udp */
-	memcpy(&udp, packet->data + sizeof(ip), sizeof(udp));
-	assert(udp.dest == htons(53));
-	assert(udp.source == bound_port);
-	/* dns */
-	assert(!memcmp(packet->data + 28, PATTERN, packet->cap_len - 28));
+	assert_dns_packet(qev->packet, wire_af, bound_port,
+	    QUARK_PACKET_DIR_INGRESS, exthdrs);
 
 	quark_queue_close(&qq);
 
 	return (0);
+}
+
+static int
+t_dns(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_af(t, qa, AF_INET, AF_INET, 0));
+}
+
+static int
+t_dns6(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_af(t, qa, AF_INET6, AF_INET6, 0));
+}
+
+/*
+ * IPv6 datagram with a Hop-by-Hop and a Destination Options header between
+ * the IPv6 header and UDP, the probe has to walk the extension header chain
+ * to find the ports.
+ */
+static int
+t_dns6_exthdrs(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_af(t, qa, AF_INET6, AF_INET6, 1));
+}
+
+/*
+ * IPv4 datagram received on a dual-stack AF_INET6 socket, the wire family
+ * and the socket family disagree.
+ */
+static int
+t_dns_v4_on_v6(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_af(t, qa, AF_INET6, AF_INET, 0));
+}
+
+/*
+ * The mirror: IPv4 datagram sent from a dual-stack AF_INET6 socket to an
+ * AF_INET listener, the wire and socket families disagree on egress.
+ */
+static int
+t_dns_v4_from_v6(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_af(t, qa, AF_INET, AF_INET6, 0));
+}
+
+/*
+ * Child side of t_dns_existing_af(): a sender and a listener on port 53 of
+ * af. Both are created before the parent opens the queue: the child reports
+ * them over ready_fd and the parent answers over go_fd once the probes are
+ * attached. Then two datagrams to the listener, each received, the sender's
+ * port reported over port_fd after the first. With connected set the sender
+ * is connected after the probes attach and uses send() instead of sendto().
+ */
+static void
+dns_existing_child(int af, int connected, int ready_fd, int go_fd,
+    int port_fd)
+{
+	struct sockaddr_storage	dst, ss;
+	socklen_t		dstlen, sslen;
+	int			listen_fd, send_fd, i;
+	char			buf[sizeof(PATTERN)], c;
+	u16			bound_port;
+	ssize_t			n;
+
+	listen_fd = local_listen(af, 53, SOCK_DGRAM, 0);
+	if ((send_fd = socket(af, SOCK_DGRAM, 0)) == -1)
+		err(1, "socket");
+	dstlen = sockaddr_local(af, htons(53), 0, &dst);
+
+	/* sockets exist, let the parent attach the probes */
+	if (qwrite(ready_fd, "", 1) == -1)
+		err(1, "qwrite ready");
+	if (qread(go_fd, &c, sizeof(c)) != sizeof(c))
+		err(1, "qread go");
+
+	/*
+	 * The connect hook is the only one that can learn a connected
+	 * sender: the kernel runs the sendmsg hook on unconnected sends only,
+	 * send() on a connected socket never reaches it.
+	 */
+	if (connected &&
+	    connect(send_fd, (struct sockaddr *)&dst, dstlen) == -1)
+		err(1, "connect");
+
+	for (i = 0; i < 2; i++) {
+		if (connected)
+			n = send(send_fd, PATTERN, strlen(PATTERN), 0);
+		else
+			n = sendto(send_fd, PATTERN, strlen(PATTERN), 0,
+			    (struct sockaddr *)&dst, dstlen);
+		if (n != (ssize_t)strlen(PATTERN))
+			err(1, "send");
+		if (i == 0) {
+			/* the first send, or the connect, bound the socket */
+			sslen = sizeof(ss);
+			if (getsockname(send_fd, (struct sockaddr *)&ss,
+			    &sslen) == -1)
+				err(1, "getsockname");
+			bound_port = sockaddr_port(&ss);
+			if (qwrite(port_fd, &bound_port, sizeof(bound_port)) ==
+			    -1)
+				err(1, "qwrite port");
+		}
+		/*
+		 * The recvmsg hook sits in the kernel's peer address copy-out,
+		 * it only runs when the caller asks for the address, so it has
+		 * to be recvfrom() here, a listener using recv() or read() is
+		 * never learned.
+		 */
+		sslen = sizeof(ss);
+		n = recvfrom(listen_fd, buf, sizeof(buf), 0,
+		    (struct sockaddr *)&ss, &sslen);
+		if (n != (ssize_t)strlen(PATTERN))
+			err(1, "recvfrom");
+	}
+
+	close(listen_fd);
+	close(send_fd);
+}
+
+/*
+ * Sockets that exist before quark starts are unknown to the probe, the
+ * sendmsg/recvmsg/connect hooks learn them on first use. The child creates a
+ * sender and a listener before the queue is opened, then:
+ * 1. sends: sendmsg learns the sender, egress is captured. The listener is
+ *    still unknown, so this datagram's ingress is lost.
+ * 2. receives with recvfrom: recvmsg learns the listener, see
+ *    dns_existing_child() for why it must be recvfrom.
+ * 3. sends again: egress and ingress are both captured.
+ * With connected set the child connects the sender before step 1 and sends
+ * with send(), so it is connect that learns the sender, see
+ * dns_existing_child().
+ */
+static int
+t_dns_existing_af(const struct test *t, struct quark_queue_attr *qa, int af,
+    int connected)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	pid_t				 child;
+	int				 status, ready[2], go[2], port[2];
+	u16				 bound_port;
+	ssize_t				 n;
+	char				 c;
+
+	assert_localhost();
+
+	if (af == AF_INET6 && !have_ipv6()) {
+		warnx("%s: no IPv6, skipping", t->name);
+		return (0);
+	}
+
+	if (pipe(ready) == -1 || pipe(go) == -1 || pipe(port) == -1)
+		err(1, "pipe");
+
+	if ((child = fork()) == -1) {
+		err(1, "fork");
+	} else if (child == 0) { /* child */
+		close(ready[0]);
+		close(go[1]);
+		close(port[0]);
+		dns_existing_child(af, connected, ready[1], go[0], port[1]);
+		exit(0);
+	}
+
+	/* parent */
+	close(ready[1]);
+	close(go[0]);
+	close(port[1]);
+
+	/* the sockets must exist before the probes attach */
+	if (qread(ready[0], &c, sizeof(c)) != sizeof(c))
+		err(1, "qread ready");
+	close(ready[0]);
+
+	qa->flags |= QQ_DNS;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* the probes are attached, release the child */
+	if (qwrite(go[1], "", 1) == -1)
+		err(1, "qwrite");
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child didn't exit cleanly");
+	n = qread(port[0], &bound_port, sizeof(bound_port));
+	if (n == -1)
+		err(1, "qread");
+	else if (n != sizeof(bound_port))
+		errx(1, "qread short buf");
+	close(go[1]);
+	close(port[0]);
+
+	/* first datagram: egress only, the listener was unknown on ingress */
+	qev = drain_for_pid(&qq, child);
+	assert_dns_packet(qev->packet, af, bound_port,
+	    QUARK_PACKET_DIR_EGRESS, 0);
+	/* second datagram: recvmsg learned the listener, both directions */
+	qev = drain_for_pid(&qq, child);
+	assert_dns_packet(qev->packet, af, bound_port,
+	    QUARK_PACKET_DIR_EGRESS, 0);
+	qev = drain_for_pid(&qq, child);
+	assert_dns_packet(qev->packet, af, bound_port,
+	    QUARK_PACKET_DIR_INGRESS, 0);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_dns_existing(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_existing_af(t, qa, AF_INET, 0));
+}
+
+static int
+t_dns6_existing(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_existing_af(t, qa, AF_INET6, 0));
+}
+
+static int
+t_dns_existing_connect(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_existing_af(t, qa, AF_INET, 1));
+}
+
+static int
+t_dns6_existing_connect(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_dns_existing_af(t, qa, AF_INET6, 1));
 }
 
 static int
@@ -5333,6 +5766,14 @@ struct test all_tests[] = {
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
 	T_EBPF(t_dns),
+	T_EBPF(t_dns6),
+	T_EBPF(t_dns6_exthdrs),
+	T_EBPF(t_dns_v4_on_v6),
+	T_EBPF(t_dns_v4_from_v6),
+	T_EBPF(t_dns_existing),
+	T_EBPF(t_dns6_existing),
+	T_EBPF(t_dns_existing_connect),
+	T_EBPF(t_dns6_existing_connect),
 	T_EBPF(t_cgroup_parse),
 	T(t_process_container_cache),
 	T(t_link_container_data),
