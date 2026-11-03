@@ -322,10 +322,11 @@ int BPF_KPROBE(kprobe__tcp_close, struct sock *sk, long timeout)
  * Walk the IPv6 extension header chain and return the offset of the UDP
  * header or -1 if the datagram isn't UDP / has a header we don't follow.
  *
- * Only Hop-by-Hop, Routing and Destination Options can legitimately sit
- * between the fixed header and UDP on a datagram that reaches a socket: a
- * Fragment header never shows up here since ingress runs after reassembly
- * and egress before fragmentation.
+ * Only Hop-by-Hop, Routing and Destination Options are followed. Real
+ * fragments are reassembled before ingress, which removes the Fragment
+ * header, and egress runs before fragmentation. An atomic fragment
+ * (deprecated in RFC 8021, Linux no longer sends them) keeps its
+ * Fragment header through delivery and is not captured.
  */
 static int skb_ipv6_udp_offset(struct __sk_buff *skb)
 {
