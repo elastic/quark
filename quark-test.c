@@ -1969,6 +1969,12 @@ t_bypass(const struct test *t, struct quark_queue_attr *qa)
 	qa->flags &= ~QQ_ENTRY_LEADER;
 	qa->flags |= QQ_BYPASS;
 
+	/* Flows go through the raw event tree, bypass must refuse them */
+	qa->flags |= QQ_UDP_FLOW;
+	if (quark_queue_open(&qq, qa) == 0 || errno != EINVAL)
+		errx(1, "quark_queue_open accepted QQ_BYPASS|QQ_UDP_FLOW");
+	qa->flags &= ~QQ_UDP_FLOW;
+
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 

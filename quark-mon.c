@@ -356,13 +356,14 @@ main(int argc, char *argv[])
 
 	if (qa.flags & QQ_BYPASS) {
 		if (qa.flags &
-		    (QQ_KPROBE|QQ_ENTRY_LEADER|QQ_MIN_AGG|QQ_THREAD_EVENTS) ||
+		    (QQ_KPROBE|QQ_ENTRY_LEADER|QQ_MIN_AGG|QQ_THREAD_EVENTS|
+		    QQ_UDP_FLOW) ||
 		    graph_cache != NULL ||
 		    maxnodes != -1 ||
 		    lflag ||
 		    filter_ppid ||
 		    !do_snap)
-			errx(1, "bypass(B) cannot be used with options: CegklmPst");
+			errx(1, "bypass(B) cannot be used with options: ACegIklmPstU");
 		qa.flags |= QQ_EBPF;
 	}
 

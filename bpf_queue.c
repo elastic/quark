@@ -1792,11 +1792,7 @@ bpf_queue_populate(struct quark_queue *qq)
 	if (npop < 0)
 		return (-1);
 
-	/*
-	 * Bypass hands raw ring events to the user, flows are not one of
-	 * those.
-	 */
-	if ((qq->flags & (QQ_UDP_FLOW | QQ_BYPASS)) == QQ_UDP_FLOW) {
+	if (qq->flags & QQ_UDP_FLOW) {
 		int	ndrained;
 
 		ndrained = udp_flow_poll(qq, space_left - npop);

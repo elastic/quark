@@ -4727,12 +4727,13 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	}
 
 	/*
-	 * QQ_BYPASS is EBPF only
+	 * QQ_BYPASS is EBPF only. UDP flows are drained from maps into the
+	 * raw event tree, which bypass never reads, so they're excluded too.
 	 */
 	if (qa->flags & QQ_BYPASS) {
 		if ((qa->flags &
 		    (QQ_KPROBE|QQ_NOVA|QQ_ENTRY_LEADER|
-		    QQ_MIN_AGG|QQ_THREAD_EVENTS)) ||
+		    QQ_MIN_AGG|QQ_THREAD_EVENTS|QQ_UDP_FLOW)) ||
 		    !(qa->flags & QQ_EBPF) ||
 		    qa->kubefd != -1)
 			return (errno = EINVAL, -1);
