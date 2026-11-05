@@ -29,30 +29,29 @@ struct bpf_queue {
 	struct ring_buffer	*ringbuf;
 	/*
 	 * UDP flow aggregation, see udp_flow_poll(). Programs write the map
-	 * selected by the low bit of udp_flow_gen, we bump it once per period
-	 * and drain the other map after the map flip has settled (double buffer).
+	 * selected by the low bit of udp_flow_gen (active map), we bump it
+	 * once per period and drain the other map (inactive map) after the map
+	 * flip has settled (double buffer).
 	 */
 	u32			 udp_flow_gen;
 
-	/* When the current aggregation period began. Set at queue open and at
-	 * every udp_flow_gen bump. If time_now()-udp_flow_period_start >= udp_agg_time,
-	 * a udp_flow_gen bump is triggered. Stores CLOCK_BOOTTIME ns.
+	/*
+	 * When the current aggregation period began, CLOCK_BOOTTIME ns. Set
+	 * at queue open and at every udp_flow_gen bump, read twice: a bump is
+	 * due once udp_agg_time has passed, and the drain of the inactive map
+	 * waits until UDP_FLOW_FLIP_GRACE has elapsed. The BPF side reads the
+	 * generation and then updates a map in two unsynchronized steps, so a
+	 * program that read the old generation an instant before the bump may
+	 * still be adding to the retired map. The grace lets those programs
+	 * finish before userspace starts deleting entries.
 	 */
 	u64			 udp_flow_period_start;
 
-	/* When the generation counter in the udp_flow_gen map was last bumped.
-	 * The drain refuses to start until UDP_FLOW_FLIP_GRACE (100 ms) after it.
-	 * The BPF side reads gen and then updates a map in two unsynchronized steps,
-	 * so a program that read the old generation an instant before the bump may
-	 * still be adding to the inactive map. The grace period lets those programs
-	 * finish before userspace starts deleting entries. Stores CLOCK_BOOTTIME ns.
-	 */
-	u64			 udp_flow_flip_time;
-
-	/* Set to true at flip, set to false when the inactive map reads empty. While
-	 * While true, no new flip is considered, so when the queue is full and the
-	 * drain takes several populates the period stretches instead of flipping onto
-	 * a map that still has data.
+	/*
+	 * Set at flip, cleared when the inactive map reads empty. While set,
+	 * no new flip is considered, so when the queue is full and the drain
+	 * takes several populate calls the period stretches instead of
+	 * flipping onto a map that still has data.
 	 */
 	bool			 udp_flow_draining;
 };
@@ -1913,7 +1912,7 @@ udp_flow_poll(struct quark_queue *qq, int space_left)
 	now = now64();
 
 	if (bqq->udp_flow_draining) {
-		if (now - bqq->udp_flow_flip_time < UDP_FLOW_FLIP_GRACE)
+		if (now - bqq->udp_flow_period_start < UDP_FLOW_FLIP_GRACE)
 			return (0);
 		if (space_left <= 0)
 			return (0);
@@ -1937,7 +1936,6 @@ udp_flow_poll(struct quark_queue *qq, int space_left)
 		return (-1);
 	}
 	bqq->udp_flow_gen = gen;
-	bqq->udp_flow_flip_time = now;
 	bqq->udp_flow_period_start = now;
 	bqq->udp_flow_draining = true;
 
