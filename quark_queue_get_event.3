@@ -235,6 +235,19 @@ since
 .Em established_time .
 Addresses and ports are in network byte order.
 .Pp
+.Em pid_origin
+is the process the socket is attributed to, the one that connected or
+accepted a TCP connection, or that sent or received a UDP socket's first
+flow.
+It is zero when that flow had no known process, and is filled in by the
+first one that does.
+.Em pid_last_use
+is the last process seen acting on the socket, which differs from the origin
+when the descriptor is inherited or shared.
+The event's
+.Em process
+is resolved from the origin.
+.Pp
 .Em cookie
 is the kernel's socket cookie, unique for the lifetime of the boot, filled in
 by the first

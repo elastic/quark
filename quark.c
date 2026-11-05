@@ -5216,7 +5216,6 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 	struct quark_event	*qev;
 	struct quark_socket	*qsk;
 	struct raw_sock_conn	*conn;
-	u32			 pid;
 
 	conn = &raw->sock_conn;
 	qev = &qq->event_storage;
@@ -5328,12 +5327,19 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 		return (NULL);
 	}
 
-	if (raw->pid != 0)
+	/*
+	 * A UDP flow carries no pid when none of its datagrams came from a
+	 * known socket. An unknown user never replaces a known one, and the
+	 * first known one becomes the origin of a socket that had none.
+	 */
+	if (raw->pid != 0) {
 		qsk->pid_last_use = raw->pid;
+		if (qsk->pid_origin == 0)
+			qsk->pid_origin = raw->pid;
+	}
 
 	qev->socket = qsk;
-	pid = qsk->pid_origin != 0 ? qsk->pid_origin : qsk->pid_last_use;
-	qev->process = process_cache_get(qq, pid, 0);
+	qev->process = process_cache_get(qq, qsk->pid_origin, 0);
 
 	return (qev);
 }

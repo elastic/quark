@@ -134,7 +134,10 @@
           a socket that goes <i class="Em">udp_idle_time</i> without traffic is
           reported as <code class="Dv">QUARK_EV_SOCK_CONN_CLOSED</code> with its
           totals. Datagrams are counted whether or not the owning process is
-          known, the process is the last one seen using the socket.
+          known. A socket whose first flow had no known process is established
+          with a
+          <a class="permalink" href="#pid_origin"><i class="Em" id="pid_origin">pid_origin</i></a>
+          of zero, the first flow that has one fills it in.
         <p class="Pp">The addresses and ports of a flow are those the socket
             sees when it is connected, and those on the wire otherwise. An
             unconnected socket talking through local NAT therefore shows its

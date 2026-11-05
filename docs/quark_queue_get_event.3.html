@@ -226,6 +226,15 @@
         and UDP headers, and are the totals since
         <a class="permalink" href="#established_time"><i class="Em">established_time</i></a>.
         Addresses and ports are in network byte order.</p>
+    <p class="Pp" id="pid_origin"><a class="permalink" href="#pid_origin"><i class="Em">pid_origin</i></a>
+        is the process the socket is attributed to, the one that connected or
+        accepted a TCP connection, or that sent or received a UDP socket's first
+        flow. It is zero when that flow had no known process, and is filled in
+        by the first one that does.
+        <a class="permalink" href="#pid_last_use"><i class="Em" id="pid_last_use">pid_last_use</i></a>
+        is the last process seen acting on the socket, which differs from the
+        origin when the descriptor is inherited or shared. The event's
+        <i class="Em">process</i> is resolved from the origin.</p>
     <p class="Pp" id="cookie"><a class="permalink" href="#cookie"><i class="Em">cookie</i></a>
         is the kernel's socket cookie, unique for the lifetime of the boot,
         filled in by the first <code class="Dv">QUARK_EV_SOCK_FLOW</code> of the

@@ -142,8 +142,10 @@ a socket that goes
 without traffic is reported as
 .Dv QUARK_EV_SOCK_CONN_CLOSED
 with its totals.
-Datagrams are counted whether or not the owning process is known, the process
-is the last one seen using the socket.
+Datagrams are counted whether or not the owning process is known.
+A socket whose first flow had no known process is established with a
+.Em pid_origin
+of zero, the first flow that has one fills it in.
 .Pp
 The addresses and ports of a flow are those the socket sees when it is
 connected, and those on the wire otherwise.
