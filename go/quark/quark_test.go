@@ -216,7 +216,7 @@ func TestQuark(t *testing.T) {
 		var socket Socket
 		found := drainUntil(queue, 5*time.Second, func() bool {
 			var ok bool
-			socket, ok = queue.SocketLookup(QUARK_TRANSPORT_TCP, local, remote)
+			socket, ok = queue.SocketLookup(QUARK_TRANSPORT_TCP, local, remote, 0)
 			return ok
 		})
 		require.True(t, found)
@@ -227,7 +227,7 @@ func TestQuark(t *testing.T) {
 		// IPv4-mapped IPv6 form finds the same socket.
 		mappedLocal := netip.AddrPortFrom(
 			netip.AddrFrom16(local.Addr().As16()), local.Port())
-		_, ok := queue.SocketLookup(QUARK_TRANSPORT_TCP, mappedLocal, remote)
+		_, ok := queue.SocketLookup(QUARK_TRANSPORT_TCP, mappedLocal, remote, 0)
 		require.True(t, ok)
 
 		// The snapshot contains it too.
@@ -244,7 +244,7 @@ func TestQuark(t *testing.T) {
 		// non-zero CloseTime until CacheGraceTime expires.
 		conn.Close()
 		found = drainUntil(queue, 5*time.Second, func() bool {
-			socket, ok = queue.SocketLookup(QUARK_TRANSPORT_TCP, local, remote)
+			socket, ok = queue.SocketLookup(QUARK_TRANSPORT_TCP, local, remote, 0)
 			return ok && socket.CloseTime != 0
 		})
 		require.True(t, found)
@@ -299,7 +299,7 @@ func TestQuark(t *testing.T) {
 		var socket Socket
 		found := drainUntil(queue, 5*time.Second, func() bool {
 			var ok bool
-			socket, ok = queue.SocketLookup(QUARK_TRANSPORT_TCP, local, remote)
+			socket, ok = queue.SocketLookup(QUARK_TRANSPORT_TCP, local, remote, 0)
 			return ok
 		})
 		require.True(t, found)
@@ -311,12 +311,12 @@ func TestQuark(t *testing.T) {
 		// The IPv4-mapped form finds it as well.
 		mappedLocal := netip.AddrPortFrom(netip.AddrFrom16(local.Addr().As16()), local.Port())
 		mappedRemote := netip.AddrPortFrom(netip.AddrFrom16(remote.Addr().As16()), remote.Port())
-		_, ok := queue.SocketLookup(QUARK_TRANSPORT_TCP, mappedLocal, mappedRemote)
+		_, ok := queue.SocketLookup(QUARK_TRANSPORT_TCP, mappedLocal, mappedRemote, 0)
 		require.True(t, ok)
 
 		// The client side is a plain AF_INET socket and is found
 		// through the AF_INET key.
-		clientSocket, ok := queue.SocketLookup(QUARK_TRANSPORT_TCP, remote, local)
+		clientSocket, ok := queue.SocketLookup(QUARK_TRANSPORT_TCP, remote, local, 0)
 		require.True(t, ok)
 		require.True(t, clientSocket.Local.Addr().Is4())
 	})

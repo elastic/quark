@@ -636,8 +636,8 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 // A closed socket remains visible with a non-zero CloseTime until it
 // ages out after the queue's CacheGraceTime. The boolean is false if
 // no such socket is known. Several UDP sockets can share endpoints,
-// as with SO_REUSEPORT, quark keeps them apart by Cookie and this
-// returns the first.
+// as with SO_REUSEPORT; quark keeps them apart by Cookie, and cookie
+// picks one of them, zero returns the first.
 //
 // quark caches sockets under the address family the kernel reports,
 // so IPv4 traffic on a dual-stack AF_INET6 socket is cached with
@@ -645,12 +645,12 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 // given in either form: the AF_INET key is tried first and the
 // IPv4-mapped AF_INET6 key second. A socket found through the mapped
 // key reports Local and Remote in mapped form, as quark stores them.
-func (queue *Queue) SocketLookup(transport int, local, remote netip.AddrPort) (Socket, bool) {
-	if socket, ok := queue.socketLookup(transport, local, remote, false); ok {
+func (queue *Queue) SocketLookup(transport int, local, remote netip.AddrPort, cookie uint64) (Socket, bool) {
+	if socket, ok := queue.socketLookup(transport, local, remote, cookie, false); ok {
 		return socket, true
 	}
 	if local.Addr().Unmap().Is4() && remote.Addr().Unmap().Is4() {
-		return queue.socketLookup(transport, local, remote, true)
+		return queue.socketLookup(transport, local, remote, cookie, true)
 	}
 
 	return Socket{}, false
@@ -659,7 +659,7 @@ func (queue *Queue) SocketLookup(transport int, local, remote netip.AddrPort) (S
 // socketLookup performs a single quark_socket_lookup(3) call. When
 // mapped is set, IPv4 endpoints are converted to their IPv4-mapped
 // AF_INET6 form before the lookup.
-func (queue *Queue) socketLookup(transport int, local, remote netip.AddrPort, mapped bool) (Socket, bool) {
+func (queue *Queue) socketLookup(transport int, local, remote netip.AddrPort, cookie uint64, mapped bool) (Socket, bool) {
 	clocal, ok := sockaddrToC(local, mapped)
 	if !ok {
 		return Socket{}, false
@@ -670,7 +670,8 @@ func (queue *Queue) socketLookup(transport int, local, remote netip.AddrPort, ma
 	}
 
 	socket, _ := C.quark_socket_lookup(queue.quarkQueue,
-		C.enum_quark_transport(transport), &clocal, &cremote)
+		C.enum_quark_transport(transport), &clocal, &cremote,
+		C.u64(cookie))
 	if socket == nil {
 		return Socket{}, false
 	}

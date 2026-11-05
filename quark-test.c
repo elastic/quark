@@ -3706,10 +3706,14 @@ t_udp_flow(const struct test *t, struct quark_queue_attr *qa)
 				    bound_port);
 			assert(qsk->close_time > 0);
 			assert_udp_totals(qsk, bound_port);
-			/* still there for a grace period */
+			/* still there for a grace period, by tuple and by cookie */
 			assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP,
 			    (struct quark_sockaddr *)&qsk->local,
-			    (struct quark_sockaddr *)&qsk->remote) == qsk);
+			    (struct quark_sockaddr *)&qsk->remote, 0) == qsk);
+			assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP,
+			    (struct quark_sockaddr *)&qsk->local,
+			    (struct quark_sockaddr *)&qsk->remote,
+			    qsk->cookie) == qsk);
 			nclosed++;
 			continue;
 		}

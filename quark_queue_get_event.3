@@ -260,7 +260,7 @@ endpoints, as with
 .Dv SO_REUSEPORT ,
 are kept apart, and
 .Fn quark_socket_lookup
-returns the first of them.
+takes it to pick one of them, or zero for the first.
 .It Em flow
 Valid with
 .Dv QUARK_EV_SOCK_FLOW ,

@@ -844,11 +844,15 @@ socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
 	return (0);
 }
 
+/*
+ * cookie selects one of several UDP sockets sharing the endpoints, zero
+ * returns the first.
+ */
 const struct quark_socket *
 quark_socket_lookup(struct quark_queue *qq, enum quark_transport transport,
-    struct quark_sockaddr *local, struct quark_sockaddr *remote)
+    struct quark_sockaddr *local, struct quark_sockaddr *remote, u64 cookie)
 {
-	return (socket_cache_lookup(qq, transport, local, remote, 0));
+	return (socket_cache_lookup(qq, transport, local, remote, cookie));
 }
 
 void

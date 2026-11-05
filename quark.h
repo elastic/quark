@@ -87,7 +87,7 @@ void			 quark_socket_iter_init(struct quark_socket_iter *,
 const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
 const struct quark_socket *quark_socket_lookup(struct quark_queue *,
 			     enum quark_transport, struct quark_sockaddr *,
-			     struct quark_sockaddr *);
+			     struct quark_sockaddr *, u64);
 struct quark_passwd	*quark_passwd_lookup(struct quark_queue *, uid_t);
 struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
 const struct quark_pod	*quark_pod_lookup(struct quark_queue *, const char *);

@@ -244,7 +244,7 @@
         same endpoints, as with <code class="Dv">SO_REUSEPORT</code>, are kept
         apart, and
         <a class="permalink" href="#quark_socket_lookup"><code class="Fn" id="quark_socket_lookup">quark_socket_lookup</code></a>()
-        returns the first of them.</p>
+        takes it to pick one of them, or zero for the first.</p>
   </dd>
   <dt id="flow"><a class="permalink" href="#flow"><i class="Em">flow</i></a></dt>
   <dd>Valid with <code class="Dv">QUARK_EV_SOCK_FLOW</code>, the traffic of one
