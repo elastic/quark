@@ -3511,6 +3511,12 @@ t_udp_flow_map(const struct test *t, struct quark_queue_attr *qa)
 	u64				 sent_cookie, recv_cookie;
 	int				 nsent, nrecv;
 
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
 	assert_localhost();
 
 	qa->flags |= QQ_UDP_FLOW;
@@ -3637,6 +3643,13 @@ t_udp_flow(const struct test *t, struct quark_queue_attr *qa)
 	u64				 sender_cookie, listener_cookie;
 	int				 npackets, nflow_sender, nflow_listener;
 	int				 nclosed;
+
+	/* the flow drain walks the map with bpf_map_get_next_key */
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
 
 	assert_localhost();
 
