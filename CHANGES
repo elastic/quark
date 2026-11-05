@@ -267,10 +267,10 @@ Changes from 0.10 to 0.11
 
 Changes from 0.11 to 0.12
 ~~~~~~~~~~~~~~~~~~~~~~~~~
-  o DNS events now cover IPv6. The packet in quark_packet{} starts at
-    the IPv4 or IPv6 header as it was on the wire, extension headers
-    included, regardless of the socket family: an IPv4 datagram on a
-    dual-stack AF_INET6 socket was previously dropped and is now
+  o BREAKING: DNS events now cover IPv6. The packet in quark_packet{}
+    starts at the IPv4 or IPv6 header as it was on the wire, extension
+    headers included, regardless of the socket family: an IPv4 datagram
+    on a dual-stack AF_INET6 socket was previously dropped and is now
     reported. Consumers that assumed an IPv4 header at data[0] must
     check the version nibble.
   o UDP sockets that predate quark are attributed on first use through
@@ -284,3 +284,50 @@ Changes from 0.11 to 0.12
     traffic is captured however it is used; only the attribution can
     lag: after fork(2) or SCM_RIGHTS passing it stays with the creating
     process until the new owner makes one of the calls above.
+  o UDP flow events were added via QQ_UDP_FLOW, EBPF only. Every UDP
+    datagram is accounted in the kernel to a flow, one socket talking
+    to one peer, and reported once per aggregation period as
+    QUARK_EV_SOCK_FLOW with the period's bytes and packets in the new
+    quark_event.flow member, a quark_flow{}. A socket's first flow
+    doubles as its QUARK_EV_SOCK_CONN_ESTABLISHED, a socket that goes
+    udp_idle_time without traffic is reported as
+    QUARK_EV_SOCK_CONN_CLOSED with its totals. The period and idle
+    time are the new udp_agg_time and udp_idle_time members of
+    quark_queue_attr{}, defaulting to 3 and 30 seconds; the idle time
+    must be at least the period, and cache_grace_time should exceed
+    the period or the last flow of a process that exits right after
+    its last datagram may arrive with no process. The kernel holds up
+    to 65536 flows per period, beyond that new flows go uncounted and
+    the new udp_flow_lost member of quark_queue_stats{} counts the
+    dropped datagrams. QQ_UDP_FLOW can't be combined with QQ_BYPASS.
+  o quark_socket{} got transport, a quark_transport enum of
+    QUARK_TRANSPORT_{TCP,UDP}, and for UDP: cookie, the kernel's socket
+    cookie, last_time, the time of the last datagram, and
+    packets_{received,sent}. Every peer of an unconnected UDP socket is
+    a socket of its own to quark, all sharing the cookie. The cookie
+    is part of a UDP socket's identity, so sockets sharing endpoints,
+    as with SO_REUSEPORT, are kept apart. pid_origin of a UDP socket
+    is zero when its first flow had no known process and is filled in
+    by the first flow that has one.
+  o BREAKING: quark_socket_lookup(3) takes the transport before the
+    endpoints and a cookie after them. A zero cookie returns the first
+    socket with the endpoints. Existing callers must pass
+    QUARK_TRANSPORT_TCP and 0.
+  o quark_event.process may be NULL for a UDP flow whose owner was
+    never seen and, as before, for socket and packet events whose
+    process already aged out of the cache. The Go binding's GetEvent
+    now delivers these events with a zero-valued Process, Pid 0,
+    instead of silently dropping them.
+  o quark-mon(8) got -U to enable UDP flows and -A and -I to set the
+    aggregation and idle times in milliseconds, both implying -U. Its
+    stats line got a udp-lost column.
+  o The ECS output reports network.transport as tcp or udp, and
+    source.bytes, destination.bytes and network.bytes on every socket
+    event: the period's traffic on a flow, the totals otherwise. UDP
+    adds source.packets, destination.packets and network.packets, and
+    a flow's event.action is connection-flow.
+  o The Go binding mirrors the above: Socket.{Transport,Cookie,
+    LastTime,PacketsSent,PacketsReceived}, Event.Flow,
+    QueueAttr.{UdpAggTime,UdpIdleTime}, Stats.UdpFlowLost,
+    QQ_UDP_FLOW, QUARK_EV_SOCK_FLOW and QUARK_TRANSPORT_*.
+  o BREAKING: SocketLookup takes the transport and a cookie.
