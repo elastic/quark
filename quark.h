@@ -983,6 +983,7 @@ struct quark_queue_stats {
 	u64	lost;
 	u64	garbage_collections;
 	u64	stalls;     /* stalled perf rings due to corruption, only for QQ_KPROBE */
+	u64	udp_flow_lost;	/* datagrams dropped by a full flow map, only for QQ_UDP_FLOW */
 	int	backend;    /* active backend, QQ_EBPF or QQ_KPROBE */
 	/* TODO u64    peak_nodes; */
 };

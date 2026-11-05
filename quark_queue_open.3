@@ -143,6 +143,12 @@ without traffic is reported as
 .Dv QUARK_EV_SOCK_CONN_CLOSED
 with its totals.
 Datagrams are counted whether or not the owning process is known.
+The kernel holds up to 65536 flows per aggregation period, beyond that new
+flows go uncounted until the next period and
+.Em udp_flow_lost
+of
+.Xr quark_queue_get_stats 3
+is incremented.
 A socket whose first flow had no known process is established with a
 .Em pid_origin
 of zero, the first flow that has one fills it in.

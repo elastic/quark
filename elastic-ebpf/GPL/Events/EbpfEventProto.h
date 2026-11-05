@@ -490,6 +490,7 @@ struct ebpf_event_stats {
     uint64_t lost;          // lost events due to a full ringbuffer
     uint64_t sent;          // events sent through the ringbuffer
     uint64_t dns_zero_body; // indicates that the dns body of a sk_buff was unavailable
+    uint64_t udp_flow_lost; // datagrams dropped, flow map full
 } __attribute__((aligned(8)));
 
 #endif // EBPF_EVENTPROBE_EBPFEVENTPROTO_H

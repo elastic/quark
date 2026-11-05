@@ -36,6 +36,7 @@ dump_stats(struct quark_queue *qq)
 	    "%14s"
 	    "%14s"
 	    "%14s"
+	    "%14s"
 	    "%14s",
 	    "insertions",
 	    "removals",
@@ -43,7 +44,8 @@ dump_stats(struct quark_queue *qq)
 	    "non-aggs",
 	    "lost",
 	    "gc-cols",
-	    "stalls"
+	    "stalls",
+	    "udp-lost"
 	);
 	fputc('\n', stderr);
 	fprintf(stderr,
@@ -53,9 +55,11 @@ dump_stats(struct quark_queue *qq)
 	    "%14llu"
 	    "%14llu"
 	    "%14llu"
+	    "%14llu"
 	    "%14llu",
 	    s.insertions, s.removals, s.aggregations,
-	    s.non_aggregations, s.lost, s.garbage_collections, s.stalls);
+	    s.non_aggregations, s.lost, s.garbage_collections, s.stalls,
+	    s.udp_flow_lost);
 	fputc('\n', stderr);
 }
 

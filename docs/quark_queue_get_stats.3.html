@@ -43,6 +43,7 @@
 	u64	lost;
 	u64	garbage_collections;
 	u64	stalls;
+	u64	udp_flow_lost;
 	int	backend;
 };</pre>
 </div>
@@ -79,6 +80,14 @@
       ring is abandoned and no further events are read from it. Only meaningful
       on the <code class="Dv">QQ_KPROBE</code> backend, zero on
       <code class="Dv">QQ_EBPF</code>.</dd>
+  <dt id="udp_flow_lost"><a class="permalink" href="#udp_flow_lost"><i class="Em">udp_flow_lost</i></a></dt>
+  <dd>A counter of UDP datagrams that could not be accounted because the kernel
+      flow map was full, that is, more flows than it holds were active in one
+      aggregation period. Every datagram of a flow that found no room is
+      counted, so this is the number of datagrams that went unreported, not a
+      number of flows. Only meaningful with <code class="Dv">QQ_UDP_FLOW</code>,
+      see
+    <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</dd>
   <dt id="backend"><a class="permalink" href="#backend"><i class="Em">backend</i></a></dt>
   <dd>Active queue backend, either <code class="Dv">QQ_EBPF</code> or
       <code class="Dv">QQ_KPROBE</code>.</dd>
@@ -101,7 +110,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 5, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

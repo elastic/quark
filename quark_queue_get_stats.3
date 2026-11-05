@@ -25,6 +25,7 @@ struct quark_queue_stats {
 	u64	lost;
 	u64	garbage_collections;
 	u64	stalls;
+	u64	udp_flow_lost;
 	int	backend;
 };
 .Ed
@@ -64,6 +65,16 @@ Only meaningful on the
 .Dv QQ_KPROBE
 backend, zero on
 .Dv QQ_EBPF .
+.It Em udp_flow_lost
+A counter of UDP datagrams that could not be accounted because the kernel
+flow map was full, that is, more flows than it holds were active in one
+aggregation period.
+Every datagram of a flow that found no room is counted, so this is the number
+of datagrams that went unreported, not a number of flows.
+Only meaningful with
+.Dv QQ_UDP_FLOW ,
+see
+.Xr quark_queue_open 3 .
 .It Em backend
 Active queue backend, either
 .Dv QQ_EBPF

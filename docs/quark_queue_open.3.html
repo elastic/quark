@@ -134,8 +134,13 @@
           a socket that goes <i class="Em">udp_idle_time</i> without traffic is
           reported as <code class="Dv">QUARK_EV_SOCK_CONN_CLOSED</code> with its
           totals. Datagrams are counted whether or not the owning process is
-          known. A socket whose first flow had no known process is established
-          with a
+          known. The kernel holds up to 65536 flows per aggregation period,
+          beyond that new flows go uncounted until the next period and
+          <a class="permalink" href="#udp_flow_lost"><i class="Em" id="udp_flow_lost">udp_flow_lost</i></a>
+          of
+          <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>
+          is incremented. A socket whose first flow had no known process is
+          established with a
           <a class="permalink" href="#pid_origin"><i class="Em" id="pid_origin">pid_origin</i></a>
           of zero, the first flow that has one fills it in.
         <p class="Pp">The addresses and ports of a flow are those the socket

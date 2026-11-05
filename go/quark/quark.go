@@ -402,6 +402,7 @@ type Stats struct {
 	Lost               uint64
 	GarbageCollections uint64
 	Stalls             uint64
+	UdpFlowLost        uint64
 	Backend            int
 }
 
@@ -753,6 +754,7 @@ func (queue *Queue) Stats() Stats {
 	stats.Lost = uint64(cStats.lost)
 	stats.GarbageCollections = uint64(cStats.garbage_collections)
 	stats.Stalls = uint64(cStats.stalls)
+	stats.UdpFlowLost = uint64(cStats.udp_flow_lost)
 	stats.Backend = int(cStats.backend)
 
 	return stats

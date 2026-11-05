@@ -488,11 +488,18 @@ static __always_inline void udp_flow_account1(void *map,
             return;
         /*
          * Another cpu inserted first, fall through to atomic adds.
-	 * If the map is full, the datagram is lost.
+         * If the map is full, the datagram is lost and counted.
          */
         v = bpf_map_lookup_elem(map, key);
-        if (v == NULL)
+        if (v == NULL) {
+            struct ebpf_event_stats *ees;
+            u32 zero = 0;
+
+            ees = bpf_map_lookup_elem(&ringbuf_stats, &zero);
+            if (ees != NULL)
+                ees->udp_flow_lost++;
             return;
+        }
     }
 
     if (direction == EBPF_NETWORK_DIR_EGRESS) {
