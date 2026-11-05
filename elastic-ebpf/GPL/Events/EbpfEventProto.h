@@ -470,7 +470,7 @@ struct ebpf_udp_flow_key {
     uint8_t raddr[16];
     uint16_t lport;
     uint16_t rport;
-    uint16_t family; // enum ebpf_net_info_af, the wire family
+    uint16_t family; // enum ebpf_net_info_af, the socket's when connected, the wire's otherwise
     uint16_t pad; // explicit pad (rather than implicit by compiler)
 };
 

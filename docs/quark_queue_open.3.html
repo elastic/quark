@@ -184,8 +184,14 @@
         period. Packets are counted as the kernel hands them to the socket
         layer, so with segmentation offload
         (<code class="Dv">UDP_SEGMENT</code>, <code class="Dv">UDP_GRO</code>)
-        one packet may carry several datagrams; bytes are unaffected. Defaults
-        to five seconds.</p>
+        one packet may carry several datagrams; bytes are unaffected.</p>
+    <p class="Pp" id="process">A flow is delivered up to an aggregation period
+        after its last datagram, so <i class="Em">cache_grace_time</i> should
+        exceed <i class="Em">udp_agg_time</i> or the last flow of a process that
+        exits right after its last datagram may arrive after the process was
+        dropped from the cache and carry no
+        <a class="permalink" href="#process"><i class="Em">process</i></a>.
+        Defaults to three seconds.</p>
   </dd>
   <dt id="udp_idle_time"><a class="permalink" href="#udp_idle_time"><i class="Em">udp_idle_time</i></a></dt>
   <dd>How long a UDP socket must go without traffic before it is considered

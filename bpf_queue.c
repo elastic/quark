@@ -42,7 +42,7 @@ struct bpf_queue {
 	 * waits until UDP_FLOW_FLIP_GRACE has elapsed. The BPF side reads the
 	 * generation and then updates a map in two unsynchronized steps, so a
 	 * program that read the old generation an instant before the bump may
-	 * still be adding to the retired map. The grace lets those programs
+	 * still be adding to the inactive map. The grace lets those programs
 	 * finish before userspace starts deleting entries.
 	 */
 	u64			 udp_flow_period_start;
@@ -1904,7 +1904,7 @@ udp_flow_drain(struct quark_queue *qq, struct bpf_map *m, int space_left,
 
 /*
  * Runs on every populate. Once per aggregation period the generation is
- * bumped so the programs move to the other map, the retired one is drained
+ * bumped so the programs move to the other map, the inactive one is drained
  * after UDP_FLOW_FLIP_GRACE, as many entries as the queue has room for,
  * across as many calls as it takes. The next flip waits for the drain to
  * finish, so a period stretches rather than losing data when the queue is
@@ -1915,7 +1915,7 @@ udp_flow_poll(struct quark_queue *qq, int space_left)
 {
 	struct bpf_queue	*bqq = qq->queue_be;
 	struct bpf_probes	*p = bqq->probes;
-	struct bpf_map		*retired;
+	struct bpf_map		*inactive;
 	u32			 zero, gen;
 	u64			 now;
 	int			 n, empty;
@@ -1927,9 +1927,9 @@ udp_flow_poll(struct quark_queue *qq, int space_left)
 			return (0);
 		if (space_left <= 0)
 			return (0);
-		retired = (bqq->udp_flow_gen & 1) ?
+		inactive = (bqq->udp_flow_gen & 1) ?
 		    p->maps.udp_flows0 : p->maps.udp_flows1;
-		n = udp_flow_drain(qq, retired, space_left, &empty);
+		n = udp_flow_drain(qq, inactive, space_left, &empty);
 		if (empty)
 			bqq->udp_flow_draining = false;
 

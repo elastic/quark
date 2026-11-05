@@ -4629,7 +4629,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->max_length = 10000;
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
-	qa->udp_agg_time = 5000;	/* five seconds */
+	qa->udp_agg_time = 3000;	/* three seconds, under cache_grace_time */
 	qa->udp_idle_time = 30000;	/* thirty seconds */
 	qa->max_env = 4096;		/* one page per process */
 	qa->kubefd = -1;		/* disabled */
@@ -4748,8 +4748,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		return (errno = EINVAL, -1);
 
 	/*
-	 * A flow reaches us up to a period plus hold_time after its last
-	 * datagram. An idle time under a period would expire live sockets.
+	 * A flow reaches us up to an aggregation period plus the flip grace
+	 * after its last datagram. An idle time under a period would expire
+	 * live sockets.
 	 */
 	if ((qa->flags & QQ_UDP_FLOW) &&
 	    (qa->udp_agg_time <= 0 || qa->udp_idle_time < qa->udp_agg_time))

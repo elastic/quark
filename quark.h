@@ -1058,7 +1058,7 @@ struct quark_queue {
 	int				 hold_time;		/* in ms */
 	u64				 udp_agg_time;		/* in ns */
 	u64				 udp_idle_time;		/* in ns */
-	TAILQ_HEAD(udp_idle_queue, quark_socket) udp_idle;	/* UDP sockets, oldest first */
+	TAILQ_HEAD(udp_idle_queue, quark_socket) udp_idle;	/* UDP sockets, longest idle first */
 	size_t				 max_env;		/* max process environment in bytes */
 	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
