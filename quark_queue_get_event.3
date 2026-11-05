@@ -255,6 +255,12 @@ by the first
 of the socket and zero for TCP.
 Every peer of an unconnected UDP socket is a socket of its own to quark, but
 all such sockets share the same cookie.
+The cookie is part of a UDP socket's identity: several sockets with the same
+endpoints, as with
+.Dv SO_REUSEPORT ,
+are kept apart, and
+.Fn quark_socket_lookup
+returns the first of them.
 .It Em flow
 Valid with
 .Dv QUARK_EV_SOCK_FLOW ,

@@ -635,7 +635,9 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 // sockets with QQ_UDP_FLOW and both require the EBPF backend.
 // A closed socket remains visible with a non-zero CloseTime until it
 // ages out after the queue's CacheGraceTime. The boolean is false if
-// no such socket is known.
+// no such socket is known. Several UDP sockets can share endpoints,
+// as with SO_REUSEPORT, quark keeps them apart by Cookie and this
+// returns the first.
 //
 // quark caches sockets under the address family the kernel reports,
 // so IPv4 traffic on a dual-stack AF_INET6 socket is cached with
