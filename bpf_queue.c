@@ -1849,26 +1849,33 @@ udp_flow_to_raw(struct ebpf_udp_flow_key *key, struct ebpf_udp_flow_val *val)
 
 /*
  * Drain up to space_left entries of the inactive map into raw events. Nothing
- * writes to it anymore so the first key is always a fresh one and deleting
- * it during the iteration never confuses the iteration.
+ * writes to it anymore, so the key chain can't be disturbed and deleting
+ * behind the iteration is safe.
+ *
  * Returns the number drained, sets *empty to 1 when the map has nothing left.
  */
 static int
 udp_flow_drain(struct quark_queue *qq, struct bpf_map *m, int space_left,
     int *empty)
 {
-	struct ebpf_udp_flow_key	 key;
+	struct ebpf_udp_flow_key	 key, next;
 	struct ebpf_udp_flow_val	 val;
 	struct raw_event		*raw;
-	int				 n;
+	int				 n, have_next;
 
 	*empty = 0;
+	if (bpf_map__get_next_key(m, NULL, &key, sizeof(key)) != 0) {
+		if (errno == ENOENT)
+			*empty = 1;
+		else
+			qwarn("bpf_map__get_next_key udp_flows");
+		return (0);
+	}
 	for (n = 0; n < space_left; n++) {
-		if (bpf_map__get_next_key(m, NULL, &key, sizeof(key)) != 0) {
-			if (errno == ENOENT)
-				*empty = 1;
-			else
-				qwarn("bpf_map__get_next_key udp_flows");
+		have_next = bpf_map__get_next_key(m, &key, &next,
+		    sizeof(next)) == 0;
+		if (!have_next && errno != ENOENT) {
+			qwarn("bpf_map__get_next_key udp_flows");
 			break;
 		}
 		if (bpf_map__lookup_elem(m, &key, sizeof(key), &val,
@@ -1891,6 +1898,12 @@ udp_flow_drain(struct quark_queue *qq, struct bpf_map *m, int space_left,
 		}
 		if (raw_event_insert(qq, raw) == -1)
 			raw_event_free(raw);
+		if (!have_next) {
+			*empty = 1;
+			n++;
+			break;
+		}
+		key = next;
 	}
 
 	return (n);
@@ -1957,7 +1970,7 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	struct bpf_queue	*bqq  = qq->queue_be;
 	struct ebpf_event_stats	*pcpu_ees;
 	u32			 zero = 0;
-	u64			 lost;
+	u64			 lost, udp_flow_lost;
 	int			 i, num_cpus;
 
 	if ((num_cpus = libbpf_num_possible_cpus()) <= 0) {
@@ -1980,9 +1993,12 @@ bpf_queue_update_stats(struct quark_queue *qq)
 		goto fail;
 	}
 
-	for (i = 0, lost = 0; i < num_cpus; i++)
+	for (i = 0, lost = 0, udp_flow_lost = 0; i < num_cpus; i++) {
 		lost += pcpu_ees[i].lost;
+		udp_flow_lost += pcpu_ees[i].udp_flow_lost;
+	}
 	qq->stats.lost = lost;
+	qq->stats.udp_flow_lost = udp_flow_lost;
 	free(pcpu_ees);
 
 	return (0);
