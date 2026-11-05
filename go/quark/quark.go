@@ -274,7 +274,10 @@ type Tty struct {
 }
 
 // Events is a bitmask of QUARK_EV_* and expresses what triggered this
-// event, Process is the context of the Event.
+// event, Process is the context of the Event. Process is zero-valued, with
+// Pid 0, when quark has no process for it, which happens for UDP flows of
+// an unknown owner and for socket or packet events whose process aged out
+// of the cache.
 type Event struct {
 	Events     uint64
 	Process    Process
@@ -535,12 +538,18 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	var event Event
 
 	cev := C.quark_queue_get_event(queue.quarkQueue)
-	if cev == nil || cev.process == nil {
+	if cev == nil {
 		return event, false
 	}
 
 	event.Events = uint64(cev.events)
-	event.Process = processFromC(cev.process)
+	// Process stays zero-valued, Pid 0, when quark has no process for
+	// the event: a UDP flow whose owner was never seen, or a socket or
+	// packet event whose process already aged out of the cache. The
+	// event is still delivered, the socket and flow stand on their own.
+	if cev.process != nil {
+		event.Process = processFromC(cev.process)
+	}
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)
 		event.Socket = &socket
