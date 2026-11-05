@@ -3586,6 +3586,7 @@ assert_udp_socket(const struct quark_socket *qsk, pid_t child, u16 lport,
 {
 	assert(qsk != NULL);
 	assert(qsk->transport == QUARK_TRANSPORT_UDP);
+	assert(qsk->cookie != 0);
 	assert(qsk->conn_origin == SOCK_CONN_FLOW);
 	assert((pid_t)qsk->pid_origin == child);
 	assert((pid_t)qsk->pid_last_use == child);
@@ -3633,6 +3634,7 @@ t_udp_flow(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_socket	*qsk;
 	pid_t				 child;
 	u16				 bound_port;
+	u64				 sender_cookie, listener_cookie;
 	int				 npackets, nflow_sender, nflow_listener;
 	int				 nclosed;
 
@@ -3671,6 +3673,7 @@ t_udp_flow(const struct test *t, struct quark_queue_attr *qa)
 				assert(qev->flow.bytes_sent == strlen(PATTERN));
 				assert(qev->flow.packets_received == 0);
 				assert(qev->flow.bytes_received == 0);
+				sender_cookie = qsk->cookie;
 				nflow_sender++;
 			} else {
 				assert_udp_socket(qsk, child, htons(53),
@@ -3679,6 +3682,7 @@ t_udp_flow(const struct test *t, struct quark_queue_attr *qa)
 				assert(qev->flow.bytes_received == strlen(PATTERN));
 				assert(qev->flow.packets_sent == 0);
 				assert(qev->flow.bytes_sent == 0);
+				listener_cookie = qsk->cookie;
 				nflow_listener++;
 			}
 			/* one datagram, one period */
@@ -3717,6 +3721,8 @@ t_udp_flow(const struct test *t, struct quark_queue_attr *qa)
 	assert(npackets == 2);
 	assert(nflow_sender == 1);
 	assert(nflow_listener == 1);
+	/* two sockets, two cookies */
+	assert(sender_cookie != listener_cookie);
 
 	quark_queue_close(&qq);
 

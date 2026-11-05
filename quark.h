@@ -374,6 +374,7 @@ struct raw_sock_conn {
 	/* SOCK_CONN_FLOW only, the period's traffic in both directions
 	 *  and its CLOCK_BOOTTIME bounds.
 	 */
+	u64	cookie;
 	u64	packets_received;
 	u64	packets_sent;
 	u64	first_time;
@@ -746,6 +747,7 @@ struct quark_socket {
 	struct quark_sockaddr	local;
 	struct quark_sockaddr	remote;
 	enum quark_transport	transport;
+	u64			cookie;			/* kernel socket cookie, UDP only */
 	u32			pid_origin;
 	u32			pid_last_use;
 	u64			established_time;

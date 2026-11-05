@@ -1849,6 +1849,7 @@ udp_flow_to_raw(struct ebpf_udp_flow_key *key, struct ebpf_udp_flow_val *val)
 	udp_flow_addr(&conn->remote, key->family, key->raddr, key->rport);
 	conn->transport = QUARK_TRANSPORT_UDP;
 	conn->conn = SOCK_CONN_FLOW;
+	conn->cookie = key->cookie;
 	conn->bytes_received = val->bytes_received;
 	conn->bytes_sent = val->bytes_sent;
 	conn->packets_received = val->packets_received;

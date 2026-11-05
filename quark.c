@@ -2360,8 +2360,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    remote, ntohs(qsk->remote.port),
 		    qsk->bytes_received, qsk->bytes_sent);
 		if (qsk->transport == QUARK_TRANSPORT_UDP)
-			PF(fl, "packets_received=%llu packets_sent=%llu\n",
-			    qsk->packets_received, qsk->packets_sent);
+			PF(fl, "packets_received=%llu packets_sent=%llu "
+			    "cookie=%llu\n", qsk->packets_received,
+			    qsk->packets_sent, qsk->cookie);
 	}
 
 	if (qev->events & QUARK_EV_SOCK_FLOW) {
@@ -5290,6 +5291,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 			}
 			qev->events = QUARK_EV_SOCK_CONN_ESTABLISHED;
 		}
+		qsk->cookie = conn->cookie;
 		qsk->bytes_received += conn->bytes_received;
 		qsk->bytes_sent += conn->bytes_sent;
 		qsk->packets_received += conn->packets_received;

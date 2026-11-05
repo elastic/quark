@@ -165,10 +165,13 @@ type Group struct {
 // Socket represents a connection between two endpoints, a TCP connection
 // or a UDP socket talking to one peer. Byte counts are payload totals since
 // EstablishedTime, packet counts exist for UDP only.
+// Cookie is the kernel's socket cookie, unique for the boot and shared by
+// every flow of an unconnected UDP socket; zero for TCP.
 type Socket struct {
 	Local           netip.AddrPort
 	Remote          netip.AddrPort
 	Transport       int
+	Cookie          uint64
 	PidOrigin       uint32
 	PidLastUse      uint32
 	EstablishedTime uint64
@@ -952,6 +955,7 @@ func socketFromC(cSocket *C.struct_quark_socket) Socket {
 	socket.Local = addrPortFromQuarkSockaddr(&cSocket.local)
 	socket.Remote = addrPortFromQuarkSockaddr(&cSocket.remote)
 	socket.Transport = int(cSocket.transport)
+	socket.Cookie = uint64(cSocket.cookie)
 	socket.PidOrigin = uint32(cSocket.pid_origin)
 	socket.PidLastUse = uint32(cSocket.pid_last_use)
 	socket.EstablishedTime = uint64(cSocket.established_time)
