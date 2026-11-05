@@ -512,12 +512,89 @@ static __always_inline void udp_flow_account1(void *map,
 }
 
 /*
- * Account the datagram to the (socket, 5-tuple) flow it belongs to, in the
- * map of the current generation. The key is always local first then remote
- * so both directions land on the same entry.
+ * The tuple as the socket sees it.
+ *
+ * bpf_sock's dst_port is a __u32 in the contrib vmlinux.h the probe is
+ * compiled with and a __be16 plus padding in the 5.18+ uapi. The port sits
+ * in the low 16 bits of the same 4 bytes either way. Every verifier takes a
+ * 4 byte load there, older ones reject a 2 byte one, and clang narrows the
+ * load when the truncation follows it directly, hence the barrier_var.
  */
-static void udp_flow_account(struct __sk_buff *skb, struct udp_hdrs *h,
-    int direction, u32 tgid)
+static __always_inline u16 sk_dst_port(struct bpf_sock *sk)
+{
+    u32 dport;
+
+    dport = sk->dst_port;
+    barrier_var(dport);
+
+    return (u16)dport;
+}
+
+static __always_inline void udp_flow_key_from_sock(
+    struct ebpf_udp_flow_key *key, struct bpf_sock *sk)
+{
+    u32 *l = (u32 *)key->laddr, *r = (u32 *)key->raddr;
+
+    if (sk->family == AF_INET) {
+        key->family = EBPF_NETWORK_EVENT_AF_INET;
+        l[0] = sk->src_ip4;
+        r[0] = sk->dst_ip4;
+    } else {
+        key->family = EBPF_NETWORK_EVENT_AF_INET6;
+        l[0] = sk->src_ip6[0];
+        l[1] = sk->src_ip6[1];
+        l[2] = sk->src_ip6[2];
+        l[3] = sk->src_ip6[3];
+        r[0] = sk->dst_ip6[0];
+        r[1] = sk->dst_ip6[1];
+        r[2] = sk->dst_ip6[2];
+        r[3] = sk->dst_ip6[3];
+    }
+    key->lport = bpf_htons((u16)sk->src_port);
+    key->rport = sk_dst_port(sk);
+}
+
+/*
+ * The tuple as it is on the wire. Normalize addresses so datagrams
+ * from both directions generate the same key.
+ */
+static __always_inline void udp_flow_key_from_hdrs(
+    struct ebpf_udp_flow_key *key, struct udp_hdrs *h, int direction)
+{
+    key->family = h->family;
+    /*
+     * Normalization: Always put the local endpoint in laddr/lport
+     * and the peer in raddr/rport.
+     */
+    if (direction == EBPF_NETWORK_DIR_EGRESS) {
+        __builtin_memcpy(key->laddr, h->saddr, sizeof(key->laddr));
+        __builtin_memcpy(key->raddr, h->daddr, sizeof(key->raddr));
+        key->lport = h->udp.source;
+        key->rport = h->udp.dest;
+    } else {
+	/* INGRESS */
+        __builtin_memcpy(key->laddr, h->daddr, sizeof(key->laddr));
+        __builtin_memcpy(key->raddr, h->saddr, sizeof(key->raddr));
+        key->lport = h->udp.dest;
+        key->rport = h->udp.source;
+    }
+}
+
+/*
+ * Account the datagram to the (socket, 5-tuple) flow it belongs to, in the
+ * map of the current generation.
+ *
+ * The tuple comes from the socket when it is connected and from the
+ * datagram headers otherwise. Egress runs after the OUTPUT DNAT and
+ * POSTROUTING SNAT rewrote the addresses while ingress runs after
+ * PREROUTING translated the reply back, so a header key would split a
+ * NATed conversation (e.g. a resolver connected to a kube-dns ClusterIP),
+ * into two one-way flows under two peers. The socket's view is the same in
+ * both directions. An unconnected socket has no peer to ask, the headers
+ * are all there is, and under DNAT its two directions stay separate.
+ */
+static void udp_flow_account(struct __sk_buff *skb, struct bpf_sock *sk,
+    struct udp_hdrs *h, int direction, u32 tgid)
 {
     struct ebpf_udp_flow_key key;
     u32 *gen, hlen;
@@ -529,18 +606,10 @@ static void udp_flow_account(struct __sk_buff *skb, struct udp_hdrs *h,
 
     __builtin_memset(&key, 0, sizeof(key));
     key.cookie = bpf_get_socket_cookie(skb);
-    key.family = h->family;
-    if (direction == EBPF_NETWORK_DIR_EGRESS) {
-        __builtin_memcpy(key.laddr, h->saddr, sizeof(key.laddr));
-        __builtin_memcpy(key.raddr, h->daddr, sizeof(key.raddr));
-        key.lport = h->udp.source;
-        key.rport = h->udp.dest;
-    } else {
-        __builtin_memcpy(key.laddr, h->daddr, sizeof(key.laddr));
-        __builtin_memcpy(key.raddr, h->saddr, sizeof(key.raddr));
-        key.lport = h->udp.dest;
-        key.rport = h->udp.source;
-    }
+    if (sk_dst_port(sk) != 0)
+        udp_flow_key_from_sock(&key, sk);
+    else
+        udp_flow_key_from_hdrs(&key, h, direction);
 
     /*
      * skb->len starts at the network header in both directions, payload is
@@ -598,7 +667,8 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
      * worth reporting as an event.
      */
     if (udp_flow_enabled)
-        udp_flow_account(skb, &h, direction, tgid != NULL ? *tgid : 0);
+        udp_flow_account(skb, sk, &h, direction,
+            tgid != NULL ? *tgid : 0);
 
     if (!is_dns || tgid == NULL)
 	/*
