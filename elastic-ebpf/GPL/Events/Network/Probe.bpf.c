@@ -458,6 +458,18 @@ static int skb_parse_udp(struct __sk_buff *skb, struct udp_hdrs *h)
 }
 
 /*
+ * Atomic add without fetch, the pre-5.12 xadd encoding. __sync_fetch_and_add
+ * lowers to atomic_fetch_add on cpu v3, clang's default since 20, and
+ * kernels before 5.12 reject that encoding when they scan the program,
+ * before dead code is removed, so the whole cgroup_skb program fails to
+ * load whether or not flows are on. Nobody reads the old value here.
+ */
+static __always_inline void udp_flow_add64(u64 *p, u64 v)
+{
+    asm volatile("lock *(u64 *)(%0 + 0) += %1" : : "r"(p), "r"(v) : "memory");
+}
+
+/*
  * Add one datagram to its flow in map. Counters are added atomically since
  * the same flow can be worked on by several cpus at once, unconnected sockets
  * in particular are shared across threads. The timestamps are plain stores:
@@ -503,11 +515,11 @@ static __always_inline void udp_flow_account1(void *map,
     }
 
     if (direction == EBPF_NETWORK_DIR_EGRESS) {
-        __sync_fetch_and_add(&v->packets_sent, 1);
-        __sync_fetch_and_add(&v->bytes_sent, bytes);
+        udp_flow_add64(&v->packets_sent, 1);
+        udp_flow_add64(&v->bytes_sent, bytes);
     } else {
-        __sync_fetch_and_add(&v->packets_received, 1);
-        __sync_fetch_and_add(&v->bytes_received, bytes);
+        udp_flow_add64(&v->packets_received, 1);
+        udp_flow_add64(&v->bytes_received, bytes);
     }
     v->last_ns = bpf_ktime_get_boot_ns();
     /*
