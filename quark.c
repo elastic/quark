@@ -5348,6 +5348,13 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
  * Expire UDP sockets that went udp_idle_time without a flow. There is no
  * close for these, so we synthesize one: a SOCK_CONN_CLOSE with the
  * totals goes through the raw event tree and raw_event_sock() reports it.
+ *
+ * idle_since is stamped when a flow is processed, not when its datagrams
+ * were sent, and a flow reaches us up to udp_agg_time plus
+ * UDP_FLOW_FLIP_GRACE after its last datagram. A datagram sent just inside
+ * udp_idle_time can therefore still be in the kernel when the idle time is
+ * up, so expiry waits that much longer; otherwise the socket would be
+ * closed and re-established around a flow that was already on its way.
  */
 static void
 udp_idle_expire(struct quark_queue *qq)
@@ -5355,17 +5362,17 @@ udp_idle_expire(struct quark_queue *qq)
 	struct quark_socket	*qsk;
 	struct raw_event	*raw;
 	struct raw_sock_conn	*conn;
-	u64			 now;
+	u64			 now, idle;
 
 	now = now64();
+	idle = qq->udp_idle_time + qq->udp_agg_time + UDP_FLOW_FLIP_GRACE;
 	while ((qsk = TAILQ_FIRST(&qq->udp_idle)) != NULL) {
 		/*
 		 * Expiry walks from the head and stops at the first socket
-		 * whose idle time is less than qq->udp_idle_time. This works
-		 * because qq->udp_idle is ordered by last activity, longest
-		 * idle at the head.
+		 * that is not idle yet. This works because qq->udp_idle is
+		 * ordered by last activity, longest idle at the head.
 		 */
-		if (AGE(qsk->idle_since, now) < qq->udp_idle_time)
+		if (AGE(qsk->idle_since, now) < idle)
 			break;
 		udp_idle_unlink(qq, qsk);
 

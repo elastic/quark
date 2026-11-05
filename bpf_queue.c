@@ -64,13 +64,6 @@ struct bpf_queue {
  */
 #define UDP_FLOWS_MAX_ENTRIES	65536
 
-/*
- * How long after flipping the generation before the retired map is drained.
- * A cgroup_skb program reads the generation and updates the map within one
- * run, a handful of microseconds, this is a wide margin over that.
- */
-#define UDP_FLOW_FLIP_GRACE	MS_TO_NS(100)
-
 static int	bpf_queue_populate(struct quark_queue *);
 static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);

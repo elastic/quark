@@ -262,6 +262,14 @@ int	quark_event_to_ecs(struct quark_queue *qq,
 #endif /* NS_TO_S */
 
 /*
+ * How long after flipping the UDP flow generation before the inactive map is
+ * drained. A cgroup_skb program reads the generation and updates the map
+ * within one run, a handful of microseconds, this is a wide margin over
+ * that. Also the tail of a flow's delivery latency, see udp_idle_expire().
+ */
+#define UDP_FLOW_FLIP_GRACE	MS_TO_NS(100)
+
+/*
  * CLOCK_BOOTTIME in nanoseconds.
  * Zero if the clock can't be read (should never happen).
  */
@@ -776,7 +784,7 @@ struct quark_socket {
 	u64			packets_sent;		/* UDP only */
 	/* Internal */
 	u64			idle_since;		/* Userspace time, UDP only */
-	int			idle_linked;		/* Set while on qq->udp_idle, see udp_idle_unlink */
+	int			idle_linked;		/* Set while on qq->udp_idle, see udp_idle_unlink() */
 };
 
 struct quark_socket_iter {
