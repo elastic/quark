@@ -185,6 +185,10 @@ The UDP flow aggregation period, only meaningful with
 .Pp
 Traffic accumulates in the kernel and is collected once per period, a busy
 flow produces one event per period.
+Packets are counted as the kernel hands them to the socket layer, so with
+segmentation offload
+.Pq Dv UDP_SEGMENT , Dv UDP_GRO
+one packet may carry several datagrams; bytes are unaffected.
 Defaults to five seconds.
 .It Em udp_idle_time
 How long a UDP socket must go without traffic before it is considered closed

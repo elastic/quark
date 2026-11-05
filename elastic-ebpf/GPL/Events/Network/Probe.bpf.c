@@ -533,12 +533,20 @@ static __always_inline u16 sk_dst_port(struct bpf_sock *sk)
 static __always_inline void udp_flow_key_from_sock(
     struct ebpf_udp_flow_key *key, struct bpf_sock *sk)
 {
-    u32 *l = (u32 *)key->laddr, *r = (u32 *)key->raddr;
+    u32 l[4], r[4];
 
+    /*
+     * The context fields are loaded one by one into locals and copied
+     * from there: the verifier rewrites each bpf_sock access and refuses
+     * arithmetic on the context pointer, and the key's address bytes are
+     * u8 arrays that must not be written through a u32 lvalue.
+     */
     if (sk->family == AF_INET) {
         key->family = EBPF_NETWORK_EVENT_AF_INET;
         l[0] = sk->src_ip4;
         r[0] = sk->dst_ip4;
+        __builtin_memcpy(key->laddr, l, 4);
+        __builtin_memcpy(key->raddr, r, 4);
     } else {
         key->family = EBPF_NETWORK_EVENT_AF_INET6;
         l[0] = sk->src_ip6[0];
@@ -549,6 +557,8 @@ static __always_inline void udp_flow_key_from_sock(
         r[1] = sk->dst_ip6[1];
         r[2] = sk->dst_ip6[2];
         r[3] = sk->dst_ip6[3];
+        __builtin_memcpy(key->laddr, l, 16);
+        __builtin_memcpy(key->raddr, r, 16);
     }
     key->lport = bpf_htons((u16)sk->src_port);
     key->rport = sk_dst_port(sk);
@@ -615,6 +625,11 @@ static void udp_flow_account(struct __sk_buff *skb, struct bpf_sock *sk,
      * skb->len starts at the network header in both directions, payload is
      * what's left after the IP and UDP headers. Matches what tcp_sock's
      * bytes_sent/bytes_received count for TCP.
+     *
+     * A packet is one skb as the stack hands it to the socket layer. With
+     * segmentation offload (UDP_SEGMENT on send, UDP_GRO on receive) one
+     * skb carries several datagrams, so packets undercount while bytes
+     * stay right.
      */
     hlen = h->l4off + sizeof(struct udphdr);
     bytes = skb->len > hlen ? skb->len - hlen : 0;

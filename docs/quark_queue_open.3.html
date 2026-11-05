@@ -174,8 +174,11 @@
   <dd>The UDP flow aggregation period, only meaningful with
       <code class="Dv">QQ_UDP_FLOW</code>.
     <p class="Pp">Traffic accumulates in the kernel and is collected once per
-        period, a busy flow produces one event per period. Defaults to five
-        seconds.</p>
+        period, a busy flow produces one event per period. Packets are counted
+        as the kernel hands them to the socket layer, so with segmentation
+        offload (<code class="Dv">UDP_SEGMENT</code>,
+        <code class="Dv">UDP_GRO</code>) one packet may carry several datagrams;
+        bytes are unaffected. Defaults to five seconds.</p>
   </dd>
   <dt id="udp_idle_time"><a class="permalink" href="#udp_idle_time"><i class="Em">udp_idle_time</i></a></dt>
   <dd>How long a UDP socket must go without traffic before it is considered

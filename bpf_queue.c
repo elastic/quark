@@ -1876,12 +1876,17 @@ udp_flow_drain(struct quark_queue *qq, struct bpf_map *m, int space_left,
 			qwarn("bpf_map__lookup_elem udp_flows");
 			break;
 		}
-		if (bpf_map__delete_elem(m, &key, sizeof(key), 0) != 0) {
-			qwarn("bpf_map__delete_elem udp_flows");
-			break;
-		}
+		/*
+		 * Allocate before deleting so a failed allocation leaves the
+		 * entry for the next pass instead of losing the period.
+		 */
 		if ((raw = udp_flow_to_raw(&key, &val)) == NULL) {
 			qwarn("udp_flow_to_raw");
+			break;
+		}
+		if (bpf_map__delete_elem(m, &key, sizeof(key), 0) != 0) {
+			qwarn("bpf_map__delete_elem udp_flows");
+			raw_event_free(raw);
 			break;
 		}
 		if (raw_event_insert(qq, raw) == -1)
@@ -1930,13 +1935,17 @@ udp_flow_poll(struct quark_queue *qq, int space_left)
 
 	zero = 0;
 	gen = bqq->udp_flow_gen + 1;
+	/*
+	 * Advance the period even on failure, so a persistent error is
+	 * retried and warned about once a period rather than on every call.
+	 */
+	bqq->udp_flow_period_start = now;
 	if (bpf_map__update_elem(p->maps.udp_flow_gen, &zero, sizeof(zero),
 	    &gen, sizeof(gen), 0) != 0) {
 		qwarn("bpf_map__update_elem udp_flow_gen");
 		return (-1);
 	}
 	bqq->udp_flow_gen = gen;
-	bqq->udp_flow_period_start = now;
 	bqq->udp_flow_draining = true;
 
 	return (0);
