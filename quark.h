@@ -15,6 +15,7 @@
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <time.h>
 
 /* Compat, tree.h, queue.h */
 #include "compat.h"
@@ -259,6 +260,21 @@ int	quark_event_to_ecs(struct quark_queue *qq,
 #ifndef NS_TO_S
 #define NS_TO_S(_x)	((u64)(_x) / NS_PER_S)
 #endif /* NS_TO_S */
+
+/*
+ * CLOCK_BOOTTIME in nanoseconds.
+ * Zero if the clock can't be read (should never happen).
+ */
+static inline u64
+now64(void)
+{
+	struct timespec	ts;
+
+	if (clock_gettime(CLOCK_BOOTTIME, &ts) == -1)
+		return (0);
+
+	return (TS_TO_NS(ts));
+}
 
 /*
  * Generic exported constants

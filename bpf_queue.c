@@ -76,7 +76,6 @@ static int	bpf_queue_populate(struct quark_queue *);
 static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
 static int	udp_flow_poll(struct quark_queue *, int);
-static u64	boottime_ns(void);
 static u32	bpf_ringbuf_size(int);
 static void	bump_memlock(void);
 
@@ -1732,7 +1731,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	qq->queue_ops = &queue_ops_bpf;
 	qq->stats.backend = QQ_EBPF;
-	bqq->udp_flow_period_start = boottime_ns();
+	bqq->udp_flow_period_start = now64();
 
 	btf__free(btf);
 
@@ -1801,17 +1800,6 @@ bpf_queue_populate(struct quark_queue *qq)
 	}
 
 	return (npop);
-}
-
-static u64
-boottime_ns(void)
-{
-	struct timespec	ts;
-
-	if (clock_gettime(CLOCK_BOOTTIME, &ts) == -1)
-		return (0);
-
-	return (TS_TO_NS(ts));
 }
 
 static void
@@ -1922,7 +1910,7 @@ udp_flow_poll(struct quark_queue *qq, int space_left)
 	u64			 now;
 	int			 n, empty;
 
-	now = boottime_ns();
+	now = now64();
 
 	if (bqq->udp_flow_draining) {
 		if (now - bqq->udp_flow_flip_time < UDP_FLOW_FLIP_GRACE)

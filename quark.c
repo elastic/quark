@@ -319,17 +319,6 @@ raw_event_by_pidtime_cmp(struct raw_event *a, struct raw_event *b)
 }
 
 static inline u64
-now64(void)
-{
-	struct timespec ts;
-
-	if (clock_gettime(CLOCK_BOOTTIME, &ts) == -1)
-		return (0);
-
-	return (TS_TO_NS(ts));
-}
-
-static inline u64
 raw_event_age(struct raw_event *raw, u64 now)
 {
 	return AGE(raw->time, now);
