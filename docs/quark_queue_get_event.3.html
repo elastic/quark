@@ -208,6 +208,7 @@
 	struct quark_sockaddr	local;
 	struct quark_sockaddr	remote;
 	enum quark_transport	transport;	/* QUARK_TRANSPORT_{TCP,UDP} */
+	u64			cookie;			/* kernel socket cookie, UDP only */
 	u32			pid_origin;
 	u32			pid_last_use;
 	u64			established_time;
@@ -225,6 +226,12 @@
         and UDP headers, and are the totals since
         <a class="permalink" href="#established_time"><i class="Em">established_time</i></a>.
         Addresses and ports are in network byte order.</p>
+    <p class="Pp" id="cookie"><a class="permalink" href="#cookie"><i class="Em">cookie</i></a>
+        is the kernel's socket cookie, unique for the lifetime of the boot,
+        filled in by the first <code class="Dv">QUARK_EV_SOCK_FLOW</code> of the
+        socket and zero for TCP. Every peer of an unconnected UDP socket is a
+        socket of its own to quark, but all such sockets share the same
+      cookie.</p>
   </dd>
   <dt id="flow"><a class="permalink" href="#flow"><i class="Em">flow</i></a></dt>
   <dd>Valid with <code class="Dv">QUARK_EV_SOCK_FLOW</code>, the traffic of one

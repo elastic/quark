@@ -215,6 +215,7 @@ struct quark_socket {
 	struct quark_sockaddr	local;
 	struct quark_sockaddr	remote;
 	enum quark_transport	transport;	/* QUARK_TRANSPORT_{TCP,UDP} */
+	u64			cookie;			/* kernel socket cookie, UDP only */
 	u32			pid_origin;
 	u32			pid_last_use;
 	u64			established_time;
@@ -233,6 +234,14 @@ The byte counts are payload, without IP and UDP headers, and are the totals
 since
 .Em established_time .
 Addresses and ports are in network byte order.
+.Pp
+.Em cookie
+is the kernel's socket cookie, unique for the lifetime of the boot, filled in
+by the first
+.Dv QUARK_EV_SOCK_FLOW
+of the socket and zero for TCP.
+Every peer of an unconnected UDP socket is a socket of its own to quark, but
+all such sockets share the same cookie.
 .It Em flow
 Valid with
 .Dv QUARK_EV_SOCK_FLOW ,

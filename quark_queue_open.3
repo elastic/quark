@@ -144,6 +144,11 @@ without traffic is reported as
 with its totals.
 Datagrams are counted whether or not the owning process is known, the process
 is the last one seen using the socket.
+.Pp
+The addresses and ports of a flow are those the socket sees when it is
+connected, and those on the wire otherwise.
+An unconnected socket talking through local NAT therefore shows its outgoing
+and incoming traffic under different peers.
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.
