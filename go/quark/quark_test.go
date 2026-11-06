@@ -321,6 +321,75 @@ func TestQuark(t *testing.T) {
 		require.True(t, clientSocket.Local.Addr().Is4())
 	})
 
+	t.Run("FlowWithoutProcess", func(t *testing.T) {
+		// Sockets that predate the queue are unknown to the probes
+		// until used through a call that carries an address. A
+		// connected socket written with send(2) never is, so its
+		// flows have no process. GetEvent must deliver them anyway,
+		// with a zero-valued Process and the socket and flow intact.
+		listener, err := net.ListenUDP("udp4",
+			&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		require.NoError(t, err)
+		defer listener.Close()
+
+		conn, err := net.DialUDP("udp4", nil,
+			listener.LocalAddr().(*net.UDPAddr))
+		require.NoError(t, err)
+		defer conn.Close()
+
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+		attr.Flags |= QQ_UDP_FLOW
+		attr.UdpAggTime = 200
+		attr.UdpIdleTime = 400
+
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		payload := []byte("hello")
+		_, err = conn.Write(payload)
+		require.NoError(t, err)
+
+		local := conn.LocalAddr().(*net.UDPAddr).AddrPort()
+		remote := conn.RemoteAddr().(*net.UDPAddr).AddrPort()
+
+		var event Event
+		found := false
+		deadline := time.Now().Add(5 * time.Second)
+		for !found && time.Now().Before(deadline) {
+			qev, ok := queue.GetEvent()
+			if !ok {
+				queue.Block()
+				continue
+			}
+			if qev.Events&QUARK_EV_SOCK_FLOW == 0 || qev.Socket == nil {
+				continue
+			}
+			if qev.Socket.Local == local && qev.Socket.Remote == remote {
+				event = qev
+				found = true
+			}
+		}
+		require.True(t, found)
+
+		// Delivered without a process, on both the event and the socket.
+		require.Zero(t, event.Process)
+		require.Zero(t, event.Socket.PidOrigin)
+		require.Zero(t, event.Socket.PidLastUse)
+
+		// The payload survived.
+		require.Equal(t, QUARK_TRANSPORT_UDP, event.Socket.Transport)
+		require.NotZero(t, event.Socket.Cookie)
+		require.NotNil(t, event.Flow)
+		require.Equal(t, uint64(len(payload)), event.Flow.BytesSent)
+		require.Equal(t, uint64(1), event.Flow.PacketsSent)
+		require.Zero(t, event.Flow.BytesReceived)
+		require.NotZero(t, event.Flow.FirstTime)
+		require.Equal(t, event.Flow.FirstTime, event.Flow.LastTime)
+	})
+
 	t.Run("PasswdGroupLookup", func(t *testing.T) {
 		queue, err := OpenQueue(DefaultQueueAttr())
 		require.NoError(t, err)
