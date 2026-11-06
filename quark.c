@@ -5354,23 +5354,10 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 			}
 		}
 
-		/*
-		 * The synthesized UDP close is queued with the time of its
-		 * expiry and held hold_time before it gets here. A flow
-		 * drained in that window carries the earlier time of its
-		 * datagrams, so it is processed first and puts the socket
-		 * back on the idle list. The socket is in use again and this
-		 * close describes a state that no longer holds so drop it.
-		 * The socket will expire again on its own.
-		 */
-		if (qsk->idle_linked && qsk->idle_since > raw->time)
-			return (NULL);
-
 		if (qsk->close_time == 0)
 			qsk->close_time = raw->time;
 		qsk->bytes_received = conn->bytes_received;
 		qsk->bytes_sent = conn->bytes_sent;
-		udp_idle_unlink(qq, qsk);
 
 		gc_mark(qq, &qsk->gc, GC_SOCKET);
 		qev->events = QUARK_EV_SOCK_CONN_CLOSED;
@@ -5399,9 +5386,9 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 }
 
 /*
- * Expire UDP sockets that went udp_idle_time without a flow. There is no
- * close for these, so we synthesize one: a SOCK_CONN_CLOSE with the
- * totals goes through the raw event tree and raw_event_sock() reports it.
+ * The UDP socket that went longest without a flow, if it went long enough
+ * to be closed, and by how much it overshot. The list is ordered by last
+ * activity, longest idle at the head, so only the head can be due.
  *
  * idle_since is stamped when a flow is processed, not when its datagrams
  * were sent, and a flow reaches us up to udp_agg_time plus
@@ -5410,58 +5397,52 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
  * up, so expiry waits that much longer; otherwise the socket would be
  * closed and re-established around a flow that was already on its way.
  */
-static void
-udp_idle_expire(struct quark_queue *qq)
+static struct quark_socket *
+udp_idle_due(struct quark_queue *qq, u64 *overdue)
 {
 	struct quark_socket	*qsk;
-	struct raw_event	*raw;
-	struct raw_sock_conn	*conn;
-	u64			 now, idle;
+	u64			 age, idle;
 
-	now = now64();
+	if ((qsk = TAILQ_FIRST(&qq->udp_idle)) == NULL)
+		return (NULL);
+	age = AGE(qsk->idle_since, now64());
 	idle = qq->udp_idle_time + qq->udp_agg_time + UDP_FLOW_FLIP_GRACE;
-	while ((qsk = TAILQ_FIRST(&qq->udp_idle)) != NULL) {
-		/*
-		 * Expiry walks from the head and stops at the first socket
-		 * that is not idle yet. This works because qq->udp_idle is
-		 * ordered by last activity, longest idle at the head.
-		 */
-		if (AGE(qsk->idle_since, now) < idle)
-			break;
+	if (age < idle)
+		return (NULL);
+	*overdue = age - idle;
 
-		/*
-		 * Honor max_length the way the backends populate does.
-		 * Expired sockets that don't fit stay at the head of the
-		 * list and are closed on a later call. A burst of
-		 * expirations is spread out instead of flooding the queue.
-		 */
-		if (qq->length >= qq->max_length)
-			break;
+	return (qsk);
+}
 
-		if ((raw = raw_event_alloc(RAW_SOCK_CONN)) == NULL) {
-			qwarn("raw_event_alloc");
-			break;
-		}
-		raw->pid = qsk->pid_last_use;
-		raw->time = now;
-		conn = &raw->sock_conn;
-		conn->local = qsk->local;
-		conn->remote = qsk->remote;
-		conn->transport = qsk->transport;
-		conn->cookie = qsk->cookie;
-		conn->conn = SOCK_CONN_CLOSE;
-		conn->bytes_received = qsk->bytes_received;
-		conn->bytes_sent = qsk->bytes_sent;
-		if (raw_event_insert(qq, raw) == -1) {
-			raw_event_free(raw);
-			break;
-		}
-		/*
-		 * A socket whose close could not be queued stays
-		 * on the list and is retried.
-		 */
-		udp_idle_unlink(qq, qsk);
-	}
+/*
+ * Close an idle UDP socket. There is no kernel close for UDP, so the CLOSED
+ * event is made here and returned as this call's event, with the totals
+ * the socket accumulated.
+ *
+ * The event is not routed through the raw event tree. It carries no kernel
+ * timestamp to sort by, and holding it there would open a race window
+ * in which a flow for the same socket could be processed before its close.
+ * Expiring and closing in one step leaves no such window: a flow that
+ * arrives later finds close_time set and re-establishes the socket.
+ */
+static struct quark_event *
+udp_idle_close(struct quark_queue *qq, struct quark_socket *qsk)
+{
+	struct quark_event	*qev;
+
+	udp_idle_unlink(qq, qsk);
+	qsk->close_time = now64();
+	gc_mark(qq, &qsk->gc, GC_SOCKET);
+
+	event_storage_clear(qq);
+	qev = &qq->event_storage;
+	qev->events = QUARK_EV_SOCK_CONN_CLOSED;
+	qev->time = qsk->close_time;
+	qev->socket = qsk;
+	qev->process = process_cache_get(qq, qsk->pid_origin, 0);
+	link_container_data(qq, (struct quark_process *)qev->process);
+
+	return (qev);
 }
 
 static struct quark_event *
@@ -6050,12 +6031,11 @@ quark_queue_get_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
 	struct quark_rule	*rule;
+	struct quark_socket	*qsk;
+	u64			 overdue;
 
 	/* GC all processes and sockets that exited after some grace time */
 	gc_collect(qq);
-
-	/* Close UDP sockets that went quiet */
-	udp_idle_expire(qq);
 
 	/* Read from the kube pipe */
 	if (qq->qkube != NULL)
@@ -6071,8 +6051,28 @@ quark_queue_get_event(struct quark_queue *qq)
 	 */
 	(void)quark_queue_populate(qq);
 
+	/*
+	 * Prioritize raw events. An idle UDP socket is closed on a
+	 * get_event call that has nothing else ready, and is prioritized
+	 * only once it has been due for longer than hold_time, so a host
+	 * that never goes quiet can't starve the closes. qsk stays valid
+	 * across get_event1(): a call that returns NULL touched no socket,
+	 * and only closed sockets are ever deleted.
+	 */
+	qsk = udp_idle_due(qq, &overdue);
+	if (qsk != NULL && overdue > (u64)MS_TO_NS(qq->hold_time)) {
+		qev = udp_idle_close(qq, qsk);
+		qsk = NULL;	/* closed */
+		goto ruleset;
+	}
+
 next:
 	qev = quark_queue_get_event1(qq);
+	if (qev == NULL && qsk != NULL) {
+		qev = udp_idle_close(qq, qsk);
+		qsk = NULL;	/* closed */
+	}
+ruleset:
 	/* Run ruleset, if we drop, get the next event */
 	if (qev != NULL && qq->ruleset != NULL) {
 		rule = quark_ruleset_match(qq->ruleset, qev);

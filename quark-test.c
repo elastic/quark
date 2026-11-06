@@ -3747,6 +3747,157 @@ t_udp_flow(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * One aggregation period of a UDP flow as the drain would hand it over,
+ * on the loopback with the ports and cookie given. Nothing is held when
+ * the time is ancient, so the raw event pops on the next get_event.
+ */
+static void
+insert_udp_flow(struct quark_queue *qq, u64 time, u64 cookie, u16 lport,
+    u16 rport)
+{
+	struct raw_event	*raw;
+	struct raw_sock_conn	*conn;
+
+	raw = raw_event_alloc(RAW_SOCK_CONN);
+	assert(raw != NULL);
+	raw->pid = 1234;
+	raw->time = time;
+	conn = &raw->sock_conn;
+	conn->local.af = AF_INET;
+	conn->local.u.addr4 = htonl(INADDR_LOOPBACK);
+	conn->local.port = lport;
+	conn->remote.af = AF_INET;
+	conn->remote.u.addr4 = htonl(INADDR_LOOPBACK);
+	conn->remote.port = rport;
+	conn->transport = QUARK_TRANSPORT_UDP;
+	conn->conn = SOCK_CONN_FLOW;
+	conn->cookie = cookie;
+	conn->packets_sent = 1;
+	conn->bytes_sent = strlen(PATTERN);
+	conn->first_time = time;
+	conn->last_time = time;
+	assert(raw_event_insert(qq, raw) == 0);
+}
+
+/*
+ * UDP sockets have no close, quark closes them after udp_idle_time without
+ * a flow. The close is this call's event, with the totals, one socket per
+ * call so a burst of expirations trickles out. Raw events come first, a
+ * close only fills a call with nothing else ready, unless it has been due
+ * for longer than hold_time. A flow that arrives after the close
+ * re-establishes the socket. Backend-free: flows are injected, only the
+ * idle and hold timers are real.
+ */
+static int
+t_udp_idle_close(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_socket	*qsk1, *qsk2;
+	u64				 before;
+	int				 i, nclosed;
+
+	quark_queue_init_bare(&qq);
+	qq.max_length = 16;
+	qq.hold_time = 300;			/* ms */
+	qq.cache_grace_time = MS_TO_NS(60000);	/* keep closed sockets */
+	qq.udp_agg_time = MS_TO_NS(1);
+	qq.udp_idle_time = MS_TO_NS(1);		/* window is the flip grace */
+
+	/* Two sockets, each established by its first flow. */
+	insert_udp_flow(&qq, 1, 42, htons(5353), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	qsk1 = qev->socket;
+	assert(qsk1 != NULL && qsk1->close_time == 0);
+
+	insert_udp_flow(&qq, 2, 43, htons(5354), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	qsk2 = qev->socket;
+	assert(qsk2 != NULL && qsk2 != qsk1);
+
+	/* Nothing to report while they are alive. */
+	assert(quark_queue_get_event(&qq) == NULL);
+
+	/*
+	 * Let both idle out, then offer a raw event alongside: the live
+	 * stream goes first, the closes fill the calls after it.
+	 */
+	before = now64();
+	msleep(150);
+	insert_udp_flow(&qq, 3, 44, htons(5355), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	assert(qev->socket->cookie == 44);
+
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+	assert(qev->socket == qsk1);
+	assert(qsk1->close_time > before);
+	assert(qsk1->bytes_sent == strlen(PATTERN));
+	assert(qsk1->packets_sent == 1);
+
+	/*
+	 * Overdue for longer than hold_time, a close jumps ahead of the
+	 * raw events waiting.
+	 */
+	msleep(350);
+	insert_udp_flow(&qq, 4, 45, htons(5356), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+	assert(qev->socket == qsk2);
+	assert(qsk2->close_time > before);
+
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	assert(qev->socket->cookie == 45);
+
+	/*
+	 * The two later sockets idle out in turn. The first two are not
+	 * closed again, and stay visible for the grace period.
+	 */
+	for (i = 0, nclosed = 0; i < 50; i++) {
+		qev = quark_queue_get_event(&qq);
+		if (qev == NULL) {
+			msleep(10);
+			continue;
+		}
+		assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+		assert(qev->socket != qsk1 && qev->socket != qsk2);
+		assert(qev->socket->cookie == 44 || qev->socket->cookie == 45);
+		nclosed++;
+	}
+	assert(nclosed == 2);
+	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP,
+	    (struct quark_sockaddr *)&qsk1->local,
+	    (struct quark_sockaddr *)&qsk1->remote, 42) == qsk1);
+
+	/* A flow after the close is a new socket on the same tuple. */
+	insert_udp_flow(&qq, 3, 42, htons(5353), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	assert(qev->socket->close_time == 0);
+	assert(qev->socket->bytes_sent == strlen(PATTERN));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -6743,6 +6894,7 @@ struct test all_tests[] = {
 	T_EBPF(t_dns6_existing_connect),
 	T_EBPF(t_udp_flow_map),
 	T_EBPF(t_udp_flow),
+	T(t_udp_idle_close),
 	T_EBPF(t_cgroup_parse),
 	T(t_process_container_cache),
 	T(t_link_container_data),
