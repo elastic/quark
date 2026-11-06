@@ -3847,17 +3847,27 @@ t_udp_idle_close(const struct test *t, struct quark_queue_attr *qa)
 	assert(qsk1->packets_sent == 1);
 
 	/*
-	 * Overdue for longer than hold_time, a close jumps ahead of the
-	 * raw events waiting.
+	 * Overdue for longer than hold_time, a close jumps ahead of raw
+	 * events that are newer than the socket's due time: here a fresh
+	 * flow for another socket, stamped now and still held.
 	 */
 	msleep(350);
-	insert_udp_flow(&qq, 4, 45, htons(5356), htons(53));
+	insert_udp_flow(&qq, now64(), 45, htons(5356), htons(53));
 	qev = quark_queue_get_event(&qq);
 	assert(qev != NULL);
 	assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
 	assert(qev->socket == qsk2);
 	assert(qsk2->close_time > before);
 
+	/* Cookie 44 is due by now and nothing is ready: closed next. */
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+	assert(qev->socket->cookie == 44);
+
+	/* The held flow is not ready yet, then it is. */
+	assert(quark_queue_get_event(&qq) == NULL);
+	msleep(350);
 	qev = quark_queue_get_event(&qq);
 	assert(qev != NULL);
 	assert(qev->events ==
@@ -3865,8 +3875,22 @@ t_udp_idle_close(const struct test *t, struct quark_queue_attr *qa)
 	assert(qev->socket->cookie == 45);
 
 	/*
-	 * The two later sockets idle out in turn. The first two are not
-	 * closed again, and stay visible for the grace period.
+	 * A flow stamped before a socket's due time holds its close back,
+	 * however overdue the socket is, since it may be the socket's own:
+	 * the flow is processed first and keeps the socket open.
+	 */
+	msleep(350);				/* cookie 45 is overdue */
+	insert_udp_flow(&qq, 9, 45, htons(5356), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_SOCK_FLOW);
+	assert(qev->socket->cookie == 45);
+	assert(qev->socket->close_time == 0);
+	assert(qev->socket->packets_sent == 2);
+
+	/*
+	 * It idles out in turn. The earlier sockets are not closed again,
+	 * and stay visible for the grace period.
 	 */
 	for (i = 0, nclosed = 0; i < 50; i++) {
 		qev = quark_queue_get_event(&qq);
@@ -3876,10 +3900,10 @@ t_udp_idle_close(const struct test *t, struct quark_queue_attr *qa)
 		}
 		assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
 		assert(qev->socket != qsk1 && qev->socket != qsk2);
-		assert(qev->socket->cookie == 44 || qev->socket->cookie == 45);
+		assert(qev->socket->cookie == 45);
 		nclosed++;
 	}
-	assert(nclosed == 2);
+	assert(nclosed == 1);
 	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP,
 	    (struct quark_sockaddr *)&qsk1->local,
 	    (struct quark_sockaddr *)&qsk1->remote, 42) == qsk1);

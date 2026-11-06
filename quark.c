@@ -5401,15 +5401,29 @@ static struct quark_socket *
 udp_idle_due(struct quark_queue *qq, u64 *overdue)
 {
 	struct quark_socket	*qsk;
-	u64			 age, idle;
+	struct raw_event	*min;
+	u64			 now, due;
 
 	if ((qsk = TAILQ_FIRST(&qq->udp_idle)) == NULL)
 		return (NULL);
-	age = AGE(qsk->idle_since, now64());
-	idle = qq->udp_idle_time + qq->udp_agg_time + UDP_FLOW_FLIP_GRACE;
-	if (age < idle)
+	now = now64();
+	due = qsk->idle_since + qq->udp_idle_time + qq->udp_agg_time +
+	    UDP_FLOW_FLIP_GRACE;
+	if (now < due)
 		return (NULL);
-	*overdue = age - idle;
+
+	/*
+	 * A flow for this socket may still be in the raw event tree,
+	 * waiting out its hold or queued behind older events. So as long
+	 * as the tree holds anything stamped before the due time, don't
+	 * close: processing that flow after a close would report a socket
+	 * that never went quiet as closed and then re-established, with
+	 * its totals split across the two.
+	 */
+	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
+	if (min != NULL && min->time <= due)
+		return (NULL);
+	*overdue = now - due;
 
 	return (qsk);
 }
@@ -6055,23 +6069,18 @@ quark_queue_get_event(struct quark_queue *qq)
 	 * Prioritize raw events. An idle UDP socket is closed on a
 	 * get_event call that has nothing else ready, and is prioritized
 	 * only once it has been due for longer than hold_time, so a host
-	 * that never goes quiet can't starve the closes. qsk stays valid
-	 * across get_event1(): a call that returns NULL touched no socket,
-	 * and only closed sockets are ever deleted.
+	 * that never goes quiet can't starve the closes.
 	 */
+next:
 	qsk = udp_idle_due(qq, &overdue);
 	if (qsk != NULL && overdue > (u64)MS_TO_NS(qq->hold_time)) {
 		qev = udp_idle_close(qq, qsk);
-		qsk = NULL;	/* closed */
 		goto ruleset;
 	}
 
-next:
 	qev = quark_queue_get_event1(qq);
-	if (qev == NULL && qsk != NULL) {
+	if (qev == NULL && qsk != NULL)
 		qev = udp_idle_close(qq, qsk);
-		qsk = NULL;	/* closed */
-	}
 ruleset:
 	/* Run ruleset, if we drop, get the next event */
 	if (qev != NULL && qq->ruleset != NULL) {
