@@ -13,6 +13,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#include "Dedup.h"
 #include "File.h"
 #include "Helpers.h"
 #include "PathResolver.h"
@@ -432,9 +433,45 @@ struct {
     __uint(max_entries, 0); // sized by bpf_queue_open1()
 } elastic_ebpf_file_access_anchors SEC(".maps");
 
+// Keep the complete visible path in the key. Inode-only keys suppress a
+// first open through another hard link, bind mount or renamed path. Longer
+// or incomplete paths bypass dedup rather than sharing a truncated key.
+#define FILE_ACCESS_DEDUP_PATH_MAX 256
+
+struct file_access_seen_key {
+    struct ebpf_dedup_file_key file;
+    u32 mntns;
+    u32 pad;
+    char path[FILE_ACCESS_DEDUP_PATH_MAX];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, struct file_access_seen_key);
+    __type(value, struct ebpf_dedup_seen);
+    __uint(max_entries, 0); // sized by userspace
+} elastic_ebpf_file_access_file_seen SEC(".maps");
+
+// Private access-class bits; raw flags remain in the public event.
+#define FILE_ACCESS_CLASS_READ (1ULL << 0)
+#define FILE_ACCESS_CLASS_WRITE (1ULL << 1)
+#define FILE_ACCESS_CLASS_EXEC (1ULL << 2)
+#define FILE_ACCESS_CLASS_PATH (1ULL << 3)
+
+// include/uapi/asm-generic/fcntl.h, include/linux/fs.h (__FMODE_EXEC)
+#define FILE_ACCESS_O_ACCMODE 00000003
+#define FILE_ACCESS_O_CREAT 00000100
+#define FILE_ACCESS_O_TRUNC 00001000
+#define FILE_ACCESS_O_APPEND 00002000
+#define FILE_ACCESS_O_PATH 010000000
+#define FILE_ACCESS___FMODE_EXEC 0x20
+
 struct file_access_scratch {
     struct ebpf_file_access_name key;
+    struct file_access_seen_key seen_key;
+    struct ebpf_dedup_seen fresh;
     struct path path;
+    bool cacheable;
 };
 
 // Keep the name and path out of the shared open probe's 512-byte stack.
@@ -447,6 +484,18 @@ struct {
 
 // Test the leaf and at most three source-filesystem ancestors.
 #define FILE_ACCESS_ANCESTORS 3
+
+static u64 file_access_class(u32 open_flags)
+{
+    if (open_flags & FILE_ACCESS_O_PATH)
+        return FILE_ACCESS_CLASS_PATH;
+    if (open_flags & FILE_ACCESS___FMODE_EXEC)
+        return FILE_ACCESS_CLASS_EXEC;
+    if ((open_flags & FILE_ACCESS_O_ACCMODE) != 0 ||
+        (open_flags & (FILE_ACCESS_O_CREAT | FILE_ACCESS_O_TRUNC | FILE_ACCESS_O_APPEND)))
+        return FILE_ACCESS_CLASS_WRITE;
+    return FILE_ACCESS_CLASS_READ;
+}
 
 // Anchor roles of a dentry name, 0 when the name is not an anchor.
 static __always_inline u32 file_access_anchor(struct ebpf_file_access_name *key, const unsigned char *name)
@@ -525,6 +574,34 @@ static __attribute__((noinline)) bool file_access__match(struct file_access_scra
     return file_access_anchored(&scratch->key, de);
 }
 
+// Resolve first: the exact emitted path and mount namespace are part of the
+// identity. Keep these locals off the emitter/path-resolver call chain.
+static __attribute__((noinline)) bool file_access__dedup(struct file_access_scratch *scratch,
+                                                          struct ebpf_file_access_event *event,
+                                                          const char *path, long size)
+{
+    struct file_access_seen_key *key = &scratch->seen_key;
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    struct dentry *de = scratch->path.dentry;
+    struct inode *inode;
+
+    scratch->cacheable = false;
+    if (size <= 1 || size > sizeof(key->path) || path[0] != '/' || !event->mntns)
+        return false;
+    inode = BPF_CORE_READ(de, d_inode);
+    if (!ebpf_dedup_file_key__fill(&key->file, inode, bpf_get_current_pid_tgid() >> 32))
+        return false;
+    key->mntns = event->mntns;
+    key->pad = 0;
+    __builtin_memset(key->path, 0, sizeof(key->path));
+    if (bpf_probe_read_kernel_str(key->path, sizeof(key->path), path) != size)
+        return false;
+    scratch->cacheable = true;
+
+    return ebpf_dedup__test(&elastic_ebpf_file_access_file_seen, key, &scratch->fresh,
+                            task, file_access_class(event->open_flags));
+}
+
 // A completed open: match, resolve, emit. Kept out of line so its locals are
 // not added to the do_filp_open__exit() frame that every open pays for.
 // Disables preemption itself for the per-cpu scratch, event buffer and
@@ -565,6 +642,8 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
     size  = ebpf_resolve_path_to_string(field->data, &scratch->path, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
+    if (file_access__dedup(scratch, event, field->data, size))
+        goto out;
 
     // symlink_target_path, the inode's inline target when the opened file is
     // the symlink itself (O_PATH|O_NOFOLLOW). i_link shares a union with
@@ -585,7 +664,8 @@ static __attribute__((noinline)) void file_access__open(struct file *f, u32 open
     // No cgroup path: the consumer takes it from the process the event is
     // linked to, and resolving it here was the deepest frame on this chain.
 
-    ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+    if (ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0) == 0 && scratch->cacheable)
+        ebpf_dedup__set(&elastic_ebpf_file_access_file_seen, &scratch->seen_key, &scratch->fresh);
 
 out:
     preempt_enable();
