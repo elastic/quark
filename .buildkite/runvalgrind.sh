@@ -17,11 +17,12 @@ sudo apt-get install -y 				\
 	bison						\
 	clang						\
 	cpio						\
+	e2fsprogs					\
 	gcc						\
 	linux-tools-7.0.0-14-generic			\
 	make						\
 	m4						\
 	valgrind
 
-make test-valgrind BPFTOOL="/usr/lib/linux-tools/7.0.0-14-generic/bpftool"
+make test-valgrind test-valgrind-file-access BPFTOOL="/usr/lib/linux-tools/7.0.0-14-generic/bpftool"
 exit $?
