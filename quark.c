@@ -40,6 +40,7 @@
 #include <cjson/cJSON.h>
 
 #include "quark.h"
+#include "quark_internal.h"
 
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
 

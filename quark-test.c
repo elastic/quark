@@ -51,6 +51,7 @@
 #include <unistd.h>
 
 #include "quark.h"
+#include "quark_internal.h"
 #include "quark-test.h"
 #include "bpf_probes_skel.h"
 

@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include "quark.h"
+#include "quark_internal.h"
 
 #define PERF_MMAP_PAGES		16			/* Must be power of 2 */
 #define PERF_RECORD_MAX_SIZE	(UINT16_MAX + 1)	/* header.size is u16 */

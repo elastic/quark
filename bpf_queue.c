@@ -21,6 +21,7 @@
 #include <bpf/btf.h>
 
 #include "quark.h"
+#include "quark_internal.h"
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
 

@@ -38,6 +38,7 @@
 #include <bpf/libbpf.h>
 
 #include "quark.h"
+#include "quark_internal.h"
 #include "bpf_telemetry_retprobe.h"
 
 /* Kernel KRETPROBE_MAXACTIVE_MAX; larger values fail with EINVAL. */

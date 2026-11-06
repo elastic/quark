@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "quark.h"
+#include "quark_internal.h"
 
 #define S(_a)	#_a
 static const char *cap_to_string[64] = {

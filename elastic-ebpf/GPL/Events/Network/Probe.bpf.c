@@ -601,7 +601,7 @@ static __always_inline void udp_flow_key_from_hdrs(
         key->lport = h->udp.source;
         key->rport = h->udp.dest;
     } else {
-	/* INGRESS */
+        /* INGRESS */
         __builtin_memcpy(key->laddr, h->daddr, sizeof(key->laddr));
         __builtin_memcpy(key->raddr, h->saddr, sizeof(key->raddr));
         key->lport = h->udp.dest;
