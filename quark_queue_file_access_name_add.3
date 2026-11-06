@@ -58,6 +58,13 @@ A
 .Em file.path
 rule never matches a file access event; the names are the only filter on the
 file itself.
+.Pp
+Opens by all threads of the process that called
+.Fn quark_queue_open
+are not reported.
+A forked child is reported, even if it inherits the queue.
+The exclusion ends when the original process exits; a later process with
+the same PID is reported.
 .Sh RETURN VALUES
 Zero on success, -1 on error with
 .Va errno
