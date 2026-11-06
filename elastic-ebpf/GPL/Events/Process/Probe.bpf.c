@@ -102,7 +102,7 @@ static void mprotect_seen__clear(u32 tgid)
 
 /*
  * File-backed transitions are deduplicated per file instead: one entry per
- * (tgid, device, inode) with the transitions already reported for that file,
+ * (tgid, device, inode, generation) with the transitions reported for that file,
  * so making a second file executable the same way is reported again. Stale
  * entries never suppress, see Dedup.h; this map needs no exec or exit
  * clearing. Only referenced from the mprotect probes, sized from userspace,
@@ -114,6 +114,25 @@ struct {
     __type(value, struct ebpf_dedup_seen);
     __uint(max_entries, 0);
 } mprotect_file_seen SEC(".maps");
+
+// Keep legacy mprotect dedup when a usable generation is unavailable. A file
+// that reuses the same device and inode can then match an old cache entry.
+// A failed shared fill can leave a partial key. Reread the base fields here
+// to validate the mprotect fallback and preserve the shared helper's contract.
+static __always_inline bool mprotect_file_key__fill(struct ebpf_dedup_file_key *key,
+                                                    const struct inode *inode, u32 tgid)
+{
+    struct super_block *sb;
+
+    if (ebpf_dedup_file_key__fill(key, inode, tgid))
+        return true;
+
+    __builtin_memset(key, 0, sizeof(*key));
+    key->tgid = tgid;
+    return inode && !BPF_CORE_READ_INTO(&sb, inode, i_sb) && sb &&
+           !BPF_CORE_READ_INTO(&key->dev, sb, s_dev) &&
+           !BPF_CORE_READ_INTO(&key->inode, inode, i_ino);
+}
 
 // Same contract as mprotect_seen__test(), per file and program image.
 // See ebpf_dedup__test().
@@ -609,33 +628,18 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
     u64 prev_prot          = mprotect_vm_flags_to_prot(vm_flags);
     struct file *file      = BPF_CORE_READ(vma, vm_file);
 
-    u64 inode = 0;
-    u32 dev   = 0;
-    if (file) {
-        struct inode *ino = BPF_CORE_READ(file, f_inode);
-        if (ino) {
-            inode = BPF_CORE_READ(ino, i_ino);
-
-            struct super_block *sb = BPF_CORE_READ(ino, i_sb);
-            if (sb)
-                dev = BPF_CORE_READ(sb, s_dev);
-        }
-    }
-
-    // One event per transition per program image for anonymous mappings, per
-    // transition per file for file-backed ones.
+    // Anonymous transitions are per program image; file-backed ones are per
+    // readable file identity, with a generation when it distinguishes reuse.
     u32 tgid = bpf_get_current_pid_tgid() >> 32;
     u32 id   = mprotect_transition_id(prev_prot, effective_prot, file != NULL);
-    struct ebpf_dedup_file_key file_key = {
-        .tgid  = tgid,
-        .dev   = dev,
-        .inode = inode,
-    };
+    struct ebpf_dedup_file_key file_key = {};
+    bool cacheable = file && mprotect_file_key__fill(
+        &file_key, BPF_CORE_READ(file, f_inode), tgid);
     // Older verifiers can lose the correlation between the two file checks.
     // Keep fresh initialized even on the anonymous path.
     struct ebpf_dedup_seen fresh = {};
 
-    if (file ? mprotect_file_seen__test(&file_key, &fresh, task, id)
+    if (file ? cacheable && mprotect_file_seen__test(&file_key, &fresh, task, id)
              : mprotect_seen__test(tgid, id))
         goto out;
 
@@ -657,9 +661,9 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
 
     if (file) {
         event->file_backed = 1;
-        event->inode       = inode;
-        event->dev_major   = dev >> MPROTECT_MINORBITS;
-        event->dev_minor   = dev & MPROTECT_MINORMASK;
+        event->inode       = file_key.inode;
+        event->dev_major   = file_key.dev >> MPROTECT_MINORBITS;
+        event->dev_minor   = file_key.dev & MPROTECT_MINORMASK;
 
         // File-backed executable transitions are rare and high signal
         // (library tampering, packers, memfd JITs); annotate them with the
@@ -673,9 +677,10 @@ static int security_file_mprotect__enter(struct vm_area_struct *vma,
 
     // A full ring buffer must not consume this transition for the process life.
     if (ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0) == 0) {
-        if (file)
-            mprotect_file_seen__set(&file_key, &fresh);
-        else
+        if (file) {
+            if (cacheable)
+                mprotect_file_seen__set(&file_key, &fresh);
+        } else
             mprotect_seen__set(tgid, id);
     }
 

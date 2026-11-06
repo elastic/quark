@@ -84,12 +84,63 @@
           <code class="Dv">NULL</code> for anonymous mappings. Anonymous
           attempts are reported once per protection transition per program
           image. File-backed attempts are reported once per protection
-          transition per file per program image. A successful
-          <a class="permalink" href="#execve"><code class="Fn" id="execve">execve</code></a>()
-          starts a new program image and resets this tracking. The same process
-          can report a transition again after <code class="Fn">execve</code>().
-          It describes an attempt and does not assert that the protection change
-          was committed.</dd>
+          transition, file and program image when the device and inode number
+          can be read. On ext2, ext3, ext4, XFS and tmpfs, the file identity
+          also includes a usable, nonzero inode generation. A file with a reused
+          inode number and a new generation is reported again. Without a usable
+          generation, the cache uses only the device and inode number. Repeated
+          transitions are still suppressed, but a new file with a reused inode
+          number can have its first event suppressed. If the device or inode
+          number cannot be read, attempts can report repeats. A successful
+          <a class="Xr" href="https://linux.die.net/man/2/execve">execve(2)</a> starts a new program
+          image and resets this tracking, so the same process can report a
+          transition again. The event describes an attempt and does not assert
+          that the protection change was committed.</dd>
+      <dt id="QUARK_EV_BPF"><a class="permalink" href="#QUARK_EV_BPF"><code class="Dv">QUARK_EV_BPF</code></a></dt>
+      <dd>A <code class="Dv">BPF_PROG_LOAD</code> attempt, reported with its
+          actual operation result in
+          <a class="permalink" href="#bpf.ret"><i class="Em" id="bpf.ret">bpf.ret</i></a>
+          (a nonnegative fd, including zero, or negative errno).
+          <a class="permalink" href="#cmd"><i class="Em" id="cmd">cmd</i></a> is
+          the command with the <code class="Dv">BPF_COMMON_ATTRS</code> bit
+          removed. The process identifies the actor when available in the
+          process cache.
+          <a class="permalink" href="#bpf.tgid"><i class="Em" id="bpf.tgid">bpf.tgid</i></a>,
+          <a class="permalink" href="#bpf.tid"><i class="Em" id="bpf.tid">bpf.tid</i></a>
+          and
+          <a class="permalink" href="#bpf.start_time_ns"><i class="Em" id="bpf.start_time_ns">bpf.start_time_ns</i></a>
+          retain its host process ID, invoking thread ID and process start time
+          even when the process cache has no entry. The start time uses
+          CLOCK_MONOTONIC.
+        <p class="Pp" id="valid"><a class="permalink" href="#valid"><i class="Em">valid</i></a>
+            indicates which metadata was captured.
+            <code class="Dv">QUARK_BPF_VALID_ATTR</code> means that
+            <i class="Em">type</i>,
+            <a class="permalink" href="#insn_cnt"><i class="Em" id="insn_cnt">insn_cnt</i></a>,
+            <a class="permalink" href="#attach_type"><i class="Em" id="attach_type">attach_type</i></a>,
+            <i class="Em">flags</i> and
+            <a class="permalink" href="#name"><i class="Em" id="name">name</i></a>
+            were copied from the kernel's zero-filled attributes at
+            <a class="permalink" href="#security_bpf"><code class="Fn" id="security_bpf">security_bpf</code></a>().
+            These describe the requested program type, instruction count,
+            expected attach type, program flags and name. The instruction count
+            precedes verifier rewriting. An attempt that fails before the
+            security check has no valid attributes; zero values alone do not
+            indicate availability.</p>
+        <p class="Pp" id="kind"><code class="Dv">QUARK_BPF_VALID_OBJECT</code>
+            means that a referenced program was observed after ID allocation and
+            the operation subsequently succeeded.
+            <a class="permalink" href="#kind"><i class="Em">kind</i></a> is then
+            <code class="Dv">QUARK_BPF_PROG</code>,
+            <a class="permalink" href="#id"><i class="Em" id="id">id</i></a> is
+            its kernel ID and <i class="Em">type</i> is its observed program
+            type. Identity is captured before fd installation, without looking
+            up the returned fd through the process's fd table. A failed
+            operation has no valid object identity, including failure to install
+            the fd after verification. A successful event without valid identity
+            indicates capture loss; consult
+            <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>.</p>
+      </dd>
     </dl>
     <p class="Pp">It's important to note that <i class="Em">events</i> is what
         triggered the event, not what is known about the process.</p>
@@ -149,11 +200,11 @@
 	char	*cgroup;
 };</pre>
     </div>
-    <p class="Pp" id="flags"><a class="permalink" href="#flags"><i class="Em">flags</i></a>
-        represent the fields which are known about the process, these can be
-        cached and originate from previous events. Each bit in the set
-        represents one or more members of the structure, if the bit is unset,
-        the respective members are invalid/unknown.</p>
+    <p class="Pp"><i class="Em">flags</i> represent the fields which are known
+        about the process, these can be cached and originate from previous
+        events. Each bit in the set represents one or more members of the
+        structure, if the bit is unset, the respective members are
+        invalid/unknown.</p>
     <p class="Pp"></p>
     <dl class="Bl-tag Bl-compact">
       <dt id="QUARK_F_PROC"><a class="permalink" href="#QUARK_F_PROC"><code class="Dv">QUARK_F_PROC</code></a></dt>
@@ -220,7 +271,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 6, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
