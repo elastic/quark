@@ -3877,9 +3877,10 @@ t_udp_idle_close(const struct test *t, struct quark_queue_attr *qa)
 	/*
 	 * A flow stamped before a socket's due time holds its close back,
 	 * however overdue the socket is, since it may be the socket's own:
-	 * the flow is processed first and keeps the socket open.
+	 * the flow is processed first and keeps the socket open. 500 ms
+	 * puts cookie 45 past the 102 ms window by more than hold_time.
 	 */
-	msleep(350);				/* cookie 45 is overdue */
+	msleep(500);	/* cookie is overdue */
 	insert_udp_flow(&qq, 9, 45, htons(5356), htons(53));
 	qev = quark_queue_get_event(&qq);
 	assert(qev != NULL);
