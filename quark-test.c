@@ -3545,6 +3545,10 @@ t_udp_flow_map(const struct test *t, struct quark_queue_attr *qa)
 		if (memcmp(key.laddr, &loopback, 4) ||
 		    memcmp(key.raddr, &loopback, 4))
 			continue;
+		/* the child's two entries only, the host has other loopback flows */
+		if (!(key.lport == bound_port && key.rport == htons(12345)) &&
+		    !(key.lport == htons(12345) && key.rport == bound_port))
+			continue;
 		assert(bpf_map__lookup_elem(p->maps.udp_flows0, &key,
 		    sizeof(key), &val, sizeof(val), 0) == 0);
 		assert(key.pad == 0);
@@ -3741,6 +3745,309 @@ t_udp_flow(const struct test *t, struct quark_queue_attr *qa)
 	assert(nflow_listener == 1);
 	/* two sockets, two cookies */
 	assert(sender_cookie != listener_cookie);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Helpers for t_udp_flow_periods(). The sender's flows are told apart from
+ * the listener's by the peer port.
+ */
+#define UDP_PERIODS_PORT	12346
+
+/*
+ * The queue and the flow maps see every UDP datagram on the host, so the
+ * test's sender is identified exactly: the child's pid and its socket's
+ * four-tuple on the loopback, the bound port learned from the child.
+ */
+struct udp_periods {
+	pid_t				 child;
+	u16				 bound_port;	/* the sender's, network order */
+	const struct quark_socket	*qsk;		/* the sender's socket */
+	int				 nflow;		/* its flows so far */
+};
+
+static int
+udp_periods_is_sender(const struct udp_periods *st,
+    const struct quark_socket *qsk)
+{
+	return (qsk->transport == QUARK_TRANSPORT_UDP &&
+	    qsk->local.af == AF_INET &&
+	    qsk->local.u.addr4 == htonl(INADDR_LOOPBACK) &&
+	    qsk->local.port == st->bound_port &&
+	    qsk->remote.af == AF_INET &&
+	    qsk->remote.u.addr4 == htonl(INADDR_LOOPBACK) &&
+	    qsk->remote.port == htons(UDP_PERIODS_PORT) &&
+	    (pid_t)qsk->pid_origin == st->child);
+}
+
+/*
+ * Process one event, or wait for one. Only the sender's flows are checked,
+ * everything else on the host goes by.
+ */
+static void
+udp_periods_consume(struct quark_queue *qq, struct udp_periods *st)
+{
+	const struct quark_event	*qev;
+
+	if ((qev = quark_queue_get_event(qq)) == NULL) {
+		if (quark_queue_block(qq) == -1)
+			err(1, "quark_queue_block");
+		return;
+	}
+	if ((qev->events & QUARK_EV_SOCK_FLOW) == 0)
+		return;
+	if (qev->process == NULL || (pid_t)qev->process->pid != st->child)
+		return;
+	if (!udp_periods_is_sender(st, qev->socket))
+		return;
+	if (st->nflow == 0) {
+		assert(qev->events ==
+		    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+		st->qsk = qev->socket;
+	} else {
+		assert(qev->events == QUARK_EV_SOCK_FLOW);
+		assert(qev->socket == st->qsk);
+	}
+	/* one datagram per period, and the socket carries the totals */
+	assert(qev->flow.packets_sent == 1);
+	assert(qev->flow.bytes_sent == strlen(PATTERN));
+	assert(qev->flow.packets_received == 0);
+	st->nflow++;
+	assert(st->qsk->packets_sent == (u64)st->nflow);
+	assert(st->qsk->bytes_sent == st->nflow * strlen(PATTERN));
+}
+
+static u32
+udp_periods_gen(struct bpf_probes *p)
+{
+	u32	zero, gen;
+
+	zero = 0;
+	assert(bpf_map__lookup_elem(p->maps.udp_flow_gen, &zero, sizeof(zero),
+	    &gen, sizeof(gen), 0) == 0);
+
+	return (gen);
+}
+
+/*
+ * Drive the queue until the sender has nflow flows, or until the generation
+ * has the parity asked for; -1 disables either condition.
+ */
+static void
+udp_periods_wait(struct quark_queue *qq, struct bpf_probes *p,
+    struct udp_periods *st, int nflow, int parity)
+{
+	struct timespec	start, now;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	for (;;) {
+		if (nflow != -1 && st->nflow >= nflow)
+			return;
+		if (parity != -1 && (int)(udp_periods_gen(p) & 1) == parity)
+			return;
+		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
+			err(1, "clock_gettime");
+		if (now.tv_sec - start.tv_sec >= 5)
+			errx(1, "udp_periods_wait: timeout (nflow %d parity %d)",
+			    nflow, parity);
+		udp_periods_consume(qq, st);
+	}
+}
+
+/*
+ * The child's entries in a flow map, straight from the kernel, picked by
+ * the exact four-tuple and the child's tgid; whatever else the host put
+ * there is ignored. With sent set, the sender's entry must be there with
+ * the one datagram just sent; otherwise none of the child's entries may
+ * remain, in either direction.
+ */
+static void
+udp_periods_in_map(struct bpf_map *m, const struct udp_periods *st, int sent)
+{
+	struct ebpf_udp_flow_key	 key, *prev;
+	struct ebpf_udp_flow_val	 val;
+	u32				 loopback;
+	int				 nsender, nlistener;
+
+	loopback = htonl(INADDR_LOOPBACK);
+	nsender = nlistener = 0;
+	prev = NULL;
+	while (bpf_map__get_next_key(m, prev, &key, sizeof(key)) == 0) {
+		prev = &key;
+		if (key.family != EBPF_NETWORK_EVENT_AF_INET ||
+		    memcmp(key.laddr, &loopback, 4) ||
+		    memcmp(key.raddr, &loopback, 4))
+			continue;
+		if (key.lport == st->bound_port &&
+		    key.rport == htons(UDP_PERIODS_PORT)) {
+			assert(bpf_map__lookup_elem(m, &key, sizeof(key),
+			    &val, sizeof(val), 0) == 0);
+			if ((pid_t)val.tgid != st->child)
+				continue;
+			assert(val.packets_sent == 1);
+			assert(val.bytes_sent == strlen(PATTERN));
+			nsender++;
+		} else if (key.lport == htons(UDP_PERIODS_PORT) &&
+		    key.rport == st->bound_port) {
+			assert(bpf_map__lookup_elem(m, &key, sizeof(key),
+			    &val, sizeof(val), 0) == 0);
+			if ((pid_t)val.tgid != st->child)
+				continue;
+			nlistener++;
+		}
+	}
+	assert(errno == ENOENT);
+	assert(nsender == sent);
+	if (!sent)
+		assert(nlistener == 0);
+}
+
+/*
+ * Tell the child to send one datagram and wait until it has. The child's
+ * socket accounts the datagram on the way out, before send(2) returns, so
+ * once the child acknowledges, the sender's entry is in the active map. No
+ * get_event runs while we wait, so no generation flips either.
+ */
+static void
+udp_periods_send(int cmd_fd, int ack_fd)
+{
+	char	c;
+
+	if (qwrite(cmd_fd, "x", 1) == -1)
+		err(1, "qwrite cmd");
+	if (qread(ack_fd, &c, 1) != 1)
+		errx(1, "child went away before acknowledging a send");
+}
+
+/*
+ * Test the double buffer over several periods. A child sends a datagram on
+ * one connected socket each time it is told to over a pipe, acknowledging
+ * each send over another; the parent paces the sends by the generation
+ * counter so one lands in each map in turn, udp_flows0, then udp_flows1,
+ * then udp_flows0 again after its drain, and looks into the kernel map to
+ * see it there. Every period reaches the sender's socket as its own flow
+ * with the totals adding up, and nothing of the child's is left in either
+ * map once it is gone.
+ */
+static int
+t_udp_flow_periods(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct bpf_probes		*p;
+	struct udp_periods		 st;
+	int				 i, status, cmd[2], ack[2];
+	int				 listen_fd, conn_fd, noise_fd;
+	u16				 bound_port;
+	char				 c;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	assert_localhost();
+
+	qa->flags |= QQ_UDP_FLOW;
+	qa->udp_agg_time = 1000;		/* room to look into the maps */
+	qa->udp_idle_time = 10000;		/* no closes during the test */
+	qa->cache_grace_time = 10000;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	p = quark_get_bpf_probes(&qq);
+	assert(p != NULL);
+
+	if (pipe(cmd) == -1 || pipe(ack) == -1)
+		err(1, "pipe");
+	bzero(&st, sizeof(st));
+	if ((st.child = fork()) == -1) {
+		err(1, "fork");
+	} else if (st.child == 0) {
+		close(cmd[1]);
+		close(ack[0]);
+		listen_fd = local_listen(AF_INET, UDP_PERIODS_PORT, SOCK_DGRAM,
+		    0);
+		conn_fd = local_connect(AF_INET, UDP_PERIODS_PORT, SOCK_DGRAM,
+		    0, 0, &bound_port);
+		/* sockets are up, tell the parent which port we got */
+		if (qwrite(ack[1], &bound_port, sizeof(bound_port)) == -1)
+			err(1, "qwrite port");
+		/* one datagram per byte, acknowledged, until the parent hangs up */
+		while (qread(cmd[0], &c, 1) == 1) {
+			if (qwrite(conn_fd, PATTERN, strlen(PATTERN)) == -1)
+				err(1, "qwrite");
+			if (qwrite(ack[1], "x", 1) == -1)
+				err(1, "qwrite ack");
+		}
+		close(listen_fd);
+		close(conn_fd);
+		exit(0);
+	}
+	close(cmd[0]);
+	close(ack[1]);
+	if (qread(ack[0], &st.bound_port, sizeof(st.bound_port)) !=
+	    sizeof(st.bound_port))
+		errx(1, "child went away before reporting its port");
+
+	/*
+	 * Stand in for the rest of the host: our own datagrams to the same
+	 * listener, from another pid and another port, sent before every
+	 * look into the maps. They share the maps and the queue with the
+	 * child's and must be ignored by every filter.
+	 */
+	noise_fd = local_connect(AF_INET, UDP_PERIODS_PORT, SOCK_DGRAM, 0, 0,
+	    NULL);
+
+	/* Generation 0 writes udp_flows0. */
+	assert(udp_periods_gen(p) == 0);
+	udp_periods_send(cmd[1], ack[0]);
+	assert(qwrite(noise_fd, PATTERN, strlen(PATTERN)) == 0);
+	udp_periods_in_map(p->maps.udp_flows0, &st, 1);
+	udp_periods_wait(&qq, p, &st, 1, -1);
+
+	/* An odd generation writes udp_flows1. */
+	udp_periods_wait(&qq, p, &st, -1, 1);
+	udp_periods_send(cmd[1], ack[0]);
+	assert(qwrite(noise_fd, PATTERN, strlen(PATTERN)) == 0);
+	udp_periods_in_map(p->maps.udp_flows1, &st, 1);
+	udp_periods_wait(&qq, p, &st, 2, -1);
+
+	/* Even again: udp_flows0, drained once, takes entries again. */
+	udp_periods_wait(&qq, p, &st, -1, 0);
+	udp_periods_send(cmd[1], ack[0]);
+	assert(qwrite(noise_fd, PATTERN, strlen(PATTERN)) == 0);
+	udp_periods_in_map(p->maps.udp_flows0, &st, 1);
+	udp_periods_wait(&qq, p, &st, 3, -1);
+
+	assert(st.nflow == 3);
+	assert(st.qsk->packets_sent == 3);
+	assert(st.qsk->bytes_sent == 3 * strlen(PATTERN));
+	assert(udp_periods_gen(p) >= 2);
+
+	close(cmd[1]);
+	close(ack[0]);
+	if (waitpid(st.child, &status, 0) == -1)
+		err(1, "waitpid");
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+	/*
+	 * Everything of the child's was drained from both maps. Other UDP
+	 * traffic on the host may be in the active map, that is its job;
+	 * one more of ours makes sure of it.
+	 */
+	for (i = 0; i < 10; i++) {
+		(void)quark_queue_get_event(&qq);
+		msleep(50);
+	}
+	assert(qwrite(noise_fd, PATTERN, strlen(PATTERN)) == 0);
+	udp_periods_in_map(p->maps.udp_flows0, &st, 0);
+	udp_periods_in_map(p->maps.udp_flows1, &st, 0);
+	close(noise_fd);
 
 	quark_queue_close(&qq);
 
@@ -6987,6 +7294,7 @@ struct test all_tests[] = {
 	T_EBPF(t_dns6_existing_connect),
 	T_EBPF(t_udp_flow_map),
 	T_EBPF(t_udp_flow),
+	T_EBPF(t_udp_flow_periods),
 	T(t_udp_idle_close),
 	T(t_udp_reuseport),
 	T_EBPF(t_cgroup_parse),
