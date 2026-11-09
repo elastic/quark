@@ -3923,6 +3923,74 @@ t_udp_idle_close(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Several UDP sockets can share one tuple (e.g. SO_REUSEPORT sockets bound
+ * to the same port talking to the same peer), and the kernel keys their flows
+ * by cookie. The socket table must keep them apart by cookie too: separate
+ * sockets, separate totals, exact lookups by cookie, and the zero cookie
+ * returning the first socket. This is a synthetic test that doesn't nee
+ * a backend as flows are injected.
+ */
+static int
+t_udp_reuseport(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_socket	*a, *b;
+	struct quark_sockaddr		 local, remote;
+
+	quark_queue_init_bare(&qq);
+	qq.max_length = 16;
+	qq.hold_time = 300;			/* ms */
+	qq.cache_grace_time = MS_TO_NS(60000);
+	qq.udp_agg_time = MS_TO_NS(60000);	/* nothing idles out */
+	qq.udp_idle_time = MS_TO_NS(60000);
+
+	/* Same tuple, two cookies: two sockets. */
+	insert_udp_flow(&qq, 1, 42, htons(53), htons(40000));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	a = qev->socket;
+	assert(a != NULL && a->cookie == 42);
+
+	insert_udp_flow(&qq, 2, 43, htons(53), htons(40000));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	b = qev->socket;
+	assert(b != NULL && b != a && b->cookie == 43);
+
+	/* A flow lands on its own socket only. */
+	insert_udp_flow(&qq, 3, 43, htons(53), htons(40000));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_SOCK_FLOW);
+	assert(qev->socket == b);
+	assert(b->packets_sent == 2);
+	assert(b->bytes_sent == 2 * strlen(PATTERN));
+	assert(a->packets_sent == 1);
+	assert(a->bytes_sent == strlen(PATTERN));
+
+	/* Lookups: exact by cookie, first by zero, none for a stranger. */
+	local = a->local;
+	remote = a->remote;
+	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP, &local, &remote,
+	    42) == a);
+	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP, &local, &remote,
+	    43) == b);
+	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP, &local, &remote,
+	    0) == a);
+	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP, &local, &remote,
+	    44) == NULL);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -6920,6 +6988,7 @@ struct test all_tests[] = {
 	T_EBPF(t_udp_flow_map),
 	T_EBPF(t_udp_flow),
 	T(t_udp_idle_close),
+	T(t_udp_reuseport),
 	T_EBPF(t_cgroup_parse),
 	T(t_process_container_cache),
 	T(t_link_container_data),
