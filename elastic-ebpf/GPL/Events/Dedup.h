@@ -18,7 +18,7 @@
 
 /*
  * Once per program image deduplication shared by the probes that report a
- * transition rather than every call (mprotect). A map keyed by
+ * transition rather than every call (mprotect and file access). A map keyed by
  * the caller's choice, usually (tgid, device, inode, generation), holds the
  * bits already reported for that key together with the process start time and
  * self_exec_id, which the kernel bumps on every exec and never reuses within
