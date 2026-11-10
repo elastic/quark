@@ -15,6 +15,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -146,6 +147,9 @@ struct exec_sample {
 };
 
 #define MAX_PWD		7
+
+/* Nested dereferences that Linux 7.3 takes in one kprobe argument */
+#define KPROBE_MAX_NEST_7_3	8
 
 /* Sorted by alignment restriction, 64->32->16->8 */
 struct task_sample {
@@ -1104,11 +1108,19 @@ kprobe_kludge_arg(struct kprobe *k, struct kprobe_arg *karg,
 	return (karg);
 }
 
+/*
+ * Each token of the argument is one dereference nested in the previous one.
+ * If there are more tokens than max_nest, the last ones are written as a
+ * struct cast followed by field names, as in
+ * (dentry)(...)->d_parent->d_name.name. The kernel finds those fields in its
+ * own BTF and they don't nest, but only struct.field tokens can be written
+ * like this. See kprobe_install().
+ */
 static char *
 kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
-    struct quark_btf *qbtf)
+    struct quark_btf *qbtf, int max_nest)
 {
-	int	 i;
+	int	 i, r, ntokens;
 	ssize_t	 off;
 	char	*p, **pp, *last, *kstr, *tokens[128], *arg_dsl;
 
@@ -1130,11 +1142,15 @@ kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
 		tokens[i++] = p;
 	}
 	tokens[i] = NULL;
+	/* The cast is one more nested level */
+	ntokens = i;
+	if (ntokens > max_nest)
+		ntokens = max_nest - 1;
 	if (asprintf(&kstr, "%%%s", karg->reg) == -1) {
 		free(arg_dsl);
 		return (NULL);
 	}
-	for (pp = tokens; *pp != NULL; pp++) {
+	for (pp = tokens; pp < tokens + ntokens; pp++) {
 		p = *pp;
 		last = kstr;
 		if (kprobe_exp(p, &off, qbtf) == -1 ||
@@ -1144,6 +1160,30 @@ kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
 			return (NULL);
 		}
 		free(last);
+	}
+	for (; *pp != NULL; pp++) {
+		/* A string is read from where the last field points to */
+		if (!strcmp(*pp, "+0") && *(pp + 1) == NULL &&
+		    !strcmp(karg->typ, "string"))
+			break;
+		p = strchr(*pp, '.');
+		if (!isalpha((unsigned char)**pp) || p == NULL) {
+			qwarnx("can't cast %s", *pp);
+			free(arg_dsl);
+			free(kstr);
+			return (NULL);
+		}
+		last = kstr;
+		if (pp == tokens + ntokens)
+			r = asprintf(&kstr, "(%.*s)(%s)->%s", (int)(p - *pp),
+			    *pp, last, p + 1);
+		else
+			r = asprintf(&kstr, "%s->%s", last, p + 1);
+		free(last);
+		if (r == -1) {
+			free(arg_dsl);
+			return (NULL);
+		}
 	}
 	last = kstr;
 	if (asprintf(&kstr, "%s=%s:%s", karg->name, last, karg->typ) == -1) {
@@ -1164,7 +1204,8 @@ kprobe_tracefs_name(struct kprobe *k, u64 qid, char *buf, size_t len)
 }
 
 static char *
-kprobe_build_string(struct kprobe *k, char *name, struct quark_btf *qbtf)
+kprobe_build_string(struct kprobe *k, char *name, struct quark_btf *qbtf,
+    int max_nest)
 {
 	struct kprobe_arg	*karg;
 	char			*p, *o, *a;
@@ -1175,7 +1216,7 @@ kprobe_build_string(struct kprobe *k, char *name, struct quark_btf *qbtf)
 	if (r == -1)
 		return (NULL);
 	for (karg = k->args; karg->name != NULL; karg++) {
-		a = kprobe_make_arg(k, karg, qbtf);
+		a = kprobe_make_arg(k, karg, qbtf, max_nest);
 		if (a == NULL) {
 			free(p);
 			return (NULL);
@@ -1216,6 +1257,32 @@ kprobe_uninstall(struct kprobe *k, u64 qid)
 	return (0);
 }
 
+static int
+kprobe_install1(struct kprobe *k, char *fsname, struct quark_btf *qbtf,
+    int max_nest)
+{
+	int	 fd, saved_errno;
+	ssize_t	 n;
+	char	*kstr;
+
+	if ((kstr = kprobe_build_string(k, fsname, qbtf, max_nest)) == NULL)
+		return (-1);
+	if ((fd = open_tracing(O_WRONLY, "kprobe_events")) == -1) {
+		free(kstr);
+		return (-1);
+	}
+	n = qwrite(fd, kstr, strlen(kstr));
+	/* The caller looks at errno */
+	saved_errno = errno;
+	close(fd);
+	free(kstr);
+	errno = saved_errno;
+	if (n == -1)
+		return (-1);
+
+	return (0);
+}
+
 /*
  * Builds the kprobe string and "installs" in tracefs, mapping to a perf ring is
  * later and belongs to kprobe_state. This separation makes library cleanup
@@ -1224,28 +1291,24 @@ kprobe_uninstall(struct kprobe *k, u64 qid)
 static int
 kprobe_install(struct kprobe *k, u64 qid, struct quark_btf *qbtf)
 {
-	int	 fd;
-	ssize_t	 n;
-	char	*kstr;
 	char	 fsname[MAXPATHLEN];
 
 	kprobe_tracefs_name(k, qid, fsname, sizeof(fsname));
 
 	if (kprobe_uninstall(k, qid) == -1 && errno != ENOENT)
 		qwarn("kprobe_uninstall");
-	if ((kstr = kprobe_build_string(k, fsname, qbtf)) == NULL)
-		return (-1);
-	if ((fd = open_tracing(O_WRONLY, "kprobe_events")) == -1) {
-		free(kstr);
-		return (-1);
-	}
-	n = qwrite(fd, kstr, strlen(kstr));
-	close(fd);
-	free(kstr);
-	if (n == -1)
+	if (kprobe_install1(k, fsname, qbtf, INT_MAX) == 0)
+		return (0);
+	/*
+	 * The deepest names of the working directory need 10 nested
+	 * dereferences. Linux 7.3 takes 8 and refuses more with E2BIG, older
+	 * kernels take 10. Linux 7.3 also takes a struct cast, which doesn't
+	 * nest, so try again with the deep arguments written like that.
+	 */
+	if (errno != E2BIG)
 		return (-1);
 
-	return (0);
+	return (kprobe_install1(k, fsname, qbtf, KPROBE_MAX_NEST_7_3));
 }
 
 static int

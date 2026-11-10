@@ -1606,6 +1606,80 @@ t_exec_long_path(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * The kprobe backend fetches the working directory as up to seven names. The
+ * last names need the most nested dereferences, and Linux 7.3 takes fewer of
+ * those than older kernels. Fork in a directory that needs all the names.
+ */
+static int
+t_cwd_deep(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+	int				 i, depth, old_cwd;
+	char				 path[PATH_MAX], real[PATH_MAX];
+	char				 name[16], *dirs[7];
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * In the initramfs / is not a mountpoint and all seven names are
+	 * directories. Elsewhere /tmp may be a mountpoint.
+	 */
+	if (getenv("QUARK_INITRAMFS") != NULL) {
+		strlcpy(path, "/quark-test-deep-cwd", sizeof(path));
+		depth = 1;
+	} else {
+		if (mkdir("/tmp", 0755) == -1 && errno != EEXIST)
+			err(1, "mkdir /tmp");
+		strlcpy(path, "/tmp/quark-test-deep-cwd", sizeof(path));
+		depth = 2;
+	}
+	for (i = 0; depth <= (int)nitems(dirs); depth++, i++) {
+		/* A different name each time, to catch a wrong order */
+		if (i != 0) {
+			snprintf(name, sizeof(name), "/d%d", i);
+			strlcat(path, name, sizeof(path));
+		}
+		if (mkdir(path, 0755) == -1 && errno != EEXIST)
+			err(1, "mkdir %s", path);
+		if ((dirs[i] = strdup(path)) == NULL)
+			err(1, "strdup");
+	}
+	if (realpath(path, real) == NULL)
+		err(1, "realpath");
+
+	/* The child gets the working directory of the parent on fork */
+	if ((old_cwd = open(".", O_RDONLY | O_DIRECTORY)) == -1)
+		err(1, "open");
+	if (chdir(path) == -1)
+		err(1, "chdir");
+	child = fork_exec_nop();
+	if (fchdir(old_cwd) == -1)
+		err(1, "fchdir");
+	close(old_cwd);
+
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_FORK);
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->cwd != NULL);
+	assert(!strcmp(qp->cwd, real));
+
+	while (--i >= 0) {
+		if (rmdir(dirs[i]) == -1)
+			warn("rmdir %s", dirs[i]);
+		free(dirs[i]);
+	}
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_id_change(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -6656,6 +6730,7 @@ struct test all_tests[] = {
 	T_KPROBE(t_fork_exec_exit),
 	T_EBPF(t_fork_exec_exit_rel),
 	T_KPROBE(t_exec_long_path),
+	T_KPROBE(t_cwd_deep),
 	T_EBPF(t_id_change),
 	T_EBPF(t_exit_tgid),
 	T_KPROBE(t_exit_tgid),
