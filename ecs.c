@@ -163,6 +163,8 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 		if (mask & QUARK_FILE_OP_REMOVE)
 			strlcat(buf, "-deleted", sizeof(buf));
 
+	} else if (qev->events & QUARK_EV_FILE_ACCESS) {
+		strlcat(buf, "file-opened", sizeof(buf));
 	} else {
 		strlcat(buf, "unknown", sizeof(buf));
 		r = -1;
@@ -891,6 +893,38 @@ ecs_file(struct quark_queue *qq, struct hanson *h,
 }
 
 static int
+ecs_file_access(struct quark_queue *qq, struct hanson *h,
+    const struct quark_file_access *access, int *first)
+{
+	struct quark_passwd	*pw;
+	struct quark_group	*gr;
+	char			 buf[32];
+	int			 ext_first = 1;
+
+	hanson_add_key_value(h, "path", access->path, first);
+	snprintf(buf, sizeof(buf), "%llu", access->inode);
+	hanson_add_key_value(h, "inode", buf, first);
+	hanson_add_key_value_int(h, "size", access->size, first);
+	hanson_add_key_value_int(h, "uid", access->uid, first);
+	hanson_add_key_value_int(h, "gid", access->gid, first);
+	if ((pw = quark_passwd_lookup(qq, access->uid)) != NULL)
+		hanson_add_key_value(h, "owner", pw->name, first);
+	if ((gr = quark_group_lookup(qq, access->gid)) != NULL)
+		hanson_add_key_value(h, "group", gr->name, first);
+	snprintf(buf, sizeof(buf), "0%o", access->mode);
+	hanson_add_key_value(h, "mode", buf, first);
+	if (access->sym_target != NULL)
+		hanson_add_key_value(h, "target_path", access->sym_target, first);
+
+	hanson_add_object(h, "Ext", first);
+	hanson_add_key_value_int(h, "open_flags", access->open_flags, &ext_first);
+	hanson_add_key_value_int(h, "fmode", access->fmode, &ext_first);
+	hanson_close_object(h);
+
+	return (0);
+}
+
+static int
 ecs_host(struct quark_queue *qq, struct hanson *h, int *first)
 {
 	struct quark_sysinfo	*si = &qq->sysinfo;
@@ -1028,17 +1062,28 @@ quark_event_to_ecs(struct quark_queue *qq, const struct quark_event *qev,
 			    ECS_PROC_TOP_LEVEL, boottime, &process_first);
 		}
 		hanson_close_object(&h);
+	} else if (qev->file_access != NULL) {
+		int	process_first = 1;
+
+		hanson_add_object(&h, "process", &top_first);
+		hanson_add_key_value_int(&h, "pid", qev->file_access->pid,
+		    &process_first);
+		hanson_close_object(&h);
 	}
 
 	if (qev->socket != NULL)
 		ecs_socket(&h, qev, &top_first);
 
-	if (qev->file != NULL) {
+	if (qev->file != NULL || qev->file_access != NULL) {
 		hanson_add_object(&h, "file", &top_first);
 		{
 			int	file_first = 1;
 
-			ecs_file(qq, &h, qev, &file_first);
+			if (qev->file != NULL)
+				ecs_file(qq, &h, qev, &file_first);
+			else
+				ecs_file_access(qq, &h, qev->file_access,
+				    &file_first);
 		}
 		hanson_close_object(&h);
 	}
