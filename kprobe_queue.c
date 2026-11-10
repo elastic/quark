@@ -1115,6 +1115,11 @@ kprobe_kludge_arg(struct kprobe *k, struct kprobe_arg *karg,
  * (dentry)(...)->d_parent->d_name.name. The kernel finds those fields in its
  * own BTF and they don't nest, but only struct.field tokens can be written
  * like this. See kprobe_install().
+ * Only the struct name of the first cast token is used. For the tokens after
+ * it the kernel takes the type that the previous field points to, and
+ * kprobe_exp() and the alternatives of quark_btf are not consulted. Each of
+ * those tokens must thus name a field of that type, as is the case for the
+ * dentry.d_parent and dentry.d_name.name of pwd_s5 and pwd_s6.
  */
 static char *
 kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
@@ -1167,7 +1172,8 @@ kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
 		    !strcmp(karg->typ, "string"))
 			break;
 		p = strchr(*pp, '.');
-		if (!isalpha((unsigned char)**pp) || p == NULL) {
+		if ((!isalpha((unsigned char)**pp) && **pp != '_') ||
+		    p == NULL) {
 			qwarnx("can't cast %s", *pp);
 			free(arg_dsl);
 			free(kstr);
