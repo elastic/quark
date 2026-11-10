@@ -61,6 +61,12 @@ Registers <var class="Fa">name</var>, a single path component without slashes
   <a class="permalink" href="#file.path"><i class="Em" id="file.path">file.path</i></a>
   rule never matches a file access event; the names are the only filter on the
   file itself.
+<p class="Pp" id="quark_queue_open">Opens by all threads of the process that
+    called
+    <a class="permalink" href="#quark_queue_open"><code class="Fn">quark_queue_open</code></a>()
+    are not reported. A forked child is reported, even if it inherits the queue.
+    The exclusion ends when the original process exits; a later process with the
+    same PID is reported.</p>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
   VALUES</a></h1>
