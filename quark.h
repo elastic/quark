@@ -164,6 +164,7 @@ int			 quark_queue_trusted_pid_add(struct quark_queue *, u32);
 int			 quark_queue_trusted_pid_reset(struct quark_queue *);
 int			 quark_queue_file_access_name_add(struct quark_queue *,
 			     const char *, int);
+int			 quark_queue_file_access_name_reset(struct quark_queue *);
 
 /* kprobe_queue.c */
 int			 kprobe_queue_open(struct quark_queue *);
