@@ -1,0 +1,9 @@
+# Valgrind checks mount(type) even when Linux ignores it for a bind mount.
+# These test callers pass NULL for that case.
+{
+   file-access-bind-mount
+   Memcheck:Param
+   mount(type)
+   fun:mount
+   fun:t_file_access
+}
