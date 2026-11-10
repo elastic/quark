@@ -504,14 +504,12 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	var event Event
 
 	cev := C.quark_queue_get_event(queue.quarkQueue)
-	if cev == nil {
+	if cev == nil || cev.process == nil {
 		return event, false
 	}
 
 	event.Events = uint64(cev.events)
-	if cev.process != nil {
-		event.Process = processFromC(cev.process)
-	}
+	event.Process = processFromC(cev.process)
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)
 		event.Socket = &socket

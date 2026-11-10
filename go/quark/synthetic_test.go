@@ -414,17 +414,16 @@ func TestSyntheticQueueTimestampExhaustion(t *testing.T) {
 }
 
 // TestSyntheticFileEventUncachedPid verifies that a file injection for a pid
-// that is not in the process cache still yields the event, with no process
-// data attached.
+// that is not in the process cache behaves as it does with the ebpf backend.
 //
-// This mirrors the ebpf backend: an ebpf file event carries only a pid and the
-// file fields, so raw_event_file() resolves the process through the cache and
-// legitimately produces a NULL process on a miss. The synthetic queue must
-// keep that behaviour, otherwise a benchmark never exercises the cache-miss
-// path.
+// An ebpf file event carries only a pid and the file fields, so
+// raw_event_file() resolves the process through the cache and produces a NULL
+// process on a miss. The synthetic queue does not seed the cache from the
+// injected process, so a benchmark sees the same cache-miss path.
 //
-// GetEvent() used to treat a NULL process the same as "no event", which both
-// dropped the file event and made the caller's drain loop exit early.
+// GetEvent() does not return events without a process. It reports false for
+// the dropped event even when more events are queued behind it, so a caller
+// that drains until false stops there and picks up the rest on a later call.
 func TestSyntheticFileEventUncachedPid(t *testing.T) {
 	queue, err := OpenSyntheticQueue(syntheticTestAttr())
 	require.NoError(t, err)
@@ -448,17 +447,32 @@ func TestSyntheticFileEventUncachedPid(t *testing.T) {
 		Process: process,
 		File:    file,
 	}))
+	// Queued behind the file event. The cache is filled when an event is
+	// popped, so this exec does not resolve the earlier file event.
+	require.NoError(t, queue.Inject(SyntheticEvent{
+		Kind:    QUARK_SYNTHETIC_EXEC,
+		Time:    5001,
+		Process: process,
+	}))
+	require.Equal(t, 2, queue.Stats().Length)
+
+	_, ok := queue.GetEvent()
+	require.False(t, ok, "file event for an uncached pid has no process and must not be returned")
+
+	// The injected process payload is not consulted for file events, and the
+	// false above was returned with the exec still queued.
+	_, ok = queue.Lookup(uncachedPid)
+	require.False(t, ok)
+	require.Equal(t, 1, queue.Stats().Length, "the exec must still be queued after the drop")
 
 	event, ok := queue.GetEvent()
-	require.True(t, ok, "GetEvent returned false — file event for an uncached pid was dropped")
-	require.Equal(t, uint64(QUARK_EV_FILE), event.Events)
-	require.NotNil(t, event.File)
-	require.Equal(t, file.Path, event.File.Path)
+	require.True(t, ok)
+	require.Equal(t, uint64(QUARK_EV_EXEC), event.Events)
+	require.Equal(t, uint32(uncachedPid), event.Process.Pid)
+	require.Zero(t, queue.Stats().Length)
 
-	// A cache miss leaves the process zero-valued, exactly as with ebpf. The
-	// injected process payload is not consulted for file events.
-	require.Zero(t, event.Process.Pid)
-	require.Empty(t, event.Process.Comm)
+	_, ok = queue.GetEvent()
+	require.False(t, ok)
 }
 
 // TestSyntheticFileEventCachedPid is the cache-hit counterpart: once an exec
