@@ -11,5 +11,6 @@ struct {
 } ringbuf SEC(".maps");
 
 #include "Process/Probe.bpf.c"
+#include "Process/BpfTelemetry.bpf.c"
 #include "Network/Probe.bpf.c"
 #include "File/Probe.bpf.c"

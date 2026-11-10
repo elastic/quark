@@ -1191,5 +1191,3 @@ int BPF_KPROBE(kprobe__tty_write_old_sig, struct file *file, const char *buf, si
 
     return r;
 }
-
-#include "BpfTelemetry.h"

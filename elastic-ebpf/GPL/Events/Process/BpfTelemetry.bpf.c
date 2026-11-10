@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
 /* Copyright (c) 2026 Elastic NV */
 
-#ifndef EBPF_BPF_TELEMETRY_H
-#define EBPF_BPF_TELEMETRY_H
+#include "vmlinux.h"
+
+#include <bpf/bpf_core_read.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
 
 #include "BpfCallStack.h"
+#include "Helpers.h"
+#include "State.h"
+#include "Varlen.h"
 
 #define EBPF_BPF_COMMON_ATTRS (1U << 16)
 
@@ -326,5 +332,3 @@ int bpf_call_task_exit(void *ctx)
     preempt_enable();
     return 0;
 }
-
-#endif
