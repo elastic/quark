@@ -55,6 +55,13 @@ struct bpf_queue {
 	 * flipping onto a map that still has data.
 	 */
 	bool			 udp_flow_draining;
+
+	/*
+	 * Where a drain that ran out of queue space resumes: the first key
+	 * of the inactive map not drained yet. See udp_flow_drain().
+	 */
+	struct ebpf_udp_flow_key udp_flow_cursor;
+	bool			 udp_flow_has_cursor;
 };
 
 /*
@@ -1846,19 +1853,34 @@ udp_flow_to_raw(struct ebpf_udp_flow_key *key, struct ebpf_udp_flow_val *val)
  * writes to it anymore, so the key chain can't be disturbed and deleting
  * behind the iteration is safe.
  *
+ * When the queue has no room for the whole map, the drain spans several calls
+ * and each one resumes from udp_flow_cursor. Asking the kernel for the first
+ * key instead makes it walk the hash buckets from the start, over everything
+ * already emptied, and a saturated queue drains one entry per call.
+ *
  * Returns the number drained, sets *empty to 1 when the map has nothing left.
+ * Only a pass that began at the first key declares the map empty. A resumed
+ * pass that reaches the end leaves that to the next call, which starts over
+ * and picks up anything a late program added behind the cursor. Any error
+ * drops the cursor, so the next call starts over as well.
  */
 static int
 udp_flow_drain(struct quark_queue *qq, struct bpf_map *m, int space_left,
     int *empty)
 {
+	struct bpf_queue		*bqq = qq->queue_be;
 	struct ebpf_udp_flow_key	 key, next;
 	struct ebpf_udp_flow_val	 val;
 	struct raw_event		*raw;
 	int				 n, have_next;
+	bool				 resumed;
 
 	*empty = 0;
-	if (bpf_map__get_next_key(m, NULL, &key, sizeof(key)) != 0) {
+	resumed = bqq->udp_flow_has_cursor;
+	bqq->udp_flow_has_cursor = false;
+	if (resumed)
+		key = bqq->udp_flow_cursor;
+	else if (bpf_map__get_next_key(m, NULL, &key, sizeof(key)) != 0) {
 		if (errno == ENOENT)
 			*empty = 1;
 		else
@@ -1870,12 +1892,12 @@ udp_flow_drain(struct quark_queue *qq, struct bpf_map *m, int space_left,
 		    sizeof(next)) == 0;
 		if (!have_next && errno != ENOENT) {
 			qwarn("bpf_map__get_next_key udp_flows");
-			break;
+			return (n);
 		}
 		if (bpf_map__lookup_elem(m, &key, sizeof(key), &val,
 		    sizeof(val), 0) != 0) {
 			qwarn("bpf_map__lookup_elem udp_flows");
-			break;
+			return (n);
 		}
 		/*
 		 * Allocate before deleting so a failed allocation leaves the
@@ -1883,22 +1905,26 @@ udp_flow_drain(struct quark_queue *qq, struct bpf_map *m, int space_left,
 		 */
 		if ((raw = udp_flow_to_raw(&key, &val)) == NULL) {
 			qwarn("udp_flow_to_raw");
-			break;
+			return (n);
 		}
 		if (bpf_map__delete_elem(m, &key, sizeof(key), 0) != 0) {
 			qwarn("bpf_map__delete_elem udp_flows");
 			raw_event_free(raw);
-			break;
+			return (n);
 		}
 		if (raw_event_insert(qq, raw) == -1)
 			raw_event_free(raw);
 		if (!have_next) {
-			*empty = 1;
-			n++;
-			break;
+			if (!resumed)
+				*empty = 1;
+			return (n + 1);
 		}
 		key = next;
 	}
+
+	/* Out of room, key is the first entry we didn't get to */
+	bqq->udp_flow_cursor = key;
+	bqq->udp_flow_has_cursor = true;
 
 	return (n);
 }
