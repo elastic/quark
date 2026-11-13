@@ -526,9 +526,6 @@ static int sk_maybe_save_tgid(struct bpf_sock *sk)
     if (sk->protocol != IPPROTO_UDP)
         return (1);
 
-    if (ebpf_events_is_trusted_pid())
-        return (1);
-
     tgid = bpf_get_current_pid_tgid() >> 32;
 
     /*
@@ -543,9 +540,12 @@ static int sk_maybe_save_tgid(struct bpf_sock *sk)
      * Only write if the owner changed. We get here on every sendto() and
      * recvfrom(), from every thread sharing the socket, and an update takes
      * a lock to swap in a new element, while a lookup is lockless.
+     *
+     * Checking for a trusted PID costs another lookup, so we only do so
+     * when there is something to write.
      */
     old = bpf_map_lookup_elem(&sk_to_tgid, &ctx->scratch64);
-    if (old == NULL || *old != tgid)
+    if ((old == NULL || *old != tgid) && !ebpf_events_is_trusted_pid())
         bpf_map_update_elem(&sk_to_tgid, &ctx->scratch64, &tgid, BPF_ANY);
     put_dns_ctx();
 
