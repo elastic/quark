@@ -520,7 +520,7 @@ int skb_ingress(struct __sk_buff *skb)
 
 static int sk_maybe_save_tgid(struct bpf_sock *sk)
 {
-    u32 tgid;
+    u32 tgid, *old;
     struct dns_ctx *ctx;
 
     if (sk->protocol != IPPROTO_UDP)
@@ -539,7 +539,14 @@ static int sk_maybe_save_tgid(struct bpf_sock *sk)
     if (ctx == NULL)
         return (1);
     ctx->scratch64 = (u64)sk;
-    bpf_map_update_elem(&sk_to_tgid, &ctx->scratch64, &tgid, BPF_ANY);
+    /*
+     * Only write if the owner changed. We get here on every sendto() and
+     * recvfrom(), from every thread sharing the socket, and an update takes
+     * a lock to swap in a new element, while a lookup is lockless.
+     */
+    old = bpf_map_lookup_elem(&sk_to_tgid, &ctx->scratch64);
+    if (old == NULL || *old != tgid)
+        bpf_map_update_elem(&sk_to_tgid, &ctx->scratch64, &tgid, BPF_ANY);
     put_dns_ctx();
 
     return (1);
