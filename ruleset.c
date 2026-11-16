@@ -115,6 +115,31 @@ path_match(struct quark_rule_field *field, const char *a)
 	return (1);
 }
 
+/*
+ * The event.scope of an event, one of QUARK_RULE_SCOPE_*. The values are
+ * disjoint, "not a container" is { host unknown }:
+ *   container	the cgroup of the process names a container
+ *   host	the cgroup is known and does not name a container
+ *   unknown	no process, no cgroup, or the container ID could not be
+ *		stored (process_container_id() tries again next time)
+ */
+static int
+event_scope(struct quark_event *qev)
+{
+	struct quark_process	*qp;
+
+	qp = (struct quark_process *)qev->process;
+	if (qp == NULL)
+		return (QUARK_RULE_SCOPE_UNKNOWN);
+	if (process_container_id(qp) != NULL)
+		return (QUARK_RULE_SCOPE_CONTAINER);
+	/* Parsed and not a container, a cleared cgroup resets the flag */
+	if (qp->container_id_parsed)
+		return (QUARK_RULE_SCOPE_HOST);
+
+	return (QUARK_RULE_SCOPE_UNKNOWN);
+}
+
 /* 1 for match, 0 for non match */
 static int
 quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
@@ -171,11 +196,7 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 			return (path_match(field, qp->container->image));
 		break;
 	case QUARK_RF_EVENT_SCOPE:
-		/* An unknown cgroup is not a container. */
-		if (qp != NULL && field->id == QUARK_RULE_SCOPE_CONTAINER)
-			return (process_container_id(
-			    (struct quark_process *)qp) != NULL);
-		break;
+		return (event_scope(qev) == (int)field->id);
 	case QUARK_RF_POISON:
 		if (qp != NULL)
 			return (qp->poison_tag == field->poison_tag);
@@ -341,8 +362,14 @@ rule_field_validate(struct quark_rule_field *rf)
 	case QUARK_RF_FILE_EXEC_CHANGE:
 		break;
 	case QUARK_RF_EVENT_SCOPE:
-		if (rf->id != QUARK_RULE_SCOPE_CONTAINER)
+		switch (rf->id) {
+		case QUARK_RULE_SCOPE_CONTAINER:	/* FALLTHROUGH */
+		case QUARK_RULE_SCOPE_HOST:		/* FALLTHROUGH */
+		case QUARK_RULE_SCOPE_UNKNOWN:
+			break;
+		default:
 			return (errno = EINVAL, -1);
+		}
 		break;
 	case QUARK_RF_POISON:
 		if (rf->poison_tag == 0)

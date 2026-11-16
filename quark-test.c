@@ -5000,6 +5000,9 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on file.path { /tmp/* */.bashrc } file.exec_change\n",
 		"pass on pod.name { nginx-* *-sidecar } container.image { a b }\n",
 		"pass on event.scope { container }\n",
+		"drop on event.scope host\n",
+		"drop on event.scope unknown\n",
+		"drop on event.scope { host unknown }\n",
 		"poison 3 on poison { 1 2 }\n",
 		"drop on pod.name {\n\tnginx-*\n\n\t*-sidecar # comment\n}\n",
 		"drop on pod.name { a\n b } process.pid 1\n",
@@ -5029,7 +5032,8 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on file.name \"foo\n",
 		"drop on event.scope\n",
 		"drop on event.scope guest\n",
-		"drop on event.scope host\n",
+		"drop on event.scope Host\n",
+		"drop on event.scope { host guest }\n",
 		"drop on pod.name\n",
 		"drop on pod.name a*b*\n",
 		"drop on container.image\n",
@@ -5293,6 +5297,67 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp.container_id == NULL);
 
 	quark_ruleset_clear(&ruleset);
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	/* Every event has exactly one of the three values. */
+	ruleset_from_string(&ruleset,
+	    "pass on event.scope host\n"
+	    "pass on event.scope unknown\n"
+	    "pass on event.scope container\n");
+	bzero(&qp, sizeof(qp));
+
+	/* No process, or a process without a cgroup, is unknown. */
+	qev.process = NULL;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	assert(!qp.container_id_parsed);
+
+	/* A known cgroup that does not name a container is host. */
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+
+	/* A container. */
+	cgroup = strdup("/system.slice/cri-containerd-abc123.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 2);
+
+	/* Not recognized as containers yet, so host (see above). */
+	cgroup = strdup("/system.slice/docker-abc123.scope/init.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+	cgroup = strdup("/kubepods/burstable/pod1234/abc123");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+	quark_ruleset_clear(&ruleset);
+
+	/* "Containers only" is one rule with a list. */
+	ruleset_from_string(&ruleset,
+	    "drop on event.scope { host unknown }\n"
+	    "pass on any\n");
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->action == QUARK_RA_DROP);
+	cgroup = strdup("/system.slice/crio-def456.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->action == QUARK_RA_PASS);
+	qev.process = NULL;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->action == QUARK_RA_DROP);
+	quark_ruleset_clear(&ruleset);
 
 	quark_ruleset_init(&ruleset);
 	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
@@ -5303,6 +5368,12 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	errno = 0;
 	assert(quark_rule_match_field(rule, rf) == -1);
 	assert(errno == EINVAL);
+	rf.id = QUARK_RULE_SCOPE_INVALID;
+	errno = 0;
+	assert(quark_rule_match_field(rule, rf) == -1);
+	assert(errno == EINVAL);
+	rf.id = QUARK_RULE_SCOPE_UNKNOWN;
+	assert(quark_rule_match_field(rule, rf) == 0);
 	quark_ruleset_clear(&ruleset);
 	free(qp.cgroup);
 	free(qp.container_id);

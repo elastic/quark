@@ -229,6 +229,10 @@ value_from_string(struct quark_parser_ctx *ctx, u64 code, const char *str,
 	case QUARK_RF_EVENT_SCOPE:
 		if (!strcmp(str, "container"))
 			rf->id = QUARK_RULE_SCOPE_CONTAINER;
+		else if (!strcmp(str, "host"))
+			rf->id = QUARK_RULE_SCOPE_HOST;
+		else if (!strcmp(str, "unknown"))
+			rf->id = QUARK_RULE_SCOPE_UNKNOWN;
 		else {
 			yyerror(ctx, "bad event scope: %s", str);
 			return (-1);

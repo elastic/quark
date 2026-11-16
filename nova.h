@@ -39,9 +39,14 @@
 #define QUARK_RF_POD_NAME	(1ULL << 11)
 #define QUARK_RF_CONTAINER_IMAGE (1ULL << 12)
 
+/*
+ * event.scope, every event has exactly one of the valid values.
+ */
 enum quark_rule_scope {
 	QUARK_RULE_SCOPE_INVALID,
-	QUARK_RULE_SCOPE_CONTAINER,
+	QUARK_RULE_SCOPE_CONTAINER,	/* the cgroup names a container */
+	QUARK_RULE_SCOPE_HOST,		/* a known cgroup, not a container */
+	QUARK_RULE_SCOPE_UNKNOWN,	/* no process, or no cgroup */
 };
 
 enum quark_rule_action {
