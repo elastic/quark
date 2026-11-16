@@ -290,3 +290,39 @@ Changes from 0.11 to 0.12
     traffic is captured however it is used; only the attribution can
     lag: after fork(2) or SCM_RIGHTS passing it stays with the creating
     process until the new owner makes one of the calls above.
+  o The rule engine moved from quark.c to ruleset.c, and its structures
+    and functions from quark.h to ruleset.h, which quark.h includes.
+    quark_rule{} holds conditions, quark_rule_cond{}, in place of fields:
+    fields and n_fields are now conds and n_conds. A condition is one
+    field code with one or more values, each a quark_rule_field{} as
+    before. quark_rule_match_field() adds a condition with one value.
+  o The rule DSL learned value lists. A field takes a list of values in
+    braces, which are alternatives, as in "drop on process.exe { /bin/*
+    /usr/bin/curl } process.uid { 0 1000 }". A list may span lines. The
+    new quark_rule_match_field_list() adds a condition with a list. An
+    unquoted { or } is now a token, so a value with a brace must be
+    quoted. The nova backend rejects a list with more than one value.
+  o The event.scope rule field learned the host and unknown values.
+    Every event has exactly one of container, host and unknown. host is
+    an absolute cgroup under /init.scope, /system.slice or /user.slice
+    with no .. component and no container scope component. Everything
+    else that is not a container is unknown: no process, no or an empty
+    cgroup, the root cgroup, a path relative to a cgroup namespace,
+    cgroupfs and nested container cgroups. "drop on event.scope { host
+    unknown }" keeps only container events in one rule.
+  o The rule DSL learned tag blocks. "tag <name> {", then "except on"
+    lines, then "on" lines, one per line, then "}". A block sets its tag
+    on the event when no except line and one on line match. Blocks don't
+    end the evaluation, every matching block sets its tag, and an except
+    line only applies to its own block. There are at most 64 tag names,
+    and the name blocked is reserved. Change in behavior: a drop rule no
+    longer drops an event that has a tag, it still ends the evaluation.
+    A ruleset without tag blocks behaves as before. quark_event{} got
+    the members tags, one bit per name, and ruleset, the ruleset that
+    names the bits. New functions quark_ruleset_tag_begin(),
+    quark_ruleset_tag_end() and quark_ruleset_tag_name(), and new rule
+    actions QUARK_RA_TAG and QUARK_RA_EXCEPT. quark_queue_open() fails
+    with EINVAL on a ruleset with an open block. The nova backend rejects
+    tag blocks with ENOTSUP.
+  o quark_event_dump() prints a TAGS line with the tag names of an event,
+    and go/quark has them in Event.Tags.

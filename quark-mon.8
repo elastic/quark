@@ -126,40 +126,7 @@ use
 .Em -
 for stdin.
 See
-.Sx CONTAINER SCOPE
-for the
-.Dq event.scope
-field.
-The
-.Dq pod.name
-field matches events from a process in a container that belongs to the
-named Kubernetes pod.
-A single
-.Sq *
-wildcard is accepted, as in
-.Dq pod.name nginx-* .
-The
-.Dq container.image
-field matches events from a process in a container whose image reference
-matches the given string.
-The image reference is compared exactly as Kubernetes reports it, or as
-given to the container API, as in
-.Dq container.image docker.io/library/nginx:1.25 .
-A single
-.Sq *
-wildcard is accepted, so
-.Dq container.image */nginx:1.25
-matches that image from any registry, and
-.Dq container.image quay.io/*
-matches every image from that registry.
-Both fields require container metadata, from quark-kube-talker, see
-.Fl K ,
-or from the container API of the library.
-An event without a process, or from a process whose container is unknown,
-matches neither field.
-Like
-.Dq event.scope ,
-these fields are only supported by the EBPF backend.
+.Sx RULES .
 .It Fl T
 Enable ptrace event tracing.
 .It Fl t
@@ -186,24 +153,245 @@ Exactly one of
 or
 .Fl n
 may be passed, there is no fallback between backends.
-.Sh CONTAINER SCOPE
-The
-.Dq event.scope container
-rule field matches events from a process in a Kubernetes container.
-To keep only container events on a Kubernetes node, use:
+.Sh RULES
+A rule file has one rule per line.
+A rule is an action, the word
+.Cm on ,
+and one or more fields, or the word
+.Cm any
+for every event:
 .Bd -literal -offset indent
-pass on event.scope container
+drop on process.uid 0 process.exe /usr/bin/*
+pass on any
+.Ed
+.Pp
+A
+.Sq #
+starts a comment that ends at the end of the line.
+A value with a blank, a
+.Sq # ,
+a
+.Sq {
+or a
+.Sq }
+must be quoted, as in
+.Ql \(dq/opt/my app/*\(dq .
+A
+.Sq \e
+at the end of a line continues the rule on the next line.
+.Pp
+The actions are:
+.Bl -tag -width "poison N"
+.It Cm pass
+The event is delivered, and the evaluation ends.
+.It Cm drop
+The event is dropped, unless it has a tag, see
+.Sx Tag blocks .
+The evaluation ends.
+.It Cm poison Ar N
+The process of the event gets the poison tag
+.Ar N ,
+which the
+.Cm poison
+field matches.
+The process keeps it for its later events, and its children inherit it.
+The evaluation goes on.
+.El
+.Pp
+All fields of a rule must match.
+A field without data for the event, like
+.Cm file.path
+on a process event, or a container field for a process without container
+metadata, does not match.
+The fields are:
+.Bl -tag -width "container.image"
+.It Cm process.pid , process.ppid , process.uid , process.gid , process.sid Ar number
+The process id, the parent process id, the user id, the group id and the
+session id of the process.
+.Cm process.pid 0
+and
+.Cm process.ppid 0
+are rejected.
+.It Cm process.exe Ar path
+The executable of the process.
+.It Cm file.path Ar path
+The path of the file of a file event.
+.It Cm file.exec_change
+A file was created, or its permissions changed, and it is executable
+afterwards.
+This field takes no value.
+.It Cm event.scope Ar container | host | unknown
+See
+.Sx CONTAINER SCOPE .
+.It Cm pod.name Ar name
+The name of the Kubernetes pod of the process container.
+.It Cm container.image Ar image
+The image reference of the process container, exactly as Kubernetes reports
+it, or as given to the container API, as in
+.Dq container.image docker.io/library/nginx:1.25 .
+.It Cm poison Ar N
+The process has the poison tag
+.Ar N .
+.El
+.Pp
+.Cm process.exe ,
+.Cm file.path ,
+.Cm pod.name
+and
+.Cm container.image
+accept one
+.Sq *
+wildcard at any position, it matches any text, including
+.Sq / .
+So
+.Dq file.path /etc/*
+matches every file under
+.Pa /etc ,
+and
+.Dq container.image */nginx:1.25
+matches that image from any registry.
+.Cm pod.name
+and
+.Cm container.image
+require container metadata, from quark-kube-talker, see
+.Fl K ,
+or from the container API of the library.
+.Ss Value lists
+A field can take a list of values in braces.
+The field matches when one of the values matches:
+.Bd -literal -offset indent
+drop on process.exe { /bin/* /usr/bin/curl } process.uid { 0 1000 }
+.Ed
+.Pp
+This rule drops an event from root or uid 1000 that runs a program in
+.Pa /bin
+or curl.
+A list may span lines, and an empty list is an error.
+.Cm file.exec_change
+takes no list.
+.Ss Tag blocks
+A tag block sets a named tag on the event.
+It has
+.Cm except on
+lines, then
+.Cm on
+lines, one per line:
+.Bd -literal -offset indent
+drop on event.scope { host unknown }
+tag alert {
+	except on file.path /tmp/*
+	on file.exec_change
+}
+tag log {
+	on file.path *
+}
 drop on any
 .Ed
 .Pp
-A container is recognized only when the last component of the process
-cgroup is a container scope of the systemd cgroup driver, like
+A block sets its tag when no
+.Cm except on
+line matches and one
+.Cm on
+line matches.
+An
+.Cm except on
+line only applies to its own block, and it needs a field.
+In the example, on a container event, a new executable in
+.Pa /tmp
+gets the tag
+.Sy log ,
+a new executable elsewhere gets
+.Sy alert
+and
+.Sy log ,
+any other file event gets
+.Sy log ,
+and an event without a file is dropped.
+.Pp
+The
+.Sq {
+follows the name, and the
+.Sq }
+has a line of its own.
+Blocks with the same name are alternatives, a name is up to 64 letters,
+digits,
+.Sq _ ,
+.Sq \&.
+and
+.Sq - ,
+there are at most 64 names, and the name
+.Sy blocked
+is reserved.
+No rule tests a tag, a tag is an output:
+.Nm
+prints it, see
+.Xr quark_event_dump 3 .
+.Ss Evaluation
+The rules are evaluated from top to bottom.
+The first matching
+.Cm pass
+or
+.Cm drop
+rule ends the evaluation.
+.Cm poison
+rules and tag blocks don't end it, so every matching block sets its tag.
+After the evaluation an event is dropped when the last matching rule is a
+.Cm drop
+and the event has no tag.
+Every other event is delivered, also an event that no rule matched.
+So a
+.Cm drop
+rule before a tag block removes an event, and
+.Dq drop on any
+as the last rule removes every event without a tag.
+.Pp
+The initial snapshot of existing processes, see
+.Fl s ,
+is not filtered by the rules.
+.Ss Backends
+The EBPF backend supports every rule.
+The kprobe backend does not report the cgroup of new processes, so it
+rejects
+.Cm event.scope ,
+.Cm pod.name
+and
+.Cm container.image .
+The NOVA backend rejects these three fields,
+.Cm file.exec_change ,
+value lists with more than one value and tag blocks.
+.Sh CONTAINER SCOPE
+The
+.Cm event.scope
+field puts every event in exactly one of three scopes:
+.Bl -tag -width "container"
+.It Cm container
+The last component of the process cgroup is a container scope of the
+systemd cgroup driver, like
 .Pa cri-containerd-<id>.scope
 or
 .Pa crio-<id>.scope .
 This is the kubeadm default since Kubernetes 1.22.
-The following are not recognized as containers, and the rules above drop
-their events:
+.It Cm host
+The process cgroup is an absolute path under
+.Pa /init.scope ,
+.Pa /system.slice
+or
+.Pa /user.slice ,
+the systemd host layout, with no
+.Pa ..
+component and no component that is a container scope.
+.It Cm unknown
+Everything else.
+.El
+.Pp
+To keep only container events on a Kubernetes node, use:
+.Bd -literal -offset indent
+drop on event.scope { host unknown }
+.Ed
+.Pp
+The following are
+.Cm unknown ,
+neither a container nor the host, so the rule above drops their events:
 .Bl -bullet
 .It
 All containers on a node that uses the cgroupfs driver, like
@@ -212,13 +400,19 @@ All containers on a node that uses the cgroupfs driver, like
 A process in a nested cgroup of a container, like
 .Pa cri-containerd-<id>.scope/init.scope .
 .It
-An event without a process, or from a process with an unknown cgroup.
+The root cgroup
+.Pa / ,
+a cgroup path relative to a cgroup namespace, like
+.Pa /../system.slice/foo.service ,
+and any other layout, like
+.Pa /machine.slice .
+.It
+An event without a process, or from a process with an unknown or empty
+cgroup.
 .El
 .Pp
 Containers outside Kubernetes are not a supported use case.
 The field is only supported by the EBPF backend.
-The kprobe backend does not report the cgroup of new processes, so it
-rejects the field, and so does the NOVA backend.
 .Sh EXIT STATUS
 .Nm
 exits with 0 in if a SIGINT was sent, or 1 in case of error.
