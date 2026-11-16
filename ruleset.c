@@ -19,27 +19,39 @@ quark_ruleset_init(struct quark_ruleset *ruleset)
 	bzero(ruleset, sizeof(*ruleset));
 }
 
+/* Free what rule_field_validate() allocated for one value */
+static void
+rule_field_free(struct quark_rule_field *rf)
+{
+	switch (rf->code) {
+	case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
+	case QUARK_RF_EXE:		/* FALLTHROUGH */
+	case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
+	case QUARK_RF_CONTAINER_IMAGE:
+		free(rf->wild.pre);
+		rf->wild.pre = NULL;
+		break;
+	default:
+		break;
+	}
+}
+
 void
 quark_ruleset_clear(struct quark_ruleset *ruleset)
 {
 	struct quark_rule	*rule;
-	size_t			 i, j;
+	struct quark_rule_cond	*cond;
+	size_t			 i, j, k;
 
 	for (i = 0; i < ruleset->n_rules; i++) {
 		rule = ruleset->rules + i;
-		for (j = 0; j < rule->n_fields; j++) {
-			switch (rule->fields[j].code) {
-			case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
-			case QUARK_RF_EXE:		/* FALLTHROUGH */
-			case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
-			case QUARK_RF_CONTAINER_IMAGE:
-				free(rule->fields[j].wild.pre);
-				break;
-			default:
-				break;
-			}
+		for (j = 0; j < rule->n_conds; j++) {
+			cond = rule->conds + j;
+			for (k = 0; k < cond->n_values; k++)
+				rule_field_free(cond->values + k);
+			free(cond->values);
 		}
-		free(rule->fields);
+		free(rule->conds);
 	}
 
 	free(ruleset->rules);
@@ -66,6 +78,7 @@ quark_ruleset_parse(struct quark_ruleset *ruleset, FILE *in,
 	for (i = 0; i < ctx.n_allocs; i++)
 		free(ctx.allocs[i]);
 	free(ctx.allocs);
+	free(ctx.strs);
 
 	if (ctx.error) {
 		quark_ruleset_clear(ctx.ruleset);
@@ -176,24 +189,37 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 	return (0);
 }
 
+/* 1 when one of the values matches, the values of a field are ORed */
+static int
+cond_match(struct quark_rule *rule, struct quark_rule_cond *cond,
+    struct quark_event *qev)
+{
+	size_t	i;
+
+	for (i = 0; i < cond->n_values; i++) {
+		if (quark_rule_field_match(rule, cond->values + i, qev))
+			return (1);
+	}
+
+	return (0);
+}
+
 struct quark_rule *
 quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 {
 	struct quark_rule	*rule;
-	struct quark_rule_field		*field;
 	size_t			 i, j;
 	struct quark_process	*qp;
 
 	for (i = 0; i < ruleset->n_rules; i++) {
 		rule = ruleset->rules + i;
 		rule->evals++;
-		for (j = 0; j < rule->n_fields; j++) {
-			field = rule->fields + j;
-			if (!quark_rule_field_match(rule, field, qev))
+		for (j = 0; j < rule->n_conds; j++) {
+			if (!cond_match(rule, rule->conds + j, qev))
 				break;
 		}
 		/* All fields matched, this is the rule! */
-		if (j == rule->n_fields) {
+		if (j == rule->n_conds) {
 			rule->hits++;
 			/* Poison rules continue to evaluate, others are done */
 			if (rule->action != QUARK_RA_POISON)
@@ -228,8 +254,8 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 	ruleset->n_rules = new_n_rules;
 
 	rule = &ruleset->rules[ruleset->n_rules - 1];
-	rule->fields = NULL;
-	rule->n_fields = 0;
+	rule->conds = NULL;
+	rule->n_conds = 0;
 	rule->action = action;
 	rule->number = ruleset->n_rules - 1;
 	rule->evals = 0;
@@ -284,67 +310,105 @@ wild_init(struct quark_wild *w)
 	return (0);
 }
 
-int
-quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
+/*
+ * Check one value and prepare it for matching. A wildcard is copied, see
+ * wild_init(). On error nothing is allocated. Returns -1 with errno set.
+ */
+static int
+rule_field_validate(struct quark_rule_field *rf)
 {
-	struct quark_rule_field	*new_fields;
-	size_t			 new_n_fields;
-	char			*path;
-
-	path = NULL;
-
-	switch (rf.code) {
+	switch (rf->code) {
 	case QUARK_RF_PID:		/* FALLTHROUGH */
 	case QUARK_RF_PPID:
-		if (rf.pid == 0)
-			goto inval;
+		if (rf->pid == 0)
+			return (errno = EINVAL, -1);
 		break;
 	case QUARK_RF_UID:		/* FALLTHROUGH */
 	case QUARK_RF_GID:		/* FALLTHROUGH */
 	case QUARK_RF_SID:
 		break;
 	case QUARK_RF_COMM:
-		if (strlen(rf.comm) == 0)
-			goto inval;
+		if (strlen(rf->comm) == 0)
+			return (errno = EINVAL, -1);
 		break;
 	case QUARK_RF_EXE:		/* FALLTHROUGH */
 	case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
 	case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
 	case QUARK_RF_CONTAINER_IMAGE:
-		if (wild_init(&rf.wild) == -1)
-			goto bad;
-		path = rf.wild.pre;
+		if (wild_init(&rf->wild) == -1)
+			return (-1);
 		break;
 	case QUARK_RF_FILE_EXEC_CHANGE:
 		break;
 	case QUARK_RF_EVENT_SCOPE:
-		if (rf.id != QUARK_RULE_SCOPE_CONTAINER)
-			goto inval;
+		if (rf->id != QUARK_RULE_SCOPE_CONTAINER)
+			return (errno = EINVAL, -1);
 		break;
 	case QUARK_RF_POISON:
-		if (rf.poison_tag == 0)
-			goto inval;
+		if (rf->poison_tag == 0)
+			return (errno = EINVAL, -1);
 		break;
 	default:
-		goto inval;
+		return (errno = EINVAL, -1);
 	}
 
-	new_n_fields = rule->n_fields + 1;
-	new_fields = reallocarray(rule->fields, new_n_fields,
-	    sizeof(*rule->fields));
-	if (new_fields == NULL)
-		goto bad;
+	return (0);
+}
 
-	rule->fields = new_fields;
-	rule->n_fields = new_n_fields;
-	rule->fields[rule->n_fields - 1] = rf;
+/*
+ * Add one field with a list of values to the rule. The field matches when
+ * one of the values matches. Every value must have the same code. The
+ * values are copied, a wildcard string is copied too. On error the rule
+ * is unchanged. Returns -1 with errno set.
+ */
+int
+quark_rule_match_field_list(struct quark_rule *rule,
+    const struct quark_rule_field *rfs, size_t n)
+{
+	struct quark_rule_cond	*new_conds;
+	struct quark_rule_field	*values;
+	size_t			 i, j;
+	int			 saved_errno;
+
+	if (rfs == NULL || n == 0)
+		return (errno = EINVAL, -1);
+	for (i = 1; i < n; i++) {
+		if (rfs[i].code != rfs[0].code)
+			return (errno = EINVAL, -1);
+	}
+	if ((values = calloc(n, sizeof(*values))) == NULL)
+		return (-1);
+	for (i = 0; i < n; i++) {
+		values[i] = rfs[i];
+		if (rule_field_validate(&values[i]) == -1)
+			goto bad;
+	}
+
+	new_conds = reallocarray(rule->conds, rule->n_conds + 1,
+	    sizeof(*rule->conds));
+	if (new_conds == NULL)
+		goto bad;
+	rule->conds = new_conds;
+	rule->conds[rule->n_conds].code = rfs[0].code;
+	rule->conds[rule->n_conds].values = values;
+	rule->conds[rule->n_conds].n_values = n;
+	rule->n_conds++;
 
 	return (0);
 
-inval:
-	errno = EINVAL;
 bad:
-	free(path);
+	/* The values before values[i] are prepared, free them */
+	saved_errno = errno;
+	for (j = 0; j < i; j++)
+		rule_field_free(&values[j]);
+	free(values);
+	errno = saved_errno;
 
 	return (-1);
+}
+
+int
+quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
+{
+	return (quark_rule_match_field_list(rule, &rf, 1));
 }

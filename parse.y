@@ -25,7 +25,6 @@ typedef struct {
 			u64 poison_tag;
 		} action;
 		struct {
-			u32			num_u32;
 			u64			num_u64;
 			struct quark_rule_field rf;
 		};
@@ -36,6 +35,8 @@ typedef struct {
 
 void	quark_error(struct quark_parser_ctx *, const char *fmt, ...);
 int	quark_lex(YYSTYPE *, struct quark_parser_ctx *);
+static int	push_value(struct quark_parser_ctx *, const char *);
+static int	add_values(struct quark_parser_ctx *, u64);
 
 #define ABORT(_fmt, ...) do {			\
 	yyerror(ctx, _fmt, ##__VA_ARGS__);	\
@@ -44,6 +45,7 @@ int	quark_lex(YYSTYPE *, struct quark_parser_ctx *);
 
 %}
 
+%expect 0
 %define api.pure
 %define api.prefix {quark_}
 %define parse.error verbose
@@ -94,60 +96,63 @@ matchlist:	match
 		| matchlist match
 		;
 
-match:		matchfield {
+match:		FILE_EXEC_CHANGE {
+			struct quark_rule_field rf;
+
 			if (ctx->cur_rule == NULL)
 				ABORT("parser bug, cur_rule is NULL");
-			if (quark_rule_match_field(ctx->cur_rule, $1.rf) != 0)
+			bzero(&rf, sizeof(rf));
+			rf.code = QUARK_RF_FILE_EXEC_CHANGE;
+			if (quark_rule_match_field(ctx->cur_rule, rf) != 0)
 				ABORT("can't add match field");
+		} | valuefield values {
+			if (ctx->cur_rule == NULL)
+				ABORT("parser bug, cur_rule is NULL");
+			if (add_values(ctx, $1.rf.code) == -1)
+				YYABORT;
 		} ;
 
-matchfield:	PROCESS_PID num_u32 {
+valuefield:	PROCESS_PID {
 			$$.rf.code = QUARK_RF_PID;
-			$$.rf.pid = $2.num_u32;
-		} | PROCESS_PPID num_u32 {
+		} | PROCESS_PPID {
 			$$.rf.code = QUARK_RF_PPID;
-			$$.rf.pid = $2.num_u32;
-		} | PROCESS_UID num_u32 {
+		} | PROCESS_UID {
 			$$.rf.code = QUARK_RF_UID;
-			$$.rf.pid = $2.num_u32;
-		} | PROCESS_GID num_u32 {
+		} | PROCESS_GID {
 			$$.rf.code = QUARK_RF_GID;
-			$$.rf.pid = $2.num_u32;
-		} | PROCESS_SID num_u32 {
+		} | PROCESS_SID {
 			$$.rf.code = QUARK_RF_SID;
-			$$.rf.pid = $2.num_u32;
-		} | PROCESS_EXE STRING {
+		} | PROCESS_EXE {
 			$$.rf.code = QUARK_RF_EXE;
-			$$.rf.wild.pre = (char *)$2.str;
-		} | FILE_PATH STRING {
+		} | FILE_PATH {
 			$$.rf.code = QUARK_RF_FILEPATH;
-			$$.rf.wild.pre = (char *)$2.str;
-		} | FILE_EXEC_CHANGE {
-			$$.rf.code = QUARK_RF_FILE_EXEC_CHANGE;
-		} | EVENT_SCOPE STRING {
+		} | EVENT_SCOPE {
 			$$.rf.code = QUARK_RF_EVENT_SCOPE;
-			if (!strcmp($2.str, "container"))
-				$$.rf.id = QUARK_RULE_SCOPE_CONTAINER;
-			else
-				ABORT("bad event scope: %s", $2.str);
-		} | POD_NAME STRING {
+		} | POD_NAME {
 			$$.rf.code = QUARK_RF_POD_NAME;
-			$$.rf.wild.pre = (char *)$2.str;
-		} | CONTAINER_IMAGE STRING {
+		} | CONTAINER_IMAGE {
 			$$.rf.code = QUARK_RF_CONTAINER_IMAGE;
-			$$.rf.wild.pre = (char *)$2.str;
-		} | POISON num_u64 {
+		} | POISON {
 			$$.rf.code = QUARK_RF_POISON;
-			$$.rf.poison_tag = $2.num_u64;
 		} ;
 
-num_u32:	STRING {
-			const char *errstr;
+/* One value, or a list of values that may span lines */
+values:		value
+		| '{' optnl valuelist optnl '}'
+		;
 
-			$$.num_u32 = strtonum($1.str, 0, UINT32_MAX, &errstr);
-			if (errstr != NULL)
-				ABORT("bad number: %s: %s", $1.str, errstr);
+valuelist:	value
+		| valuelist optnl value
+		;
+
+value:		STRING {
+			if (push_value(ctx, $1.str) == -1)
+				ABORT("%s", strerror(errno));
 		} ;
+
+optnl:		/* empty */
+		| optnl '\n'
+		;
 
 num_u64:	STRING {
 			if (strtou64(&$$.num_u64, $1.str, 10) == -1)
@@ -174,6 +179,105 @@ quark_error(struct quark_parser_ctx *ctx, const char *fmt, ...)
 	    ctx->lineno + 1, ctx->colno + 1);
 	vsnprintf(ctx->errorbuf, sizeof(ctx->errorbuf), fmtbuf, va);
 	va_end(va);
+}
+
+/* Collect one value of the current field, the string is in the arena */
+static int
+push_value(struct quark_parser_ctx *ctx, const char *str)
+{
+	const char **new_strs;
+
+	new_strs = reallocarray(ctx->strs, ctx->n_strs + 1,
+	    sizeof(*ctx->strs));
+	if (new_strs == NULL)
+		return (-1);
+	ctx->strs = new_strs;
+	ctx->strs[ctx->n_strs++] = str;
+
+	return (0);
+}
+
+/* Convert one string to a value of the field with the given code */
+static int
+value_from_string(struct quark_parser_ctx *ctx, u64 code, const char *str,
+    struct quark_rule_field *rf)
+{
+	const char	*errstr;
+
+	bzero(rf, sizeof(*rf));
+	rf->code = code;
+
+	switch (code) {
+	case QUARK_RF_PID:		/* FALLTHROUGH */
+	case QUARK_RF_PPID:		/* FALLTHROUGH */
+	case QUARK_RF_UID:		/* FALLTHROUGH */
+	case QUARK_RF_GID:		/* FALLTHROUGH */
+	case QUARK_RF_SID:
+		rf->pid = strtonum(str, 0, UINT32_MAX, &errstr);
+		if (errstr != NULL) {
+			yyerror(ctx, "bad number: %s: %s", str, errstr);
+			return (-1);
+		}
+		break;
+	case QUARK_RF_EXE:		/* FALLTHROUGH */
+	case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
+	case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
+	case QUARK_RF_CONTAINER_IMAGE:
+		/* Copied by quark_rule_match_field_list() */
+		rf->wild.pre = (char *)str;
+		break;
+	case QUARK_RF_EVENT_SCOPE:
+		if (!strcmp(str, "container"))
+			rf->id = QUARK_RULE_SCOPE_CONTAINER;
+		else {
+			yyerror(ctx, "bad event scope: %s", str);
+			return (-1);
+		}
+		break;
+	case QUARK_RF_POISON:
+		if (strtou64(&rf->poison_tag, str, 10) == -1) {
+			yyerror(ctx, "bad number: %s", str);
+			return (-1);
+		}
+		break;
+	default:
+		yyerror(ctx, "parser bug, bad field code %llu", code);
+		return (-1);
+	}
+
+	return (0);
+}
+
+/*
+ * Add the collected values to the current rule as one field, the values
+ * are ORed. Always empties the collected values.
+ */
+static int
+add_values(struct quark_parser_ctx *ctx, u64 code)
+{
+	struct quark_rule_field	*rfs;
+	size_t			 i;
+	int			 r;
+
+	r = -1;
+	if ((rfs = calloc(ctx->n_strs, sizeof(*rfs))) == NULL) {
+		yyerror(ctx, "%s", strerror(errno));
+		goto done;
+	}
+	for (i = 0; i < ctx->n_strs; i++) {
+		if (value_from_string(ctx, code, ctx->strs[i], &rfs[i]) == -1)
+			goto done;
+	}
+	if (quark_rule_match_field_list(ctx->cur_rule, rfs, ctx->n_strs) == -1) {
+		yyerror(ctx, "can't add match field");
+		goto done;
+	}
+	r = 0;
+done:
+	free(rfs);
+	ctx->n_strs = 0;
+
+	return (r);
 }
 
 /* Arena allocator so we can free intermediate allocations */
@@ -263,6 +367,10 @@ repeat:
 			ctx->colno = 0;
 			ctx->lineno++;
 			return c;
+		case '{':			/* FALLTHROUGH */
+		case '}':
+			ctx->colno++;
+			return c;
 		case '#':
 			/* skip comments; NUL is allowed; no continuation */
 			while ((c = getc(ctx->in)) != '\n')
@@ -311,6 +419,8 @@ repeat:
 		case '#':
 		case ' ':
 		case '\t':
+		case '{':
+		case '}':
 			if (!escape && !quotes)
 				goto eow;
 			break;

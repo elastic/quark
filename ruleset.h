@@ -33,9 +33,19 @@ struct quark_rule_field {
 	};
 };
 
+/*
+ * Rule Condition, one field with one or more values. It matches when one
+ * of the values matches. Each value has the same code.
+ */
+struct quark_rule_cond {
+	u64			 code;		/* QUARK_RF_* */
+	struct quark_rule_field	*values;	/* ORed */
+	size_t			 n_values;	/* at least one */
+};
+
 struct quark_rule {
-	struct quark_rule_field	*fields;	/* fields that must match */
-	size_t			 n_fields;	/* number of fields */
+	struct quark_rule_cond	*conds;		/* conditions that must match */
+	size_t			 n_conds;	/* number of conditions */
 	int			 action;	/* QUARK_RA_* */
 	u64			 poison_tag;	/* tag used for SETTING poison */
 	u64			 evals;		/* counter */
@@ -54,6 +64,8 @@ struct quark_parser_ctx {
 	FILE			 *in;			/* input file */
 	char			**allocs;		/* arena for parser allocations */
 	size_t			  n_allocs;		/* size of the arena */
+	const char		**strs;			/* values of the current field */
+	size_t			  n_strs;		/* number of values */
 	int			  sentnl;		/* if we sent nl uppon EOF */
 	u_long			  lineno;		/* line number */
 	u_long			  colno;		/* column number */
@@ -70,6 +82,8 @@ struct quark_rule	*quark_ruleset_append_rule(struct quark_ruleset *,
 			     int, u64);
 int			 quark_rule_match_field(struct quark_rule *,
 			     struct quark_rule_field);
+int			 quark_rule_match_field_list(struct quark_rule *,
+			     const struct quark_rule_field *, size_t);
 struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
 			     struct quark_event *);
 

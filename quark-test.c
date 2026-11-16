@@ -4424,7 +4424,7 @@ t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 	assert(ruleset.n_rules == 1);
 	rule = &ruleset.rules[0];
 	assert(rule->action == QUARK_RA_DROP);
-	assert(rule->n_fields == 2);
+	assert(rule->n_conds == 2);
 
 	qa->ruleset = &ruleset;
 	qa->flags |= QQ_FILE;
@@ -4498,10 +4498,10 @@ t_rule_exec_change(const struct test *t, struct quark_queue_attr *qa)
 	assert(ruleset.n_rules == 2);
 	pass_rule = &ruleset.rules[0];
 	assert(pass_rule->action == QUARK_RA_PASS);
-	assert(pass_rule->n_fields == 3);
+	assert(pass_rule->n_conds == 3);
 	drop_rule = &ruleset.rules[1];
 	assert(drop_rule->action == QUARK_RA_DROP);
-	assert(drop_rule->n_fields == 1);
+	assert(drop_rule->n_conds == 1);
 
 	qa->ruleset = &ruleset;
 	qa->flags |= QQ_FILE;
@@ -4596,17 +4596,17 @@ t_rule_path2(const struct test *t, struct quark_queue_attr *qa)
 	/* Assert suff_rule */
 	suff_rule = &ruleset.rules[0];
 	assert(suff_rule->action == QUARK_RA_PASS);
-	assert(suff_rule->n_fields == 2);
+	assert(suff_rule->n_conds == 2);
 
 	/* Assert inf_rule */
 	inf_rule = &ruleset.rules[1];
 	assert(inf_rule->action == QUARK_RA_PASS);
-	assert(inf_rule->n_fields == 2);
+	assert(inf_rule->n_conds == 2);
 
 	/* Assert drop_rule */
 	drop_rule = &ruleset.rules[2];
 	assert(drop_rule->action == QUARK_RA_DROP);
-	assert(drop_rule->n_fields == 1);
+	assert(drop_rule->n_conds == 1);
 
 	/* Start the ball */
 	qa->ruleset = &ruleset;
@@ -4990,6 +4990,22 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"pass on process.exe /foo/*\n",
 		"drop on process.exe \"/foo bar/*\"\n",
 		"pass on process.exe \\\nfoo",	/* line split by \ */
+		/* value lists */
+		"drop on process.pid { 1 2 3 }\n",
+		"drop on process.pid {1 2}\n",
+		"drop on process.pid { 7 }\n",
+		"drop on process.ppid { 1 2 } process.uid { 0 1000 }\n",
+		"drop on process.gid { 0 1 } process.sid { 5 6 }\n",
+		"drop on process.exe { /bin/* /usr/bin/* \"/opt/my app/*\" }\n",
+		"drop on file.path { /tmp/* */.bashrc } file.exec_change\n",
+		"pass on pod.name { nginx-* *-sidecar } container.image { a b }\n",
+		"pass on event.scope { container }\n",
+		"poison 3 on poison { 1 2 }\n",
+		"drop on pod.name {\n\tnginx-*\n\n\t*-sidecar # comment\n}\n",
+		"drop on pod.name { a\n b } process.pid 1\n",
+		/* braces are tokens, unless quoted or escaped */
+		"drop on file.path \"/a{b}\"\n",
+		"drop on file.path /a\\{b\\}\n",
 		NULL
 	};
 	char *bad_cases[] = {
@@ -5018,6 +5034,23 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on pod.name a*b*\n",
 		"drop on container.image\n",
 		"drop on container.image */nginx:*\n",
+		/* value lists */
+		"drop on process.pid { }\n",
+		"drop on process.pid {\n",
+		"drop on process.pid { 1 2\n",
+		"drop on process.pid { 1 2",
+		"drop on process.pid 1 }\n",
+		"drop on process.pid } 1 {\n",
+		"drop on { process.pid 1 }\n",
+		"drop on process.pid { 1 { 2 } }\n",
+		"drop on process.pid { 1 x }\n",
+		"drop on process.pid { 1 0 }\n",
+		"drop on process.exe { /a /b** }\n",
+		"drop on file.exec_change { 1 }\n",
+		"drop on any { }\n",
+		"drop on event.scope { container guest }\n",
+		"poison { 1 } on any\n",
+		"drop on file.path /a{b\n",
 		NULL
 	};
 
@@ -5036,6 +5069,128 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 			errx(1, "rule %d should have failed: %s", i, *s);
 		quark_ruleset_clear(&ruleset);
 	}
+
+	return (0);
+}
+
+/*
+ * The values of a field are ORed, the fields of a rule are ANDed.
+ */
+static int
+t_rule_values(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_event	 qev;
+	struct quark_process	 qp;
+	struct quark_file	 file;
+	struct quark_rule	*rule;
+	struct quark_rule_field	 rfs[3];
+	struct quark_ruleset	 ruleset;
+	char			 exe[] = "/usr/bin/curl";
+	u32			 pid;
+
+	bzero(&qev, sizeof(qev));
+	bzero(&qp, sizeof(qp));
+	bzero(&file, sizeof(file));
+	qev.process = &qp;
+	qp.flags = QUARK_F_PROC;
+
+	ruleset_from_string(&ruleset,
+	    "pass on process.pid { 10 20 30 } process.uid { 0 1000 }\n"
+	    "drop on process.exe { /bin/* /usr/bin/curl *-helper }\n"
+	    "poison 9 on file.path { /tmp/* \"/srv/a b\" }\n");
+	assert(ruleset.n_rules == 3);
+	rule = &ruleset.rules[0];
+	assert(rule->n_conds == 2);
+	assert(rule->conds[0].code == QUARK_RF_PID);
+	assert(rule->conds[0].n_values == 3);
+	assert(rule->conds[1].code == QUARK_RF_UID);
+	assert(rule->conds[1].n_values == 2);
+	assert(ruleset.rules[1].conds[0].n_values == 3);
+	assert(ruleset.rules[2].conds[0].n_values == 2);
+
+	/* First, middle and last value, with both uids */
+	for (pid = 10; pid <= 30; pid += 10) {
+		qp.pid = pid;
+		qp.proc_uid = pid == 20 ? 1000 : 0;
+		rule = quark_ruleset_match(&ruleset, &qev);
+		assert(rule != NULL && rule->number == 0);
+	}
+	/* One field matches, the other does not: no AND */
+	qp.pid = 10;
+	qp.proc_uid = 5;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	qp.pid = 11;
+	qp.proc_uid = 0;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Wildcard values: prefix, exact and suffix */
+	qp.exe = exe;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	strlcpy(exe, "/bin/sh", sizeof(exe));
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	strlcpy(exe, "/opt/x-helper", sizeof(exe));
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	strlcpy(exe, "/usr/bin/cur", sizeof(exe));
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	qp.exe = NULL;
+
+	/* A quoted value with a space, and no file is no match */
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp.poison_tag == 0);
+	qev.file = &file;
+	file.path = "/srv/a b";
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp.poison_tag == 9);
+	qp.poison_tag = 0;
+	file.path = "/tmp/x";
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp.poison_tag == 9);
+	qp.poison_tag = 0;
+	file.path = "/srv/a";
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp.poison_tag == 0);
+
+	quark_ruleset_clear(&ruleset);
+
+	/* The list API */
+	quark_ruleset_init(&ruleset);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
+	assert(rule != NULL);
+	bzero(rfs, sizeof(rfs));
+	rfs[0].code = rfs[1].code = rfs[2].code = QUARK_RF_EXE;
+	rfs[0].wild.pre = "/a/*";
+	rfs[1].wild.pre = "/b";
+	rfs[2].wild.pre = "/c/**";
+	/* No values */
+	errno = 0;
+	assert(quark_rule_match_field_list(rule, rfs, 0) == -1);
+	assert(errno == EINVAL);
+	assert(quark_rule_match_field_list(rule, NULL, 1) == -1);
+	/* A bad value after good ones leaves the rule unchanged */
+	errno = 0;
+	assert(quark_rule_match_field_list(rule, rfs, 3) == -1);
+	assert(errno == EINVAL);
+	assert(rule->n_conds == 0);
+	/* Mixed codes */
+	rfs[2].code = QUARK_RF_FILEPATH;
+	rfs[2].wild.pre = "/c";
+	errno = 0;
+	assert(quark_rule_match_field_list(rule, rfs, 3) == -1);
+	assert(errno == EINVAL);
+	assert(rule->n_conds == 0);
+	/* The values are copied, the caller keeps its strings */
+	assert(quark_rule_match_field_list(rule, rfs, 2) == 0);
+	assert(rule->n_conds == 1);
+	assert(rule->conds[0].n_values == 2);
+	assert(rule->conds[0].values[0].wild.pre != rfs[0].wild.pre);
+	/* A single field is a list of one */
+	assert(quark_rule_match_field(rule, rfs[2]) == 0);
+	assert(rule->n_conds == 2);
+	assert(rule->conds[1].n_values == 1);
+	quark_ruleset_clear(&ruleset);
 
 	return (0);
 }
@@ -6801,6 +6956,7 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
+	T(t_rule_values),
 	T(t_rule_scope),
 	T_KPROBE(t_rule_container_kprobe),
 	T(t_rule_pod_name),

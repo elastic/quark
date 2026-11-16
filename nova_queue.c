@@ -122,12 +122,19 @@ nova_rule_from_quark(struct nova_queue *nqq,
     struct nova_rule *nr, struct quark_rule *qr)
 {
 	size_t			 i;
+	struct quark_rule_cond	*cond;
 	struct quark_rule_field *field;
 
 	bzero(nr, sizeof(*nr));
 
-	for (i = 0; i < qr->n_fields; i++) {
-		field = qr->fields + i;
+	for (i = 0; i < qr->n_conds; i++) {
+		cond = qr->conds + i;
+		if (cond->n_values != 1) {
+			errno = ENOTSUP;
+			qwarn("value lists are not supported in nova backend");
+			return (-1);
+		}
+		field = cond->values;
 
 		switch (field->code) {
 		case QUARK_RF_PID:
