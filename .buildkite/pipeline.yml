@@ -1,3 +1,11 @@
+# The distribution steps fetch their kernel as they run, with the
+# exact kernel version documented in parenthesis. A version that is
+# present means the step boots that kernel every time: typically
+# the kernels come from archives that no longer change.
+#
+# A "current" version means whatever the mirror has today. Ubuntu steps
+# boot the newest kernel of the release, which is the HWE one where it
+# exists and not the kernel the release came out with.
 steps:
   - label: "build amd64 in docker"
     key: make_docker
@@ -73,7 +81,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 28 (no bpf)"
+  - label: "quark-test on fedora 28 (5.0.16, no bpf)"
     key: test_fedora_28
     command: "./.buildkite/runtest_distro.sh fedora 28 -k"
     depends_on:
@@ -84,7 +92,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 29 (no bpf)"
+  - label: "quark-test on fedora 29 (5.3.11, no bpf)"
     key: test_fedora_29
     command: "./.buildkite/runtest_distro.sh fedora 29 -k"
     depends_on:
@@ -95,7 +103,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 30 (no bpf)"
+  - label: "quark-test on fedora 30 (5.6.13, no bpf)"
     key: test_fedora_30
     command: "./.buildkite/runtest_distro.sh fedora 30 -k"
     depends_on:
@@ -106,7 +114,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 31 (no bpf)"
+  - label: "quark-test on fedora 31 (5.8.18, no bpf)"
     key: test_fedora_31
     command: "./.buildkite/runtest_distro.sh fedora 31 -k"
     depends_on:
@@ -117,7 +125,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 32"
+  - label: "quark-test on fedora 32 (5.11.22)"
     key: test_fedora_32
     command: "./.buildkite/runtest_distro.sh fedora 32"
     depends_on:
@@ -128,7 +136,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 32 (ebpf kprobe fallback)"
+  - label: "quark-test on fedora 32 (5.11.22, ebpf kprobe fallback)"
     key: test_fedora_32_kprobe_fallback
     command: "./.buildkite/runtest_distro.sh fedora 32 -b -K"
     depends_on:
@@ -139,7 +147,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 33"
+  - label: "quark-test on fedora 33 (5.14.18)"
     key: test_fedora_33
     command: "./.buildkite/runtest_distro.sh fedora 33"
     depends_on:
@@ -150,7 +158,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 34"
+  - label: "quark-test on fedora 34 (5.17.12)"
     key: test_fedora_34
     command: "./.buildkite/runtest_distro.sh fedora 34"
     depends_on:
@@ -161,7 +169,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 35"
+  - label: "quark-test on fedora 35 (6.0.12)"
     key: test_fedora_35
     command: "./.buildkite/runtest_distro.sh fedora 35"
     depends_on:
@@ -172,7 +180,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 36"
+  - label: "quark-test on fedora 36 (6.2.15)"
     key: test_fedora_36
     command: "./.buildkite/runtest_distro.sh fedora 36"
     depends_on:
@@ -183,7 +191,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 37"
+  - label: "quark-test on fedora 37 (6.5.12)"
     key: test_fedora_37
     command: "./.buildkite/runtest_distro.sh fedora 37"
     depends_on:
@@ -194,7 +202,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 38"
+  - label: "quark-test on fedora 38 (6.8.9)"
     key: test_fedora_38
     command: "./.buildkite/runtest_distro.sh fedora 38"
     depends_on:
@@ -205,7 +213,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 39"
+  - label: "quark-test on fedora 39 (6.11.9)"
     key: test_fedora_39
     command: "./.buildkite/runtest_distro.sh fedora 39"
     depends_on:
@@ -216,7 +224,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 40"
+  - label: "quark-test on fedora 40 (6.14.5)"
     key: test_fedora_40
     command: "./.buildkite/runtest_distro.sh fedora 40"
     depends_on:
@@ -227,7 +235,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 41"
+  - label: "quark-test on fedora 41 (6.17.10)"
     key: test_fedora_41
     command: "./.buildkite/runtest_distro.sh fedora 41"
     depends_on:
@@ -238,7 +246,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 42"
+  - label: "quark-test on fedora 42 (6.19.14)"
     key: test_fedora_42
     command: "./.buildkite/runtest_distro.sh fedora 42"
     depends_on:
@@ -249,7 +257,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 43"
+  - label: "quark-test on fedora 43 (current)"
     key: test_fedora_43
     command: "./.buildkite/runtest_distro.sh fedora 43"
     depends_on:
@@ -260,7 +268,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on fedora 44"
+  - label: "quark-test on fedora 44 (current)"
     key: test_fedora_44
     command: "./.buildkite/runtest_distro.sh fedora 44"
     depends_on:
@@ -271,7 +279,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "kprobe failing on rhel 7.0 (no perf clockid)"
+  - label: "kprobe failing on rhel 7.0 (3.10.0-123, no perf clockid)"
     key: test_rhel_7_0_negative
     command: "./.buildkite/runtest_distro.sh rhel 7.0 -k t_kprobe_clockid"
     depends_on:
@@ -282,7 +290,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 7.4 (no bpf, oldest kprobe)"
+  - label: "quark-test on rhel 7.4 (3.10.0-693, no bpf, oldest kprobe)"
     key: test_rhel_7_4
     command: "./.buildkite/runtest_distro.sh rhel 7.4 -k"
     depends_on:
@@ -293,7 +301,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 7.9 (no bpf, kprobe)"
+  - label: "quark-test on rhel 7.9 (3.10.0-1160, no bpf, kprobe)"
     key: test_rhel_7_9
     command: "./.buildkite/runtest_distro.sh rhel 7.9 -k"
     depends_on:
@@ -304,7 +312,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8"
+  - label: "quark-test on rhel 8 (4.18.0-553)"
     key: test_rhel_8
     command: "./.buildkite/runtest_distro.sh rhel 8"
     depends_on:
@@ -315,7 +323,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8 (ebpf kprobe fallback)"
+  - label: "quark-test on rhel 8 (4.18.0-553, ebpf kprobe fallback)"
     key: test_rhel_8_kprobe_fallback
     command: "./.buildkite/runtest_distro.sh rhel 8 -b -K"
     depends_on:
@@ -326,7 +334,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8.3 (no bpf)"
+  - label: "quark-test on rhel 8.3 (4.18.0-240, no bpf)"
     key: test_rhel_8_3
     command: "./.buildkite/runtest_distro.sh rhel 8.3 -k"
     depends_on:
@@ -337,7 +345,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8.4 (no bpf)"
+  - label: "quark-test on rhel 8.4 (4.18.0-305, no bpf)"
     key: test_rhel_8_4
     command: "./.buildkite/runtest_distro.sh rhel 8.4 -k"
     depends_on:
@@ -348,7 +356,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8.5 (no file)"
+  - label: "quark-test on rhel 8.5 (4.18.0-348, no file)"
     key: test_rhel_8_5
     command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
     depends_on:
@@ -359,7 +367,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8.6 (no file)"
+  - label: "quark-test on rhel 8.6 (4.18.0-372, no file)"
     key: test_rhel_8_6
     command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
     depends_on:
@@ -370,7 +378,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8.7 (no file)"
+  - label: "quark-test on rhel 8.7 (4.18.0-425, no file)"
     key: test_rhel_8_7
     command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
     depends_on:
@@ -381,7 +389,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8.8"
+  - label: "quark-test on rhel 8.8 (4.18.0-477)"
     key: test_rhel_8_8
     command: "./.buildkite/runtest_distro.sh rhel 8.8"
     depends_on:
@@ -392,7 +400,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 8.9"
+  - label: "quark-test on rhel 8.9 (4.18.0-513)"
     key: test_rhel_8_9
     command: "./.buildkite/runtest_distro.sh rhel 8.9"
     depends_on:
@@ -403,7 +411,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 9"
+  - label: "quark-test on rhel 9 (current)"
     key: test_rhel_9
     command: "./.buildkite/runtest_distro.sh rhel 9"
     depends_on:
@@ -414,7 +422,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 9.0"
+  - label: "quark-test on rhel 9.0 (5.14.0-70)"
     key: test_rhel_9_0
     command: "./.buildkite/runtest_distro.sh rhel 9.0"
     depends_on:
@@ -425,7 +433,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 9.1"
+  - label: "quark-test on rhel 9.1 (5.14.0-162)"
     key: test_rhel_9_1
     command: "./.buildkite/runtest_distro.sh rhel 9.1"
     depends_on:
@@ -436,7 +444,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 9.2"
+  - label: "quark-test on rhel 9.2 (5.14.0-284)"
     key: test_rhel_9_2
     command: "./.buildkite/runtest_distro.sh rhel 9.2"
     depends_on:
@@ -447,7 +455,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 9.3"
+  - label: "quark-test on rhel 9.3 (5.14.0-362)"
     key: test_rhel_9_3
     command: "./.buildkite/runtest_distro.sh rhel 9.3"
     depends_on:
@@ -458,7 +466,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 9.4"
+  - label: "quark-test on rhel 9.4 (5.14.0-427)"
     key: test_rhel_9_4
     command: "./.buildkite/runtest_distro.sh rhel 9.4"
     depends_on:
@@ -469,7 +477,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 9.5"
+  - label: "quark-test on rhel 9.5 (5.14.0-503)"
     key: test_rhel_9_5
     command: "./.buildkite/runtest_distro.sh rhel 9.5"
     depends_on:
@@ -480,7 +488,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 10"
+  - label: "quark-test on rhel 10 (current)"
     key: test_rhel_10
     command: "./.buildkite/runtest_distro.sh rhel 10"
     depends_on:
@@ -491,7 +499,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on rhel 10.0"
+  - label: "quark-test on rhel 10.0 (6.12.0-55)"
     key: test_rhel_10_0
     command: "./.buildkite/runtest_distro.sh rhel 10.0"
     depends_on:
@@ -502,7 +510,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on ubuntu 18.04 (no bpf)"
+  - label: "quark-test on ubuntu 18.04 (hwe 5.4, no bpf)"
     key: test_ubuntu_18_04
     command: "./.buildkite/runtest_distro.sh ubuntu 18.04 -k"
     depends_on:
@@ -513,7 +521,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on ubuntu 20.04"
+  - label: "quark-test on ubuntu 20.04 (hwe 5.15)"
     key: test_ubuntu_20_04
     command: "./.buildkite/runtest_distro.sh ubuntu 20.04"
     depends_on:
@@ -524,7 +532,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on ubuntu 22.04"
+  - label: "quark-test on ubuntu 22.04 (hwe 6.8)"
     key: test_ubuntu_22_04
     command: "./.buildkite/runtest_distro.sh ubuntu 22.04"
     depends_on:
@@ -535,7 +543,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on ubuntu 24.04"
+  - label: "quark-test on ubuntu 24.04 (current hwe)"
     key: test_ubuntu_24_04
     command: "./.buildkite/runtest_distro.sh ubuntu 24.04"
     depends_on:
@@ -546,7 +554,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on ubuntu 24.04 (ipv6 disabled)"
+  - label: "quark-test on ubuntu 24.04 (current hwe, ipv6 disabled)"
     key: test_ubuntu_24_04_noipv6
     command: "./.buildkite/runtest_distro.sh ubuntu 24.04"
     env:
@@ -559,7 +567,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on ubuntu 25.04"
+  - label: "quark-test on ubuntu 25.04 (6.14)"
     key: test_ubuntu_25_04
     command: "./.buildkite/runtest_distro.sh ubuntu 25.04"
     depends_on:
@@ -570,7 +578,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on ubuntu 26.04"
+  - label: "quark-test on ubuntu 26.04 (current)"
     key: test_ubuntu_26_04
     command: "./.buildkite/runtest_distro.sh ubuntu 26.04"
     depends_on:
@@ -581,7 +589,7 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
-  - label: "quark-test on ubuntu 26.04 (ebpf kprobe fallback)"
+  - label: "quark-test on ubuntu 26.04 (current, ebpf kprobe fallback)"
     key: test_ubuntu_26_04_kprobe_fallback
     command: "./.buildkite/runtest_distro.sh ubuntu 26.04 -b -K"
     depends_on:
