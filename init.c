@@ -125,6 +125,14 @@ main(int argc, char *argv[])
 			err(1, "mount /tmp");
 		if (mount("proc", "/proc", "proc", 0, NULL) == -1)
 			err(1, "mount /proc");
+		/*
+		 * udev would make this one. fexecve() has the kernel name the
+		 * binary /dev/fd/N, and TOMOYO, before Linux 6.12 and the
+		 * stable trees that took the fix, fails the exec with ENOENT
+		 * if it can't resolve that name.
+		 */
+		if (symlink("/proc/self/fd", "/dev/fd") == -1)
+			err(1, "symlink /dev/fd");
 		if (mount("sysfs", "/sys", "sysfs", 0, NULL) == -1)
 			err(1, "mount /sys");
 		if (mount("tracefs", "/sys/kernel/tracing", "tracefs",
