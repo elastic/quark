@@ -1617,6 +1617,43 @@ kube_read_events(struct quark_queue *qq)
 }
 
 /*
+ * Container scopes of the systemd cgroup driver, foo-<id>.scope:
+ * docker-<id>.scope                 -> docker://<id>
+ * crio-<id>.scope|libpod-<id>.scope -> cri-o://<id>
+ * cri-containerd-<id>.scope         -> containerd://<id>
+ * containerd-<id>.scope             -> containerd://<id>
+ */
+struct container_scope {
+	const char	*prefix;
+	size_t		 prefix_len;
+	const char	*runtime;
+};
+
+static const struct container_scope container_scopes[] = {
+	{ "docker-",		7,	"docker" },
+	{ "crio-",		5,	"cri-o" },
+	{ "libpod-",		7,	"cri-o" },
+	{ "cri-containerd-",	15,	"containerd" },
+	{ "containerd-",	11,	"containerd" },
+};
+
+/* The container scope that a cgroup component of len bytes names, or NULL */
+static const struct container_scope *
+container_scope_lookup(const char *name, size_t len)
+{
+	size_t	i;
+
+	for (i = 0; i < nitems(container_scopes); i++) {
+		if (len >= container_scopes[i].prefix_len &&
+		    !strncmp(name, container_scopes[i].prefix,
+		    container_scopes[i].prefix_len))
+			return (&container_scopes[i]);
+	}
+
+	return (NULL);
+}
+
+/*
  * Build the kubernetes container_id from a cgroup
  * cgroup is what we get from the kernel, like docker-<id>.scope.
  * container_id is how kubernetes sees it, like docker://<id>.
@@ -1626,51 +1663,27 @@ kube_read_events(struct quark_queue *qq)
 int
 parse_container_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
 {
-	char		*dot;
-	const char	*name, *id;
-	const char	*lookup_prefix;
-	int		 r, id_skip;
+	char				*dot;
+	const char			*name, *id;
+	const struct container_scope	*cs;
+	int				 r;
 
 	if ((name = safe_basename(cgroup)) == NULL)
 		return (-1);
 
-	/*
-	 * Atm we only accept the systemd format, foo-<id>.scope
-	 * docker-<id>.scope                 -> docker://<id>
-	 * crio-<id>.scope|libpod-<id>.scope -> cri-o://<id>
-	 * cri-containerd-<id>.scope         -> containerd://<id>
-	 * containerd-<id>.scope             -> containerd://<id>
-	 */
-	id_skip = 0;
-
-	lookup_prefix = NULL;
-	if (!strncmp(name, "docker-", 7)) {
-		id_skip = 7;
-		lookup_prefix = "docker";
-	} else if (!strncmp(name, "crio-", 5)) {
-		id_skip = 5;
-		lookup_prefix = "cri-o";
-	} else if (!strncmp(name, "libpod-", 7)) {
-		id_skip = 7;
-		lookup_prefix = "cri-o";
-	} else if (!strncmp(name, "cri-containerd-", 15)) {
-		id_skip = 15;
-		lookup_prefix = "containerd";
-	} else if (!strncmp(name, "containerd-", 11)) {
-		id_skip = 11;
-		lookup_prefix = "containerd";
-	} else
+	/* Atm we only accept the systemd format, see container_scopes */
+	if ((cs = container_scope_lookup(name, strlen(name))) == NULL)
 		return (-1);
 
 	/*
 	 * id starts after the foo- prefix, we still need to chomp the trailing
 	 * .scope
 	 */
-	id = name + id_skip;
+	id = name + cs->prefix_len;
 
-	/* copy the whole thing with the lookup_prefix, and then chomp .scope */
+	/* copy the whole thing with the runtime, and then chomp .scope */
 	r = snprintf(container_id, container_id_len,
-	    "%s://%s", lookup_prefix, id);
+	    "%s://%s", cs->runtime, id);
 	if (r < 0 || r >= (int)container_id_len)
 		return (-1);
 	dot = strrchr(container_id, '.');
@@ -1679,6 +1692,55 @@ parse_container_cgroup(const char *cgroup, char *container_id, size_t container_
 	*dot = 0;
 
 	return (0);
+}
+
+/*
+ * Return 1 when the cgroup is positively a host cgroup, 0 otherwise. A
+ * host cgroup is an absolute path under a root of the systemd host
+ * layout, /init.scope, /system.slice or /user.slice, with no ..
+ * component and no component that names a container at any depth. So
+ * these are not host:
+ *   /                                     the root, or our own cgroup
+ *                                         in a private cgroup namespace
+ *   /../system.slice/foo.service          relative to a cgroup namespace
+ *   /system.slice/docker-<id>.scope/init  nested in a container
+ *   /kubepods/burstable/pod<uid>/<id>     cgroupfs driver
+ *   /machine.slice/...                    VMs and systemd-nspawn
+ * Keep this function non static so we can test it.
+ */
+int
+cgroup_is_host(const char *cgroup)
+{
+	static const char	*roots[] = {
+		"init.scope", "system.slice", "user.slice"
+	};
+	const char		*p;
+	size_t			 i, len, n;
+
+	if (cgroup == NULL || *cgroup != '/')
+		return (0);
+	for (p = cgroup, n = 0; *p != 0; p += len) {
+		if (*p == '/') {
+			len = 1;
+			continue;
+		}
+		len = strcspn(p, "/");
+		if (n++ == 0) {
+			for (i = 0; i < nitems(roots); i++) {
+				if (len == strlen(roots[i]) &&
+				    !strncmp(p, roots[i], len))
+					break;
+			}
+			if (i == nitems(roots))
+				return (0);
+		}
+		if (len == 2 && !strncmp(p, "..", 2))
+			return (0);
+		if (container_scope_lookup(p, len) != NULL)
+			return (0);
+	}
+
+	return (n > 0);
 }
 
 /*

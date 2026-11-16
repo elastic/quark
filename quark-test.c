@@ -5202,6 +5202,34 @@ t_rule_values(const struct test *t, struct quark_queue_attr *qa)
 static int
 t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 {
+	const char *host_cgroups[] = {
+		"/init.scope",
+		"/system.slice",
+		"/system.slice/sshd.service",
+		"/system.slice//cron.service/",
+		"/user.slice/user-1000.slice/session-2.scope",
+		"/user.slice/user-1000.slice/user@1000.service/app.slice/x.service",
+	};
+	const char *unknown_cgroups[] = {
+		"",
+		"/",
+		"//",
+		"system.slice/sshd.service",
+		"/../system.slice/sshd.service",
+		"/system.slice/../kubepods.slice",
+		"/system.slice/docker-abc123.scope/init.scope",
+		"/user.slice/user-1000.slice/user@1000.service/user.slice/"
+		    "libpod-abc123.scope/container",
+		"/kubepods/burstable/pod1234/abc123",
+		"/kubepods.slice/kubepods-burstable.slice/"
+		    "kubepods-burstable-pod1234.slice",
+		"/docker/abc123",
+		"/machine.slice/machine-qemu-1.scope",
+		"/lxc.payload.c1",
+		"/init.scopes",
+		"/system.slicex/sshd.service",
+	};
+	size_t			 i;
 	struct quark_event	 qev;
 	struct quark_process	 qp;
 	struct quark_rule	*rule;
@@ -5330,18 +5358,39 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 2);
 
-	/* Not recognized as containers yet, so host (see above). */
-	cgroup = strdup("/system.slice/docker-abc123.scope/init.scope");
-	assert(cgroup != NULL);
-	process_set_cgroup(&qp, &cgroup);
-	rule = quark_ruleset_match(&ruleset, &qev);
-	assert(rule != NULL && rule->number == 0);
-	cgroup = strdup("/kubepods/burstable/pod1234/abc123");
+	/*
+	 * Not recognized as a container (see above), and not host either:
+	 * a cgroup nested in a container, the cgroupfs driver, the root, a
+	 * path relative to a cgroup namespace, and an empty cgroup.
+	 */
+	for (i = 0; i < nitems(unknown_cgroups); i++) {
+		cgroup = strdup(unknown_cgroups[i]);
+		assert(cgroup != NULL);
+		process_set_cgroup(&qp, &cgroup);
+		rule = quark_ruleset_match(&ruleset, &qev);
+		assert(rule != NULL);
+		if (rule->number != 1)
+			errx(1, "%s: scope rule %u", unknown_cgroups[i],
+			    rule->number);
+	}
+	cgroup = strdup("/system.slice/sshd.service");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 0);
 	quark_ruleset_clear(&ruleset);
+
+	/* Host needs positive evidence, see cgroup_is_host() */
+	for (i = 0; i < nitems(host_cgroups); i++) {
+		if (!cgroup_is_host(host_cgroups[i]))
+			errx(1, "%s should be host", host_cgroups[i]);
+	}
+	for (i = 0; i < nitems(unknown_cgroups); i++) {
+		if (cgroup_is_host(unknown_cgroups[i]))
+			errx(1, "%s should not be host", unknown_cgroups[i]);
+	}
+	assert(!cgroup_is_host(NULL));
+	assert(!cgroup_is_host("/system.slice/docker-abc123.scope"));
 
 	/* "Containers only" is one rule with a list. */
 	ruleset_from_string(&ruleset,

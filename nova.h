@@ -45,8 +45,8 @@
 enum quark_rule_scope {
 	QUARK_RULE_SCOPE_INVALID,
 	QUARK_RULE_SCOPE_CONTAINER,	/* the cgroup names a container */
-	QUARK_RULE_SCOPE_HOST,		/* a known cgroup, not a container */
-	QUARK_RULE_SCOPE_UNKNOWN,	/* no process, or no cgroup */
+	QUARK_RULE_SCOPE_HOST,		/* a cgroup of the host layout */
+	QUARK_RULE_SCOPE_UNKNOWN,	/* not enough evidence for either */
 };
 
 enum quark_rule_action {

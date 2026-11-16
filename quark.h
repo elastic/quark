@@ -114,6 +114,7 @@ int			 quark_can_aggregate_tty(struct quark_queue *,
 struct cJSON;
 void		 quark_queue_init_bare(struct quark_queue *);
 int		 parse_container_cgroup(const char *, char *, size_t);
+int		 cgroup_is_host(const char *);
 const char	*process_container_id(struct quark_process *);
 void		 process_set_cgroup(struct quark_process *, char **);
 void		 link_container_data(struct quark_queue *,
