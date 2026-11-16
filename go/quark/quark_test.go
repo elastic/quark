@@ -176,6 +176,51 @@ func TestQuark(t *testing.T) {
 		require.True(t, foundChild)
 	})
 
+	t.Run("RuleTag", func(t *testing.T) {
+		// Tag the events of our children, deliver only tagged
+		// events, as in t_rule_tag_delivery of quark-test.
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+		attr.RuleText = fmt.Sprintf(
+			"tag other {\n"+
+				"\ton process.pid 1\n"+
+				"}\n"+
+				"tag child {\n"+
+				"\texcept on process.exe /nonexistent\n"+
+				"\ton process.ppid { 1 %d }\n"+
+				"}\n"+
+				"drop on any",
+			os.Getpid())
+
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		require.Equal(t, []string{"other", "child"}, queue.tagNames)
+
+		// XXX assumes /bin/true exists
+		cmd := exec.Command("/bin/true")
+		err = cmd.Run()
+		require.NoError(t, err)
+
+		qevs, err := drainFor(queue, 200*time.Millisecond)
+		require.NoError(t, err)
+		require.NotEmpty(t, qevs)
+
+		// Everything that survived the ruleset is tagged, and our
+		// child must be in there.
+		foundChild := false
+		for _, qev := range qevs {
+			require.NotEmpty(t, qev.Tags)
+			if qev.Process.Pid == uint32(cmd.Process.Pid) {
+				require.Equal(t, []string{"child"}, qev.Tags)
+				foundChild = true
+			}
+		}
+		require.True(t, foundChild)
+	})
+
 	t.Run("SocketLookup", func(t *testing.T) {
 		attr := DefaultQueueAttr()
 		attr.HoldTime = 25
@@ -351,12 +396,38 @@ func TestRuleText(t *testing.T) {
 	ruleset, err := rulesetFromText("drop on any")
 	require.NoError(t, err)
 	require.NotNil(t, ruleset)
+	require.Empty(t, tagNamesFromC(ruleset))
+	freeRuleset(ruleset)
+
+	// Tag names are indexed by bit, a repeated name keeps its bit
+	ruleset, err = rulesetFromText(
+		"tag log {\n" +
+			"\ton process.pid { 1 2 }\n" +
+			"}\n" +
+			"tag alert {\n" +
+			"\texcept on process.uid 0\n" +
+			"\ton any\n" +
+			"}\n" +
+			"tag log {\n" +
+			"\ton process.pid 3\n" +
+			"}\n" +
+			"drop on any")
+	require.NoError(t, err)
+	require.Equal(t, []string{"log", "alert"}, tagNamesFromC(ruleset))
+	queue := Queue{tagNames: tagNamesFromC(ruleset)}
+	require.Nil(t, queue.tagsFromBits(0))
+	require.Equal(t, []string{"alert"}, queue.tagsFromBits(2))
+	require.Equal(t, []string{"log", "alert"}, queue.tagsFromBits(3))
 	freeRuleset(ruleset)
 
 	attr := DefaultQueueAttr()
 	attr.RuleText = "this is not a valid rule"
 	_, err = OpenQueue(attr)
 	require.ErrorContains(t, err, "can't parse ruleset")
+
+	attr.RuleText = "tag log {\n\ton any\n}\n" + "tag log {\n}\n"
+	_, err = OpenQueue(attr)
+	require.ErrorContains(t, err, "tag block without an on line")
 }
 
 func testStats(t *testing.T, attr QueueAttr) {

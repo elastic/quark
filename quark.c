@@ -2388,6 +2388,22 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		P(" (%s)", buf);
 	P("\n");
 
+	if (qev->tags != 0 && qev->ruleset != NULL) {
+		const char	*sep, *name;
+		u_int		 bit;
+
+		fl = "TAGS";
+		PF(fl, "tags=[ ");
+		for (bit = 0, sep = ""; bit < QUARK_MAX_TAGS; bit++) {
+			if (!(qev->tags & (1ULL << bit)))
+				continue;
+			name = quark_ruleset_tag_name(qev->ruleset, bit);
+			P("%s%s", sep, name != NULL ? name : "?");
+			sep = ", ";
+		}
+		P(" ]\n");
+	}
+
 	if (qev->events & (QUARK_EV_SOCK_CONN_ESTABLISHED|QUARK_EV_SOCK_CONN_CLOSED)) {
 		char local[INET6_ADDRSTRLEN], remote[INET6_ADDRSTRLEN];
 		fl = "SOCK";

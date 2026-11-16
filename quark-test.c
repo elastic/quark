@@ -5267,6 +5267,9 @@ t_rule_tag(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_rule	*rule;
 	struct quark_ruleset	 ruleset;
 	u64			 alert, log;
+	FILE			*dump_f;
+	char			*dump_buf;
+	size_t			 dump_len;
 
 	ruleset_from_string(&ruleset,
 	    "tag alert {\n"
@@ -5315,6 +5318,17 @@ t_rule_tag(const struct test *t, struct quark_queue_attr *qa)
 	assert(ruleset.rules[1].hits == 1);
 	assert(ruleset.rules[2].evals == 0);
 
+	/* The dump prints the names, in bit order */
+	dump_buf = NULL;
+	dump_len = 0;
+	dump_f = open_memstream(&dump_buf, &dump_len);
+	assert(dump_f != NULL);
+	assert(quark_event_dump(&qev, dump_f) == 0);
+	fclose(dump_f);
+	if (strstr(dump_buf, "  TAGS\ttags=[ alert, log ]\n") == NULL)
+		errx(1, "no TAGS line in:\n%s", dump_buf);
+	free(dump_buf);
+
 	/* Not executable: the second on line of the block */
 	tag_test_event(&qev, &qp, &file, 1, "/usr/bin/y", 0644,
 	    QUARK_FILE_OP_CREATE);
@@ -5333,6 +5347,14 @@ t_rule_tag(const struct test *t, struct quark_queue_attr *qa)
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 4);
 	assert(qev.tags == 0);
+	/* No tags, no TAGS line */
+	dump_buf = NULL;
+	dump_f = open_memstream(&dump_buf, &dump_len);
+	assert(dump_f != NULL);
+	assert(quark_event_dump(&qev, dump_f) == 0);
+	fclose(dump_f);
+	assert(strstr(dump_buf, "TAGS") == NULL);
+	free(dump_buf);
 
 	/* A match starts with no tags */
 	qev.tags = alert;
