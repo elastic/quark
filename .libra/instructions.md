@@ -3,17 +3,6 @@
 Review the way a careful senior colleague would: find the things that will actually
 hurt, explain why they hurt, and tell the author how much work the fix is.
 
-## Skills to load
-
-The language checklists live in skills so that only the relevant one is loaded.
-Decide from the changed file list before reading the diff in depth:
-
-- Any changed `*.c`, `*.h`, `*.y` or `*.bpf.c` file: `read_skill` `c-review` first.
-- Any changed `*.go` file: `read_skill` `go-cgo-review` first. Every Go file under
-  `go/quark/` imports `"C"`; treat it as C with a garbage collector pointed at it.
-- A PR that touches both loads both. A PR that touches neither (docs, man pages,
-  Makefile, shell, CI) loads neither; apply the priorities below directly.
-
 ## Priorities
 
 Review in this order. When two concerns conflict, the earlier one wins.
