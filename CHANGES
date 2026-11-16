@@ -314,8 +314,8 @@ Changes from 0.11 to 0.12
     lines, then "on" lines, one per line, then "}". A block sets its tag
     on the event when no except line and one on line match. Blocks don't
     end the evaluation, every matching block sets its tag, and an except
-    line only applies to its own block. There are at most 64 tag names,
-    and the name blocked is reserved. Change in behavior: a drop rule no
+    line only applies to its own block. The tag is log or alert, the
+    actions of a D4C response. Change in behavior: a drop rule no
     longer drops an event that has a tag, it still ends the evaluation.
     A ruleset without tag blocks behaves as before. quark_event{} got
     the members tags, one bit per name, and ruleset, the ruleset that

@@ -296,21 +296,18 @@ tag log {
 }
 drop on any</pre>
 </div>
-<p class="Pp" id="alert">A block sets its tag when no <code class="Cm">except
-    on</code> line matches and one <code class="Cm">on</code> line matches. An
+<p class="Pp">A block sets its tag when no <code class="Cm">except on</code>
+    line matches and one <code class="Cm">on</code> line matches. An
     <code class="Cm">except on</code> line only applies to its own block, and it
     needs a field. In the example, on a container event, a new executable in
     <span class="Pa">/tmp</span> gets the tag <b class="Sy">log</b>, a new
-    executable elsewhere gets
-    <a class="permalink" href="#alert"><b class="Sy">alert</b></a> and
-    <b class="Sy">log</b>, any other file event gets <b class="Sy">log</b>, and
-    an event without a file is dropped.</p>
-<p class="Pp" id="blocked">The &#x2018;{&#x2019; follows the name, and the
-    &#x2018;}&#x2019; has a line of its own. Blocks with the same name are
-    alternatives, a name is up to 64 letters, digits, &#x2018;_&#x2019;,
-    &#x2018;.&#x2019; and &#x2018;-&#x2019;, there are at most 64 names, and the
-    name <a class="permalink" href="#blocked"><b class="Sy">blocked</b></a> is
-    reserved. No rule tests a tag, a tag is an output:
+    executable elsewhere gets <b class="Sy">alert</b> and <b class="Sy">log</b>,
+    any other file event gets <b class="Sy">log</b>, and an event without a file
+    is dropped.</p>
+<p class="Pp">The name is <b class="Sy">log</b> or <b class="Sy">alert</b>, the
+    actions of a Defend for Containers response. The &#x2018;{&#x2019; follows
+    the name, and the &#x2018;}&#x2019; has a line of its own. Blocks with the
+    same name are alternatives. No rule tests a tag, a tag is an output:
     <code class="Nm">quark-mon</code> prints it, see
     <a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>.</p>
 </section>

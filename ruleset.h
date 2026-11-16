@@ -13,10 +13,10 @@ struct quark_event;
 
 /*
  * Tags are set by tag blocks, one bit per distinct name, so they fit in
- * the u64 quark_event.tags.
+ * the u64 quark_event.tags. The names are log and alert for now, see
+ * quark_ruleset_tag_begin().
  */
 #define QUARK_MAX_TAGS		64
-#define QUARK_TAG_NAME_MAX	64	/* without NUL */
 
 /*
  * post points into pre

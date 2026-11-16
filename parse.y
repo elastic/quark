@@ -89,7 +89,8 @@ block:		TAG STRING '{' {
 				if (errno == E2BIG)
 					ABORT("too many tags, max %d",
 					    QUARK_MAX_TAGS);
-				ABORT("bad tag name: %s", $2.str);
+				ABORT("bad tag name: %s, only log and alert "
+				    "are supported", $2.str);
 			}
 		} blocklines '}' {
 			if (quark_ruleset_tag_end(ctx->ruleset) == -1)

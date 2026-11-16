@@ -182,10 +182,10 @@ func TestQuark(t *testing.T) {
 		attr := DefaultQueueAttr()
 		attr.HoldTime = 25
 		attr.RuleText = fmt.Sprintf(
-			"tag other {\n"+
+			"tag alert {\n"+
 				"\ton process.pid 1\n"+
 				"}\n"+
-				"tag child {\n"+
+				"tag log {\n"+
 				"\texcept on process.exe /nonexistent\n"+
 				"\ton process.ppid { 1 %d }\n"+
 				"}\n"+
@@ -197,7 +197,7 @@ func TestQuark(t *testing.T) {
 
 		defer queue.Close()
 
-		require.Equal(t, []string{"other", "child"}, queue.tagNames)
+		require.Equal(t, []string{"alert", "log"}, queue.tagNames)
 
 		// XXX assumes /bin/true exists
 		cmd := exec.Command("/bin/true")
@@ -214,7 +214,7 @@ func TestQuark(t *testing.T) {
 		for _, qev := range qevs {
 			require.NotEmpty(t, qev.Tags)
 			if qev.Process.Pid == uint32(cmd.Process.Pid) {
-				require.Equal(t, []string{"child"}, qev.Tags)
+				require.Equal(t, []string{"log"}, qev.Tags)
 				foundChild = true
 			}
 		}
@@ -428,6 +428,10 @@ func TestRuleText(t *testing.T) {
 	attr.RuleText = "tag log {\n\ton any\n}\n" + "tag log {\n}\n"
 	_, err = OpenQueue(attr)
 	require.ErrorContains(t, err, "tag block without an on line")
+
+	attr.RuleText = "tag child {\n\ton any\n}\n"
+	_, err = OpenQueue(attr)
+	require.ErrorContains(t, err, "only log and alert are supported")
 }
 
 func testStats(t *testing.T, attr QueueAttr) {

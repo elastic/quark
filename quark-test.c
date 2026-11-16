@@ -5014,13 +5014,13 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"tag log {\n\ton any\n}",
 		"tag alert {\n\texcept on file.path /tmp/*\n"
 		    "\ton file.exec_change\n\ton process.pid { 1 2 }\n}\n",
-		"tag a {\n\texcept on process.pid 1\n"
+		"tag log {\n\texcept on process.pid 1\n"
 		    "\texcept on process.uid { 0 1 }\n\ton any\n}\n",
-		"tag a {\n\n# comment\n\ton any # comment\n\n}\n",
-		"tag a {\n\ton any\n}\ntag a {\n\ton process.pid 1\n}\n",
-		"tag x.y_z-1 {\n\ton any\n}\n",
-		"tag \"q\" {\n\ton any\n}\n",
-		"tag a {\n\ton pod.name {\n\t\tx\n\t\ty\n\t}\n}\n",
+		"tag log {\n\n# comment\n\ton any # comment\n\n}\n",
+		"tag log {\n\ton any\n}\ntag log {\n\ton process.pid 1\n}\n",
+		"tag log {\n\ton any\n}\ntag alert {\n\ton any\n}\n",
+		"tag \"alert\" {\n\ton any\n}\n",
+		"tag log {\n\ton pod.name {\n\t\tx\n\t\ty\n\t}\n}\n",
 		"drop on event.scope { host unknown }\n"
 		    "tag log {\n\ton any\n}\ndrop on any\n",
 		NULL
@@ -5070,25 +5070,30 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"poison { 1 } on any\n",
 		"drop on file.path /a{b\n",
 		/* tag blocks */
-		"tag a {\n}\n",
-		"tag a {\n\texcept on process.pid 1\n}\n",
-		"tag a {\n\ton any\n\texcept on process.pid 1\n}\n",
-		"tag a {\n\texcept on any\n\ton any\n}\n",
-		"tag a {\n\tpass on any\n}\n",
-		"tag a {\n\tpoison 1 on any\n}\n",
-		"tag a {\n\ton any\n",
-		"tag a { on any }\n",
-		"tag a {\n\ton any }\n",
-		"tag a\n{\n\ton any\n}\n",
-		"tag a {\n\ttag b {\n\t\ton any\n\t}\n}\n",
-		"tag a {\n\ton any\n} drop on any\n",
+		"tag log {\n}\n",
+		"tag log {\n\texcept on process.pid 1\n}\n",
+		"tag log {\n\ton any\n\texcept on process.pid 1\n}\n",
+		"tag log {\n\texcept on any\n\ton any\n}\n",
+		"tag log {\n\tpass on any\n}\n",
+		"tag log {\n\tpoison 1 on any\n}\n",
+		"tag log {\n\ton any\n",
+		"tag log { on any }\n",
+		"tag log {\n\ton any }\n",
+		"tag log\n{\n\ton any\n}\n",
+		"tag log {\n\ttag alert {\n\t\ton any\n\t}\n}\n",
+		"tag log {\n\ton any\n} drop on any\n",
+		"tag log {\n\ton\n}\n",
+		/* tag names: log and alert only */
+		"tag a {\n\ton any\n}\n",
+		"tag x.y_z-1 {\n\ton any\n}\n",
+		"tag Log {\n\ton any\n}\n",
+		"tag \"log \" {\n\ton any\n}\n",
 		"tag blocked {\n\ton any\n}\n",
-		"tag \"a b\" {\n\ton any\n}\n",
 		"tag \"\" {\n\ton any\n}\n",
 		"tag {\n\ton any\n}\n",
-		"tag a b {\n\ton any\n}\n",
-		"tag a {\n\ton\n}\n",
+		"tag log alert {\n\ton any\n}\n",
 		"tag on {\n\ton any\n}\n",
+		"tag al\xe9rt {\n\ton any\n}\n",	/* a Latin-1 byte */
 		"}\n",
 		"on any\n",
 		"except on any\n",
@@ -5369,14 +5374,14 @@ t_rule_tag(const struct test *t, struct quark_queue_attr *qa)
 	 */
 	ruleset_from_string(&ruleset,
 	    "poison 5 on process.pid 1\n"
-	    "tag a {\n"
+	    "tag log {\n"
 	    "\texcept on process.pid 2\n"
 	    "\ton process.pid { 1 2 }\n"
 	    "}\n"
-	    "tag a {\n"
+	    "tag log {\n"
 	    "\ton process.pid { 1 3 }\n"
 	    "}\n"
-	    "tag b {\n"
+	    "tag alert {\n"
 	    "\ton any\n"
 	    "}\n");
 	assert(ruleset.n_tags == 2);
@@ -5426,11 +5431,11 @@ t_rule_tag_delivery(const struct test *t, struct quark_queue_attr *qa)
 	quark_queue_init_bare(&qq);
 	ruleset_from_string(&ruleset,
 	    "drop on process.pid 1\n"
-	    "tag keep {\n"
+	    "tag log {\n"
 	    "\texcept on process.pid 3\n"
 	    "\ton process.pid { 1 2 3 4 }\n"
 	    "}\n"
-	    "tag other {\n"
+	    "tag alert {\n"
 	    "\ton process.pid 4\n"
 	    "}\n"
 	    "drop on any\n");
@@ -5454,7 +5459,7 @@ t_rule_tag_delivery(const struct test *t, struct quark_queue_attr *qa)
 	/* A pass before the block ends the evaluation, delivered, no tag */
 	ruleset_from_string(&ruleset,
 	    "pass on process.pid 6\n"
-	    "tag t {\n"
+	    "tag log {\n"
 	    "\ton any\n"
 	    "}\n"
 	    "drop on any\n");
@@ -5467,7 +5472,7 @@ t_rule_tag_delivery(const struct test *t, struct quark_queue_attr *qa)
 
 	/* Without a terminal rule an event is delivered, as before */
 	ruleset_from_string(&ruleset,
-	    "tag t {\n"
+	    "tag log {\n"
 	    "\ton process.pid 8\n"
 	    "}\n");
 	qq.ruleset = &ruleset;
@@ -5490,8 +5495,10 @@ t_rule_tag_api(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue	 qq;
 	struct quark_rule	*rule;
 	struct quark_rule_field	 rf;
-	char			 name[QUARK_TAG_NAME_MAX + 2];
-	int			 i;
+	const char		*bad_names[] = {
+		"", "a", "Log", "log ", " log", "logs", "blocked", "alert\n"
+	};
+	size_t			 i;
 
 	quark_ruleset_init(&ruleset);
 	bzero(&rf, sizeof(rf));
@@ -5505,30 +5512,27 @@ t_rule_tag_api(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0) == NULL);
 	assert(quark_ruleset_tag_end(&ruleset) == -1);
 
-	/* Bad names */
+	/* The names are log and alert */
 	assert(quark_ruleset_tag_begin(&ruleset, NULL) == -1);
-	assert(quark_ruleset_tag_begin(&ruleset, "") == -1);
-	assert(quark_ruleset_tag_begin(&ruleset, "a b") == -1);
-	assert(quark_ruleset_tag_begin(&ruleset, "a/b") == -1);
-	errno = 0;
-	assert(quark_ruleset_tag_begin(&ruleset, "blocked") == -1);
-	assert(errno == EINVAL);
-	memset(name, 'a', sizeof(name) - 1);
-	name[sizeof(name) - 1] = 0;
-	assert(quark_ruleset_tag_begin(&ruleset, name) == -1);
-	name[QUARK_TAG_NAME_MAX] = 0;
-	assert(quark_ruleset_tag_begin(&ruleset, name) == 0);
+	for (i = 0; i < nitems(bad_names); i++) {
+		errno = 0;
+		if (quark_ruleset_tag_begin(&ruleset, bad_names[i]) != -1 ||
+		    errno != EINVAL)
+			errx(1, "tag name \"%s\" should fail", bad_names[i]);
+	}
+	assert(ruleset.n_tags == 0 && !ruleset.block_open);
+	assert(quark_ruleset_tag_begin(&ruleset, "log") == 0);
 	assert(quark_ruleset_tag_end(&ruleset) == -1);	/* no on line */
 	assert(ruleset.block_open);
 	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0);
-	assert(rule != NULL);
+	assert(rule != NULL && rule->tags == 1);
 	assert(quark_ruleset_tag_end(&ruleset) == 0);
 	assert(ruleset.n_tags == 1);
 
 	/* One block at a time, and pass, drop, poison stay outside */
-	assert(quark_ruleset_tag_begin(&ruleset, "a") == 0);
+	assert(quark_ruleset_tag_begin(&ruleset, "alert") == 0);
 	errno = 0;
-	assert(quark_ruleset_tag_begin(&ruleset, "b") == -1);
+	assert(quark_ruleset_tag_begin(&ruleset, "log") == -1);
 	assert(errno == EINVAL);
 	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0) == NULL);
 	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0) == NULL);
@@ -5556,30 +5560,16 @@ t_rule_tag_api(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0) != NULL);
 	assert(ruleset.rules[3].tags == 0);
 
-	/* A known name reuses its bit */
-	assert(quark_ruleset_tag_begin(&ruleset, "a") == 0);
+	/* A known name reuses its bit, the bits follow the first use */
+	assert(quark_ruleset_tag_begin(&ruleset, "alert") == 0);
 	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0);
 	assert(rule != NULL && rule->tags == 2);
 	assert(quark_ruleset_tag_end(&ruleset) == 0);
 	assert(ruleset.n_tags == 2);
-
-	/* At most QUARK_MAX_TAGS names */
-	for (i = ruleset.n_tags; i < QUARK_MAX_TAGS; i++) {
-		snprintf(name, sizeof(name), "t%d", i);
-		assert(quark_ruleset_tag_begin(&ruleset, name) == 0);
-		assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0)
-		    != NULL);
-		assert(quark_ruleset_tag_end(&ruleset) == 0);
-	}
-	assert(ruleset.n_tags == QUARK_MAX_TAGS);
-	assert(ruleset.rules[ruleset.n_rules - 1].tags == 1ULL << 63);
-	errno = 0;
-	assert(quark_ruleset_tag_begin(&ruleset, "one-more") == -1);
-	assert(errno == E2BIG);
-	assert(quark_ruleset_tag_begin(&ruleset, "t63") == 0);
-	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) != NULL);
-	assert(quark_ruleset_tag_end(&ruleset) == 0);
-	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 63), "t63"));
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 0), "log"));
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 1), "alert"));
+	assert(quark_ruleset_tag_name(&ruleset, 2) == NULL);
+	assert(quark_ruleset_tag_name(&ruleset, 63) == NULL);
 	assert(quark_ruleset_tag_name(&ruleset, 64) == NULL);
 	quark_ruleset_clear(&ruleset);
 

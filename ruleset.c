@@ -4,7 +4,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -368,37 +367,40 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 	return (rule);
 }
 
-/* A tag name is [A-Za-z0-9_.-], 1 to QUARK_TAG_NAME_MAX bytes */
+/*
+ * The tag names of the first version, the actions of a D4C response. The
+ * engine takes up to QUARK_MAX_TAGS names, more can be allowed later.
+ */
+static const char *tags_allowed[] = { "log", "alert" };
+
 static int
 tag_name_valid(const char *name)
 {
-	const char	*p;
+	size_t	i;
 
-	if (name == NULL || *name == 0 ||
-	    strlen(name) > QUARK_TAG_NAME_MAX)
+	if (name == NULL)
 		return (0);
-	for (p = name; *p != 0; p++) {
-		if (!isalnum((unsigned char)*p) &&
-		    *p != '_' && *p != '.' && *p != '-')
-			return (0);
+	for (i = 0; i < nitems(tags_allowed); i++) {
+		if (!strcmp(name, tags_allowed[i]))
+			return (1);
 	}
 
-	return (1);
+	return (0);
 }
 
 /*
  * Open a tag block, the rules appended until quark_ruleset_tag_end() are
- * its lines. Blocks with the same name share one bit. The name blocked is
- * reserved for denied operations. Returns -1 with errno set: EINVAL for a
- * bad name or a block already open, E2BIG past QUARK_MAX_TAGS names.
+ * its lines. Blocks with the same name share one bit, the bits follow the
+ * order of first use. The name is log or alert. Returns -1 with errno set:
+ * EINVAL for another name or a block already open, E2BIG past
+ * QUARK_MAX_TAGS names.
  */
 int
 quark_ruleset_tag_begin(struct quark_ruleset *ruleset, const char *name)
 {
 	u_int	bit;
 
-	if (ruleset->block_open || !tag_name_valid(name) ||
-	    !strcmp(name, "blocked"))
+	if (ruleset->block_open || !tag_name_valid(name))
 		return (errno = EINVAL, -1);
 	for (bit = 0; bit < ruleset->n_tags; bit++) {
 		if (!strcmp(ruleset->tag_names[bit], name))

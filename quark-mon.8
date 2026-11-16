@@ -308,20 +308,17 @@ any other file event gets
 .Sy log ,
 and an event without a file is dropped.
 .Pp
+The name is
+.Sy log
+or
+.Sy alert ,
+the actions of a Defend for Containers response.
 The
 .Sq {
 follows the name, and the
 .Sq }
 has a line of its own.
-Blocks with the same name are alternatives, a name is up to 64 letters,
-digits,
-.Sq _ ,
-.Sq \&.
-and
-.Sq - ,
-there are at most 64 names, and the name
-.Sy blocked
-is reserved.
+Blocks with the same name are alternatives.
 No rule tests a tag, a tag is an output:
 .Nm
 prints it, see
