@@ -12,6 +12,13 @@
 struct quark_event;
 
 /*
+ * Tags are set by tag blocks, one bit per distinct name, so they fit in
+ * the u64 quark_event.tags.
+ */
+#define QUARK_MAX_TAGS		64
+#define QUARK_TAG_NAME_MAX	64	/* without NUL */
+
+/*
  * post points into pre
  */
 struct quark_wild {
@@ -50,12 +57,21 @@ struct quark_rule {
 	u64			 poison_tag;	/* tag used for SETTING poison */
 	u64			 evals;		/* counter */
 	u64			 hits;		/* counter */
+	u64			 tags;		/* TAG, EXCEPT: the bit of the block */
 	u_int			 number;	/* starting from 0 */
+	u_int			 skip_to;	/* TAG, EXCEPT: first rule after the block */
 };
 
 struct quark_ruleset {
 	struct quark_rule	*rules;
 	size_t			 n_rules;
+	char			*tag_names[QUARK_MAX_TAGS];	/* by bit */
+	u_int			 n_tags;
+	/* The tag block being built, see quark_ruleset_tag_begin() */
+	int			 block_open;
+	int			 block_has_on;
+	size_t			 block_start;
+	u64			 block_tag;
 };
 
 struct quark_parser_ctx {
@@ -86,5 +102,10 @@ int			 quark_rule_match_field_list(struct quark_rule *,
 			     const struct quark_rule_field *, size_t);
 struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
 			     struct quark_event *);
+int			 quark_ruleset_tag_begin(struct quark_ruleset *,
+			     const char *);
+int			 quark_ruleset_tag_end(struct quark_ruleset *);
+const char		*quark_ruleset_tag_name(const struct quark_ruleset *,
+			     u_int);
 
 #endif /* _RULESET_H_ */

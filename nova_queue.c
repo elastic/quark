@@ -127,6 +127,13 @@ nova_rule_from_quark(struct nova_queue *nqq,
 
 	bzero(nr, sizeof(*nr));
 
+	/* Tags run in userspace, the first match ends the loop in BPF */
+	if (qr->action == QUARK_RA_TAG || qr->action == QUARK_RA_EXCEPT) {
+		errno = ENOTSUP;
+		qwarn("tag blocks are not supported in nova backend");
+		return (-1);
+	}
+
 	for (i = 0; i < qr->n_conds; i++) {
 		cond = qr->conds + i;
 		if (cond->n_values != 1) {

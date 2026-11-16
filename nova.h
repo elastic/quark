@@ -54,6 +54,8 @@ enum quark_rule_action {
 	QUARK_RA_DROP,
 	QUARK_RA_PASS,
 	QUARK_RA_POISON,
+	QUARK_RA_TAG,		/* "on" line of a tag block, userspace only */
+	QUARK_RA_EXCEPT,	/* "except on" line of a tag block, userspace only */
 };
 
 /*

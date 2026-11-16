@@ -55,7 +55,7 @@ static int	add_values(struct quark_parser_ctx *, u64);
 	bzero(&$$, sizeof($$));
 }
 
-%token PASS DROP POISON ON ANY STRING
+%token PASS DROP POISON ON ANY STRING TAG EXCEPT
 %token PROCESS_PID PROCESS_PPID PROCESS_UID PROCESS_GID PROCESS_SID
 %token PROCESS_EXE FILE_PATH FILE_EXEC_CHANGE EVENT_SCOPE
 %token POD_NAME CONTAINER_IMAGE
@@ -64,6 +64,7 @@ static int	add_values(struct quark_parser_ctx *, u64);
 grammar:	/* empty  */
 		| grammar '\n'
 		| grammar rule '\n'
+		| grammar block '\n'
 		| error { YYABORT; }
 		;
 
@@ -73,6 +74,46 @@ rule:		action {
 			if (ctx->cur_rule == NULL)
 				ABORT("can't add rule");
 		} ON matchbody {
+			ctx->cur_rule = NULL;
+		} ;
+
+/*
+ * tag <name> {
+ *	except on <fields>
+ *	on <fields>|any
+ * }
+ * One line each, the except lines first, see quark_ruleset_match().
+ */
+block:		TAG STRING '{' {
+			if (quark_ruleset_tag_begin(ctx->ruleset, $2.str) == -1) {
+				if (errno == E2BIG)
+					ABORT("too many tags, max %d",
+					    QUARK_MAX_TAGS);
+				ABORT("bad tag name: %s", $2.str);
+			}
+		} blocklines '}' {
+			if (quark_ruleset_tag_end(ctx->ruleset) == -1)
+				ABORT("tag block without an on line");
+		} ;
+
+blocklines:	/* empty */
+		| blocklines '\n'
+		| blocklines blockline '\n'
+		;
+
+blockline:	EXCEPT ON {
+			ctx->cur_rule = quark_ruleset_append_rule(ctx->ruleset,
+			    QUARK_RA_EXCEPT, 0);
+			if (ctx->cur_rule == NULL)
+				ABORT("except on must come before on");
+		} matchlist {
+			ctx->cur_rule = NULL;
+		} | ON {
+			ctx->cur_rule = quark_ruleset_append_rule(ctx->ruleset,
+			    QUARK_RA_TAG, 0);
+			if (ctx->cur_rule == NULL)
+				ABORT("can't add rule");
+		} matchbody {
 			ctx->cur_rule = NULL;
 		} ;
 
@@ -310,6 +351,8 @@ static struct keyword {
 	{ "poison",		POISON },
 	{ "on",			ON },
 	{ "any",		ANY },
+	{ "tag",		TAG },
+	{ "except",		EXCEPT },
 	{ "process.pid",	PROCESS_PID },
 	{ "process.ppid",	PROCESS_PPID },
 	{ "process.uid",	PROCESS_UID },

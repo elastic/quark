@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -55,8 +56,9 @@ quark_ruleset_clear(struct quark_ruleset *ruleset)
 	}
 
 	free(ruleset->rules);
-	ruleset->rules = NULL;
-	ruleset->n_rules = 0;
+	for (i = 0; i < ruleset->n_tags; i++)
+		free(ruleset->tag_names[i]);
+	quark_ruleset_init(ruleset);
 }
 
 int
@@ -66,6 +68,8 @@ quark_ruleset_parse(struct quark_ruleset *ruleset, FILE *in,
 	struct quark_parser_ctx	 ctx;
 	size_t			 i;
 	int			 quark_parse(struct quark_parser_ctx *);
+	void			 quark_error(struct quark_parser_ctx *,
+				     const char *, ...);
 
 	quark_ruleset_init(ruleset);
 	bzero(&ctx, sizeof(ctx));
@@ -73,6 +77,9 @@ quark_ruleset_parse(struct quark_ruleset *ruleset, FILE *in,
 	ctx.ruleset = ruleset;
 
 	quark_parse(&ctx);
+	/* The grammar closes every block, this guards the parser */
+	if (!ctx.error && ruleset->block_open)
+		quark_error(&ctx, "unterminated tag block");
 
 	/* Free up parser arena */
 	for (i = 0; i < ctx.n_allocs; i++)
@@ -228,46 +235,109 @@ cond_match(struct quark_rule *rule, struct quark_rule_cond *cond,
 	return (0);
 }
 
+/* 1 when every condition matches, the conditions of a rule are ANDed */
+static int
+rule_match(struct quark_rule *rule, struct quark_event *qev)
+{
+	size_t	i;
+
+	for (i = 0; i < rule->n_conds; i++) {
+		if (!cond_match(rule, rule->conds + i, qev))
+			return (0);
+	}
+
+	return (1);
+}
+
+/*
+ * Evaluate the ruleset on an event, top to bottom. Set qev->tags and return
+ * the first pass or drop rule that matches, or NULL. Poison rules and tag
+ * blocks don't end the evaluation, all of them apply.
+ *
+ * A tag block sets its tag when no "except on" line matches and one "on"
+ * line matches. The except lines come first, so the first match in a
+ * block decides it: an except line leaves the block, an on line sets the
+ * tag and leaves the block too, the rest can't add anything. A block whose
+ * tag is already set is skipped, an except line is local to its block and
+ * never removes a tag.
+ *
+ * The caller decides delivery: a drop removes only an event without tags.
+ */
 struct quark_rule *
 quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 {
 	struct quark_rule	*rule;
-	size_t			 i, j;
+	size_t			 i;
 	struct quark_process	*qp;
+
+	qev->tags = 0;
+	qev->ruleset = ruleset;
 
 	for (i = 0; i < ruleset->n_rules; i++) {
 		rule = ruleset->rules + i;
-		rule->evals++;
-		for (j = 0; j < rule->n_conds; j++) {
-			if (!cond_match(rule, rule->conds + j, qev))
-				break;
+		if ((rule->action == QUARK_RA_TAG ||
+		    rule->action == QUARK_RA_EXCEPT) &&
+		    (qev->tags & rule->tags) == rule->tags) {
+			i = rule->skip_to - 1;
+			continue;
 		}
-		/* All fields matched, this is the rule! */
-		if (j == rule->n_conds) {
-			rule->hits++;
-			/* Poison rules continue to evaluate, others are done */
-			if (rule->action != QUARK_RA_POISON)
-				return (rule);
+		rule->evals++;
+		if (!rule_match(rule, qev))
+			continue;
+		rule->hits++;
+		switch (rule->action) {
+		case QUARK_RA_EXCEPT:
+			i = rule->skip_to - 1;
+			break;
+		case QUARK_RA_TAG:
+			qev->tags |= rule->tags;
+			i = rule->skip_to - 1;
+			break;
+		case QUARK_RA_POISON:
 			/* Poison this process */
 			qp = (struct quark_process *)qev->process;
 			if (qp != NULL)
 				qp->poison_tag = rule->poison_tag;
+			break;
+		default:
+			/* Pass and drop are done */
+			return (rule);
 		}
 	}
 
 	return (NULL);
 }
 
+/*
+ * Append a rule. QUARK_RA_TAG and QUARK_RA_EXCEPT are the "on" and
+ * "except on" lines of the open tag block, see quark_ruleset_tag_begin(),
+ * the except lines come first. The other actions are outside of a block.
+ * Returns NULL with errno set.
+ */
 struct quark_rule *
 quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_tag)
 {
 	struct quark_rule	*new_rules, *rule;
 	size_t			 new_n_rules;
 
-	if (action != QUARK_RA_DROP &&
-	    action != QUARK_RA_PASS &&
-	    action != QUARK_RA_POISON)
+	switch (action) {
+	case QUARK_RA_DROP:		/* FALLTHROUGH */
+	case QUARK_RA_PASS:		/* FALLTHROUGH */
+	case QUARK_RA_POISON:
+		if (ruleset->block_open)
+			return (errno = EINVAL, NULL);
+		break;
+	case QUARK_RA_EXCEPT:
+		if (!ruleset->block_open || ruleset->block_has_on)
+			return (errno = EINVAL, NULL);
+		break;
+	case QUARK_RA_TAG:
+		if (!ruleset->block_open)
+			return (errno = EINVAL, NULL);
+		break;
+	default:
 		return (errno = EINVAL, NULL);
+	}
 	new_n_rules = ruleset->n_rules + 1;
 	new_rules = reallocarray(ruleset->rules, new_n_rules,
 	    sizeof(*ruleset->rules));
@@ -284,12 +354,105 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 	rule->number = ruleset->n_rules - 1;
 	rule->evals = 0;
 	rule->hits = 0;
+	rule->tags = 0;
+	rule->skip_to = 0;
 	if (action == QUARK_RA_POISON)
 		rule->poison_tag = poison_tag;
 	else
 		rule->poison_tag = 0;
+	if (action == QUARK_RA_TAG || action == QUARK_RA_EXCEPT)
+		rule->tags = ruleset->block_tag;
+	if (action == QUARK_RA_TAG)
+		ruleset->block_has_on = 1;
 
 	return (rule);
+}
+
+/* A tag name is [A-Za-z0-9_.-], 1 to QUARK_TAG_NAME_MAX bytes */
+static int
+tag_name_valid(const char *name)
+{
+	const char	*p;
+
+	if (name == NULL || *name == 0 ||
+	    strlen(name) > QUARK_TAG_NAME_MAX)
+		return (0);
+	for (p = name; *p != 0; p++) {
+		if (!isalnum((unsigned char)*p) &&
+		    *p != '_' && *p != '.' && *p != '-')
+			return (0);
+	}
+
+	return (1);
+}
+
+/*
+ * Open a tag block, the rules appended until quark_ruleset_tag_end() are
+ * its lines. Blocks with the same name share one bit. The name blocked is
+ * reserved for denied operations. Returns -1 with errno set: EINVAL for a
+ * bad name or a block already open, E2BIG past QUARK_MAX_TAGS names.
+ */
+int
+quark_ruleset_tag_begin(struct quark_ruleset *ruleset, const char *name)
+{
+	u_int	bit;
+
+	if (ruleset->block_open || !tag_name_valid(name) ||
+	    !strcmp(name, "blocked"))
+		return (errno = EINVAL, -1);
+	for (bit = 0; bit < ruleset->n_tags; bit++) {
+		if (!strcmp(ruleset->tag_names[bit], name))
+			break;
+	}
+	if (bit == ruleset->n_tags) {
+		if (ruleset->n_tags == QUARK_MAX_TAGS)
+			return (errno = E2BIG, -1);
+		if ((ruleset->tag_names[bit] = strdup(name)) == NULL)
+			return (-1);
+		ruleset->n_tags++;
+	}
+	ruleset->block_open = 1;
+	ruleset->block_has_on = 0;
+	ruleset->block_start = ruleset->n_rules;
+	ruleset->block_tag = 1ULL << bit;
+
+	return (0);
+}
+
+/*
+ * Close the open tag block. It needs an "on" line, and an "except on" line
+ * needs a field, otherwise it matches every event and the block is dead.
+ * Returns -1 with errno set to EINVAL.
+ */
+int
+quark_ruleset_tag_end(struct quark_ruleset *ruleset)
+{
+	size_t	i;
+
+	if (!ruleset->block_open || !ruleset->block_has_on)
+		return (errno = EINVAL, -1);
+	for (i = ruleset->block_start; i < ruleset->n_rules; i++) {
+		if (ruleset->rules[i].action == QUARK_RA_EXCEPT &&
+		    ruleset->rules[i].n_conds == 0)
+			return (errno = EINVAL, -1);
+	}
+	for (i = ruleset->block_start; i < ruleset->n_rules; i++)
+		ruleset->rules[i].skip_to = ruleset->n_rules;
+	ruleset->block_open = 0;
+	ruleset->block_has_on = 0;
+	ruleset->block_tag = 0;
+
+	return (0);
+}
+
+/* The name of a tag bit, or NULL */
+const char *
+quark_ruleset_tag_name(const struct quark_ruleset *ruleset, u_int bit)
+{
+	if (bit >= ruleset->n_tags)
+		return (NULL);
+
+	return (ruleset->tag_names[bit]);
 }
 
 /*

@@ -473,6 +473,8 @@ event_storage_clear(struct quark_queue *qq)
 {
 	qq->event_storage.events = 0;
 	qq->event_storage.time = 0;
+	qq->event_storage.tags = 0;
+	qq->event_storage.ruleset = NULL;
 	qq->event_storage.process = NULL;
 	qq->event_storage.socket = NULL;
 	free(qq->event_storage.packet);
@@ -4813,6 +4815,10 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	    qa->hold_time < 10)
 		return (errno = EINVAL, -1);
 
+	/* A tag block must be closed, see quark_ruleset_tag_end() */
+	if (qa->ruleset != NULL && qa->ruleset->block_open)
+		return (errno = EINVAL, -1);
+
 	if (quark_init() == -1)
 		return (-1);
 
@@ -5638,10 +5644,14 @@ quark_queue_get_event(struct quark_queue *qq)
 
 next:
 	qev = quark_queue_get_event1(qq);
-	/* Run ruleset, if we drop, get the next event */
+	/*
+	 * Run ruleset, if we drop, get the next event. A tag means "deliver
+	 * this event", so drop removes only an event without tags.
+	 */
 	if (qev != NULL && qq->ruleset != NULL) {
 		rule = quark_ruleset_match(qq->ruleset, qev);
-		if (rule != NULL && rule->action == QUARK_RA_DROP)
+		if (rule != NULL && rule->action == QUARK_RA_DROP &&
+		    qev->tags == 0)
 			goto next;
 	}
 

@@ -5009,6 +5009,20 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		/* braces are tokens, unless quoted or escaped */
 		"drop on file.path \"/a{b}\"\n",
 		"drop on file.path /a\\{b\\}\n",
+		/* tag blocks */
+		"tag log {\n\ton any\n}\n",
+		"tag log {\n\ton any\n}",
+		"tag alert {\n\texcept on file.path /tmp/*\n"
+		    "\ton file.exec_change\n\ton process.pid { 1 2 }\n}\n",
+		"tag a {\n\texcept on process.pid 1\n"
+		    "\texcept on process.uid { 0 1 }\n\ton any\n}\n",
+		"tag a {\n\n# comment\n\ton any # comment\n\n}\n",
+		"tag a {\n\ton any\n}\ntag a {\n\ton process.pid 1\n}\n",
+		"tag x.y_z-1 {\n\ton any\n}\n",
+		"tag \"q\" {\n\ton any\n}\n",
+		"tag a {\n\ton pod.name {\n\t\tx\n\t\ty\n\t}\n}\n",
+		"drop on event.scope { host unknown }\n"
+		    "tag log {\n\ton any\n}\ndrop on any\n",
 		NULL
 	};
 	char *bad_cases[] = {
@@ -5055,6 +5069,29 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on event.scope { container guest }\n",
 		"poison { 1 } on any\n",
 		"drop on file.path /a{b\n",
+		/* tag blocks */
+		"tag a {\n}\n",
+		"tag a {\n\texcept on process.pid 1\n}\n",
+		"tag a {\n\ton any\n\texcept on process.pid 1\n}\n",
+		"tag a {\n\texcept on any\n\ton any\n}\n",
+		"tag a {\n\tpass on any\n}\n",
+		"tag a {\n\tpoison 1 on any\n}\n",
+		"tag a {\n\ton any\n",
+		"tag a { on any }\n",
+		"tag a {\n\ton any }\n",
+		"tag a\n{\n\ton any\n}\n",
+		"tag a {\n\ttag b {\n\t\ton any\n\t}\n}\n",
+		"tag a {\n\ton any\n} drop on any\n",
+		"tag blocked {\n\ton any\n}\n",
+		"tag \"a b\" {\n\ton any\n}\n",
+		"tag \"\" {\n\ton any\n}\n",
+		"tag {\n\ton any\n}\n",
+		"tag a b {\n\ton any\n}\n",
+		"tag a {\n\ton\n}\n",
+		"tag on {\n\ton any\n}\n",
+		"}\n",
+		"on any\n",
+		"except on any\n",
 		NULL
 	};
 
@@ -5194,6 +5231,334 @@ t_rule_values(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_rule_match_field(rule, rfs[2]) == 0);
 	assert(rule->n_conds == 2);
 	assert(rule->conds[1].n_values == 1);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/* An event of a process with pid, its file is NULL unless path is set */
+static void
+tag_test_event(struct quark_event *qev, struct quark_process *qp,
+    struct quark_file *file, u32 pid, const char *path, u32 mode, u32 op)
+{
+	bzero(qev, sizeof(*qev));
+	bzero(qp, sizeof(*qp));
+	bzero(file, sizeof(*file));
+	qp->pid = pid;
+	qev->process = qp;
+	if (path != NULL) {
+		file->path = path;
+		file->mode = mode;
+		file->op_mask = op;
+		qev->file = file;
+	}
+}
+
+/*
+ * Tag blocks: the L2 example of the D4C gap analysis, the exclude applies
+ * to one response only.
+ */
+static int
+t_rule_tag(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_event	 qev;
+	struct quark_process	 qp;
+	struct quark_file	 file;
+	struct quark_rule	*rule;
+	struct quark_ruleset	 ruleset;
+	u64			 alert, log;
+
+	ruleset_from_string(&ruleset,
+	    "tag alert {\n"
+	    "\texcept on file.path /tmp/*\n"
+	    "\ton file.exec_change\n"
+	    "\ton file.path /usr/bin/*\n"
+	    "}\n"
+	    "tag log {\n"
+	    "\ton file.path *\n"
+	    "}\n"
+	    "drop on any\n");
+	assert(ruleset.n_rules == 5);
+	assert(ruleset.n_tags == 2);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 0), "alert"));
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 1), "log"));
+	assert(quark_ruleset_tag_name(&ruleset, 2) == NULL);
+	alert = 1ULL << 0;
+	log = 1ULL << 1;
+	assert(ruleset.rules[0].action == QUARK_RA_EXCEPT);
+	assert(ruleset.rules[1].action == QUARK_RA_TAG);
+	assert(ruleset.rules[2].action == QUARK_RA_TAG);
+	assert(ruleset.rules[3].action == QUARK_RA_TAG);
+	assert(ruleset.rules[4].action == QUARK_RA_DROP);
+	assert(ruleset.rules[0].skip_to == 3 && ruleset.rules[2].skip_to == 3);
+	assert(ruleset.rules[3].skip_to == 4);
+	assert(ruleset.rules[0].tags == alert && ruleset.rules[1].tags == alert);
+	assert(ruleset.rules[3].tags == log);
+
+	/* A new executable in /tmp: the exclude stops the alert only */
+	tag_test_event(&qev, &qp, &file, 1, "/tmp/x", 0755,
+	    QUARK_FILE_OP_CREATE);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->action == QUARK_RA_DROP);
+	assert(qev.tags == log);
+	assert(qev.ruleset == &ruleset);
+	/* The except line left the block, its on lines were not evaluated */
+	assert(ruleset.rules[0].hits == 1);
+	assert(ruleset.rules[1].evals == 0 && ruleset.rules[2].evals == 0);
+
+	/* Elsewhere: both tags, the first on line decides the block */
+	tag_test_event(&qev, &qp, &file, 1, "/usr/bin/x", 0755,
+	    QUARK_FILE_OP_CREATE);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->action == QUARK_RA_DROP);
+	assert(qev.tags == (alert | log));
+	assert(ruleset.rules[1].hits == 1);
+	assert(ruleset.rules[2].evals == 0);
+
+	/* Not executable: the second on line of the block */
+	tag_test_event(&qev, &qp, &file, 1, "/usr/bin/y", 0644,
+	    QUARK_FILE_OP_CREATE);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(qev.tags == (alert | log));
+	assert(ruleset.rules[2].hits == 1);
+
+	/* Not executable, not /usr/bin: log only */
+	tag_test_event(&qev, &qp, &file, 1, "/etc/z", 0644,
+	    QUARK_FILE_OP_CREATE);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(qev.tags == log);
+
+	/* No file: no tag, the last rule drops it */
+	tag_test_event(&qev, &qp, &file, 1, NULL, 0, 0);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 4);
+	assert(qev.tags == 0);
+
+	/* A match starts with no tags */
+	qev.tags = alert;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(qev.tags == 0);
+	quark_ruleset_clear(&ruleset);
+	assert(ruleset.n_tags == 0 && ruleset.n_rules == 0);
+
+	/*
+	 * Two blocks with the same tag are an OR, and the second is skipped
+	 * when the first set the tag. Except is local to its block.
+	 */
+	ruleset_from_string(&ruleset,
+	    "poison 5 on process.pid 1\n"
+	    "tag a {\n"
+	    "\texcept on process.pid 2\n"
+	    "\ton process.pid { 1 2 }\n"
+	    "}\n"
+	    "tag a {\n"
+	    "\ton process.pid { 1 3 }\n"
+	    "}\n"
+	    "tag b {\n"
+	    "\ton any\n"
+	    "}\n");
+	assert(ruleset.n_tags == 2);
+	tag_test_event(&qev, &qp, &file, 1, NULL, 0, 0);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qev.tags == 3);
+	assert(qp.poison_tag == 5);
+	assert(ruleset.rules[3].evals == 0);
+	tag_test_event(&qev, &qp, &file, 2, NULL, 0, 0);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qev.tags == 2);
+	assert(qp.poison_tag == 0);
+	tag_test_event(&qev, &qp, &file, 3, NULL, 0, 0);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qev.tags == 3);
+	assert(ruleset.rules[3].hits == 1);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/* Insert a process event for pid and get it back, NULL if it was dropped */
+static const struct quark_event *
+tag_queue_event(struct quark_queue *qq, u32 pid)
+{
+	struct raw_event	*raw;
+
+	raw = raw_event_alloc(RAW_GETPID);
+	assert(raw != NULL);
+	raw->pid = pid;
+	assert(raw_event_insert(qq, raw) == 0);
+
+	return (quark_queue_get_event(qq));
+}
+
+/*
+ * The delivery rule through quark_queue_get_event(): an event with a tag
+ * is delivered, drop removes only an event without tags.
+ */
+static int
+t_rule_tag_delivery(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	const struct quark_event	*qev;
+
+	quark_queue_init_bare(&qq);
+	ruleset_from_string(&ruleset,
+	    "drop on process.pid 1\n"
+	    "tag keep {\n"
+	    "\texcept on process.pid 3\n"
+	    "\ton process.pid { 1 2 3 4 }\n"
+	    "}\n"
+	    "tag other {\n"
+	    "\ton process.pid 4\n"
+	    "}\n"
+	    "drop on any\n");
+	qq.ruleset = &ruleset;
+
+	/* A drop before the block ends the evaluation, no tag, dropped */
+	assert(tag_queue_event(&qq, 1) == NULL);
+	/* Tagged, the last drop keeps it */
+	qev = tag_queue_event(&qq, 2);
+	assert(qev != NULL && qev->process->pid == 2);
+	assert(qev->tags == 1 && qev->ruleset == &ruleset);
+	/* Excepted, no tag, dropped */
+	assert(tag_queue_event(&qq, 3) == NULL);
+	/* Two tags */
+	qev = tag_queue_event(&qq, 4);
+	assert(qev != NULL && qev->tags == 3);
+	/* No rule but the last matches */
+	assert(tag_queue_event(&qq, 5) == NULL);
+	quark_ruleset_clear(&ruleset);
+
+	/* A pass before the block ends the evaluation, delivered, no tag */
+	ruleset_from_string(&ruleset,
+	    "pass on process.pid 6\n"
+	    "tag t {\n"
+	    "\ton any\n"
+	    "}\n"
+	    "drop on any\n");
+	qq.ruleset = &ruleset;
+	qev = tag_queue_event(&qq, 6);
+	assert(qev != NULL && qev->tags == 0);
+	qev = tag_queue_event(&qq, 7);
+	assert(qev != NULL && qev->tags == 1);
+	quark_ruleset_clear(&ruleset);
+
+	/* Without a terminal rule an event is delivered, as before */
+	ruleset_from_string(&ruleset,
+	    "tag t {\n"
+	    "\ton process.pid 8\n"
+	    "}\n");
+	qq.ruleset = &ruleset;
+	qev = tag_queue_event(&qq, 9);
+	assert(qev != NULL && qev->tags == 0);
+	quark_ruleset_clear(&ruleset);
+
+	qq.ruleset = NULL;
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/* Building tag blocks with the library calls */
+static int
+t_rule_tag_api(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset	 ruleset;
+	struct quark_queue_attr	 attr;
+	struct quark_queue	 qq;
+	struct quark_rule	*rule;
+	struct quark_rule_field	 rf;
+	char			 name[QUARK_TAG_NAME_MAX + 2];
+	int			 i;
+
+	quark_ruleset_init(&ruleset);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_PID;
+	rf.pid = 1;
+
+	/* Block lines only inside a block */
+	errno = 0;
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) == NULL);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0) == NULL);
+	assert(quark_ruleset_tag_end(&ruleset) == -1);
+
+	/* Bad names */
+	assert(quark_ruleset_tag_begin(&ruleset, NULL) == -1);
+	assert(quark_ruleset_tag_begin(&ruleset, "") == -1);
+	assert(quark_ruleset_tag_begin(&ruleset, "a b") == -1);
+	assert(quark_ruleset_tag_begin(&ruleset, "a/b") == -1);
+	errno = 0;
+	assert(quark_ruleset_tag_begin(&ruleset, "blocked") == -1);
+	assert(errno == EINVAL);
+	memset(name, 'a', sizeof(name) - 1);
+	name[sizeof(name) - 1] = 0;
+	assert(quark_ruleset_tag_begin(&ruleset, name) == -1);
+	name[QUARK_TAG_NAME_MAX] = 0;
+	assert(quark_ruleset_tag_begin(&ruleset, name) == 0);
+	assert(quark_ruleset_tag_end(&ruleset) == -1);	/* no on line */
+	assert(ruleset.block_open);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0);
+	assert(rule != NULL);
+	assert(quark_ruleset_tag_end(&ruleset) == 0);
+	assert(ruleset.n_tags == 1);
+
+	/* One block at a time, and pass, drop, poison stay outside */
+	assert(quark_ruleset_tag_begin(&ruleset, "a") == 0);
+	errno = 0;
+	assert(quark_ruleset_tag_begin(&ruleset, "b") == -1);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_POISON, 1) == NULL);
+
+	/* An open block is refused by the queue */
+	quark_queue_default_attr(&attr);
+	attr.ruleset = &ruleset;
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EINVAL);
+
+	/* Except lines first, an except line needs a field */
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0);
+	assert(rule != NULL && rule->tags == 2);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) != NULL);
+	errno = 0;
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0) == NULL);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_tag_end(&ruleset) == -1);	/* except on any */
+	assert(quark_rule_match_field(&ruleset.rules[1], rf) == 0);
+	assert(quark_ruleset_tag_end(&ruleset) == 0);
+	assert(ruleset.rules[1].skip_to == 3 && ruleset.rules[2].skip_to == 3);
+	assert(!ruleset.block_open);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0) != NULL);
+	assert(ruleset.rules[3].tags == 0);
+
+	/* A known name reuses its bit */
+	assert(quark_ruleset_tag_begin(&ruleset, "a") == 0);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0);
+	assert(rule != NULL && rule->tags == 2);
+	assert(quark_ruleset_tag_end(&ruleset) == 0);
+	assert(ruleset.n_tags == 2);
+
+	/* At most QUARK_MAX_TAGS names */
+	for (i = ruleset.n_tags; i < QUARK_MAX_TAGS; i++) {
+		snprintf(name, sizeof(name), "t%d", i);
+		assert(quark_ruleset_tag_begin(&ruleset, name) == 0);
+		assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0)
+		    != NULL);
+		assert(quark_ruleset_tag_end(&ruleset) == 0);
+	}
+	assert(ruleset.n_tags == QUARK_MAX_TAGS);
+	assert(ruleset.rules[ruleset.n_rules - 1].tags == 1ULL << 63);
+	errno = 0;
+	assert(quark_ruleset_tag_begin(&ruleset, "one-more") == -1);
+	assert(errno == E2BIG);
+	assert(quark_ruleset_tag_begin(&ruleset, "t63") == 0);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) != NULL);
+	assert(quark_ruleset_tag_end(&ruleset) == 0);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 63), "t63"));
+	assert(quark_ruleset_tag_name(&ruleset, 64) == NULL);
 	quark_ruleset_clear(&ruleset);
 
 	return (0);
@@ -7077,6 +7442,9 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
 	T(t_rule_values),
+	T(t_rule_tag),
+	T(t_rule_tag_delivery),
+	T(t_rule_tag_api),
 	T(t_rule_scope),
 	T_KPROBE(t_rule_container_kprobe),
 	T(t_rule_pod_name),
