@@ -123,6 +123,24 @@ Enable EBPF-only executable mprotect attempt events.
 Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
+.It Dv QQ_BPF
+Enable EBPF-only
+.Xr bpf 2
+program load attempts and results.
+The operation boundary, copied-attribute and referenced-program hooks are
+required: queue initialization fails if a required symbol, prototype or
+attachment is unavailable.
+The initial implementation requires readable kernel symbol names and BTF,
+and writable, already mounted tracefs with kprobe events and profiles.
+It uses named return probes with 4096 concurrent instances per boundary.
+Normal close and failed initialization remove the consumer's events;
+events left by a crash or SIGKILL stay disabled until a later queue
+initialization removes them.
+This does not require enabling BPF LSM.
+See
+.Dv QUARK_EV_BPF
+in
+.Xr quark_queue_get_event 3 .
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.
