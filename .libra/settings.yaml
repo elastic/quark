@@ -1,0 +1,6 @@
+version: 1
+paths:
+  exclude:
+    # Don't review vendored third-party sources built into libquark
+    - "libbpf/**"
+    - "licenses/**"
