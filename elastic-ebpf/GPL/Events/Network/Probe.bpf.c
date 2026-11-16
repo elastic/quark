@@ -384,31 +384,40 @@ static int skb_udp_offset(struct __sk_buff *skb)
 /*
  * See cgroub_skb/egress, pretty please.
  */
-static int skb_in_or_egress(struct __sk_buff *skb, int direction,
-    struct dns_ctx *ctx)
+static int skb_in_or_egress(struct __sk_buff *skb, int direction)
 {
     struct udphdr udp;
     struct bpf_sock *sk;
+    struct dns_ctx *ctx;
     u32 *tgid, cap_len;
     int l4off;
     struct ebpf_dns_event *event;
 
+    /*
+     * This function runs for every packet of the machine, TCP included,
+     * and nearly all calls exit through one of the checks below. Keep
+     * these checks fast and free of anything that costs.
+     */
     if (skb->family != AF_INET && skb->family != AF_INET6)
-        goto ignore;
+        return (1);
     if ((sk = skb->sk) == NULL)
-        goto ignore;
+        return (1);
     if ((sk = bpf_sk_fullsock(sk)) == NULL)
-        goto ignore;
+        return (1);
     if (sk->protocol != IPPROTO_UDP)
-        goto ignore;
+        return (1);
 
     if ((l4off = skb_udp_offset(skb)) < 0)
-        goto ignore;
+        return (1);
     if (bpf_skb_load_bytes(skb, l4off, &udp, sizeof(udp)))
-        goto ignore;
+        return (1);
 
     if (bpf_ntohs(udp.dest) != 53 && bpf_ntohs(udp.source) != 53)
-        goto ignore;
+        return (1);
+
+    preempt_disable();
+    if ((ctx = get_dns_ctx()) == NULL)
+        goto out;
 
     /*
      * Needed for kernels prior to cd17d38f8b28f808c368121041c0a4fa91757e0d
@@ -473,6 +482,10 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
     }
 
 ignore:
+    put_dns_ctx();
+out:
+    preempt_enable();
+
     return (1);
 }
 
@@ -488,16 +501,7 @@ ignore:
 SEC("cgroup_skb/egress")
 int skb_egress(struct __sk_buff *skb)
 {
-    struct dns_ctx *ctx;
-
-    preempt_disable();
-    if ((ctx = get_dns_ctx()) != NULL) {
-        skb_in_or_egress(skb, EBPF_NETWORK_DIR_EGRESS, ctx);
-        put_dns_ctx();
-    }
-    preempt_enable();
-
-    return 1;
+    return (skb_in_or_egress(skb, EBPF_NETWORK_DIR_EGRESS));
 }
 
 /*
@@ -506,16 +510,7 @@ int skb_egress(struct __sk_buff *skb)
 SEC("cgroup_skb/ingress")
 int skb_ingress(struct __sk_buff *skb)
 {
-    struct dns_ctx *ctx;
-
-    preempt_disable();
-    if ((ctx = get_dns_ctx()) != NULL) {
-        skb_in_or_egress(skb, EBPF_NETWORK_DIR_INGRESS, ctx);
-        put_dns_ctx();
-    }
-    preempt_enable();
-
-    return 1;
+    return (skb_in_or_egress(skb, EBPF_NETWORK_DIR_INGRESS));
 }
 
 static int sk_maybe_save_tgid(struct bpf_sock *sk)
