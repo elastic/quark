@@ -234,11 +234,16 @@ EOF
 # The timing is an average over every packet of the machine, which is why
 # the machine has to be idle to avoid skewing the results.
 function __ns_per_packet {
-  local senders="$1" out packets prog runs ns=0 ran=0
+  local senders="$1" out pps packets prog runs ns=0 ran=0
   shift
 
   out="$(__with_quark -p "$@" -- pps -j "${senders}" -t "${seconds}")"
-  packets=$(($(__val pps <<< "${out}") * seconds))
+  pps="$(__val pps <<< "${out}")"
+  if (( pps == 0 )); then
+    echo "$0: the senders got no packet out" >&2
+    exit 1
+  fi
+  packets=$((pps * seconds))
   for prog in "${packet_progs[@]}"; do
     runs="$(__val "prog_runs.${prog}" <<< "${out}")"
     if (( ${runs:-0} * 2 >= packets )); then
@@ -252,7 +257,7 @@ function __ns_per_packet {
   fi
 
   echo "${ns} ${ran} $(__val refused_percent <<< "${out}")" \
-       "$(__calc "${senders} * 1000000000 / $(__val pps <<< "${out}")")"
+       "$(__calc "${senders} * 1000000000 / ${pps}")"
 }
 
 function cmd_pps {
