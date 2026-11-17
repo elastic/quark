@@ -44,6 +44,11 @@
 #
 #     ./flow-bench.sh -d 10.0.0.2 -i eth0 udp
 #
+#   The destination should be a machine we control:
+#     - flows sends a datagram to one UDP port for each flow, from 1024 up,
+#       every period.
+#     - pps sends to port 22000 as fast as it can.
+#
 # Adding a protocol:
 #
 #   Write its proto_ function below, and a loader that takes the flows and pps
@@ -53,6 +58,10 @@ set -e
 
 # A failure inside $(...) stops us there too
 shopt -s inherit_errexit
+
+# Our numbers have a decimal point. printf, awk and sort go by the locale,
+# and a locale that writes a comma there introduces parsing errors.
+export LC_ALL=C
 
 #
 # Configuration
@@ -127,6 +136,9 @@ function usage {
   echo "Environment:"
   echo
   echo "  THREADS     Senders in the threaded pps run (default: ${THREADS})"
+  echo
+  echo "The destination gets a datagram on each UDP port from 1024 up, one per"
+  echo "flow, and as many as we can send on port 22000: ensure it's a machine we control."
   echo
   exit 1
 }
@@ -351,6 +363,10 @@ while getopts 'd:i:r:' opt; do
   esac
 done
 shift $((OPTIND - 1))
+
+if [ $# -gt 2 ]; then
+  usage
+fi
 
 if ! [[ "${REPS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "Invalid number of runs: ${REPS}" >&2

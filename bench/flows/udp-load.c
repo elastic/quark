@@ -11,15 +11,17 @@
  *	Many flows, few packets. One socket sends one datagram per period to
  *	each of nflows ports of the destination, evenly spread over the
  *	period, until it gets a SIGTERM or SIGINT. Nobody has to listen
- *	there. Prints "sent_percent N", how much of that it managed: a slow
- *	device can make a send take longer than the time there is for it.
+ *	there, but whoever does gets our datagrams, and to anything watching
+ *	the destination this is a sweep of its ports from FLOWS_PORT up.
+ *	Prints "sent_percent N", how much of that it managed.
  *
  * udp-load pps
  *	Few flows, many packets. Each thread gets a CPU and a connected socket
- *	of its own, and sends as fast as it can, one datagram per system
- *	call, for a given time. Prints "pps N", the datagrams per second the
- *	kernel took from all of them, and "refused_percent N", how many of
- *	their sends it turned away, mostly for lack of room in the device
+ *	of its own, and sends to PPS_PORT of the destination as fast as it
+ *	can, one datagram per system call, for a given time: a flood, as far
+ *	as the destination can tell. Prints "pps N", the datagrams per second
+ *	the kernel took from all of them, and "refused_percent N", how many
+ *	of their sends it turned away, mostly for lack of room in the device
  *	queue.
  */
 
