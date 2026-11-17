@@ -6664,28 +6664,32 @@ block_try(int in_container, const char *exec_path, const char *exec_arg)
 
 /*
  * A copy of true(1) under a name of our own, so that a block on it
- * denies nothing else on the machine, and nobody else runs it.
+ * denies nothing else on the machine, and nobody else runs it. We are
+ * root and /tmp is for everybody: mkstemp() makes a new file under a name
+ * that can't be guessed, and never follows a link that is already there.
  */
 static void
 block_copy_true(char *dst, size_t dst_len)
 {
-	char	 tmp[PATH_MAX], buf[65536];
+	char	 tmp[] = "/tmp/quark-test-true.XXXXXX", buf[65536];
 	ssize_t	 n;
 	int	 in, out;
 
 	if ((in = open("/bin/true", O_RDONLY)) == -1 &&
 	    (in = open("/usr/bin/true", O_RDONLY)) == -1)
 		err(1, "open true");
-	snprintf(tmp, sizeof(tmp), "/tmp/quark-test-true.%d", getpid());
-	if ((out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0755)) == -1)
-		err(1, "open %s", tmp);
+	if ((out = mkstemp(tmp)) == -1)
+		err(1, "mkstemp %s", tmp);
 	while ((n = read(in, buf, sizeof(buf))) > 0) {
 		if (write(out, buf, n) != n)
 			err(1, "write %s", tmp);
 	}
 	if (n == -1)
 		err(1, "read true");
+	if (fchmod(out, 0755) == -1)
+		err(1, "fchmod %s", tmp);
 	close(in);
+	/* An exec fails with ETXTBSY while the file is open for writing */
 	close(out);
 	if (realpath(tmp, dst) == NULL || strlen(dst) >= dst_len)
 		err(1, "realpath %s", tmp);
