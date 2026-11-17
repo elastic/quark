@@ -5512,6 +5512,7 @@ t_rule_tag_api(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue	 qq;
 	struct quark_rule	*rule;
 	struct quark_rule_field	 rf;
+	struct quark_event	 qev;
 	const char		*bad_names[] = {
 		"", "a", "Log", "log ", " log", "logs", "blocked", "alert\n"
 	};
@@ -5566,6 +5567,17 @@ t_rule_tag_api(const struct test *t, struct quark_queue_attr *qa)
 	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0);
 	assert(rule != NULL && rule->tags == 2);
 	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) != NULL);
+
+	/*
+	 * A direct match on the open block returns: until the block is
+	 * closed, skip_to is past each rule. The except line has no field
+	 * yet and matches, a skip_to of 0 would loop forever.
+	 */
+	assert(ruleset.rules[1].skip_to == 2 && ruleset.rules[2].skip_to == 3);
+	bzero(&qev, sizeof(qev));
+	alarm(5);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	alarm(0);
 	errno = 0;
 	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0) == NULL);
 	assert(errno == EINVAL);

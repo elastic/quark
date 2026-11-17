@@ -225,6 +225,20 @@ cond_match(struct quark_rule *rule, struct quark_rule_cond *cond,
     struct quark_event *qev)
 {
 	size_t	i;
+	int	scope;
+
+	/*
+	 * The scope walks the cgroup, compute it once for the whole list, as
+	 * in "drop on event.scope { host unknown }" which sees every event.
+	 */
+	if (cond->code == QUARK_RF_EVENT_SCOPE) {
+		scope = event_scope(qev);
+		for (i = 0; i < cond->n_values; i++) {
+			if ((int)cond->values[i].id == scope)
+				return (1);
+		}
+		return (0);
+	}
 
 	for (i = 0; i < cond->n_values; i++) {
 		if (quark_rule_field_match(rule, cond->values + i, qev))
@@ -354,7 +368,11 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 	rule->evals = 0;
 	rule->hits = 0;
 	rule->tags = 0;
-	rule->skip_to = 0;
+	/*
+	 * Past this rule until quark_ruleset_tag_end() sets the end of the
+	 * block, so that a match on an open block can't loop.
+	 */
+	rule->skip_to = ruleset->n_rules;
 	if (action == QUARK_RA_POISON)
 		rule->poison_tag = poison_tag;
 	else

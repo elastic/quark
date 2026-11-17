@@ -72,7 +72,7 @@ rule:		action {
 			ctx->cur_rule = quark_ruleset_append_rule(ctx->ruleset,
 			    $1.action.code, $1.action.poison_tag);
 			if (ctx->cur_rule == NULL)
-				ABORT("can't add rule");
+				ABORT("can't add rule: %s", strerror(errno));
 		} ON matchbody {
 			ctx->cur_rule = NULL;
 		} ;
@@ -113,7 +113,7 @@ blockline:	EXCEPT ON {
 			ctx->cur_rule = quark_ruleset_append_rule(ctx->ruleset,
 			    QUARK_RA_TAG, 0);
 			if (ctx->cur_rule == NULL)
-				ABORT("can't add rule");
+				ABORT("can't add rule: %s", strerror(errno));
 		} matchbody {
 			ctx->cur_rule = NULL;
 		} ;
