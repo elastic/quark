@@ -1305,6 +1305,29 @@ t_os_release(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * proc_time_boot of a process forked between the before and after clock
+ * reads. Before 3.17 task_struct.real_start_time is a struct timespec and
+ * the kprobe backend reads only its tv_sec, so expect seconds there; this
+ * fails once that is fixed.
+ */
+static void
+assert_start_time(struct quark_queue *qq, struct quark_queue_attr *qa,
+    const struct quark_process *qp, u64 before, u64 after)
+{
+	const char	*rel = qq->sysinfo.uts_release;
+	unsigned int	 major, minor;
+
+	if ((qa->flags & QQ_KPROBE) && rel != NULL &&
+	    sscanf(rel, "%u.%u", &major, &minor) == 2 &&
+	    (major < 3 || (major == 3 && minor < 17))) {
+		before /= NS_PER_S;
+		after /= NS_PER_S;
+	}
+	assert(qp->proc_time_boot >= before);
+	assert(qp->proc_time_boot <= after);
+}
+
 static int
 fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 {
@@ -1345,7 +1368,8 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 		assert(qp->cgroup != NULL);
 	assert((pid_t)qp->pid == child);
 	assert((pid_t)qp->proc_ppid == getpid());
-	assert(qp->proc_time_boot > 0); /* XXX: improve */
+	/* Same clock as qev->time, see t_suspend */
+	assert_start_time(&qq, qa, qp, before, after);
 	assert(qp->proc_uid == getuid());
 	assert(qp->proc_gid == getgid());
 	assert(qp->proc_suid == geteuid());
@@ -1462,6 +1486,103 @@ static int
 t_fork_exec_exit_rel(const struct test *t, struct quark_queue_attr *qa)
 {
 	return (fork_exec_exit(t, qa, 1));
+}
+
+static int
+sysfs_write(const char *path, const char *val)
+{
+	ssize_t	n;
+	int	fd;
+
+	if ((fd = open(path, O_WRONLY)) == -1)
+		return (-1);
+	n = write(fd, val, strlen(val));
+	close(fd);
+
+	return (n == (ssize_t)strlen(val) ? 0 : -1);
+}
+
+/*
+ * Put the whole machine to sleep (S3) for secs seconds, an RTC alarm wakes
+ * it up. Only for the test initramfs, never a real host. Not s2idle: the
+ * RTC alarm doesn't wake a qemu guest out of it, the VM would hang.
+ */
+static int
+suspend_vm(int secs)
+{
+	char	alarm[16];
+
+	/* S3 only, s2idle would never return */
+	if (sysfs_write("/sys/power/mem_sleep", "deep") == -1)
+		return (-1);
+	/* Without an RTC that can wake us we would sleep forever */
+	if (sysfs_write("/sys/class/rtc/rtc0/device/power/wakeup",
+	    "enabled") == -1)
+		return (-1);
+	if (sysfs_write("/sys/class/rtc/rtc0/wakealarm", "0") == -1)
+		return (-1);
+	(void)snprintf(alarm, sizeof(alarm), "+%d", secs);
+	if (sysfs_write("/sys/class/rtc/rtc0/wakealarm", alarm) == -1)
+		return (-1);
+	/* Returns once resumed */
+	if (sysfs_write("/sys/power/state", "mem") == -1) {
+		(void)sysfs_write("/sys/class/rtc/rtc0/wakealarm", "0");
+		return (-1);
+	}
+
+	return (0);
+}
+
+/*
+ * Process start times are CLOCK_BOOTTIME like event times. The kernel also
+ * keeps a CLOCK_MONOTONIC start (task_struct.start_time) and only a host
+ * that has slept tells the two apart: a monotonic start of a process
+ * forked after a suspend is behind by the total time asleep. In the test
+ * initramfs, sleep a few seconds first if the VM never did. Elsewhere only
+ * test if the host already slept.
+ */
+#define SUSPEND_SECS	3
+#define SUSPEND_MIN_NS	(1000ULL * 1000ULL * 1000ULL)
+
+static int
+t_suspend(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+	u64				 asleep, before, after;
+
+	asleep = clock_diff(CLOCK_BOOTTIME, CLOCK_MONOTONIC);
+	if (asleep < SUSPEND_MIN_NS && getenv("QUARK_INITRAMFS") != NULL) {
+		if (suspend_vm(SUSPEND_SECS) == -1)
+			warn("%s: can't suspend", t->name);
+		asleep = clock_diff(CLOCK_BOOTTIME, CLOCK_MONOTONIC);
+	}
+	if (asleep < SUSPEND_MIN_NS) {
+		warnx("%s: host never slept, skipping", t->name);
+		return (0);
+	}
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	before = ns_clock();
+	child = fork_exec_nop1(0, 0);
+	qev = drain_for_pid(&qq, child);
+	after = ns_clock();
+
+	assert(qev->time >= before);
+	assert(qev->time <= after);
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->flags & QUARK_F_PROC);
+	/* A monotonic start would be behind before by asleep */
+	assert_start_time(&qq, qa, qp, before, after);
+
+	quark_queue_close(&qq);
+
+	return (0);
 }
 
 /*
@@ -6810,6 +6931,9 @@ struct test all_tests[] = {
 	T_EBPF(t_map_freeze),
 	T_EBPF(t_bpf_load_fixture),
 	T_NOVA(t_nova),		/* XXX temporary XXX */
+	/* Last: after a suspend BOOTTIME stays ahead of MONOTONIC */
+	T_EBPF(t_suspend),
+	T_KPROBE(t_suspend),
 	{ NULL,	NULL, 0, 0 }
 };
 #undef S
