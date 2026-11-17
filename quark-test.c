@@ -1562,9 +1562,15 @@ t_suspend(const struct test *t, struct quark_queue_attr *qa)
 	qp = qev->process;
 	assert(qp != NULL);
 	assert(qp->flags & QUARK_F_PROC);
-	/* A monotonic start would be behind before by asleep */
-	assert(qp->proc_time_boot >= before);
-	assert(qp->proc_time_boot <= after);
+	/*
+	 * A monotonic start would be behind before by asleep. EBPF only, see
+	 * fork_exec_exit: kprobe start times before 3.17 are in seconds.
+	 */
+	if (qa->flags & QQ_EBPF) {
+		assert(qp->proc_time_boot >= before);
+		assert(qp->proc_time_boot <= after);
+	} else
+		assert(qp->proc_time_boot > 0);
 
 	quark_queue_close(&qq);
 
