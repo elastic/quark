@@ -248,6 +248,9 @@ DOCS_HTML+= $(patsubst %.8,docs/%.8.html,$(wildcard *.8))
 
 ALL_TARGETS+=$(LIBQUARK_TARGET)
 ALL_TARGETS+=$(BIN_FILES)
+ifndef SYSLIB
+ALL_TARGETS+=bench
+endif
 ifdef NO_GO
 EXTRA_OPTIONS+= NO_GO=$(NO_GO)
 else
@@ -521,6 +524,15 @@ true: true.c
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) -static -o $@ $^
 
+# The benchmarks have Makefiles of their own and build without us. From here
+# they get our flags through the environment, so that they see quark.h as the
+# rest of the tree does, and so that every build we do keeps them compiling.
+bench: $(LIBQUARK_STATIC_BIG)
+	$(call msg,MAKE,$@)
+	$(call assert_no_syslib)
+	$(Q)CC="$(CC)" CFLAGS="$(CFLAGS)" CPPFLAGS="$(CPPFLAGS)" \
+		LDLIBS="$(EXTRA_LDFLAGS)" $(MAKE) -C bench
+
 hanson-bench: hanson-bench.c hanson.o compat.o quark.h
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
@@ -682,6 +694,7 @@ clean:
 		nova_skel.h		\
 		init
 	$(Q)rm -rf initramfs quark-bin quark-bin-glibc2.17
+	$(Q)$(MAKE) -C bench clean
 
 clean-all: clean
 	$(call msg,CLEAN-ALL)
@@ -699,6 +712,7 @@ clean-docs:
 
 .PHONY:				\
 	all			\
+	bench			\
 	btfhub			\
 	centos7			\
 	centos7-image		\
