@@ -14,8 +14,9 @@
  * backend (-b, -k, -n), the features (-B, -e, -F, -G, -g, -H, -L, -N, -S,
  * -T, -t, -U, -u), their settings (-A, -I, -l) and -v.
  *
- * Two more are our own: we measure from the end of the warm-up (-w) for as
- * long as told (-d), or until the command exits.
+ * Three more are our own: we measure from the end of the warm-up (-w) for as
+ * long as told (-d), or until the command exits, and -p has the BPF programs
+ * timed, see below.
  *
  * Results are "name value" lines on stdout, after whatever the command wrote:
  *
@@ -28,8 +29,8 @@
  * That covers the userspace CPU cost. Most of what quark costs in the kernel
  * is usually not ours to pay: quark BPF programs run in the context of whoever
  * opens the file or processes the packet on egress/ingress. With -p we have
- * the kernel time all the BPF programs while we measure (BPF_ENABLE_STATS, Linux 5.8)
- * and add two lines for each program that ran:
+ * the kernel time all the BPF programs while we measure (BPF_ENABLE_STATS,
+ * Linux 5.8) and add two lines for each program that ran:
  *
  *   prog_runs.NAME  how many times it ran
  *   prog_ns.NAME    how long a run took on average
@@ -43,7 +44,7 @@
  *
  * If -d is given and the command is still running when that time is up, we
  * stop measuring right there, do not wait the extra second, and end the
- * command with SIGTERM. Only the command itself is signaled, nit what it may
+ * command with SIGTERM. Only the command itself is signaled, not what it may
  * have started. If it is still there five seconds later it gets a SIGKILL:
  * the results are printed all the same, but we exit with an error.
  *
@@ -333,8 +334,13 @@ main(int argc, char *argv[])
 	if ((qa.flags & (QQ_KPROBE | QQ_NOVA)) == 0)
 		qa.flags |= QQ_EBPF;
 
+	/*
+	 * We don't want to be told when it is stopped or continued,
+	 * say by a ^Z, and take it for dead.
+	 */
 	bzero(&sa, sizeof(sa));
 	sa.sa_handler = sigchld;
+	sa.sa_flags = SA_NOCLDSTOP;
 	if (sigaction(SIGCHLD, &sa, NULL) == -1)
 		err(1, "sigaction");
 
