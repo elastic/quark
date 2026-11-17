@@ -31,7 +31,7 @@
 #
 # Examples:
 #
-#   Both benchmarks over loopback, about 9 minutes:
+#   Both benchmarks over loopback, about 5 minutes:
 #
 #     ./flow-bench.sh udp
 #
@@ -74,7 +74,7 @@ export LC_ALL=C
 : "${IFACE:=}"
 
 # Runs behind each figure (-r)
-: "${REPS:=5}"
+: "${REPS:=3}"
 
 # Senders in the threaded pps run. One sender already tells what a packet
 # costs, the threaded run only checks that it holds with several CPUs in the
@@ -111,7 +111,7 @@ function proto_udp {
   base_flags=(-N)
   flow_name='QQ_UDP_FLOW'
   flow_flags=(-N -U -A "${period}")
-  flow_points=(1024 16384 32768 61440)
+  flow_points=(1024 32768 61440)
   packet_progs=(skb_egress skb_ingress)
 }
 
