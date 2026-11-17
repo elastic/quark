@@ -1305,6 +1305,29 @@ t_os_release(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * proc_time_boot of a process forked between the before and after clock
+ * reads. Before 3.17 task_struct.real_start_time is a struct timespec and
+ * the kprobe backend reads only its tv_sec, so expect seconds there; this
+ * fails once that is fixed.
+ */
+static void
+assert_start_time(struct quark_queue *qq, struct quark_queue_attr *qa,
+    const struct quark_process *qp, u64 before, u64 after)
+{
+	const char	*rel = qq->sysinfo.uts_release;
+	unsigned int	 major, minor;
+
+	if ((qa->flags & QQ_KPROBE) && rel != NULL &&
+	    sscanf(rel, "%u.%u", &major, &minor) == 2 &&
+	    (major < 3 || (major == 3 && minor < 17))) {
+		before /= NS_PER_S;
+		after /= NS_PER_S;
+	}
+	assert(qp->proc_time_boot >= before);
+	assert(qp->proc_time_boot <= after);
+}
+
 static int
 fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 {
@@ -1345,16 +1368,8 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 		assert(qp->cgroup != NULL);
 	assert((pid_t)qp->pid == child);
 	assert((pid_t)qp->proc_ppid == getpid());
-	/*
-	 * Same clock as qev->time, see t_suspend. Not for kprobe yet: before
-	 * 3.17 real_start_time is a struct timespec and kprobe reads only its
-	 * tv_sec.
-	 */
-	if (qa->flags & QQ_EBPF) {
-		assert(qp->proc_time_boot >= before);
-		assert(qp->proc_time_boot <= after);
-	} else
-		assert(qp->proc_time_boot > 0);
+	/* Same clock as qev->time, see t_suspend */
+	assert_start_time(&qq, qa, qp, before, after);
 	assert(qp->proc_uid == getuid());
 	assert(qp->proc_gid == getgid());
 	assert(qp->proc_suid == geteuid());
@@ -1562,15 +1577,8 @@ t_suspend(const struct test *t, struct quark_queue_attr *qa)
 	qp = qev->process;
 	assert(qp != NULL);
 	assert(qp->flags & QUARK_F_PROC);
-	/*
-	 * A monotonic start would be behind before by asleep. EBPF only, see
-	 * fork_exec_exit: kprobe start times before 3.17 are in seconds.
-	 */
-	if (qa->flags & QQ_EBPF) {
-		assert(qp->proc_time_boot >= before);
-		assert(qp->proc_time_boot <= after);
-	} else
-		assert(qp->proc_time_boot > 0);
+	/* A monotonic start would be behind before by asleep */
+	assert_start_time(&qq, qa, qp, before, after);
 
 	quark_queue_close(&qq);
 
