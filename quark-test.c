@@ -5926,6 +5926,440 @@ t_rule_block(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* Find a pattern in a compiled path list by its bytes */
+static const struct quark_block_path *
+block_path_find(const struct quark_block_path *paths, size_t n_paths,
+    const char *bytes, size_t len)
+{
+	size_t	i;
+
+	for (i = 0; i < n_paths; i++) {
+		if (paths[i].len == len && !memcmp(paths[i].path, bytes, len))
+			return (&paths[i]);
+	}
+
+	return (NULL);
+}
+
+/* A ruleset of n blocks with one on line each, or one block of n lines */
+static void
+block_ruleset_n(struct quark_ruleset *ruleset, int n, int one_block,
+    int same_line)
+{
+	char	*text, *line;
+	size_t	 len;
+	FILE	*f;
+	int	 i;
+
+	if ((f = open_memstream(&text, &len)) == NULL)
+		err(1, "open_memstream");
+	if (one_block)
+		fprintf(f, "block {\n");
+	for (i = 0; i < n; i++) {
+		assert(asprintf(&line, "\ton process.exe /bin/x%d\n",
+		    same_line ? 0 : i) != -1);
+		if (one_block)
+			fprintf(f, "%s", line);
+		else
+			fprintf(f, "block {\n%s}\n", line);
+		free(line);
+	}
+	if (one_block)
+		fprintf(f, "}\n");
+	fclose(f);
+	ruleset_from_string(ruleset, text);
+	free(text);
+}
+
+/*
+ * The compiled form of blocks: lines as bits, equal lines shared, the
+ * path patterns with the lines of their prefixes, and the limits.
+ */
+static int
+t_rule_block_compile(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset		 ruleset;
+	struct quark_block_prog		*prog;
+	const struct quark_block_path	*bp;
+	struct quark_container		 container;
+	struct quark_pod		 pod;
+	char				 image[] = "nginx:1.25";
+	char				 name[] = "debug-7";
+
+	/* No blocks: an empty program that denies nothing */
+	ruleset_from_string(&ruleset, "tag log {\n\ton any\n}\ndrop on any\n");
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL);
+	assert(prog->n_blocks == 0 && prog->n_lines == 0);
+	assert(prog->n_exe == 0 && prog->n_file == 0);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+	quark_block_free(NULL);
+
+	/*
+	 * One lookup finds the longest pattern only, so each pattern has
+	 * the lines of the prefix patterns that are a prefix of it. An
+	 * exact pattern has its NUL and is a prefix of nothing.
+	 */
+	ruleset_from_string(&ruleset,
+	    "block {\n\ton file.path /usr/*\n}\n"
+	    "block {\n\ton file.path /usr/bin/*\n}\n"
+	    "block {\n\ton file.path /usr/bin/curl\n}\n"
+	    "block {\n\ton file.path /usr/bin/curl*\n}\n");
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL);
+	assert(prog->n_blocks == 4 && prog->n_lines == 4);
+	assert(prog->blocks[0].on == 1 && prog->blocks[0].except == 0);
+	assert(prog->blocks[1].on == 2 && prog->blocks[2].on == 4);
+	assert(prog->blocks[3].on == 8);
+	assert(prog->dc_file == 0 && prog->dc_exe == 0xf);
+	assert(prog->dc_container == 0xf);
+	assert(prog->n_exe == 0 && prog->n_file == 4);
+	/* Sorted, a prefix before what it is a prefix of */
+	assert(prog->file[0].len == 5 && prog->file[1].len == 9);
+	assert(prog->file[2].len == 13 && prog->file[3].len == 14);
+	bp = block_path_find(prog->file, prog->n_file, "/usr/", 5);
+	assert(bp != NULL && !bp->exact && bp->own == 1 && bp->lines == 1);
+	bp = block_path_find(prog->file, prog->n_file, "/usr/bin/", 9);
+	assert(bp != NULL && !bp->exact && bp->own == 2 && bp->lines == 3);
+	bp = block_path_find(prog->file, prog->n_file, "/usr/bin/curl", 13);
+	assert(bp != NULL && !bp->exact && bp->own == 8 && bp->lines == 0xb);
+	bp = block_path_find(prog->file, prog->n_file, "/usr/bin/curl", 14);
+	assert(bp != NULL && bp->exact && bp->own == 4 && bp->lines == 0xf);
+#define FILE_BITS(_p)	quark_block_path_bits(prog->file, prog->n_file, _p)
+	assert(FILE_BITS("/usr/bin/curl") == 0xf);
+	assert(FILE_BITS("/usr/bin/curly") == 0xb);
+	assert(FILE_BITS("/usr/bin/cur") == 3);
+	assert(FILE_BITS("/usr/bin/") == 3);
+	assert(FILE_BITS("/usr/lib/x") == 1);
+	assert(FILE_BITS("/usr/") == 1);
+	assert(FILE_BITS("/usr") == 0);
+	assert(FILE_BITS("/etc/x") == 0);
+	assert(FILE_BITS("") == 0);
+#undef FILE_BITS
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+
+	/*
+	 * Equal lines share a bit, whatever the order of their fields and
+	 * values. "*" is a pattern like any other: the line uses
+	 * process.exe, so it is not in dc_exe and can't match a file
+	 * operation.
+	 */
+	ruleset_from_string(&ruleset,
+	    "block {\n"
+	    "	except on pod.name debug-*\n"
+	    "	on process.exe { /bin/a /bin/b } container.image nginx:*\n"
+	    "}\n"
+	    "drop on process.pid 1\n"
+	    "block {\n"
+	    "	except on pod.name debug-*\n"
+	    "	on container.image nginx:* process.exe { /bin/b /bin/a /bin/a }\n"
+	    "	on process.exe *\n"
+	    "}\n");
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL);
+	assert(prog->ruleset == &ruleset);
+	assert(prog->n_blocks == 2 && prog->n_lines == 3);
+	assert(prog->line_rule[0] == 0 && prog->line_rule[1] == 1 &&
+	    prog->line_rule[2] == 5);
+	assert(prog->blocks[0].except == 1 && prog->blocks[0].on == 2);
+	assert(prog->blocks[1].except == 1 && prog->blocks[1].on == 6);
+	assert(prog->dc_exe == 1 && prog->dc_file == 7);
+	assert(prog->dc_container == 4);
+	assert(prog->n_exe == 3 && prog->n_file == 0);
+	bp = block_path_find(prog->exe, prog->n_exe, "", 0);
+	assert(bp != NULL && !bp->exact && bp->own == 4 && bp->lines == 4);
+	bp = block_path_find(prog->exe, prog->n_exe, "/bin/a", 7);
+	assert(bp != NULL && bp->exact && bp->own == 2 && bp->lines == 6);
+	bp = block_path_find(prog->exe, prog->n_exe, "/bin/b", 7);
+	assert(bp != NULL && bp->exact && bp->own == 2 && bp->lines == 6);
+	assert(quark_block_path_bits(prog->exe, prog->n_exe, "/bin/a") == 6);
+	assert(quark_block_path_bits(prog->exe, prog->n_exe, "/bin/c") == 4);
+
+	/*
+	 * The lines per container: without metadata only the lines that
+	 * have no container field.
+	 */
+	assert(quark_block_container_bits(prog, NULL) == 4);
+	bzero(&container, sizeof(container));
+	bzero(&pod, sizeof(pod));
+	assert(quark_block_container_bits(prog, &container) == 4);
+	container.image = image;
+	assert(quark_block_container_bits(prog, &container) == 6);
+	container.pod = &pod;
+	assert(quark_block_container_bits(prog, &container) == 6);
+	pod.name = name;
+	assert(quark_block_container_bits(prog, &container) == 7);
+	container.image = NULL;
+	assert(quark_block_container_bits(prog, &container) == 5);
+	name[0] = 'x';
+	assert(quark_block_container_bits(prog, &container) == 4);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+
+	/* A path and the same path with a * are two lines */
+	ruleset_from_string(&ruleset,
+	    "block {\n\ton process.exe /bin/a\n\ton process.exe /bin/a*\n}\n");
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL && prog->n_lines == 2 && prog->n_exe == 2);
+	assert(prog->blocks[0].on == 3);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+
+	/* NOVA_BLOCK_LINES distinct lines, and one more */
+	block_ruleset_n(&ruleset, NOVA_BLOCK_LINES, 1, 0);
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL);
+	assert(prog->n_blocks == 1 && prog->n_lines == NOVA_BLOCK_LINES);
+	assert(prog->blocks[0].on == UINT64_MAX);
+	assert(prog->dc_exe == 0 && prog->dc_file == UINT64_MAX);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+	block_ruleset_n(&ruleset, NOVA_BLOCK_LINES + 1, 1, 0);
+	errno = 0;
+	assert(quark_block_compile(&ruleset) == NULL);
+	assert(errno == E2BIG);
+	quark_ruleset_clear(&ruleset);
+	/* The limit is on distinct lines, not on rules */
+	block_ruleset_n(&ruleset, NOVA_BLOCK_LINES + 1, 1, 1);
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL && prog->n_lines == 1 && prog->blocks[0].on == 1);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+
+	/* NOVA_MAX_BLOCKS blocks, and one more */
+	block_ruleset_n(&ruleset, NOVA_MAX_BLOCKS, 0, 1);
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL);
+	assert(prog->n_blocks == NOVA_MAX_BLOCKS && prog->n_lines == 1);
+	assert(prog->blocks[NOVA_MAX_BLOCKS - 1].on == 1);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+	block_ruleset_n(&ruleset, NOVA_MAX_BLOCKS + 1, 0, 1);
+	errno = 0;
+	assert(quark_block_compile(&ruleset) == NULL);
+	assert(errno == E2BIG);
+	quark_ruleset_clear(&ruleset);
+
+	/* An open block can't be compiled */
+	quark_ruleset_init(&ruleset);
+	assert(quark_ruleset_block_begin(&ruleset) == 0);
+	errno = 0;
+	assert(quark_block_compile(&ruleset) == NULL);
+	assert(errno == EINVAL);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/*
+ * What blocks deny. Each vector is an operation of a process in a
+ * container, as a hook sees it, with the block that must deny it. Two
+ * evaluators must give that answer: quark_block_eval_rules() walks the
+ * rules with the matching code of the tag blocks, quark_block_eval()
+ * applies the compiled form as the kernel does.
+ */
+enum {
+	BC_NONE,	/* no metadata for the container */
+	BC_WEB,		/* pod web-1, nginx */
+	BC_DEBUG,	/* pod debug-7, nginx */
+	BC_DB,		/* pod db-0, redis */
+	BC_NOPOD,	/* nginx, no pod */
+	BC_NOIMAGE,	/* pod web-1, no image */
+	BC_MAX
+};
+
+struct block_vector {
+	int		 kind;		/* QUARK_BLOCK_* */
+	const char	*path;		/* NULL: not resolved */
+	int		 container;	/* BC_* */
+	int		 want;		/* block that denies, or -1 */
+};
+
+static int
+t_rule_block_eval(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset		 ruleset;
+	struct quark_block_prog		*prog;
+	struct quark_block_input	 in;
+	struct quark_container		 containers[BC_MAX];
+	struct quark_pod		 pods[BC_MAX];
+	const struct quark_container	*cp[BC_MAX];
+	char				 nginx[] = "docker.io/library/nginx:1.25";
+	char				 redis[] = "docker.io/library/redis:7";
+	char				 web[] = "web-1", debug[] = "debug-7";
+	char				 db[] = "db-0";
+	char				 fits[NOVA_PATHLEN], toolong[NOVA_PATHLEN + 1];
+	const struct block_vector	*v;
+	size_t				 i, r, p, c;
+	int				 kind, got, ref;
+	const struct block_vector	 vectors[] = {
+		/* Block 0: processes, with an except on the pod */
+		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_WEB, 0 },
+		{ QUARK_BLOCK_PROCESS, "/usr/bin/wget", BC_DB, 0 },
+		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_NOPOD, 0 },
+		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_DEBUG, -1 },
+		/* Unknown does not match: the except can't protect yet */
+		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_NONE, 0 },
+		{ QUARK_BLOCK_PROCESS, "/usr/bin/curly", BC_WEB, -1 },
+		{ QUARK_BLOCK_PROCESS, "/usr/bin/cur", BC_WEB, -1 },
+		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl/x", BC_WEB, -1 },
+		{ QUARK_BLOCK_PROCESS, "/usr/bin/nginx", BC_WEB, -1 },
+		{ QUARK_BLOCK_PROCESS, NULL, BC_WEB, -1 },
+		/* Block 1: files in nginx containers, with an except path */
+		{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_WEB, 1 },
+		{ QUARK_BLOCK_FILE, "/usr/bin/x/y/z", BC_NOPOD, 1 },
+		/* The except of block 0 is local to block 0 */
+		{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_DEBUG, 1 },
+		{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_DB, -1 },
+		{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_NONE, -1 },
+		{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_NOIMAGE, -1 },
+		{ QUARK_BLOCK_FILE, "/usr/bin/internal/x", BC_WEB, -1 },
+		{ QUARK_BLOCK_FILE, "/usr/bin/internal", BC_WEB, 1 },
+		{ QUARK_BLOCK_FILE, "/usr/bin", BC_WEB, -1 },
+		{ QUARK_BLOCK_FILE, "/etc/passwd", BC_WEB, -1 },
+		{ QUARK_BLOCK_FILE, NULL, BC_WEB, -1 },
+		/* A path that does not fit in a key is not available */
+		{ QUARK_BLOCK_FILE, fits, BC_WEB, 1 },
+		{ QUARK_BLOCK_FILE, toolong, BC_WEB, -1 },
+		/* Block 2: files, no container field, so also without metadata */
+		{ QUARK_BLOCK_FILE, "/etc/shadow", BC_NONE, 2 },
+		{ QUARK_BLOCK_FILE, "/etc/shadow", BC_DB, 2 },
+		{ QUARK_BLOCK_FILE, "/etc/shadow-", BC_DB, -1 },
+		{ QUARK_BLOCK_PROCESS, "/etc/shadow", BC_WEB, -1 },
+		/* Block 3: every process of a redis container */
+		{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_DB, 3 },
+		{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_WEB, -1 },
+		{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_NONE, -1 },
+		{ QUARK_BLOCK_PROCESS, NULL, BC_DB, -1 },
+		{ QUARK_BLOCK_FILE, "/bin/sh", BC_DB, -1 },
+		/* The first block that denies is reported */
+		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_DB, 0 },
+	};
+	/* More rulesets, where the two evaluators are compared only */
+	char *rulesets[] = {
+		"block {\n\ton process.exe *\n}\n",
+		"block {\n\ton file.path *\n}\n",
+		"block {\n\texcept on process.exe /usr/bin/*\n"
+		    "\ton process.exe /usr/*\n}\n",
+		"block {\n\texcept on file.path /usr/bin/curl\n"
+		    "\ton file.path /usr/bin/curl*\n}\n",
+		"block {\n\texcept on container.image *redis:7\n"
+		    "\texcept on pod.name web-*\n\ton file.path /etc/*\n}\n"
+		    "block {\n\ton file.path { /etc/shadow /usr/bin/* }\n}\n",
+		"block {\n\ton process.exe /usr/bin/curl pod.name web-1\n"
+		    "\ton process.exe /usr/bin/curl pod.name db-0\n}\n"
+		    "block {\n\texcept on pod.name db-0\n"
+		    "\ton process.exe /usr/bin/curl pod.name db-0\n"
+		    "\ton process.exe /bin/*\n}\n",
+		"block {\n\texcept on pod.name *\n\ton process.exe /bin/sh\n}\n"
+		    "block {\n\texcept on container.image *\n"
+		    "\ton file.path /etc/*\n}\n",
+		NULL
+	};
+	const char *paths[] = {
+		NULL, "", "/", "/bin/sh", "/bin", "/etc/shadow", "/etc/shadow-",
+		"/etc", "/usr", "/usr/", "/usr/bin/curl", "/usr/bin/curly",
+		"/usr/bin/cur", "/usr/bin/internal/x", "/usr/lib/x", fits,
+		toolong,
+	};
+
+	bzero(containers, sizeof(containers));
+	bzero(pods, sizeof(pods));
+	cp[BC_NONE] = NULL;
+	for (i = BC_WEB; i < BC_MAX; i++)
+		cp[i] = &containers[i];
+	containers[BC_WEB].image = nginx;
+	containers[BC_WEB].pod = &pods[BC_WEB];
+	pods[BC_WEB].name = web;
+	containers[BC_DEBUG].image = nginx;
+	containers[BC_DEBUG].pod = &pods[BC_DEBUG];
+	pods[BC_DEBUG].name = debug;
+	containers[BC_DB].image = redis;
+	containers[BC_DB].pod = &pods[BC_DB];
+	pods[BC_DB].name = db;
+	containers[BC_NOPOD].image = nginx;
+	containers[BC_NOIMAGE].pod = &pods[BC_NOIMAGE];
+	pods[BC_NOIMAGE].name = web;
+
+	/* The longest path that fits in a key, and one byte more */
+	memset(fits, 'a', sizeof(fits));
+	memcpy(fits, "/usr/bin/", 9);
+	fits[sizeof(fits) - 1] = 0;
+	memset(toolong, 'a', sizeof(toolong));
+	memcpy(toolong, "/usr/bin/", 9);
+	toolong[sizeof(toolong) - 1] = 0;
+	assert(strlen(fits) == NOVA_PATHLEN - 1);
+	assert(strlen(toolong) == NOVA_PATHLEN);
+
+	ruleset_from_string(&ruleset,
+	    "block {\n"
+	    "	except on pod.name debug-*\n"
+	    "	on process.exe { /usr/bin/curl /usr/bin/wget /usr/bin/ncat }\n"
+	    "}\n"
+	    "block {\n"
+	    "	except on file.path /usr/bin/internal/*\n"
+	    "	on file.path /usr/bin/* container.image docker.io/library/nginx:*\n"
+	    "}\n"
+	    "tag log {\n"
+	    "	on process.exe /usr/bin/*\n"
+	    "}\n"
+	    "block {\n"
+	    "	on file.path /etc/shadow\n"
+	    "}\n"
+	    "block {\n"
+	    "	on process.exe * container.image */redis:7\n"
+	    "}\n"
+	    "drop on any\n");
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL && prog->n_blocks == 4);
+	for (i = 0; i < nitems(vectors); i++) {
+		v = &vectors[i];
+		in.kind = v->kind;
+		in.path = v->path;
+		in.container = cp[v->container];
+		ref = quark_block_eval_rules(&ruleset, &in);
+		got = quark_block_eval(prog, &in);
+		if (ref != v->want || got != v->want)
+			errx(1, "vector %zu: kind %d path %.40s container %d: "
+			    "wanted %d, rules %d, compiled %d", i, v->kind,
+			    v->path == NULL ? "(null)" : v->path, v->container,
+			    v->want, ref, got);
+	}
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+
+	for (r = 0; rulesets[r] != NULL; r++) {
+		ruleset_from_string(&ruleset, rulesets[r]);
+		prog = quark_block_compile(&ruleset);
+		assert(prog != NULL);
+		for (kind = QUARK_BLOCK_PROCESS; kind <= QUARK_BLOCK_FILE;
+		    kind++) {
+			for (p = 0; p < nitems(paths); p++) {
+				for (c = 0; c < BC_MAX; c++) {
+					in.kind = kind;
+					in.path = paths[p];
+					in.container = cp[c];
+					ref = quark_block_eval_rules(&ruleset,
+					    &in);
+					got = quark_block_eval(prog, &in);
+					if (ref == got)
+						continue;
+					errx(1, "ruleset %zu kind %d path "
+					    "%zu container %zu: rules %d, "
+					    "compiled %d", r, kind, p, c,
+					    ref, got);
+				}
+			}
+		}
+		quark_block_free(prog);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	return (0);
+}
+
 static int
 t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -7860,6 +8294,8 @@ struct test all_tests[] = {
 	T(t_rule_tag_delivery),
 	T(t_rule_tag_api),
 	T(t_rule_block),
+	T(t_rule_block_compile),
+	T(t_rule_block_eval),
 	T(t_rule_scope),
 	T_KPROBE(t_rule_container_kprobe),
 	T_NOVA(t_rule_repeated_nova),

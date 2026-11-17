@@ -10,6 +10,7 @@
  */
 
 struct quark_event;
+struct quark_container;
 
 /*
  * Tags are set by tag blocks, one bit per distinct name, so they fit in
@@ -97,6 +98,61 @@ struct quark_parser_ctx {
 	char			  errorbuf[1024];	/* the parser error */
 };
 
+/*
+ * The blocks of a ruleset compiled for the kernel, see block.c. Every
+ * distinct line of every block is one bit, and all the sets below are sets
+ * of lines.
+ */
+
+/* One process.exe or file.path pattern */
+struct quark_block_path {
+	char	*path;		/* bytes to compare, with the NUL when exact */
+	size_t	 len;		/* number of bytes, 0 for "*" */
+	int	 exact;		/* no "*", the whole path must be equal */
+	u64	 own;		/* lines that have this pattern */
+	u64	 lines;		/* own and those of every pattern that is a prefix */
+};
+
+struct quark_block_prog {
+	const struct quark_ruleset	*ruleset;	/* borrowed, must not change */
+	struct nova_block		 blocks[NOVA_MAX_BLOCKS];
+	u_int				 n_blocks;
+	u_int				 line_rule[NOVA_BLOCK_LINES];	/* a rule with this line */
+	u_int				 n_lines;
+	u64				 dc_exe;	/* lines without process.exe */
+	u64				 dc_file;	/* lines without file.path */
+	u64				 dc_container;	/* lines without a container field */
+	struct quark_block_path		*exe;		/* sorted */
+	size_t				 n_exe;
+	struct quark_block_path		*file;		/* sorted */
+	size_t				 n_file;
+};
+
+/* What a hook knows about an operation in a container */
+enum quark_block_kind {
+	QUARK_BLOCK_PROCESS,	/* fork or exec, the path is the executable */
+	QUARK_BLOCK_FILE,	/* a file operation, the path is the file */
+};
+
+struct quark_block_input {
+	enum quark_block_kind		 kind;
+	const char			*path;		/* NULL if not resolved */
+	const struct quark_container	*container;	/* NULL if no metadata */
+};
+
+/* block.c */
+struct quark_block_prog	*quark_block_compile(const struct quark_ruleset *);
+void			 quark_block_free(struct quark_block_prog *);
+u64			 quark_block_container_bits(
+			     const struct quark_block_prog *,
+			     const struct quark_container *);
+u64			 quark_block_path_bits(const struct quark_block_path *,
+			     size_t, const char *);
+int			 quark_block_eval(const struct quark_block_prog *,
+			     const struct quark_block_input *);
+int			 quark_block_eval_rules(const struct quark_ruleset *,
+			     const struct quark_block_input *);
+
 /* ruleset.c */
 void			 quark_ruleset_init(struct quark_ruleset *);
 void			 quark_ruleset_clear(struct quark_ruleset *);
@@ -110,6 +166,11 @@ int			 quark_rule_match_field_list(struct quark_rule *,
 			     const struct quark_rule_field *, size_t);
 struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
 			     struct quark_event *);
+int			 quark_rule_match(const struct quark_rule *,
+			     struct quark_event *);
+int			 quark_rule_cond_match_container(
+			     const struct quark_rule_cond *,
+			     const struct quark_container *);
 int			 quark_ruleset_tag_begin(struct quark_ruleset *,
 			     const char *);
 int			 quark_ruleset_tag_end(struct quark_ruleset *);

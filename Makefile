@@ -157,6 +157,7 @@ LIBQUARK_DEPS+= $(EEBPF_FILES) include
 endif
 LIBQUARK_SRCS:=			\
 	base64.c		\
+	block.c			\
 	bpf_queue.c		\
 	bpf_telemetry.c		\
 	bpf_telemetry_retprobe.c	\

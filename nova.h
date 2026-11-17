@@ -24,6 +24,12 @@
 #define NOVA_PATH_FIELDS	2
 #define NOVA_MAX_PATHS		(NOVA_MAX_RULES * NOVA_PATH_FIELDS * 2)
 #define NOVA_PATHLEN		250	/* including NUL */
+/*
+ * The "on" and "except on" lines of all blocks get one bit each in a
+ * __u64, equal lines share a bit.
+ */
+#define NOVA_BLOCK_LINES	64
+#define NOVA_MAX_BLOCKS		64
 
 #define QUARK_RF_PID		(1ULL << 0)
 #define QUARK_RF_PPID		(1ULL << 1)
@@ -95,6 +101,15 @@ struct nova_rule {
 	__u32	action;			/* QUARK_RA_* */
 	__u32	pad0;
 	char	comm[16];		/* QUARK_RF_COMM */
+};
+
+/*
+ * A block as two sets of line bits. With M the lines that match an
+ * operation, the block denies it when (on & M) != 0 && (except & M) == 0.
+ */
+struct nova_block {
+	__u64	on;
+	__u64	except;
 };
 
 struct nova_rule_pcpu {

@@ -98,9 +98,9 @@ quark_ruleset_parse(struct quark_ruleset *ruleset, FILE *in,
 }
 
 static int
-path_match(struct quark_rule_field *field, const char *a)
+path_match(const struct quark_rule_field *field, const char *a)
 {
-	struct quark_wild	*w = &field->wild;
+	const struct quark_wild	*w = &field->wild;
 	size_t			 alen;
 
 	/*
@@ -149,9 +149,57 @@ event_scope(struct quark_event *qev)
 	return (QUARK_RULE_SCOPE_UNKNOWN);
 }
 
+/*
+ * Match one value of a field that depends only on the container, pod.name
+ * or container.image. 1 for match, 0 for non match, also when the container
+ * or the data of the field is missing.
+ */
+static int
+container_field_match(const struct quark_rule_field *field,
+    const struct quark_container *container)
+{
+	if (container == NULL)
+		return (0);
+
+	switch (field->code) {
+	case QUARK_RF_POD_NAME:
+		if (container->pod != NULL && container->pod->name != NULL)
+			return (path_match(field, container->pod->name));
+		break;
+	case QUARK_RF_CONTAINER_IMAGE:
+		if (container->image != NULL)
+			return (path_match(field, container->image));
+		break;
+	default:
+		break;
+	}
+
+	return (0);
+}
+
+/*
+ * Match a pod.name or container.image condition on a container, without
+ * an event: the values are ORed. This is what a rule sees for an event of
+ * a process in that container. 1 for match, 0 for non match, which
+ * includes a NULL container and any other field.
+ */
+int
+quark_rule_cond_match_container(const struct quark_rule_cond *cond,
+    const struct quark_container *container)
+{
+	size_t	i;
+
+	for (i = 0; i < cond->n_values; i++) {
+		if (container_field_match(cond->values + i, container))
+			return (1);
+	}
+
+	return (0);
+}
+
 /* 1 for match, 0 for non match */
 static int
-quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
+quark_rule_field_match(const struct quark_rule_field *field,
     struct quark_event *qev)
 {
 	const struct quark_process	*qp;
@@ -193,16 +241,10 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 			    (qev->file->change_mask & QUARK_FILE_CH_PERMS)) &&
 			    (qev->file->mode & (S_IXUSR | S_IXGRP | S_IXOTH)));
 		break;
-	case QUARK_RF_POD_NAME:
-		if (qp != NULL && qp->container != NULL &&
-		    qp->container->pod != NULL &&
-		    qp->container->pod->name != NULL)
-			return (path_match(field, qp->container->pod->name));
-		break;
+	case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
 	case QUARK_RF_CONTAINER_IMAGE:
-		if (qp != NULL && qp->container != NULL &&
-		    qp->container->image != NULL)
-			return (path_match(field, qp->container->image));
+		if (qp != NULL)
+			return (container_field_match(field, qp->container));
 		break;
 	/* QUARK_RF_EVENT_SCOPE is matched in cond_match(), once per list */
 	case QUARK_RF_POISON:
@@ -220,8 +262,7 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 
 /* 1 when one of the values matches, the values of a field are ORed */
 static int
-cond_match(struct quark_rule *rule, struct quark_rule_cond *cond,
-    struct quark_event *qev)
+cond_match(const struct quark_rule_cond *cond, struct quark_event *qev)
 {
 	size_t	i;
 	int	scope;
@@ -240,21 +281,24 @@ cond_match(struct quark_rule *rule, struct quark_rule_cond *cond,
 	}
 
 	for (i = 0; i < cond->n_values; i++) {
-		if (quark_rule_field_match(rule, cond->values + i, qev))
+		if (quark_rule_field_match(cond->values + i, qev))
 			return (1);
 	}
 
 	return (0);
 }
 
-/* 1 when every condition matches, the conditions of a rule are ANDed */
-static int
-rule_match(struct quark_rule *rule, struct quark_event *qev)
+/*
+ * 1 when every condition of the rule matches the event, the conditions of
+ * a rule are ANDed. The action and the counters of the rule play no part.
+ */
+int
+quark_rule_match(const struct quark_rule *rule, struct quark_event *qev)
 {
 	size_t	i;
 
 	for (i = 0; i < rule->n_conds; i++) {
-		if (!cond_match(rule, rule->conds + i, qev))
+		if (!cond_match(rule->conds + i, qev))
 			return (0);
 	}
 
@@ -302,7 +346,7 @@ quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 			continue;
 		}
 		rule->evals++;
-		if (!rule_match(rule, qev))
+		if (!quark_rule_match(rule, qev))
 			continue;
 		rule->hits++;
 		switch (rule->action) {
