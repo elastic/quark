@@ -204,8 +204,7 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 		    qp->container->image != NULL)
 			return (path_match(field, qp->container->image));
 		break;
-	case QUARK_RF_EVENT_SCOPE:
-		return (event_scope(qev) == (int)field->id);
+	/* QUARK_RF_EVENT_SCOPE is matched in cond_match(), once per list */
 	case QUARK_RF_POISON:
 		if (qp != NULL)
 			return (qp->poison_tag == field->poison_tag);
