@@ -3710,6 +3710,7 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 		{ "foo/cri-containerd-abc123def456.scope", "containerd://abc123def456", 0 },
 		{ "foo/containerd-abc123def456.scope", "containerd://abc123def456", 0 },
 		{ "foo/crio-0123456789abcdef.scope", "cri-o://0123456789abcdef", 0 },
+		{ "foo/libpod-0123456789abcdef.scope", "cri-o://0123456789abcdef", 0 },
 		/* negative cases */
 		{ "crio-0123456789abcdef.scope", "cri-o://0123456789abcdef", -1 },
 		{ "docker-.scope", NULL, -1 },
@@ -3719,6 +3720,22 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 		{ "ABCDEF", NULL, -1 },
 		{ "something-abcdef.scope", NULL, -1 },
 		{ "docker-abcdef.scopeX", NULL, -1 },
+		/* with a directory, so they reach the prefix check */
+		{ "foo/docker-.scope", NULL, -1 },
+		{ "foo/containerd-.scope", NULL, -1 },
+		{ "foo/crio-.scope", NULL, -1 },
+		{ "foo/something-abcdef.scope", NULL, -1 },
+		{ "foo/docker-abcdef.scopeX", NULL, -1 },
+		{ "foo/docker-abcdef.service", NULL, -1 },
+		{ "foo/docker-abcdef", NULL, -1 },
+		{ "foo/docker-ABCDEF.scope", NULL, -1 },
+		{ "foo/docker-abc.def.scope", NULL, -1 },
+		{ "foo/docker-abcdeg.scope", NULL, -1 },
+		/* host units that share a runtime prefix */
+		{ "/system.slice/crio-wipe.service", NULL, -1 },
+		{ "/system.slice/docker-cleanup.service", NULL, -1 },
+		{ "/system.slice/crio-conmon-0123abcd.scope", NULL, -1 },
+		{ "/machine.slice/libpod-conmon-0123abcd.scope", NULL, -1 },
 		{ NULL, NULL, -1 }
 	};
 
@@ -3918,12 +3935,12 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	TAILQ_INIT(&container.processes);
 
 	/* Parse and cache the first container ID. */
-	cgroup = strdup("/system.slice/docker-old.scope");
+	cgroup = strdup("/system.slice/docker-0a1d.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
 	assert(process_container_id(&qp) != NULL);
-	assert(!strcmp(qp.container_id, "docker://old"));
+	assert(!strcmp(qp.container_id, "docker://0a1d"));
 	assert(qp.container_id_parsed);
 	assert(qp.container_id != NULL);
 	cached = qp.container_id;
@@ -3935,7 +3952,7 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
 	qp.container = &container;
 
-	cgroup = strdup("/system.slice/docker-old.scope");
+	cgroup = strdup("/system.slice/docker-0a1d.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
@@ -3948,11 +3965,11 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	 * cgroup inside the same container. The parser only looks at the
 	 * basename, so it does not relink nested cgroups yet.
 	 */
-	cgroup = strdup("/system.slice/docker-old.scope/init.scope");
+	cgroup = strdup("/system.slice/docker-0a1d.scope/init.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
-	assert(!strcmp(qp.cgroup, "/system.slice/docker-old.scope/init.scope"));
+	assert(!strcmp(qp.cgroup, "/system.slice/docker-0a1d.scope/init.scope"));
 	assert(qp.container == NULL);
 	assert(TAILQ_EMPTY(&container.processes));
 	assert(qp.container_id == NULL);
@@ -3962,15 +3979,15 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	 * A different container cgroup must remove the old link and clear
 	 * the cached ID.
 	 */
-	cgroup = strdup("/system.slice/docker-old.scope");
+	cgroup = strdup("/system.slice/docker-0a1d.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
-	assert(!strcmp(process_container_id(&qp), "docker://old"));
+	assert(!strcmp(process_container_id(&qp), "docker://0a1d"));
 	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
 	qp.container = &container;
 
-	cgroup = strdup("/system.slice/containerd-new.scope");
+	cgroup = strdup("/system.slice/containerd-0e3.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
@@ -3979,7 +3996,7 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp.container_id == NULL);
 	assert(!qp.container_id_parsed);
 
-	assert(!strcmp(process_container_id(&qp), "containerd://new"));
+	assert(!strcmp(process_container_id(&qp), "containerd://0e3"));
 	assert(qp.container_id_parsed);
 
 	/*
@@ -4016,12 +4033,12 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp.container_id_parsed);
 
 	/* A container cgroup after a negative result must be parsed. */
-	cgroup = strdup("/system.slice/docker-late.scope");
+	cgroup = strdup("/system.slice/docker-1a7e.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
 	assert(!qp.container_id_parsed);
-	assert(!strcmp(process_container_id(&qp), "docker://late"));
+	assert(!strcmp(process_container_id(&qp), "docker://1a7e"));
 	assert(qp.container_id_parsed);
 
 	free(qp.cgroup);
@@ -4049,7 +4066,7 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	quark_queue_init_bare(&qq);
 	bzero(&qp, sizeof(qp));
 
-	qp.cgroup = strdup("/system.slice/docker-target.scope");
+	qp.cgroup = strdup("/system.slice/docker-7a6e7.scope");
 	assert(qp.cgroup != NULL);
 
 	/* No metadata exists. RB_EMPTY must stop the parse. */
@@ -4066,7 +4083,7 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	link_container_data(&qq, &qp);
 	assert(qp.container == NULL);
 	assert(qp.container_id_parsed);
-	assert(!strcmp(qp.container_id, "docker://target"));
+	assert(!strcmp(qp.container_id, "docker://7a6e7"));
 	cached = qp.container_id;
 
 	/* A second failed lookup must use the same cached string. */
@@ -4075,7 +4092,7 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp.container_id == cached);
 
 	/* Matching metadata arrives after the process. */
-	container = quark_container_get(&qq, "docker://target", NULL);
+	container = quark_container_get(&qq, "docker://7a6e7", NULL);
 	assert(container != NULL);
 	link_container_data(&qq, &qp);
 	assert(qp.container == container);
@@ -4083,19 +4100,19 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 
 	/* Public cache reads must link metadata that arrived later. */
 	lookup_qp = test_process_event(&qq, 100,
-	    "/system.slice/docker-lookup.scope");
+	    "/system.slice/docker-100c.scope");
 	iter_qp = test_process_event(&qq, 200,
-	    "/system.slice/docker-iterator.scope");
+	    "/system.slice/docker-17e6a7.scope");
 
-	assert(quark_container_get(&qq, "docker://lookup", NULL) != NULL);
-	assert(quark_container_get(&qq, "docker://iterator", NULL) != NULL);
+	assert(quark_container_get(&qq, "docker://100c", NULL) != NULL);
+	assert(quark_container_get(&qq, "docker://17e6a7", NULL) != NULL);
 	assert(lookup_qp->container == NULL);
 	assert(iter_qp->container == NULL);
 
 	seen = quark_process_lookup(&qq, lookup_qp->pid);
 	assert(seen == lookup_qp);
 	assert(lookup_qp->container != NULL);
-	assert(!strcmp(lookup_qp->container->container_id, "docker://lookup"));
+	assert(!strcmp(lookup_qp->container->container_id, "docker://100c"));
 
 	quark_process_iter_init(&qi, &qq);
 	seen = quark_process_iter_next(&qi);
@@ -4103,7 +4120,7 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	seen = quark_process_iter_next(&qi);
 	assert(seen == iter_qp);
 	assert(iter_qp->container != NULL);
-	assert(!strcmp(iter_qp->container->container_id, "docker://iterator"));
+	assert(!strcmp(iter_qp->container->container_id, "docker://17e6a7"));
 	assert(quark_process_iter_next(&qi) == NULL);
 
 	/* Stats must work without a backend. */
@@ -5586,6 +5603,12 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 		"/system.slice//cron.service/",
 		"/user.slice/user-1000.slice/session-2.scope",
 		"/user.slice/user-1000.slice/user@1000.service/app.slice/x.service",
+		/* host units that share a runtime prefix */
+		"/system.slice/crio-wipe.service",
+		"/system.slice/docker-cleanup.service",
+		"/system.slice/crio-conmon-0123abcd.scope",
+		"/user.slice/user-1000.slice/user@1000.service/user.slice/"
+		    "libpod-conmon-0123abcd.scope",
 	};
 	const char *unknown_cgroups[] = {
 		"",
@@ -5605,6 +5628,7 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 		"/lxc.payload.c1",
 		"/init.scopes",
 		"/system.slicex/sshd.service",
+		"/kubepods.slice/kubepods-pod1234.slice/crio-conmon-0123abcd.scope",
 	};
 	size_t			 i;
 	struct quark_event	 qev;
@@ -5912,19 +5936,19 @@ t_rule_pod_name(const struct test *t, struct quark_queue_attr *qa)
 	qp = rule_kube_process(&qq, 101, "bbb", "pod-b", "nginx", NULL);
 	qev.process = qp;
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
-	qp = rule_kube_process(&qq, 107, "hhh", "pod-h", "nginx-", NULL);
+	qp = rule_kube_process(&qq, 107, "a08", "pod-h", "nginx-", NULL);
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 0);
 
 	/* PoC: pod.name ignores the namespace. */
-	qp = rule_kube_process(&qq, 108, "iii", "pod-i", "nginx-web", NULL);
+	qp = rule_kube_process(&qq, 108, "a09", "pod-i", "nginx-web", NULL);
 	qp->container->pod->ns = strdup("default");
 	assert(qp->container->pod->ns != NULL);
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 0);
-	qp = rule_kube_process(&qq, 109, "jjj", "pod-j", "nginx-web", NULL);
+	qp = rule_kube_process(&qq, 109, "a0a", "pod-j", "nginx-web", NULL);
 	qp->container->pod->ns = strdup("other");
 	assert(qp->container->pod->ns != NULL);
 	qev.process = qp;
@@ -5957,7 +5981,7 @@ t_rule_pod_name(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 
 	/* Container without a pod, no match. */
-	qp = rule_kube_process(&qq, 106, "ggg", NULL, NULL, NULL);
+	qp = rule_kube_process(&qq, 106, "a07", NULL, NULL, NULL);
 	qev.process = qp;
 	assert(qp->container->pod == NULL);
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
@@ -6034,28 +6058,28 @@ t_rule_container_image(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 
 	/* Suffix wildcard matches a whole registry, digests included. */
-	qp = rule_kube_process(&qq, 106, "ggg", "pod-g", "web",
+	qp = rule_kube_process(&qq, 106, "a07", "pod-g", "web",
 	    "quay.io/prometheus/node-exporter@sha256:0123456789abcdef");
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 2);
 	/* The wildcard may be empty, but the prefix must be complete. */
-	qp = rule_kube_process(&qq, 107, "hhh", "pod-h", "web", "quay.io/");
+	qp = rule_kube_process(&qq, 107, "a08", "pod-h", "web", "quay.io/");
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 2);
-	qp = rule_kube_process(&qq, 112, "mmm", "pod-m", "web", "quay.io");
+	qp = rule_kube_process(&qq, 112, "a0d", "pod-m", "web", "quay.io");
 	qev.process = qp;
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 
 	/* Container without an image, no match. */
-	qp = rule_kube_process(&qq, 108, "iii", "pod-i", "web", NULL);
+	qp = rule_kube_process(&qq, 108, "a09", "pod-i", "web", NULL);
 	qev.process = qp;
 	assert(qp->container->image == NULL);
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 
 	/* Container without a pod still matches on the image. */
-	qp = rule_kube_process(&qq, 109, "jjj", NULL, NULL,
+	qp = rule_kube_process(&qq, 109, "a0a", NULL, NULL,
 	    "docker.io/library/nginx:1.25");
 	qev.process = qp;
 	assert(qp->container->pod == NULL);
@@ -6063,13 +6087,13 @@ t_rule_container_image(const struct test *t, struct quark_queue_attr *qa)
 	assert(rule != NULL && rule->number == 0);
 
 	/* Combined with pod.name, both must match. */
-	qp = rule_kube_process(&qq, 110, "kkk", "pod-k", "e2e-test",
+	qp = rule_kube_process(&qq, 110, "a0b", "pod-k", "e2e-test",
 	    "registry.k8s.io/e2e-test-images/agnhost:2.39");
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 3 &&
 	    rule->action == QUARK_RA_PASS);
-	qp = rule_kube_process(&qq, 111, "lll", "pod-l", "prod-test",
+	qp = rule_kube_process(&qq, 111, "a0c", "pod-l", "prod-test",
 	    "registry.k8s.io/e2e-test-images/agnhost:2.39");
 	qev.process = qp;
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);

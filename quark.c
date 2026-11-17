@@ -1619,11 +1619,15 @@ kube_read_events(struct quark_queue *qq)
 }
 
 /*
- * Container scopes of the systemd cgroup driver, foo-<id>.scope:
+ * Container scopes of the systemd cgroup driver, <prefix><id>.scope, where
+ * <id> is the container ID in lowercase hex:
  * docker-<id>.scope                 -> docker://<id>
  * crio-<id>.scope|libpod-<id>.scope -> cri-o://<id>
  * cri-containerd-<id>.scope         -> containerd://<id>
  * containerd-<id>.scope             -> containerd://<id>
+ * The hex ID keeps out host units that share a prefix, like the conmon
+ * monitor in crio-conmon-<id>.scope or libpod-conmon-<id>.scope, and
+ * services like crio-wipe.service.
  */
 struct container_scope {
 	const char	*prefix;
@@ -1639,17 +1643,40 @@ static const struct container_scope container_scopes[] = {
 	{ "containerd-",	11,	"containerd" },
 };
 
-/* The container scope that a cgroup component of len bytes names, or NULL */
+#define CONTAINER_SCOPE_SUFFIX		".scope"
+#define CONTAINER_SCOPE_SUFFIX_LEN	(sizeof(CONTAINER_SCOPE_SUFFIX) - 1)
+
+/*
+ * The container scope that a cgroup component of len bytes names, or NULL.
+ * The ID is name + prefix_len, len - prefix_len - CONTAINER_SCOPE_SUFFIX_LEN
+ * bytes long.
+ */
 static const struct container_scope *
 container_scope_lookup(const char *name, size_t len)
 {
-	size_t	i;
+	const struct container_scope	*cs;
+	const char			*id;
+	size_t				 i, j, id_len;
+
+	if (len <= CONTAINER_SCOPE_SUFFIX_LEN ||
+	    strncmp(name + len - CONTAINER_SCOPE_SUFFIX_LEN,
+	    CONTAINER_SCOPE_SUFFIX, CONTAINER_SCOPE_SUFFIX_LEN))
+		return (NULL);
 
 	for (i = 0; i < nitems(container_scopes); i++) {
-		if (len >= container_scopes[i].prefix_len &&
-		    !strncmp(name, container_scopes[i].prefix,
-		    container_scopes[i].prefix_len))
-			return (&container_scopes[i]);
+		cs = &container_scopes[i];
+		if (len <= cs->prefix_len + CONTAINER_SCOPE_SUFFIX_LEN ||
+		    strncmp(name, cs->prefix, cs->prefix_len))
+			continue;
+		id = name + cs->prefix_len;
+		id_len = len - cs->prefix_len - CONTAINER_SCOPE_SUFFIX_LEN;
+		for (j = 0; j < id_len; j++) {
+			if (!((id[j] >= '0' && id[j] <= '9') ||
+			    (id[j] >= 'a' && id[j] <= 'f')))
+				break;
+		}
+		if (j == id_len)
+			return (cs);
 	}
 
 	return (NULL);
@@ -1665,33 +1692,24 @@ container_scope_lookup(const char *name, size_t len)
 int
 parse_container_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
 {
-	char				*dot;
-	const char			*name, *id;
+	const char			*name;
 	const struct container_scope	*cs;
+	size_t				 len, id_len;
 	int				 r;
 
 	if ((name = safe_basename(cgroup)) == NULL)
 		return (-1);
 
 	/* Atm we only accept the systemd format, see container_scopes */
-	if ((cs = container_scope_lookup(name, strlen(name))) == NULL)
+	len = strlen(name);
+	if ((cs = container_scope_lookup(name, len)) == NULL)
 		return (-1);
+	id_len = len - cs->prefix_len - CONTAINER_SCOPE_SUFFIX_LEN;
 
-	/*
-	 * id starts after the foo- prefix, we still need to chomp the trailing
-	 * .scope
-	 */
-	id = name + cs->prefix_len;
-
-	/* copy the whole thing with the runtime, and then chomp .scope */
-	r = snprintf(container_id, container_id_len,
-	    "%s://%s", cs->runtime, id);
+	r = snprintf(container_id, container_id_len, "%s://%.*s",
+	    cs->runtime, (int)id_len, name + cs->prefix_len);
 	if (r < 0 || r >= (int)container_id_len)
 		return (-1);
-	dot = strrchr(container_id, '.');
-	if (dot == NULL)
-		return (-1);
-	*dot = 0;
 
 	return (0);
 }

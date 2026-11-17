@@ -366,8 +366,16 @@ The last component of the process cgroup is a container scope of the
 systemd cgroup driver, like
 .Pa cri-containerd-<id>.scope
 or
-.Pa crio-<id>.scope .
+.Pa crio-<id>.scope ,
+where
+.Ar id
+is the container ID in lowercase hex.
 This is the kubeadm default since Kubernetes 1.22.
+Host units that share the prefix, like the conmon monitor in
+.Pa crio-conmon-<id>.scope
+or the service
+.Pa crio-wipe.service ,
+are not containers.
 .It Cm host
 The process cgroup is an absolute path under
 .Pa /init.scope ,

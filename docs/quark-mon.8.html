@@ -345,8 +345,12 @@ drop on any</pre>
   <dd>The last component of the process cgroup is a container scope of the
       systemd cgroup driver, like
       <span class="Pa">cri-containerd-&lt;id&gt;.scope</span> or
-      <span class="Pa">crio-&lt;id&gt;.scope</span>. This is the kubeadm default
-      since Kubernetes 1.22.</dd>
+      <span class="Pa">crio-&lt;id&gt;.scope</span>, where
+      <var class="Ar">id</var> is the container ID in lowercase hex. This is the
+      kubeadm default since Kubernetes 1.22. Host units that share the prefix,
+      like the conmon monitor in
+      <span class="Pa">crio-conmon-&lt;id&gt;.scope</span> or the service
+      <span class="Pa">crio-wipe.service</span>, are not containers.</dd>
   <dt id="host"><a class="permalink" href="#host"><code class="Cm">host</code></a></dt>
   <dd>The process cgroup is an absolute path under
       <span class="Pa">/init.scope</span>, <span class="Pa">/system.slice</span>
@@ -434,7 +438,7 @@ drop on any</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 16, 2026</td>
+    <td class="foot-date">November 17, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
