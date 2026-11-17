@@ -432,6 +432,24 @@ func TestRuleText(t *testing.T) {
 	attr.RuleText = "tag child {\n\ton any\n}\n"
 	_, err = OpenQueue(attr)
 	require.ErrorContains(t, err, "only log and alert are supported")
+
+	// A block reserves the tag blocked, the first block takes the bit
+	ruleset, err = rulesetFromText(
+		"block {\n" +
+			"\texcept on pod.name debug-*\n" +
+			"\ton process.exe { /usr/bin/curl /usr/bin/wget }\n" +
+			"}\n" +
+			"tag log {\n" +
+			"\ton any\n" +
+			"}\n" +
+			"drop on any")
+	require.NoError(t, err)
+	require.Equal(t, []string{"blocked", "log"}, tagNamesFromC(ruleset))
+	freeRuleset(ruleset)
+
+	attr.RuleText = "block {\n\ton pod.name web-*\n}\n"
+	_, err = OpenQueue(attr)
+	require.ErrorContains(t, err, "needs process.exe or file.path")
 }
 
 func testStats(t *testing.T, attr QueueAttr) {

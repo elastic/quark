@@ -14,7 +14,8 @@ struct quark_event;
 /*
  * Tags are set by tag blocks, one bit per distinct name, so they fit in
  * the u64 quark_event.tags. The names are log and alert for now, see
- * quark_ruleset_tag_begin().
+ * quark_ruleset_tag_begin(). The name blocked is reserved for a denied
+ * attempt, see quark_ruleset_block_begin().
  */
 #define QUARK_MAX_TAGS		64
 
@@ -67,8 +68,14 @@ struct quark_ruleset {
 	size_t			 n_rules;
 	char			*tag_names[QUARK_MAX_TAGS];	/* by bit */
 	u_int			 n_tags;
-	/* The tag block being built, see quark_ruleset_tag_begin() */
+	u_int			 n_blocks;	/* closed "block" blocks */
+	u64			 blocked_tag;	/* bit of "blocked", 0 without blocks */
+	/*
+	 * The block being built, see quark_ruleset_tag_begin() and
+	 * quark_ruleset_block_begin()
+	 */
 	int			 block_open;
+	int			 block_deny;	/* a "block" block, not a tag block */
 	int			 block_has_on;
 	size_t			 block_start;
 	u64			 block_tag;
@@ -83,6 +90,7 @@ struct quark_parser_ctx {
 	const char		**strs;			/* values of the current field */
 	size_t			  n_strs;		/* number of values */
 	int			  sentnl;		/* if we sent nl uppon EOF */
+	u_long			  rule_lineno;		/* line of cur_rule */
 	u_long			  lineno;		/* line number */
 	u_long			  colno;		/* column number */
 	int			  error;		/* if the parser errored out */
@@ -107,5 +115,10 @@ int			 quark_ruleset_tag_begin(struct quark_ruleset *,
 int			 quark_ruleset_tag_end(struct quark_ruleset *);
 const char		*quark_ruleset_tag_name(const struct quark_ruleset *,
 			     u_int);
+int			 quark_ruleset_block_begin(struct quark_ruleset *);
+int			 quark_ruleset_block_end(struct quark_ruleset *);
+const char		*quark_ruleset_block_check_line(
+			     const struct quark_ruleset *,
+			     const struct quark_rule *);
 
 #endif /* _RULESET_H_ */

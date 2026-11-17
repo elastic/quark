@@ -5038,6 +5038,28 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"tag log {\n\ton any\n}\ntag alert {\n\ton any\n}\n",
 		"tag \"alert\" {\n\ton any\n}\n",
 		"tag log {\n\ton pod.name {\n\t\tx\n\t\ty\n\t}\n}\n",
+		/* blocks */
+		"block {\n\ton process.exe /usr/bin/curl\n}\n",
+		"block {\n\ton process.exe /usr/bin/curl\n}",
+		"block {\n\ton process.exe *\n}\n",
+		"block {\n\ton file.path /etc/* pod.name web-*\n}\n",
+		"block {\n\texcept on pod.name debug-*\n"
+		    "\ton process.exe { /usr/bin/curl /usr/bin/wget }\n}\n",
+		"block {\n\texcept on file.path /usr/bin/internal/*\n"
+		    "\ton file.path /usr/bin/* "
+		    "container.image docker.io/library/nginx:*\n}\n",
+		"block {\n\texcept on process.exe /bin/sh\n"
+		    "\texcept on container.image */debug:1\n"
+		    "\ton process.exe /bin/*\n\ton process.exe /sbin/*\n}\n",
+		"block {\n\n# comment\n\ton file.path /etc/* # comment\n\n}\n",
+		"block {\n\ton file.path {\n\t\t/etc/*\n\t\t/usr/bin/*\n\t}\n}\n",
+		"block {\n\ton process.exe \"/opt/my app/*\"\n}\n",
+		"drop on event.scope { host unknown }\n"
+		    "block {\n\ton process.exe /bin/nc\n}\n"
+		    "tag log {\n\ton any\n}\n"
+		    "block {\n\ton file.path /etc/*\n}\n"
+		    "drop on any\n",
+		"drop on process.exe \"block\"\n",
 		"drop on event.scope { host unknown }\n"
 		    "tag log {\n\ton any\n}\ndrop on any\n",
 		NULL
@@ -5111,6 +5133,45 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"tag log alert {\n\ton any\n}\n",
 		"tag on {\n\ton any\n}\n",
 		"tag al\xe9rt {\n\ton any\n}\n",	/* a Latin-1 byte */
+		/* blocks */
+		"block {\n}\n",
+		"block {\n\texcept on pod.name x\n}\n",
+		"block {\n\ton any\n}\n",
+		"block {\n\ton pod.name x\n}\n",
+		"block {\n\ton container.image x pod.name y\n}\n",
+		"block {\n\ton process.exe /bin/a\n\texcept on pod.name x\n}\n",
+		"block {\n\texcept on any\n\ton process.exe /bin/a\n}\n",
+		"block {\n\ton process.exe */a\n}\n",
+		"block {\n\ton process.exe /usr/*/a\n}\n",
+		"block {\n\ton file.path { /etc/* /usr/*/x }\n}\n",
+		"block {\n\texcept on file.path *.conf\n\ton file.path /etc/*\n}\n",
+		"block {\n\ton process.exe /bin/a process.exe /bin/b\n}\n",
+		"block {\n\ton process.exe /bin/a pod.name x pod.name y\n}\n",
+		"block {\n\ton process.exe /bin/a file.path /etc/*\n}\n",
+		"block {\n\ton process.exe /bin/a\n\ton file.path /etc/*\n}\n",
+		"block {\n\texcept on file.path /etc/*\n\ton process.exe /bin/a\n}\n",
+		"block {\n\ton process.exe /bin/a process.pid 1\n}\n",
+		"block {\n\ton process.exe /bin/a process.ppid 1\n}\n",
+		"block {\n\ton process.exe /bin/a process.uid 0\n}\n",
+		"block {\n\ton process.exe /bin/a process.gid 0\n}\n",
+		"block {\n\ton process.exe /bin/a process.sid 1\n}\n",
+		"block {\n\ton process.exe /bin/a poison 1\n}\n",
+		"block {\n\ton file.path /etc/* file.exec_change\n}\n",
+		"block {\n\ton process.exe /bin/a event.scope container\n}\n",
+		"block {\n\texcept on event.scope { host unknown }\n"
+		    "\ton process.exe /bin/a\n}\n",
+		"block x {\n\ton process.exe /bin/a\n}\n",
+		"block { on process.exe /bin/a }\n",
+		"block {\n\ton process.exe /bin/a }\n",
+		"block\n{\n\ton process.exe /bin/a\n}\n",
+		"block {\n\tpass on any\n}\n",
+		"block {\n\tblock {\n\t\ton process.exe /bin/a\n\t}\n}\n",
+		"block {\n\ttag log {\n\t\ton any\n\t}\n}\n",
+		"tag log {\n\tblock {\n\t\ton process.exe /bin/a\n\t}\n}\n",
+		"block {\n\ton process.exe /bin/a\n",
+		"block {\n\ton process.exe /bin/a\n} drop on any\n",
+		"drop on process.exe block\n",
+		"tag block {\n\ton any\n}\n",
 		"}\n",
 		"on any\n",
 		"except on any\n",
@@ -5600,6 +5661,266 @@ t_rule_tag_api(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_ruleset_tag_name(&ruleset, 2) == NULL);
 	assert(quark_ruleset_tag_name(&ruleset, 63) == NULL);
 	assert(quark_ruleset_tag_name(&ruleset, 64) == NULL);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/*
+ * A "block" block: the parser messages, the rules it builds, the library
+ * calls, and that userspace never evaluates its lines.
+ */
+static int
+t_rule_block(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset	 ruleset;
+	struct quark_queue_attr	 attr;
+	struct quark_queue	 qq;
+	struct quark_rule	*rule, *except, *on;
+	struct quark_rule_field	 rf;
+	struct quark_event	 qev;
+	struct quark_process	 qp;
+	char			 exe[] = "/usr/bin/curl";
+	char			 parser_error[1024];
+	char			 path[NOVA_PATHLEN + 2];
+	size_t			 i;
+	struct {
+		char	*text;
+		char	*message;
+	} *m, messages[] = {
+		{ "block {\n\ton process.exe /bin/a\n\ton pod.name x\n}\n",
+		    "an on line of a block needs process.exe or file.path "
+		    "at line 3 " },
+		{ "block {\n\ton any\n}\n",
+		    "an on line of a block needs process.exe or file.path "
+		    "at line 2 " },
+		{ "block {\n\ton process.exe /usr/*/a\n}\n",
+		    "a path in a block takes * only at the end at line 2 " },
+		{ "block {\n\ton process.exe /bin/a process.uid 0\n}\n",
+		    "a block supports only process.exe, file.path, pod.name "
+		    "and container.image at line 2 " },
+		{ "block {\n\ton file.path /a pod.name x pod.name y\n}\n",
+		    "a field can't be repeated in a line of a block at line 2 " },
+		{ "block {\n\ton process.exe /bin/a file.path /etc/*\n}\n",
+		    "a line of a block takes process.exe or file.path, not "
+		    "both at line 2 " },
+		{ "block {\n\texcept on file.path /etc/*\n\n"
+		    "\ton process.exe /bin/a\n}\n",
+		    "a block uses process.exe or file.path in its lines, not "
+		    "both at line 4 " },
+		{ "block {\n\texcept on pod.name x\n}\n",
+		    "block without an on line" },
+		{ "block {\n\ton process.exe /bin/a\n\texcept on pod.name x\n}\n",
+		    "except on must come before on" },
+		{ "block {\n\ton process.exe /bin/a\n",
+		    "syntax error" },
+		{ NULL, NULL }
+	};
+
+	for (m = messages; m->text != NULL; m++) {
+		parser_error[0] = 0;
+		if (ruleset_from_string1(&ruleset, m->text,
+		    parser_error, sizeof(parser_error)) == 0)
+			errx(1, "should have failed: %s", m->text);
+		if (strstr(parser_error, m->message) == NULL)
+			errx(1, "got \"%s\", wanted \"%s\"",
+			    parser_error, m->message);
+	}
+
+	/*
+	 * The rules of a ruleset with blocks and a tag block. The first block
+	 * takes the first tag bit for blocked.
+	 */
+	ruleset_from_string(&ruleset,
+	    "block {\n"
+	    "	except on pod.name debug-*\n"
+	    "	on process.exe { /usr/bin/curl /usr/bin/wget }\n"
+	    "}\n"
+	    "tag log {\n"
+	    "	on process.exe /usr/bin/*\n"
+	    "}\n"
+	    "block {\n"
+	    "	except on file.path /usr/bin/internal/*\n"
+	    "	on file.path /usr/bin/* container.image nginx:*\n"
+	    "	on file.path /etc/*\n"
+	    "}\n"
+	    "drop on any\n");
+	assert(ruleset.n_rules == 7);
+	assert(ruleset.n_blocks == 2);
+	assert(!ruleset.block_open);
+	assert(ruleset.rules[0].action == QUARK_RA_BLOCK_EXCEPT);
+	assert(ruleset.rules[1].action == QUARK_RA_BLOCK_ON);
+	assert(ruleset.rules[2].action == QUARK_RA_TAG);
+	assert(ruleset.rules[3].action == QUARK_RA_BLOCK_EXCEPT);
+	assert(ruleset.rules[4].action == QUARK_RA_BLOCK_ON);
+	assert(ruleset.rules[5].action == QUARK_RA_BLOCK_ON);
+	assert(ruleset.rules[6].action == QUARK_RA_DROP);
+	assert(ruleset.rules[0].skip_to == 2 && ruleset.rules[1].skip_to == 2);
+	assert(ruleset.rules[3].skip_to == 6 && ruleset.rules[4].skip_to == 6 &&
+	    ruleset.rules[5].skip_to == 6);
+	assert(ruleset.rules[1].n_conds == 1);
+	assert(ruleset.rules[1].conds[0].n_values == 2);
+	assert(ruleset.rules[4].n_conds == 2);
+	assert(ruleset.rules[0].tags == 0 && ruleset.rules[1].tags == 0);
+	assert(ruleset.n_tags == 2 && ruleset.blocked_tag == 1);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 0), "blocked"));
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 1), "log"));
+	assert(ruleset.rules[2].tags == 2);
+	/* Every line is still valid when its block is closed */
+	for (i = 0; i < ruleset.n_rules; i++) {
+		rule = &ruleset.rules[i];
+		if (rule->action == QUARK_RA_BLOCK_ON ||
+		    rule->action == QUARK_RA_BLOCK_EXCEPT)
+			assert(quark_ruleset_block_check_line(&ruleset,
+			    rule) == NULL);
+		else
+			assert(quark_ruleset_block_check_line(&ruleset,
+			    rule) != NULL);
+	}
+
+	/*
+	 * Userspace skips the lines of a block: curl matches the on line of
+	 * the first block, which is not evaluated and sets no tag.
+	 */
+	bzero(&qev, sizeof(qev));
+	bzero(&qp, sizeof(qp));
+	qp.exe = exe;
+	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule == &ruleset.rules[6]);
+	assert(qev.tags == 2);
+	for (i = 0; i < ruleset.n_rules; i++) {
+		rule = &ruleset.rules[i];
+		if (rule->action == QUARK_RA_BLOCK_ON ||
+		    rule->action == QUARK_RA_BLOCK_EXCEPT)
+			assert(rule->evals == 0 && rule->hits == 0);
+		else
+			assert(rule->evals == 1 && rule->hits == 1);
+	}
+
+	/* No backend enforces a block yet */
+	quark_queue_default_attr(&attr);
+	attr.ruleset = &ruleset;
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == ENOTSUP);
+	quark_ruleset_clear(&ruleset);
+	assert(ruleset.n_blocks == 0 && ruleset.blocked_tag == 0);
+
+	/*
+	 * The library calls. Lines only inside a block of their own kind.
+	 */
+	quark_ruleset_init(&ruleset);
+	errno = 0;
+	assert(quark_ruleset_append_rule(&ruleset,
+	    QUARK_RA_BLOCK_ON, 0) == NULL);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_append_rule(&ruleset,
+	    QUARK_RA_BLOCK_EXCEPT, 0) == NULL);
+	assert(quark_ruleset_block_end(&ruleset) == -1);
+	assert(quark_ruleset_tag_begin(&ruleset, "log") == 0);
+	assert(quark_ruleset_append_rule(&ruleset,
+	    QUARK_RA_BLOCK_ON, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset,
+	    QUARK_RA_BLOCK_EXCEPT, 0) == NULL);
+	assert(quark_ruleset_block_begin(&ruleset) == -1);
+	assert(quark_ruleset_block_end(&ruleset) == -1);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) != NULL);
+	assert(quark_ruleset_tag_end(&ruleset) == 0);
+	assert(ruleset.n_blocks == 0 && ruleset.blocked_tag == 0);
+
+	assert(quark_ruleset_block_begin(&ruleset) == 0);
+	assert(ruleset.block_open && ruleset.block_deny);
+	assert(ruleset.blocked_tag == 2 && ruleset.n_tags == 2);
+	errno = 0;
+	assert(quark_ruleset_block_begin(&ruleset) == -1);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_tag_begin(&ruleset, "alert") == -1);
+	assert(quark_ruleset_tag_end(&ruleset) == -1);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_POISON, 1) == NULL);
+	assert(quark_ruleset_block_end(&ruleset) == -1);	/* no on line */
+
+	/* An open block is refused by the queue */
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EINVAL);
+
+	/* An except line needs a field, an on line needs a path field */
+	except = quark_ruleset_append_rule(&ruleset, QUARK_RA_BLOCK_EXCEPT, 0);
+	assert(except != NULL && except->tags == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, except) != NULL);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_POD_NAME;
+	rf.wild.pre = "debug-*";
+	assert(quark_rule_match_field(except, rf) == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, except) == NULL);
+	assert(quark_ruleset_block_end(&ruleset) == -1);	/* no on line */
+
+	on = quark_ruleset_append_rule(&ruleset, QUARK_RA_BLOCK_ON, 0);
+	/* append_rule() moves the rules, except is stale */
+	except = on - 1;
+	assert(on != NULL);
+	errno = 0;
+	assert(quark_ruleset_append_rule(&ruleset,
+	    QUARK_RA_BLOCK_EXCEPT, 0) == NULL);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_block_check_line(&ruleset, on) != NULL);
+	assert(quark_ruleset_block_end(&ruleset) == -1);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_CONTAINER_IMAGE;
+	rf.wild.pre = "*/nginx:1";
+	assert(quark_rule_match_field(on, rf) == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, on) != NULL);
+
+	/* The longest path has NOVA_PATHLEN - 1 bytes */
+	memset(path, 'a', sizeof(path));
+	path[0] = '/';
+	path[NOVA_PATHLEN - 1] = 0;
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_EXE;
+	rf.wild.pre = path;
+	assert(quark_rule_match_field(on, rf) == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, on) == NULL);
+	assert(quark_ruleset_block_end(&ruleset) == 0);
+	assert(ruleset.n_blocks == 1 && !ruleset.block_open);
+	assert(except->skip_to == 3 && on->skip_to == 3);
+
+	/* The same bytes before a * fit too, one byte more is too long */
+	assert(quark_ruleset_block_begin(&ruleset) == 0);
+	on = quark_ruleset_append_rule(&ruleset, QUARK_RA_BLOCK_ON, 0);
+	assert(on != NULL);
+	path[NOVA_PATHLEN - 1] = '*';
+	path[NOVA_PATHLEN] = 0;
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_FILEPATH;
+	rf.wild.pre = path;
+	assert(quark_rule_match_field(on, rf) == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, on) == NULL);
+	assert(quark_ruleset_block_end(&ruleset) == 0);
+	assert(ruleset.n_blocks == 2);
+
+	assert(quark_ruleset_block_begin(&ruleset) == 0);
+	on = quark_ruleset_append_rule(&ruleset, QUARK_RA_BLOCK_ON, 0);
+	assert(on != NULL);
+	path[NOVA_PATHLEN - 1] = 'a';
+	path[NOVA_PATHLEN] = '*';
+	path[NOVA_PATHLEN + 1] = 0;
+	assert(quark_rule_match_field(on, rf) == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, on) != NULL);
+	errno = 0;
+	assert(quark_ruleset_block_end(&ruleset) == -1);
+	assert(errno == EINVAL);
+	assert(ruleset.n_blocks == 2 && ruleset.block_open);
+
+	/* A direct match on the open block returns, see t_rule_tag_api */
+	alarm(5);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	alarm(0);
+	assert(qev.tags == 1);	/* log, from the tag block above */
 	quark_ruleset_clear(&ruleset);
 
 	return (0);
@@ -7538,6 +7859,7 @@ struct test all_tests[] = {
 	T(t_rule_tag),
 	T(t_rule_tag_delivery),
 	T(t_rule_tag_api),
+	T(t_rule_block),
 	T(t_rule_scope),
 	T_KPROBE(t_rule_container_kprobe),
 	T_NOVA(t_rule_repeated_nova),

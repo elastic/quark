@@ -56,6 +56,8 @@ enum quark_rule_action {
 	QUARK_RA_POISON,
 	QUARK_RA_TAG,		/* "on" line of a tag block, userspace only */
 	QUARK_RA_EXCEPT,	/* "except on" line of a tag block, userspace only */
+	QUARK_RA_BLOCK_ON,	/* "on" line of a block, never in userspace */
+	QUARK_RA_BLOCK_EXCEPT,	/* "except on" line of a block, never in userspace */
 };
 
 /*
