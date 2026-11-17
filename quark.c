@@ -4852,8 +4852,9 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	/* A tag block must be closed, see quark_ruleset_tag_end() */
 	if (qa->ruleset != NULL && qa->ruleset->block_open)
 		return (errno = EINVAL, -1);
-	/* No backend enforces a block yet */
-	if (qa->ruleset != NULL && qa->ruleset->n_blocks > 0)
+	/* Only nova enforces a block */
+	if (qa->ruleset != NULL && qa->ruleset->n_blocks > 0 &&
+	    backends != QQ_NOVA)
 		return (errno = ENOTSUP, -1);
 
 	if (quark_init() == -1)

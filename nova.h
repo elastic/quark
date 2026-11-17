@@ -30,6 +30,18 @@
  */
 #define NOVA_BLOCK_LINES	64
 #define NOVA_MAX_BLOCKS		64
+/* Distinct process.exe patterns of all blocks, and file.path ones */
+#define NOVA_BLOCK_MAX_PATHS	4096
+/* Containers with metadata that a block can tell apart */
+#define NOVA_BLOCK_MAX_CONTAINERS 16384
+/*
+ * A hook finds the container of a task in the name of its cgroup,
+ * <prefix><id>.scope, as container_scope_lookup() in quark.c does. The id
+ * is up to NOVA_CONTAINER_IDLEN lowercase hex characters, a longer one is
+ * not a container for a block.
+ */
+#define NOVA_CONTAINER_IDLEN	64
+#define NOVA_CGROUP_NAMELEN	128	/* including NUL */
 
 #define QUARK_RF_PID		(1ULL << 0)
 #define QUARK_RF_PPID		(1ULL << 1)
@@ -111,6 +123,51 @@ struct nova_block {
 	__u64	on;
 	__u64	except;
 };
+
+/*
+ * Key of the process.exe and file.path tries. A pattern that ends in * is
+ * its bytes before the *, a fixed path is its bytes and the NUL, so a
+ * lookup with the path of an operation finds the longest pattern that
+ * matches. The value is a __u64 of line bits.
+ */
+struct nova_block_path_key {
+	__u32	prefixlen;		/* in bits, of path */
+	char	path[NOVA_PATHLEN];
+	__u16	pad0;
+};
+
+/* Key of the container map: the id, padded with NUL */
+struct nova_block_cid {
+	char	id[NOVA_CONTAINER_IDLEN];
+};
+
+/* Counters of the block hooks, per CPU */
+struct nova_block_stats {
+	__u64	no_path;		/* a path was not resolved or too long */
+};
+
+/*
+ * Input of the test program blk_test, which evaluates the blocks for a
+ * made up operation as a hook does, see nova_block_test_run().
+ */
+#define NOVA_BT_PROCESS		0	/* kind: fork or exec, path is the executable */
+#define NOVA_BT_FILE		1	/* kind: file operation, path is the file */
+#define NOVA_BT_HAS_PATH	(1 << 0)	/* flags: path was resolved */
+#define NOVA_BT_HAS_CBITS	(1 << 1)	/* flags: use cbits, not cgroup */
+
+struct nova_block_test {
+	__u32	kind;
+	__u32	flags;
+	__u64	cbits;				/* lines of the container */
+	char	cgroup[NOVA_CGROUP_NAMELEN];	/* name of the cgroup */
+	char	path[NOVA_PATHLEN];
+	char	pad0[6];
+};
+
+/* Results of blk_test: 0 is allowed, 1 + n is denied by block n */
+#define NOVA_BT_ALLOW		0
+#define NOVA_BT_NOT_CONTAINER	1000
+#define NOVA_BT_FAULT		1001
 
 struct nova_rule_pcpu {
 	__u64	hits;			/* counter */

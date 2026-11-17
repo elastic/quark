@@ -159,6 +159,8 @@ int			 kprobe_queue_open(struct quark_queue *);
 
 /* nova_queue.c */
 int			 nova_queue_open(struct quark_queue *);
+int			 nova_block_test_run(struct quark_queue *,
+			     const struct nova_block_test *);
 
 ssize_t		 qread(int, void *, size_t);
 int		 qwrite(int, const void *, size_t);
@@ -901,6 +903,7 @@ struct quark_queue_stats {
 	u64	bpf_metadata_lost; /* metadata capture failed for an operation */
 	u64	bpf_retprobe_missed; /* tracefs misses; may overlap state_lost */
 	u64	stalls;     /* stalled perf rings due to corruption, only for QQ_KPROBE */
+	u64	block_no_path; /* block hooks that could not use a path, only for QQ_NOVA */
 	int	bpf_retprobe_stats_valid; /* last miss-count refresh succeeded */
 	int	backend;    /* active backend, QQ_EBPF or QQ_KPROBE */
 	/* TODO u64    peak_nodes; */

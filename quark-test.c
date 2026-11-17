@@ -5798,7 +5798,7 @@ t_rule_block(const struct test *t, struct quark_queue_attr *qa)
 			assert(rule->evals == 1 && rule->hits == 1);
 	}
 
-	/* No backend enforces a block yet */
+	/* Only the nova backend enforces a block, this is EBPF */
 	quark_queue_default_attr(&attr);
 	attr.ruleset = &ruleset;
 	errno = 0;
@@ -6155,10 +6155,11 @@ t_rule_block_compile(const struct test *t, struct quark_queue_attr *qa)
 
 /*
  * What blocks deny. Each vector is an operation of a process in a
- * container, as a hook sees it, with the block that must deny it. Two
+ * container, as a hook sees it, with the block that must deny it. Three
  * evaluators must give that answer: quark_block_eval_rules() walks the
  * rules with the matching code of the tag blocks, quark_block_eval()
- * applies the compiled form as the kernel does.
+ * applies the compiled form in userspace, and the nova backend applies it
+ * in the kernel, see t_block_eval_nova.
  */
 enum {
 	BC_NONE,	/* no metadata for the container */
@@ -6177,185 +6178,561 @@ struct block_vector {
 	int		 want;		/* block that denies, or -1 */
 };
 
-static int
-t_rule_block_eval(const struct test *t, struct quark_queue_attr *qa)
+/* The longest path that fits in a key, and one byte more */
+static char	bv_fits[NOVA_PATHLEN];
+static char	bv_toolong[NOVA_PATHLEN + 1];
+
+static struct quark_container		 bv_containers[BC_MAX];
+static struct quark_pod			 bv_pods[BC_MAX];
+static const struct quark_container	*bv_cp[BC_MAX];
+
+/* A rule that is not a block between the blocks, which nova accepts too */
+static char bv_ruleset[] =
+    "block {\n"
+    "	except on pod.name debug-*\n"
+    "	on process.exe { /usr/bin/curl /usr/bin/wget /usr/bin/ncat }\n"
+    "}\n"
+    "block {\n"
+    "	except on file.path /usr/bin/internal/*\n"
+    "	on file.path /usr/bin/* container.image docker.io/library/nginx:*\n"
+    "}\n"
+    "drop on process.pid 4000000000\n"
+    "block {\n"
+    "	on file.path /etc/shadow\n"
+    "}\n"
+    "block {\n"
+    "	on process.exe * container.image */redis:7\n"
+    "}\n"
+    "drop on any\n";
+
+static const struct block_vector bv_vectors[] = {
+	/* Block 0: processes, with an except on the pod */
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_WEB, 0 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/wget", BC_DB, 0 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_NOPOD, 0 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_DEBUG, -1 },
+	/* Unknown does not match: the except can't protect yet */
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_NONE, 0 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curly", BC_WEB, -1 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/cur", BC_WEB, -1 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl/x", BC_WEB, -1 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/nginx", BC_WEB, -1 },
+	{ QUARK_BLOCK_PROCESS, NULL, BC_WEB, -1 },
+	/* Block 1: files in nginx containers, with an except path */
+	{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_WEB, 1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/x/y/z", BC_NOPOD, 1 },
+	/* The except of block 0 is local to block 0 */
+	{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_DEBUG, 1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_DB, -1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_NONE, -1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_NOIMAGE, -1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/internal/x", BC_WEB, -1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/internal", BC_WEB, 1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin", BC_WEB, -1 },
+	{ QUARK_BLOCK_FILE, "/etc/passwd", BC_WEB, -1 },
+	{ QUARK_BLOCK_FILE, NULL, BC_WEB, -1 },
+	/* A path that does not fit in a key is not available */
+	{ QUARK_BLOCK_FILE, bv_fits, BC_WEB, 1 },
+	{ QUARK_BLOCK_FILE, bv_toolong, BC_WEB, -1 },
+	/* Block 2: files, no container field, so also without metadata */
+	{ QUARK_BLOCK_FILE, "/etc/shadow", BC_NONE, 2 },
+	{ QUARK_BLOCK_FILE, "/etc/shadow", BC_DB, 2 },
+	{ QUARK_BLOCK_FILE, "/etc/shadow-", BC_DB, -1 },
+	{ QUARK_BLOCK_PROCESS, "/etc/shadow", BC_WEB, -1 },
+	/* Block 3: every process of a redis container */
+	{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_DB, 3 },
+	{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_WEB, -1 },
+	{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_NONE, -1 },
+	{ QUARK_BLOCK_PROCESS, NULL, BC_DB, -1 },
+	{ QUARK_BLOCK_FILE, "/bin/sh", BC_DB, -1 },
+	/* The first block that denies is reported */
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_DB, 0 },
+};
+
+/* More rulesets, where the evaluators are compared only */
+static char *bv_rulesets[] = {
+	"block {\n\ton process.exe *\n}\n",
+	"block {\n\ton file.path *\n}\n",
+	"block {\n\texcept on process.exe /usr/bin/*\n"
+	    "\ton process.exe /usr/*\n}\n",
+	"block {\n\texcept on file.path /usr/bin/curl\n"
+	    "\ton file.path /usr/bin/curl*\n}\n",
+	"block {\n\texcept on container.image *redis:7\n"
+	    "\texcept on pod.name web-*\n\ton file.path /etc/*\n}\n"
+	    "block {\n\ton file.path { /etc/shadow /usr/bin/* }\n}\n",
+	"block {\n\ton process.exe /usr/bin/curl pod.name web-1\n"
+	    "\ton process.exe /usr/bin/curl pod.name db-0\n}\n"
+	    "block {\n\texcept on pod.name db-0\n"
+	    "\ton process.exe /usr/bin/curl pod.name db-0\n"
+	    "\ton process.exe /bin/*\n}\n",
+	"block {\n\texcept on pod.name *\n\ton process.exe /bin/sh\n}\n"
+	    "block {\n\texcept on container.image *\n"
+	    "\ton file.path /etc/*\n}\n",
+	NULL
+};
+
+static const char *bv_paths[] = {
+	NULL, "", "/", "/bin/sh", "/bin", "/etc/shadow", "/etc/shadow-",
+	"/etc", "/usr", "/usr/", "/usr/bin/curl", "/usr/bin/curly",
+	"/usr/bin/cur", "/usr/bin/internal/x", "/usr/lib/x", bv_fits,
+	bv_toolong,
+};
+
+static void
+block_vectors_init(void)
+{
+	static char	nginx[] = "docker.io/library/nginx:1.25";
+	static char	redis[] = "docker.io/library/redis:7";
+	static char	web[] = "web-1", debug[] = "debug-7", db[] = "db-0";
+	size_t		i;
+
+	bzero(bv_containers, sizeof(bv_containers));
+	bzero(bv_pods, sizeof(bv_pods));
+	bv_cp[BC_NONE] = NULL;
+	for (i = BC_WEB; i < BC_MAX; i++)
+		bv_cp[i] = &bv_containers[i];
+	bv_containers[BC_WEB].image = nginx;
+	bv_containers[BC_WEB].pod = &bv_pods[BC_WEB];
+	bv_pods[BC_WEB].name = web;
+	bv_containers[BC_DEBUG].image = nginx;
+	bv_containers[BC_DEBUG].pod = &bv_pods[BC_DEBUG];
+	bv_pods[BC_DEBUG].name = debug;
+	bv_containers[BC_DB].image = redis;
+	bv_containers[BC_DB].pod = &bv_pods[BC_DB];
+	bv_pods[BC_DB].name = db;
+	bv_containers[BC_NOPOD].image = nginx;
+	bv_containers[BC_NOIMAGE].pod = &bv_pods[BC_NOIMAGE];
+	bv_pods[BC_NOIMAGE].name = web;
+
+	memset(bv_fits, 'a', sizeof(bv_fits));
+	memcpy(bv_fits, "/usr/bin/", 9);
+	bv_fits[sizeof(bv_fits) - 1] = 0;
+	memset(bv_toolong, 'a', sizeof(bv_toolong));
+	memcpy(bv_toolong, "/usr/bin/", 9);
+	bv_toolong[sizeof(bv_toolong) - 1] = 0;
+	assert(strlen(bv_fits) == NOVA_PATHLEN - 1);
+	assert(strlen(bv_toolong) == NOVA_PATHLEN);
+}
+
+/*
+ * One more evaluator for the vectors, NULL for none. It gets the lines of
+ * the container, as the kernel has them, and returns the block or -1.
+ */
+typedef int (*block_eval_fn)(void *, const struct quark_block_input *, u64);
+
+/*
+ * Run one operation through the reference, the compiled form and maybe
+ * one more evaluator. want is the block that must deny, -1 for none, or
+ * -2 to only compare the evaluators.
+ */
+static void
+block_vector_check(const char *what, size_t n, struct quark_ruleset *ruleset,
+    struct quark_block_prog *prog, const struct quark_block_input *in,
+    int want, block_eval_fn fn, void *arg)
+{
+	int	ref, got, extra;
+
+	ref = quark_block_eval_rules(ruleset, in);
+	got = quark_block_eval(prog, in);
+	extra = ref;
+	if (fn != NULL)
+		extra = fn(arg, in,
+		    quark_block_container_bits(prog, in->container));
+	if (want == -2)
+		want = ref;
+	if (ref == want && got == want && extra == want)
+		return;
+	errx(1, "%s %zu: kind %d path %.40s: wanted %d, rules %d, "
+	    "compiled %d, extra %d", what, n, in->kind,
+	    in->path == NULL ? "(null)" : in->path, want, ref, got, extra);
+}
+
+/* All vectors and all rulesets, see block_vector_check() */
+static void
+block_vectors_run(block_eval_fn fn, void *(*open)(struct quark_ruleset *),
+    void (*close)(void *))
 {
 	struct quark_ruleset		 ruleset;
 	struct quark_block_prog		*prog;
 	struct quark_block_input	 in;
-	struct quark_container		 containers[BC_MAX];
-	struct quark_pod		 pods[BC_MAX];
-	const struct quark_container	*cp[BC_MAX];
-	char				 nginx[] = "docker.io/library/nginx:1.25";
-	char				 redis[] = "docker.io/library/redis:7";
-	char				 web[] = "web-1", debug[] = "debug-7";
-	char				 db[] = "db-0";
-	char				 fits[NOVA_PATHLEN], toolong[NOVA_PATHLEN + 1];
 	const struct block_vector	*v;
+	void				*arg;
 	size_t				 i, r, p, c;
-	int				 kind, got, ref;
-	const struct block_vector	 vectors[] = {
-		/* Block 0: processes, with an except on the pod */
-		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_WEB, 0 },
-		{ QUARK_BLOCK_PROCESS, "/usr/bin/wget", BC_DB, 0 },
-		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_NOPOD, 0 },
-		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_DEBUG, -1 },
-		/* Unknown does not match: the except can't protect yet */
-		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_NONE, 0 },
-		{ QUARK_BLOCK_PROCESS, "/usr/bin/curly", BC_WEB, -1 },
-		{ QUARK_BLOCK_PROCESS, "/usr/bin/cur", BC_WEB, -1 },
-		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl/x", BC_WEB, -1 },
-		{ QUARK_BLOCK_PROCESS, "/usr/bin/nginx", BC_WEB, -1 },
-		{ QUARK_BLOCK_PROCESS, NULL, BC_WEB, -1 },
-		/* Block 1: files in nginx containers, with an except path */
-		{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_WEB, 1 },
-		{ QUARK_BLOCK_FILE, "/usr/bin/x/y/z", BC_NOPOD, 1 },
-		/* The except of block 0 is local to block 0 */
-		{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_DEBUG, 1 },
-		{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_DB, -1 },
-		{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_NONE, -1 },
-		{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_NOIMAGE, -1 },
-		{ QUARK_BLOCK_FILE, "/usr/bin/internal/x", BC_WEB, -1 },
-		{ QUARK_BLOCK_FILE, "/usr/bin/internal", BC_WEB, 1 },
-		{ QUARK_BLOCK_FILE, "/usr/bin", BC_WEB, -1 },
-		{ QUARK_BLOCK_FILE, "/etc/passwd", BC_WEB, -1 },
-		{ QUARK_BLOCK_FILE, NULL, BC_WEB, -1 },
-		/* A path that does not fit in a key is not available */
-		{ QUARK_BLOCK_FILE, fits, BC_WEB, 1 },
-		{ QUARK_BLOCK_FILE, toolong, BC_WEB, -1 },
-		/* Block 2: files, no container field, so also without metadata */
-		{ QUARK_BLOCK_FILE, "/etc/shadow", BC_NONE, 2 },
-		{ QUARK_BLOCK_FILE, "/etc/shadow", BC_DB, 2 },
-		{ QUARK_BLOCK_FILE, "/etc/shadow-", BC_DB, -1 },
-		{ QUARK_BLOCK_PROCESS, "/etc/shadow", BC_WEB, -1 },
-		/* Block 3: every process of a redis container */
-		{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_DB, 3 },
-		{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_WEB, -1 },
-		{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_NONE, -1 },
-		{ QUARK_BLOCK_PROCESS, NULL, BC_DB, -1 },
-		{ QUARK_BLOCK_FILE, "/bin/sh", BC_DB, -1 },
-		/* The first block that denies is reported */
-		{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_DB, 0 },
-	};
-	/* More rulesets, where the two evaluators are compared only */
-	char *rulesets[] = {
-		"block {\n\ton process.exe *\n}\n",
-		"block {\n\ton file.path *\n}\n",
-		"block {\n\texcept on process.exe /usr/bin/*\n"
-		    "\ton process.exe /usr/*\n}\n",
-		"block {\n\texcept on file.path /usr/bin/curl\n"
-		    "\ton file.path /usr/bin/curl*\n}\n",
-		"block {\n\texcept on container.image *redis:7\n"
-		    "\texcept on pod.name web-*\n\ton file.path /etc/*\n}\n"
-		    "block {\n\ton file.path { /etc/shadow /usr/bin/* }\n}\n",
-		"block {\n\ton process.exe /usr/bin/curl pod.name web-1\n"
-		    "\ton process.exe /usr/bin/curl pod.name db-0\n}\n"
-		    "block {\n\texcept on pod.name db-0\n"
-		    "\ton process.exe /usr/bin/curl pod.name db-0\n"
-		    "\ton process.exe /bin/*\n}\n",
-		"block {\n\texcept on pod.name *\n\ton process.exe /bin/sh\n}\n"
-		    "block {\n\texcept on container.image *\n"
-		    "\ton file.path /etc/*\n}\n",
-		NULL
-	};
-	const char *paths[] = {
-		NULL, "", "/", "/bin/sh", "/bin", "/etc/shadow", "/etc/shadow-",
-		"/etc", "/usr", "/usr/", "/usr/bin/curl", "/usr/bin/curly",
-		"/usr/bin/cur", "/usr/bin/internal/x", "/usr/lib/x", fits,
-		toolong,
-	};
+	int				 kind;
 
-	bzero(containers, sizeof(containers));
-	bzero(pods, sizeof(pods));
-	cp[BC_NONE] = NULL;
-	for (i = BC_WEB; i < BC_MAX; i++)
-		cp[i] = &containers[i];
-	containers[BC_WEB].image = nginx;
-	containers[BC_WEB].pod = &pods[BC_WEB];
-	pods[BC_WEB].name = web;
-	containers[BC_DEBUG].image = nginx;
-	containers[BC_DEBUG].pod = &pods[BC_DEBUG];
-	pods[BC_DEBUG].name = debug;
-	containers[BC_DB].image = redis;
-	containers[BC_DB].pod = &pods[BC_DB];
-	pods[BC_DB].name = db;
-	containers[BC_NOPOD].image = nginx;
-	containers[BC_NOIMAGE].pod = &pods[BC_NOIMAGE];
-	pods[BC_NOIMAGE].name = web;
+	block_vectors_init();
 
-	/* The longest path that fits in a key, and one byte more */
-	memset(fits, 'a', sizeof(fits));
-	memcpy(fits, "/usr/bin/", 9);
-	fits[sizeof(fits) - 1] = 0;
-	memset(toolong, 'a', sizeof(toolong));
-	memcpy(toolong, "/usr/bin/", 9);
-	toolong[sizeof(toolong) - 1] = 0;
-	assert(strlen(fits) == NOVA_PATHLEN - 1);
-	assert(strlen(toolong) == NOVA_PATHLEN);
-
-	ruleset_from_string(&ruleset,
-	    "block {\n"
-	    "	except on pod.name debug-*\n"
-	    "	on process.exe { /usr/bin/curl /usr/bin/wget /usr/bin/ncat }\n"
-	    "}\n"
-	    "block {\n"
-	    "	except on file.path /usr/bin/internal/*\n"
-	    "	on file.path /usr/bin/* container.image docker.io/library/nginx:*\n"
-	    "}\n"
-	    "tag log {\n"
-	    "	on process.exe /usr/bin/*\n"
-	    "}\n"
-	    "block {\n"
-	    "	on file.path /etc/shadow\n"
-	    "}\n"
-	    "block {\n"
-	    "	on process.exe * container.image */redis:7\n"
-	    "}\n"
-	    "drop on any\n");
+	ruleset_from_string(&ruleset, bv_ruleset);
 	prog = quark_block_compile(&ruleset);
 	assert(prog != NULL && prog->n_blocks == 4);
-	for (i = 0; i < nitems(vectors); i++) {
-		v = &vectors[i];
+	arg = open != NULL ? open(&ruleset) : NULL;
+	for (i = 0; i < nitems(bv_vectors); i++) {
+		v = &bv_vectors[i];
 		in.kind = v->kind;
 		in.path = v->path;
-		in.container = cp[v->container];
-		ref = quark_block_eval_rules(&ruleset, &in);
-		got = quark_block_eval(prog, &in);
-		if (ref != v->want || got != v->want)
-			errx(1, "vector %zu: kind %d path %.40s container %d: "
-			    "wanted %d, rules %d, compiled %d", i, v->kind,
-			    v->path == NULL ? "(null)" : v->path, v->container,
-			    v->want, ref, got);
+		in.container = bv_cp[v->container];
+		block_vector_check("vector", i, &ruleset, prog, &in, v->want,
+		    fn, arg);
 	}
+	if (close != NULL)
+		close(arg);
 	quark_block_free(prog);
 	quark_ruleset_clear(&ruleset);
 
-	for (r = 0; rulesets[r] != NULL; r++) {
-		ruleset_from_string(&ruleset, rulesets[r]);
+	for (r = 0; bv_rulesets[r] != NULL; r++) {
+		ruleset_from_string(&ruleset, bv_rulesets[r]);
 		prog = quark_block_compile(&ruleset);
 		assert(prog != NULL);
+		arg = open != NULL ? open(&ruleset) : NULL;
 		for (kind = QUARK_BLOCK_PROCESS; kind <= QUARK_BLOCK_FILE;
 		    kind++) {
-			for (p = 0; p < nitems(paths); p++) {
+			for (p = 0; p < nitems(bv_paths); p++) {
 				for (c = 0; c < BC_MAX; c++) {
 					in.kind = kind;
-					in.path = paths[p];
-					in.container = cp[c];
-					ref = quark_block_eval_rules(&ruleset,
-					    &in);
-					got = quark_block_eval(prog, &in);
-					if (ref == got)
-						continue;
-					errx(1, "ruleset %zu kind %d path "
-					    "%zu container %zu: rules %d, "
-					    "compiled %d", r, kind, p, c,
-					    ref, got);
+					in.path = bv_paths[p];
+					in.container = bv_cp[c];
+					block_vector_check("ruleset",
+					    r * 1000 + p * 10 + c, &ruleset,
+					    prog, &in, -2, fn, arg);
 				}
 			}
 		}
+		if (close != NULL)
+			close(arg);
 		quark_block_free(prog);
 		quark_ruleset_clear(&ruleset);
 	}
+}
+
+static int
+t_rule_block_eval(const struct test *t, struct quark_queue_attr *qa)
+{
+	block_vectors_run(NULL, NULL, NULL);
+
+	return (0);
+}
+
+/*
+ * The nova backend as the third evaluator: the same vectors through the
+ * test program in the kernel, which runs the code of the hooks.
+ */
+static struct quark_queue_attr	*bn_qa;
+static struct quark_queue	 bn_qq;
+
+static void *
+block_nova_open(struct quark_ruleset *ruleset)
+{
+	bn_qa->ruleset = ruleset;
+	if (quark_queue_open(&bn_qq, bn_qa) != 0)
+		err(1, "quark_queue_open");
+
+	return (&bn_qq);
+}
+
+static void
+block_nova_close(void *vqq)
+{
+	quark_queue_close(vqq);
+}
+
+static int
+block_nova_eval(void *vqq, const struct quark_block_input *in, u64 cbits)
+{
+	struct nova_block_test	bt;
+	int			r;
+
+	bzero(&bt, sizeof(bt));
+	bt.kind = in->kind == QUARK_BLOCK_FILE ? NOVA_BT_FILE : NOVA_BT_PROCESS;
+	bt.flags = NOVA_BT_HAS_CBITS;
+	bt.cbits = cbits;
+	/* A hook has no path when it does not fit, see bpf_d_path() */
+	if (in->path != NULL && strlen(in->path) < sizeof(bt.path)) {
+		bt.flags |= NOVA_BT_HAS_PATH;
+		strlcpy(bt.path, in->path, sizeof(bt.path));
+	}
+	if ((r = nova_block_test_run(vqq, &bt)) == -1)
+		err(1, "nova_block_test_run");
+	if (r == NOVA_BT_ALLOW)
+		return (-1);
+	if (r > NOVA_MAX_BLOCKS)
+		errx(1, "nova_block_test_run: unexpected %d", r);
+
+	return (r - 1);
+}
+
+static int
+t_block_eval_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset	ruleset;
+	struct quark_queue	qq;
+	struct nova_block_test	bt;
+	char			userspace[NAME_MAX], cgroup[PATH_MAX];
+	size_t			i;
+	int			r;
+	const char		*hex64 =
+	    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	char			 name65[128];
+	struct {
+		const char	*name;
+		int		 container;
+	} names[] = {
+		{ "docker-0123456789abcdef0123456789abcdef"
+		    "0123456789abcdef0123456789abcdef.scope", 1 },
+		{ "cri-containerd-0123456789abcdef0123456789abcdef"
+		    "0123456789abcdef0123456789abcdef.scope", 1 },
+		{ "crio-0123456789abcdef0123456789abcdef"
+		    "0123456789abcdef0123456789abcdef.scope", 1 },
+		{ "containerd-0123abcd.scope", 1 },
+		{ "libpod-abc123.scope", 1 },
+		{ "docker-a.scope", 1 },
+		{ "docker-.scope", 0 },
+		{ "docker-abc123.scopeX", 0 },
+		{ "docker-abc123.scop", 0 },
+		{ "docker-abc123", 0 },
+		{ "docker-abcdefabcdef", 0 },	/* hex where .scope would be */
+		{ "docker-ABC123.scope", 0 },
+		{ "docker-abc.def.scope", 0 },
+		{ "docker-xyz.scope", 0 },
+		{ "Docker-abc123.scope", 0 },
+		{ "xdocker-abc123.scope", 0 },
+		{ "crio-conmon-0123abcd.scope", 0 },
+		{ "libpod-conmon-0123abcd.scope", 0 },
+		{ "docker-cleanup.service", 0 },
+		{ "crio-wipe.service", 0 },
+		{ "sshd.service", 0 },
+		{ "init.scope", 0 },
+		{ "session-2.scope", 0 },
+		{ "kubepods-burstable.slice", 0 },
+		{ "0123456789abcdef0123456789abcdef"
+		    "0123456789abcdef0123456789abcdef", 0 },
+		{ ".scope", 0 },
+		{ "x", 0 },
+		{ "", 0 },
+	};
+
+	/* The vectors and the rulesets of t_rule_block_eval */
+	bn_qa = qa;
+	block_vectors_run(block_nova_eval, block_nova_open, block_nova_close);
+
+	/*
+	 * The cgroup name parser of the hooks must agree with
+	 * parse_container_cgroup(). The first block has no container field,
+	 * so it denies in any container, and a name that is not a container
+	 * gets no evaluation. The second block has a container field, and
+	 * these containers have no metadata, so it never matches.
+	 */
+	ruleset_from_string(&ruleset,
+	    "block {\n\ton process.exe /bin/blocked\n}\n"
+	    "block {\n\ton process.exe /bin/other pod.name web-*\n}\n");
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	bzero(&bt, sizeof(bt));
+	bt.kind = NOVA_BT_PROCESS;
+	bt.flags = NOVA_BT_HAS_PATH;
+	strlcpy(bt.path, "/bin/blocked", sizeof(bt.path));
+	for (i = 0; i < nitems(names); i++) {
+		snprintf(cgroup, sizeof(cgroup), "/system.slice/%s",
+		    names[i].name);
+		r = parse_container_cgroup(cgroup, userspace, sizeof(userspace));
+		if ((r == 0) != names[i].container)
+			errx(1, "userspace: %s", names[i].name);
+		strlcpy(bt.cgroup, names[i].name, sizeof(bt.cgroup));
+		r = nova_block_test_run(&qq, &bt);
+		if (r != (names[i].container ? 1 : NOVA_BT_NOT_CONTAINER))
+			errx(1, "kernel: %s: got %d", names[i].name, r);
+	}
+	/* An id longer than the key of the kernel is not a container there */
+	snprintf(name65, sizeof(name65), "docker-%sa.scope", hex64);
+	strlcpy(bt.cgroup, name65, sizeof(bt.cgroup));
+	assert(nova_block_test_run(&qq, &bt) == NOVA_BT_NOT_CONTAINER);
+	/* Not the blocked program, and no path at all */
+	strlcpy(bt.cgroup, names[0].name, sizeof(bt.cgroup));
+	assert(nova_block_test_run(&qq, &bt) == 1);
+	strlcpy(bt.path, "/bin/other", sizeof(bt.path));
+	assert(nova_block_test_run(&qq, &bt) == NOVA_BT_ALLOW);
+	bt.flags = 0;
+	assert(nova_block_test_run(&qq, &bt) == NOVA_BT_ALLOW);
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/*
+ * A cgroup named like a container scope, for a child to join. The pids
+ * controller must reach it: the hooks read the name of the pids cgroup of
+ * a task, as the EBPF backend does, and without the controller that is an
+ * ancestor.
+ */
+#define BLOCK_CG_ROOT	"/sys/fs/cgroup"
+#define BLOCK_CG_SLICE	BLOCK_CG_ROOT "/quark-test.slice"
+#define BLOCK_CG_SCOPE	BLOCK_CG_SLICE "/docker-" \
+	"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff.scope"
+
+static int
+block_write(const char *path, const char *s)
+{
+	int	fd, r;
+
+	if ((fd = open(path, O_WRONLY)) == -1)
+		return (-1);
+	r = write(fd, s, strlen(s)) == (ssize_t)strlen(s) ? 0 : -1;
+	close(fd);
+
+	return (r);
+}
+
+static void
+block_cgroup_setup(void)
+{
+	/* Fails when it is on already, or when the root has processes */
+	(void)block_write(BLOCK_CG_ROOT "/cgroup.subtree_control", "+pids");
+	if (mkdir(BLOCK_CG_SLICE, 0755) == -1 && errno != EEXIST)
+		err(1, "mkdir %s", BLOCK_CG_SLICE);
+	if (block_write(BLOCK_CG_SLICE "/cgroup.subtree_control",
+	    "+pids") == -1)
+		err(1, "pids controller in %s", BLOCK_CG_SLICE);
+	if (mkdir(BLOCK_CG_SCOPE, 0755) == -1 && errno != EEXIST)
+		err(1, "mkdir %s", BLOCK_CG_SCOPE);
+}
+
+static void
+block_cgroup_cleanup(void)
+{
+	(void)rmdir(BLOCK_CG_SCOPE);
+	(void)rmdir(BLOCK_CG_SLICE);
+}
+
+#define BLOCK_EXIT_EXEC_EPERM	77
+#define BLOCK_EXIT_FORK_EPERM	78
+#define BLOCK_EXIT_OTHER	79
+
+/*
+ * A child that may join the test cgroup, then forks or execs. Returns
+ * its exit status: BLOCK_EXIT_EXEC_EPERM or BLOCK_EXIT_FORK_EPERM when
+ * the operation was denied, the status of the program otherwise.
+ */
+static int
+block_try(int in_container, const char *exec_path, const char *exec_arg)
+{
+	char	pidbuf[32];
+	pid_t	pid, gc;
+	int	status;
+
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+	if (pid == 0) {
+		if (in_container) {
+			snprintf(pidbuf, sizeof(pidbuf), "%d", getpid());
+			if (block_write(BLOCK_CG_SCOPE "/cgroup.procs",
+			    pidbuf) == -1)
+				_exit(BLOCK_EXIT_OTHER);
+		}
+		if (exec_path == NULL) {
+			if ((gc = fork()) == 0)
+				_exit(0);
+			if (gc == -1)
+				_exit(errno == EPERM ? BLOCK_EXIT_FORK_EPERM :
+				    BLOCK_EXIT_OTHER);
+			waitpid(gc, &status, 0);
+			_exit(0);
+		}
+		/* Keep the output of the program out of the test output */
+		if (exec_arg != NULL) {
+			int	fd;
+
+			if ((fd = open("/dev/null", O_RDWR)) != -1) {
+				dup2(fd, STDIN_FILENO);
+				dup2(fd, STDOUT_FILENO);
+				dup2(fd, STDERR_FILENO);
+			}
+		}
+		execl(exec_path, exec_path, exec_arg, (char *)NULL);
+		_exit(errno == EPERM ? BLOCK_EXIT_EXEC_EPERM :
+		    BLOCK_EXIT_OTHER);
+	}
+	if (waitpid(pid, &status, 0) == -1)
+		err(1, "waitpid");
+
+	return (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+}
+
+/*
+ * The process hooks deny a fork and an exec, in a container only. The
+ * blocks name this program and true(1), so that nothing else on the
+ * machine is denied while the test runs.
+ */
+static int
+t_block_process_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct quark_queue_stats	 stats;
+	char				 self[PATH_MAX], true_path[PATH_MAX];
+	char				*text;
+
+	if (realpath("/proc/self/exe", self) == NULL)
+		err(1, "realpath self");
+	if (realpath("/bin/true", true_path) == NULL &&
+	    realpath("/usr/bin/true", true_path) == NULL)
+		err(1, "realpath true");
+	block_cgroup_setup();
+
+	/* An exec of true is denied in the container, nothing else */
+	assert(asprintf(&text, "block {\n\ton process.exe %s\n}\n",
+	    true_path) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	assert(block_try(0, true_path, NULL) == 0);
+	assert(block_try(1, NULL, NULL) == 0);
+	assert(block_try(0, NULL, NULL) == 0);
+	/* Another program in the container, -h prints the usage */
+	assert(block_try(1, self, "-h") != BLOCK_EXIT_EXEC_EPERM);
+	/* The denials of a block are the hits of its first line */
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 1 && ruleset.rules[0].evals == 0);
+	assert(stats.block_no_path == 0);
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 2);
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	/*
+	 * An except line, a value list, and a fork: the executable of a
+	 * fork is the one of the parent, this program.
+	 */
+	assert(asprintf(&text,
+	    "block {\n"
+	    "	except on process.exe %s\n"
+	    "	on process.exe { %s %s }\n"
+	    "}\n"
+	    "block {\n"
+	    "	on process.exe /nonexistent/*\n"
+	    "}\n", true_path, true_path, self) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	assert(block_try(1, true_path, NULL) == 0);
+	assert(block_try(1, self, "-h") == BLOCK_EXIT_EXEC_EPERM);
+	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+	assert(block_try(0, NULL, NULL) == 0);
+	assert(block_try(0, self, "-h") != BLOCK_EXIT_EXEC_EPERM);
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 2);
+	assert(ruleset.rules[1].hits == 0);
+	assert(ruleset.rules[2].hits == 0);	/* the second block */
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	block_cgroup_cleanup();
 
 	return (0);
 }
@@ -8299,6 +8676,8 @@ struct test all_tests[] = {
 	T(t_rule_scope),
 	T_KPROBE(t_rule_container_kprobe),
 	T_NOVA(t_rule_repeated_nova),
+	T_NOVA(t_block_eval_nova),
+	T_NOVA(t_block_process_nova),
 	T(t_rule_pod_name),
 	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),
