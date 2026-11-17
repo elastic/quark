@@ -55,6 +55,7 @@
 #include <sys/wait.h>
 
 #include <bpf/bpf.h>
+#include <bpf/btf.h>
 
 #include <dirent.h>
 #include <err.h>
@@ -74,6 +75,7 @@
 
 #define KILL_GRACE_NS	(5 * NS_PER_S)	/* from SIGTERM to SIGKILL */
 #define MAX_PROGS	256
+#define PROG_NAME_LEN	128
 
 /*
  * A BPF program of the queue. The counters are what the kernel had when we
@@ -81,7 +83,7 @@
  */
 struct prog {
 	int	fd;
-	char	name[BPF_OBJ_NAME_LEN];
+	char	name[PROG_NAME_LEN];
 	u64	run_time_ns;
 	u64	run_cnt;
 };
@@ -108,6 +110,49 @@ now(clockid_t clock)
 }
 
 /*
+ * The kernel keeps 15 characters of a program's name and many of ours
+ * have the same prefix. The full program name is in the BTF, as the
+ * name of its first function. If we can't fetch that, 15 chars it is.
+ */
+static void
+prog_name(struct prog *p)
+{
+	struct bpf_prog_info	 info;
+	struct bpf_func_info	 func;
+	struct btf		*btf;
+	const struct btf_type	*t;
+	const char		*name;
+	__u32			 len, btf_id;
+
+	bzero(&info, sizeof(info));
+	len = sizeof(info);
+	/* libbpf returns -errno, and leaves errno set */
+	if (bpf_obj_get_info_by_fd(p->fd, &info, &len) < 0)
+		err(1, "bpf_obj_get_info_by_fd");
+	strlcpy(p->name, info.name, sizeof(p->name));
+	if ((btf_id = info.btf_id) == 0 || info.nr_func_info == 0)
+		return;
+
+	/* Again, now with room for the first function */
+	bzero(&info, sizeof(info));
+	bzero(&func, sizeof(func));
+	len = sizeof(info);
+	info.nr_func_info = 1;
+	info.func_info_rec_size = sizeof(func);
+	info.func_info = (__u64)(unsigned long)&func;
+	if (bpf_obj_get_info_by_fd(p->fd, &info, &len) < 0 ||
+	    info.nr_func_info == 0)
+		return;
+	if ((btf = btf__load_from_kernel_by_id(btf_id)) == NULL)
+		return;
+	if ((t = btf__type_by_id(btf, func.type_id)) != NULL &&
+	    (name = btf__name_by_offset(btf, t->name_off)) != NULL &&
+	    *name != 0)
+		strlcpy(p->name, name, sizeof(p->name));
+	btf__free(btf);
+}
+
+/*
  * The queue doesn't say which programs it loaded, but each one is a file
  * descriptor of ours, and those we can list.
  */
@@ -126,8 +171,10 @@ progs_find(void)
 		if ((n = readlink(path, target, sizeof(target) - 1)) == -1)
 			continue;
 		target[n] = 0;
-		if (!strcmp(target, "anon_inode:bpf-prog"))
-			progs[nprogs++].fd = atoi(d->d_name);
+		if (strcmp(target, "anon_inode:bpf-prog"))
+			continue;
+		progs[nprogs].fd = atoi(d->d_name);
+		prog_name(&progs[nprogs++]);
 	}
 	closedir(dir);
 }
@@ -142,10 +189,8 @@ progs_read(int stop)
 	for (p = progs; p < progs + nprogs; p++) {
 		bzero(&info, sizeof(info));
 		len = sizeof(info);
-		/* libbpf returns -errno, and leaves errno set */
 		if (bpf_obj_get_info_by_fd(p->fd, &info, &len) < 0)
 			err(1, "bpf_obj_get_info_by_fd");
-		strlcpy(p->name, info.name, sizeof(p->name));
 		p->run_time_ns = info.run_time_ns - (stop ? p->run_time_ns : 0);
 		p->run_cnt = info.run_cnt - (stop ? p->run_cnt : 0);
 	}
