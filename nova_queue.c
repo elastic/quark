@@ -143,6 +143,18 @@ nova_rule_from_quark(struct nova_queue *nqq,
 		}
 		field = cond->values;
 
+		/*
+		 * Two conditions on one field are ANDed in userspace. A
+		 * nova_rule{} has one slot per field, the last value would
+		 * win, and two paths would be ORed in lpm_path.
+		 */
+		if (nr->fields & field->code) {
+			errno = ENOTSUP;
+			qwarn("a field repeated in one rule is not supported "
+			    "in nova backend");
+			return (-1);
+		}
+
 		switch (field->code) {
 		case QUARK_RF_PID:
 			nr->pid = field->id;

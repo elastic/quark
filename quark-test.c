@@ -5872,6 +5872,51 @@ t_rule_container_kprobe(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * Nova has one slot per field in a rule, so it can't AND two conditions on
+ * the same field as userspace does, and must refuse the rule. The same
+ * field in two rules is fine.
+ */
+static int
+t_rule_repeated_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	  qq;
+	struct quark_ruleset	  ruleset;
+	char			**r, *bad[] = {
+		"pass on process.uid 1 process.uid 2\n",
+		"pass on process.uid 1 process.uid 1\n",
+		"pass on process.pid 1 process.uid 2 process.pid 3\n",
+		"drop on process.exe /bin/a process.exe /bin/b\n",
+		"pass on process.uid 1\npass on process.gid 1 process.gid 2\n",
+		NULL
+	}, *good[] = {
+		"pass on process.uid 1\n",
+		"pass on process.uid 1\npass on process.uid 2\n",
+		"pass on process.uid 1 process.gid 1\n",
+		"drop on process.exe /bin/a\ndrop on process.exe /bin/b\n",
+		NULL
+	};
+
+	for (r = bad; *r != NULL; r++) {
+		ruleset_from_string(&ruleset, *r);
+		qa->ruleset = &ruleset;
+		errno = 0;
+		assert(quark_queue_open(&qq, qa) == -1);
+		assert(errno == ENOTSUP);
+		quark_ruleset_clear(&ruleset);
+	}
+	for (r = good; *r != NULL; r++) {
+		ruleset_from_string(&ruleset, *r);
+		qa->ruleset = &ruleset;
+		if (quark_queue_open(&qq, qa) != 0)
+			err(1, "%s: quark_queue_open: %s", t->name, *r);
+		quark_queue_close(&qq);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	return (0);
+}
+
+/*
  * Set up a process linked to a new container in a pod through the public
  * API, as an embedder would. The pod name and image come from the caller,
  * each cid must be unique within a test.
@@ -7495,6 +7540,7 @@ struct test all_tests[] = {
 	T(t_rule_tag_api),
 	T(t_rule_scope),
 	T_KPROBE(t_rule_container_kprobe),
+	T_NOVA(t_rule_repeated_nova),
 	T(t_rule_pod_name),
 	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),

@@ -332,3 +332,7 @@ Changes from 0.11 to 0.12
     tag blocks with ENOTSUP.
   o quark_event_dump() prints a TAGS line with the tag names of an event,
     and go/quark has them in Event.Tags.
+  o The nova backend rejects a rule that repeats a field, as in "pass on
+    process.uid 1 process.uid 2", with ENOTSUP. Such a rule is an AND
+    that never matches in userspace, while nova used the last value,
+    and matched either of two paths.
