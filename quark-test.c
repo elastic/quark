@@ -6414,25 +6414,25 @@ t_rule_block_eval(const struct test *t, struct quark_queue_attr *qa)
 
 /*
  * The nova backend as the third evaluator: the same vectors through the
- * test program in the kernel, which runs the code of the hooks.
+ * test program in the kernel, which runs the code of the hooks. No hook
+ * is attached: these rulesets have blocks like "on process.exe *", which
+ * would deny every fork and exec in every container of the machine.
  */
-static struct quark_queue_attr	*bn_qa;
-static struct quark_queue	 bn_qq;
-
 static void *
 block_nova_open(struct quark_ruleset *ruleset)
 {
-	bn_qa->ruleset = ruleset;
-	if (quark_queue_open(&bn_qq, bn_qa) != 0)
-		err(1, "quark_queue_open");
+	void	*bt;
 
-	return (&bn_qq);
+	if ((bt = nova_block_test_open(ruleset)) == NULL)
+		err(1, "nova_block_test_open");
+
+	return (bt);
 }
 
 static void
-block_nova_close(void *vqq)
+block_nova_close(void *bt)
 {
-	quark_queue_close(vqq);
+	nova_block_test_close(bt);
 }
 
 static int
@@ -6464,7 +6464,7 @@ static int
 t_block_eval_nova(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_ruleset	ruleset;
-	struct quark_queue	qq;
+	void			*qq;
 	struct nova_block_test	bt;
 	char			userspace[NAME_MAX], cgroup[PATH_MAX];
 	size_t			i;
@@ -6511,7 +6511,6 @@ t_block_eval_nova(const struct test *t, struct quark_queue_attr *qa)
 	};
 
 	/* The vectors and the rulesets of t_rule_block_eval */
-	bn_qa = qa;
 	block_vectors_run(block_nova_eval, block_nova_open, block_nova_close);
 
 	/*
@@ -6524,9 +6523,8 @@ t_block_eval_nova(const struct test *t, struct quark_queue_attr *qa)
 	ruleset_from_string(&ruleset,
 	    "block {\n\ton process.exe /bin/blocked\n}\n"
 	    "block {\n\ton process.exe /bin/other pod.name web-*\n}\n");
-	qa->ruleset = &ruleset;
-	if (quark_queue_open(&qq, qa) != 0)
-		err(1, "%s: quark_queue_open", t->name);
+	if ((qq = nova_block_test_open(&ruleset)) == NULL)
+		err(1, "%s: nova_block_test_open", t->name);
 	bzero(&bt, sizeof(bt));
 	bt.kind = NOVA_BT_PROCESS;
 	bt.flags = NOVA_BT_HAS_PATH;
@@ -6538,22 +6536,28 @@ t_block_eval_nova(const struct test *t, struct quark_queue_attr *qa)
 		if ((r == 0) != names[i].container)
 			errx(1, "userspace: %s", names[i].name);
 		strlcpy(bt.cgroup, names[i].name, sizeof(bt.cgroup));
-		r = nova_block_test_run(&qq, &bt);
+		r = nova_block_test_run(qq, &bt);
 		if (r != (names[i].container ? 1 : NOVA_BT_NOT_CONTAINER))
 			errx(1, "kernel: %s: got %d", names[i].name, r);
 	}
 	/* An id longer than the key of the kernel is not a container there */
 	snprintf(name65, sizeof(name65), "docker-%sa.scope", hex64);
 	strlcpy(bt.cgroup, name65, sizeof(bt.cgroup));
-	assert(nova_block_test_run(&qq, &bt) == NOVA_BT_NOT_CONTAINER);
+	assert(nova_block_test_run(qq, &bt) == NOVA_BT_NOT_CONTAINER);
 	/* Not the blocked program, and no path at all */
 	strlcpy(bt.cgroup, names[0].name, sizeof(bt.cgroup));
-	assert(nova_block_test_run(&qq, &bt) == 1);
+	assert(nova_block_test_run(qq, &bt) == 1);
 	strlcpy(bt.path, "/bin/other", sizeof(bt.path));
-	assert(nova_block_test_run(&qq, &bt) == NOVA_BT_ALLOW);
+	assert(nova_block_test_run(qq, &bt) == NOVA_BT_ALLOW);
 	bt.flags = 0;
-	assert(nova_block_test_run(&qq, &bt) == NOVA_BT_ALLOW);
-	quark_queue_close(&qq);
+	assert(nova_block_test_run(qq, &bt) == NOVA_BT_ALLOW);
+	nova_block_test_close(qq);
+	quark_ruleset_clear(&ruleset);
+
+	/* Nothing to test without a block */
+	ruleset_from_string(&ruleset, "drop on any\n");
+	errno = 0;
+	assert(nova_block_test_open(&ruleset) == NULL && errno == EINVAL);
 	quark_ruleset_clear(&ruleset);
 
 	return (0);
@@ -6659,9 +6663,38 @@ block_try(int in_container, const char *exec_path, const char *exec_arg)
 }
 
 /*
+ * A copy of true(1) under a name of our own, so that a block on it
+ * denies nothing else on the machine, and nobody else runs it.
+ */
+static void
+block_copy_true(char *dst, size_t dst_len)
+{
+	char	 tmp[PATH_MAX], buf[65536];
+	ssize_t	 n;
+	int	 in, out;
+
+	if ((in = open("/bin/true", O_RDONLY)) == -1 &&
+	    (in = open("/usr/bin/true", O_RDONLY)) == -1)
+		err(1, "open true");
+	snprintf(tmp, sizeof(tmp), "/tmp/quark-test-true.%d", getpid());
+	if ((out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0755)) == -1)
+		err(1, "open %s", tmp);
+	while ((n = read(in, buf, sizeof(buf))) > 0) {
+		if (write(out, buf, n) != n)
+			err(1, "write %s", tmp);
+	}
+	if (n == -1)
+		err(1, "read true");
+	close(in);
+	close(out);
+	if (realpath(tmp, dst) == NULL || strlen(dst) >= dst_len)
+		err(1, "realpath %s", tmp);
+}
+
+/*
  * The process hooks deny a fork and an exec, in a container only. The
- * blocks name this program and true(1), so that nothing else on the
- * machine is denied while the test runs.
+ * blocks name this program and a copy of true(1), so that nothing else on
+ * the machine is denied while the test runs.
  */
 static int
 t_block_process_nova(const struct test *t, struct quark_queue_attr *qa)
@@ -6672,23 +6705,50 @@ t_block_process_nova(const struct test *t, struct quark_queue_attr *qa)
 	char				 self[PATH_MAX], true_path[PATH_MAX];
 	char				*text;
 
+	void				*bt;
+
 	if (realpath("/proc/self/exe", self) == NULL)
 		err(1, "realpath self");
-	if (realpath("/bin/true", true_path) == NULL &&
-	    realpath("/usr/bin/true", true_path) == NULL)
-		err(1, "realpath true");
+	block_copy_true(true_path, sizeof(true_path));
 	block_cgroup_setup();
 
-	/* An exec of true is denied in the container, nothing else */
-	assert(asprintf(&text, "block {\n\ton process.exe %s\n}\n",
-	    true_path) != -1);
+	/*
+	 * The handle of the vector tests attaches no hook: with a block on
+	 * every process loaded, a fork and an exec in the container work.
+	 */
+	ruleset_from_string(&ruleset, "block {\n\ton process.exe *\n}\n");
+	if ((bt = nova_block_test_open(&ruleset)) == NULL)
+		err(1, "%s: nova_block_test_open", t->name);
+	assert(block_try(1, NULL, NULL) == 0);
+	assert(block_try(1, true_path, NULL) == 0);
+	nova_block_test_close(bt);
+	quark_ruleset_clear(&ruleset);
+
+	/*
+	 * An exec of true is denied in the container, nothing else. The pass
+	 * rule counts the execs of true that the program that sends events
+	 * sees, in its hits.
+	 */
+	assert(asprintf(&text,
+	    "block {\n\ton process.exe %s\n}\n"
+	    "pass on process.exe %s\n", true_path, true_path) != -1);
 	ruleset_from_string(&ruleset, text);
 	free(text);
 	qa->ruleset = &ruleset;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "%s: quark_queue_open", t->name);
 	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	/*
+	 * A denied exec is not an exec: the hook of the block must run
+	 * before the one that sends the exec event, and end the chain.
+	 */
+	quark_queue_get_stats(&qq, &stats);
+	if (ruleset.rules[1].hits != 0)
+		errx(1, "a denied exec was seen as an exec, %llu times",
+		    ruleset.rules[1].hits);
 	assert(block_try(0, true_path, NULL) == 0);
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[1].hits == 1);
 	assert(block_try(1, NULL, NULL) == 0);
 	assert(block_try(0, NULL, NULL) == 0);
 	/* Another program in the container, -h prints the usage */
@@ -6733,6 +6793,7 @@ t_block_process_nova(const struct test *t, struct quark_queue_attr *qa)
 	quark_ruleset_clear(&ruleset);
 
 	block_cgroup_cleanup();
+	(void)unlink(true_path);
 
 	return (0);
 }

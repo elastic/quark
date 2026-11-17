@@ -237,6 +237,16 @@ nova_rule_from_quark(struct nova_queue *nqq,
 	return (0);
 }
 
+/*
+ * The one place that opens the object: the skeleton call is a large
+ * inline function, and a second copy of it does not inline.
+ */
+static __attribute__((noinline)) struct nova *
+nova_open_object(void)
+{
+	return (nova__open());
+}
+
 #define NOVA_LSM_LIST	"/sys/kernel/security/lsm"
 
 /*
@@ -276,9 +286,29 @@ check_bpf_lsm(void)
 }
 
 /*
- * Compile the blocks of the ruleset, and set what the programs take as
- * constants. The programs of the blocks are loaded only when there is a
- * block.
+ * Compile the blocks of a ruleset, and set what the programs of the
+ * blocks take as constants.
+ */
+static int
+load_block_rodata(struct nova_queue *nqq, const struct quark_ruleset *ruleset)
+{
+	struct nova	*nova = nqq->nova;
+
+	if ((nqq->blocks = quark_block_compile(ruleset)) == NULL) {
+		qwarn("can't compile blocks");
+		return (-1);
+	}
+	nova->rodata->blk_n_blocks = nqq->blocks->n_blocks;
+	nova->rodata->blk_dc_exe = nqq->blocks->dc_exe;
+	nova->rodata->blk_dc_file = nqq->blocks->dc_file;
+	nova->rodata->blk_dc_container = nqq->blocks->dc_container;
+
+	return (0);
+}
+
+/*
+ * Set what the programs take as constants. The programs of the blocks are
+ * loaded only when the ruleset has a block.
  */
 static int
 load_rodata(struct quark_queue *qq, struct nova_queue *nqq)
@@ -292,6 +322,9 @@ load_rodata(struct quark_queue *qq, struct nova_queue *nqq)
 	bpf_program__set_autoload(nova->progs.blk_test, has_blocks);
 	/* blk_test is run with BPF_PROG_TEST_RUN, never attached */
 	bpf_program__set_autoattach(nova->progs.blk_test, 0);
+	/* The hooks of the blocks are attached last, see attach_blocks() */
+	bpf_program__set_autoattach(nova->progs.blk_bprm_check, 0);
+	bpf_program__set_autoattach(nova->progs.blk_task_alloc, 0);
 
 	if (qq->ruleset == NULL)
 		return (0);
@@ -303,14 +336,8 @@ load_rodata(struct quark_queue *qq, struct nova_queue *nqq)
 	if (has_blocks) {
 		if (check_bpf_lsm() == -1)
 			return (-1);
-		if ((nqq->blocks = quark_block_compile(qq->ruleset)) == NULL) {
-			qwarn("can't compile blocks");
+		if (load_block_rodata(nqq, qq->ruleset) == -1)
 			return (-1);
-		}
-		nova->rodata->blk_n_blocks = nqq->blocks->n_blocks;
-		nova->rodata->blk_dc_exe = nqq->blocks->dc_exe;
-		nova->rodata->blk_dc_file = nqq->blocks->dc_file;
-		nova->rodata->blk_dc_container = nqq->blocks->dc_container;
 	}
 
 	return (0);
@@ -381,10 +408,12 @@ load_blocks(struct nova_queue *nqq)
 }
 
 /*
- * Attach the hooks of the blocks before the others. Programs on one hook
- * run in the order they were attached, and the first that denies ends
- * the chain: a denied exec must not be reported as an exec by the program
- * that sends events.
+ * Attach the hooks of the blocks, after the others. With two programs on
+ * one hook the kernel runs the last attached first, and the first that
+ * denies ends the chain. The hook of a block must be that one: a denied
+ * exec is not an exec, and the program that sends events must not see it.
+ * This order is not a documented interface, t_block_process_nova tests
+ * it.
  */
 static int
 attach_blocks(struct nova_queue *nqq)
@@ -410,22 +439,54 @@ attach_blocks(struct nova_queue *nqq)
 }
 
 /*
- * Evaluate the blocks of an open nova queue for a made up operation, in
- * the kernel, with the code of the hooks and without any hook. For tests.
+ * For tests: the blocks of a ruleset in the kernel, with their maps and
+ * the test program, and no hook. Nothing is attached, so nothing on the
+ * machine is denied, whatever the blocks say. nova_block_test_run()
+ * evaluates a made up operation with the code of the hooks. Returns a
+ * handle for the other two calls, or NULL with errno set, EINVAL for a
+ * ruleset without blocks.
+ */
+void *
+nova_block_test_open(const struct quark_ruleset *ruleset)
+{
+	struct nova_queue	*nqq;
+	struct bpf_program	*prog;
+
+	if (ruleset == NULL || ruleset->n_blocks == 0)
+		return (errno = EINVAL, NULL);
+	setup_libbpf_logs();
+	if ((nqq = calloc(1, sizeof(*nqq))) == NULL)
+		return (NULL);
+	if ((nqq->nova = nova_open_object()) == NULL)
+		goto fail;
+	bpf_object__for_each_program(prog, nqq->nova->obj)
+		bpf_program__set_autoload(prog, prog == nqq->nova->progs.blk_test);
+	if (load_block_rodata(nqq, ruleset) == -1)
+		goto fail;
+	if (nova__load(nqq->nova) != 0)
+		goto fail;
+	if (load_blocks(nqq) == -1)
+		goto fail;
+
+	return (nqq);
+fail:
+	nova_block_test_close(nqq);
+
+	return (NULL);
+}
+
+/*
  * Returns NOVA_BT_ALLOW, 1 + the number of the block that denies,
  * NOVA_BT_NOT_CONTAINER when the cgroup name is not a container, or -1
  * with errno set.
  */
 int
-nova_block_test_run(struct quark_queue *qq, const struct nova_block_test *in)
+nova_block_test_run(void *handle, const struct nova_block_test *in)
 {
-	struct nova_queue	*nqq = qq->queue_be;
+	struct nova_queue	*nqq = handle;
 	__u64			 args[1];
 	LIBBPF_OPTS(bpf_test_run_opts, opts);
 
-	if (qq->queue_ops != &queue_ops_nova || nqq == NULL ||
-	    nqq->blocks == NULL)
-		return (errno = EINVAL, -1);
 	args[0] = (__u64)(unsigned long)in;
 	opts.ctx_in = args;
 	opts.ctx_size_in = sizeof(args);
@@ -434,6 +495,21 @@ nova_block_test_run(struct quark_queue *qq, const struct nova_block_test *in)
 		return (-1);
 
 	return (opts.retval);
+}
+
+void
+nova_block_test_close(void *handle)
+{
+	struct nova_queue	*nqq = handle;
+	int			 saved_errno = errno;
+
+	if (nqq == NULL)
+		return;
+	if (nqq->nova != NULL)
+		nova__destroy(nqq->nova);
+	quark_block_free(nqq->blocks);
+	free(nqq);
+	errno = saved_errno;
 }
 
 /*
@@ -594,7 +670,7 @@ nova_queue_open(struct quark_queue *qq)
 		return (-1);
 	qq->queue_be = nqq;
 
-	if ((nqq->nova = nova__open()) == NULL)
+	if ((nqq->nova = nova_open_object()) == NULL)
 		goto fail;
 	bpf_object__for_each_program(prog, nqq->nova->obj) {
 		/* bpf_program__set_autoload(prog, 0); */
@@ -611,9 +687,9 @@ nova_queue_open(struct quark_queue *qq)
 		goto fail;
 	if (ringbuf_setup(qq, nqq) == -1)
 		goto fail;
-	if (attach_blocks(nqq) == -1)
-		goto fail;
 	if (nova__attach(nqq->nova) != 0)
+		goto fail;
+	if (attach_blocks(nqq) == -1)
 		goto fail;
 
 	qq->queue_ops = &queue_ops_nova;

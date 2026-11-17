@@ -159,8 +159,10 @@ int			 kprobe_queue_open(struct quark_queue *);
 
 /* nova_queue.c */
 int			 nova_queue_open(struct quark_queue *);
-int			 nova_block_test_run(struct quark_queue *,
+void			*nova_block_test_open(const struct quark_ruleset *);
+int			 nova_block_test_run(void *,
 			     const struct nova_block_test *);
+void			 nova_block_test_close(void *);
 
 ssize_t		 qread(int, void *, size_t);
 int		 qwrite(int, const void *, size_t);
