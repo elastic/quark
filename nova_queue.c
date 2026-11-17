@@ -30,12 +30,15 @@ struct nova_queue {
 static int	nova_queue_populate(struct quark_queue *);
 static int	nova_queue_update_stats(struct quark_queue *);
 static void	nova_queue_close(struct quark_queue *);
+static void	nova_queue_container(struct quark_queue *,
+		    const struct quark_container *, int);
 
 struct quark_queue_ops queue_ops_nova = {
 	.open	      = nova_queue_open,
 	.populate     = nova_queue_populate,
 	.update_stats = nova_queue_update_stats,
 	.close	      = nova_queue_close,
+	.container    = nova_queue_container,
 };
 
 /*
@@ -834,6 +837,74 @@ fail:
 	free(rule_pcpu);
 
 	return (-1);
+}
+
+/*
+ * The key of a container in the kernel: the id that a hook finds in the
+ * name of a cgroup, see blk_parse_cgroup() in nova.bpf.c. container_id is
+ * <runtime>://<id>. Returns -1 for an id that a hook can't find, one that
+ * is not 1 to NOVA_CONTAINER_IDLEN lowercase hex characters.
+ */
+static int
+container_cid(const char *container_id, struct nova_block_cid *cid)
+{
+	const char	*id;
+	size_t		 i, len;
+
+	if ((id = strstr(container_id, "://")) != NULL)
+		id += 3;
+	else
+		id = container_id;
+	len = strlen(id);
+	if (len == 0 || len > sizeof(cid->id))
+		return (-1);
+	for (i = 0; i < len; i++) {
+		if (!((id[i] >= '0' && id[i] <= '9') ||
+		    (id[i] >= 'a' && id[i] <= 'f')))
+			return (-1);
+	}
+	bzero(cid, sizeof(*cid));
+	memcpy(cid->id, id, len);
+
+	return (0);
+}
+
+/*
+ * Keep the lines of the blocks that the container fields of a container
+ * allow, for the hooks. A container without an entry has the lines
+ * without container fields, so that is not stored: most containers match
+ * no container field of a block and take no room in the map.
+ */
+static void
+nova_queue_container(struct quark_queue *qq,
+    const struct quark_container *container, int removed)
+{
+	struct nova_queue	*nqq = qq->queue_be;
+	struct bpf_map		*map;
+	struct nova_block_cid	 cid;
+	u64			 lines;
+
+	/* The backend is closed before the containers are freed */
+	if (nqq == NULL || nqq->nova == NULL || nqq->blocks == NULL)
+		return;
+	if (container_cid(container->container_id, &cid) == -1)
+		return;
+	map = nqq->nova->maps.blk_container;
+	lines = nqq->blocks->dc_container;
+	if (!removed)
+		lines = quark_block_container_bits(nqq->blocks, container);
+	if (lines == nqq->blocks->dc_container) {
+		if (bpf_map__delete_elem(map, &cid, sizeof(cid), 0) != 0 &&
+		    errno != ENOENT)
+			qwarn("can't forget container %s",
+			    container->container_id);
+		return;
+	}
+	/* The blocks then see a container without metadata */
+	if (bpf_map__update_elem(map, &cid, sizeof(cid),
+	    &lines, sizeof(lines), BPF_ANY) != 0)
+		qwarn("can't store the block lines of container %s",
+		    container->container_id);
 }
 
 static void

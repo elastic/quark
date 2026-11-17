@@ -6571,8 +6571,11 @@ t_block_eval_nova(const struct test *t, struct quark_queue_attr *qa)
  */
 #define BLOCK_CG_ROOT	"/sys/fs/cgroup"
 #define BLOCK_CG_SLICE	BLOCK_CG_ROOT "/quark-test.slice"
-#define BLOCK_CG_SCOPE	BLOCK_CG_SLICE "/docker-" \
-	"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff.scope"
+#define BLOCK_CG_ID	\
+	"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+#define BLOCK_CG_SCOPE	BLOCK_CG_SLICE "/docker-" BLOCK_CG_ID ".scope"
+/* The container of a process in that cgroup, as kubernetes names it */
+#define BLOCK_CONTAINER	"docker://" BLOCK_CG_ID
 
 static int
 block_write(const char *path, const char *s)
@@ -6793,6 +6796,147 @@ t_block_process_nova(const struct test *t, struct quark_queue_attr *qa)
 	assert(ruleset.rules[0].hits == 2);
 	assert(ruleset.rules[1].hits == 0);
 	assert(ruleset.rules[2].hits == 0);	/* the second block */
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	block_cgroup_cleanup();
+	(void)unlink(true_path);
+
+	return (0);
+}
+
+/* One message of quark-kube-talker: a length and a JSON object */
+static void
+block_kube_write(int fd, const char *json)
+{
+	u32	len = strlen(json);
+
+	if (write(fd, &len, sizeof(len)) != sizeof(len) ||
+	    write(fd, json, len) != (ssize_t)len)
+		err(1, "write kube message");
+}
+
+#define BLOCK_POD_JSON(_name, _uid)					\
+	"{\"kind\":\"Pod\","						\
+	"\"metadata\":{\"name\":\"" _name "\",\"namespace\":\"default\","	\
+	"\"uid\":\"" _uid "\"},"					\
+	"\"spec\":{\"containers\":[{\"name\":\"c\"}]},"			\
+	"\"status\":{\"phase\":\"Running\","				\
+	"\"containerStatuses\":[{\"name\":\"c\","			\
+	"\"image\":\"registry.k8s.io/nginx:1.25\","			\
+	"\"imageID\":\"docker-pullable://registry.k8s.io/nginx@sha256:abc\"," \
+	"\"containerID\":\"" BLOCK_CONTAINER "\","			\
+	"\"state\":{\"running\":{}}}]}}"
+
+/*
+ * The container fields of a block follow the metadata of the container
+ * of the test cgroup. Two blocks, told apart by the operation: the first
+ * denies an exec of true in a pod named web-*, the second a fork of this
+ * program unless the pod is named debug-*. Without metadata a container
+ * field does not match, on an on line and on an except line.
+ */
+static int
+t_block_container_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct quark_queue_stats	 stats;
+	char				 self[PATH_MAX], true_path[PATH_MAX];
+	char				*text;
+	cJSON				*json;
+	int				 pfd[2];
+
+	if (realpath("/proc/self/exe", self) == NULL)
+		err(1, "realpath self");
+	block_copy_true(true_path, sizeof(true_path));
+	block_cgroup_setup();
+	/* drop on any keeps the events of nova out of the test output */
+	assert(asprintf(&text,
+	    "block {\n"
+	    "	on process.exe %s pod.name web-*\n"
+	    "}\n"
+	    "block {\n"
+	    "	except on pod.name debug-*\n"
+	    "	on process.exe %s\n"
+	    "}\n"
+	    "drop on any\n", true_path, self) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+
+	/*
+	 * A container that is known before the backend is open, from the
+	 * kube talker, gets its lines when the queue opens. The talker is a
+	 * pipe that ends after a node and a pod.
+	 */
+	if (pipe(pfd) == -1)
+		err(1, "pipe");
+	block_kube_write(pfd[1], "{\"kind\":\"Node\","
+	    "\"metadata\":{\"name\":\"node-1\",\"uid\":\"node-uid\"}}");
+	block_kube_write(pfd[1], BLOCK_POD_JSON("web-1", "pod-a"));
+	close(pfd[1]);
+	qa->kubefd = pfd[0];
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open with kubefd", t->name);
+	qa->kubefd = -1;
+	assert(quark_container_lookup(&qq, BLOCK_CONTAINER) != NULL);
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+	assert(block_try(0, true_path, NULL) == 0);
+	quark_queue_close(&qq);
+	/* The pipe of the talker is ours to close */
+	close(pfd[0]);
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	/* A removed container goes away at once */
+	qq.cache_grace_time = 0;
+
+	/*
+	 * No metadata: pod.name is not known. The on line of the first block
+	 * does not match, and the except line of the second does not
+	 * protect.
+	 */
+	assert(block_try(1, true_path, NULL) == 0);
+	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+
+	/* The container is in the pod web-1 */
+	assert(quark_pod_create(&qq, "pod-b", "web-1", "default", NULL) != NULL);
+	assert(quark_container_create(&qq, BLOCK_CONTAINER, "pod-b", "c",
+	    "registry.k8s.io/nginx:1.25") != NULL);
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+	assert(block_try(0, true_path, NULL) == 0);
+
+	/* The container is gone, and with it what we knew */
+	assert(quark_container_remove(&qq, BLOCK_CONTAINER) == 0);
+	(void)quark_queue_get_event(&qq);
+	assert(quark_container_lookup(&qq, BLOCK_CONTAINER) == NULL);
+	assert(block_try(1, true_path, NULL) == 0);
+	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+
+	/*
+	 * The container comes back in the pod debug-1, from the kube talker:
+	 * the first block does not match, the except line of the second
+	 * does.
+	 */
+	json = cJSON_Parse(BLOCK_POD_JSON("debug-1", "pod-c"));
+	assert(json != NULL);
+	assert(kube_handle_pod(&qq, json) == 0);
+	cJSON_Delete(json);
+	assert(block_try(1, true_path, NULL) == 0);
+	assert(block_try(1, NULL, NULL) == 0);
+
+	/* Containers that a hook can never find are ignored */
+	assert(quark_container_create(&qq, "docker://not-hex", NULL, "c",
+	    "x") != NULL);
+	assert(quark_container_create(&qq, "docker://" BLOCK_CG_ID "0", NULL,
+	    "c", "x") != NULL);
+
+	/* One exec was denied by the first block, three forks by the second */
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 1);
+	assert(ruleset.rules[1].hits == 3);
 	quark_queue_close(&qq);
 	quark_ruleset_clear(&ruleset);
 
@@ -8743,6 +8887,7 @@ struct test all_tests[] = {
 	T_NOVA(t_rule_repeated_nova),
 	T_NOVA(t_block_eval_nova),
 	T_NOVA(t_block_process_nova),
+	T_NOVA(t_block_container_nova),
 	T(t_rule_pod_name),
 	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),

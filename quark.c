@@ -860,6 +860,21 @@ container_by_id_cmp(struct quark_container *a, struct quark_container *b)
 	return (strcmp(a->container_id, b->container_id));
 }
 
+/*
+ * Tell the backend that the metadata of a container is new or has changed,
+ * or with removed that the container goes away. A backend that keeps data
+ * per container in the kernel needs this, nova for the blocks. Call it
+ * after every change of what a rule can see of a container: its image and
+ * the name of its pod.
+ */
+static void
+container_notify(struct quark_queue *qq,
+    const struct quark_container *container, int removed)
+{
+	if (qq->queue_ops != NULL && qq->queue_ops->container != NULL)
+		qq->queue_ops->container(qq, container, removed);
+}
+
 static void
 container_delete(struct quark_queue *qq, struct quark_container *container)
 {
@@ -867,6 +882,7 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 	struct quark_process	*qp;
 
 	if (container->linked_by_id) {
+		container_notify(qq, container, 1);
 		container_by_id_RB_REMOVE(&qq->container_by_id, container);
 		container->linked_by_id = 0;
 	}
@@ -1134,6 +1150,7 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 	char			*tmp;
 	int			 ip_found;
 	struct label_node	*node, *node_aux;
+	struct quark_container	*container;
 
 	metadata	  = GET(json, "metadata");
 	name		  = GET(metadata, "name");
@@ -1332,6 +1349,14 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 		if (kube_handle_container(qq, pod, container_json) == -1)
 			qwarnx("kube_handle_containers failed");
 	}
+
+	/*
+	 * Every container of the pod, not only the ones of this update: the
+	 * name of the pod may be new for a container that a library user
+	 * created before.
+	 */
+	RB_FOREACH(container, pod_containers, &pod->containers)
+		container_notify(qq, container, 0);
 
 	return (0);
 #undef GET
@@ -2726,7 +2751,8 @@ quark_pod_lookup(struct quark_queue *qq, const char *uid)
  * existing container if already present, otherwise allocates and inserts one.
  * An existing container without a pod is attached to the requested pod;
  * requesting a different pod for an attached container fails with EEXIST.
- * Caller fills in remaining fields (name, image, etc.).
+ * Caller fills in remaining fields (name, image, etc.), and must then call
+ * container_notify(), as kube_handle_pod() does.
  */
 struct quark_container *
 quark_container_get(struct quark_queue *qq, const char *container_id,
@@ -2890,6 +2916,8 @@ quark_container_create(struct quark_queue *qq, const char *container_id,
 		}
 		container->linked_by_pod = 1;
 	}
+
+	container_notify(qq, container, 0);
 
 	return (container);
 fail:
@@ -4793,6 +4821,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 {
 	struct quark_queue_attr	 qa_default;
 	struct quark_process	*qp;
+	struct quark_container	*container;
 	struct timespec		 unused;
 	char			*ver;
 	int			 backends;
@@ -5000,6 +5029,13 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 			link_container_data(qq, qp);
 		}
 	}
+
+	/*
+	 * The containers that the kube talker gave us before the backend was
+	 * open: the backend has not seen them yet.
+	 */
+	RB_FOREACH(container, container_by_id, &qq->container_by_id)
+		container_notify(qq, container, 0);
 
 	/*
 	 * Build username database, really only used for ECS and event dumping.

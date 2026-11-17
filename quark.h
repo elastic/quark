@@ -916,6 +916,12 @@ struct quark_queue_ops {
 	int	(*populate)(struct quark_queue *);
 	int	(*update_stats)(struct quark_queue *);
 	void	(*close)(struct quark_queue *);
+	/*
+	 * Optional: the metadata of a container is new or has changed, or
+	 * the container is gone, see container_notify()
+	 */
+	void	(*container)(struct quark_queue *,
+		    const struct quark_container *, int);
 };
 
 struct quark_queue_attr {
