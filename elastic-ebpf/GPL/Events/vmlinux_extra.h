@@ -276,4 +276,12 @@ struct syscall_tp_t___exit {
 	long			ret;
 };
 
+/*
+ * kernel 5.5: cf25e24db61c renamed task_struct.real_start_time to
+ * start_boottime. Partial definition of the old name, CO-RE matches by name.
+ */
+struct task_struct___pre_5_5 {
+	u64			real_start_time;
+};
+
 #endif	/* _VMLINUX_EXTRA_H_ */

@@ -104,7 +104,7 @@ struct ebpf_varlen_field {
 } __attribute__((packed));
 
 struct ebpf_pid_info {
-    uint64_t start_time_ns;
+    uint64_t start_time_ns; /* group leader start, CLOCK_BOOTTIME like ts */
     uint32_t tid;
     uint32_t tgid;
     uint32_t ppid;

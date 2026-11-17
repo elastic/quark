@@ -111,7 +111,8 @@
           <a class="permalink" href="#bpf.start_time_ns"><i class="Em" id="bpf.start_time_ns">bpf.start_time_ns</i></a>
           retain its host process ID, invoking thread ID and process start time
           even when the process cache has no entry. The start time uses
-          CLOCK_MONOTONIC.
+          CLOCK_BOOTTIME, like
+          <a class="permalink" href="#proc_time_boot"><i class="Em" id="proc_time_boot">proc_time_boot</i></a>.
         <p class="Pp" id="valid"><a class="permalink" href="#valid"><i class="Em">valid</i></a>
             indicates which metadata was captured.
             <code class="Dv">QUARK_BPF_VALID_ATTR</code> means that
@@ -271,7 +272,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 6, 2026</td>
+    <td class="foot-date">November 17, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
