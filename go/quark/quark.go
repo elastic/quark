@@ -205,15 +205,16 @@ type Ptrace struct {
 
 // Blocked describes an operation that a block of the ruleset denied. It did
 // not happen: a denied fork has no child, a denied exec left the process as
-// it was. The event has the tag "blocked" and is always delivered.
+// it was, a denied file operation left the file as it was. The event has
+// the tag "blocked" and is always delivered.
 type Blocked struct {
-	Op    uint32 // QUARK_BLOCKED_FORK or QUARK_BLOCKED_EXEC
+	Op    uint32 // QUARK_BLOCKED_*, what was tried
 	Block uint32 // The block of the ruleset that denied it, from 0
 	Pid   uint32 // Who tried, also in Process when it is known
 	Tid   uint32
 	Comm  string
-	Path  string // The executable: of the parent for a fork, the new program for an exec
-	Path2 string // A second path, or empty
+	Path  string // The executable: of the parent for a fork, the new program for an exec. Or the file
+	Path2 string // The new path of a rename or a link, or empty
 }
 
 // Mprotect describes an executable protection attempt observed for one VMA.
@@ -333,8 +334,15 @@ const (
 	QUARK_EV_BLOCKED               = uint64(C.QUARK_EV_BLOCKED)
 
 	// What a block denied, Blocked.Op
-	QUARK_BLOCKED_FORK = uint32(C.QUARK_BLOCKED_FORK)
-	QUARK_BLOCKED_EXEC = uint32(C.QUARK_BLOCKED_EXEC)
+	QUARK_BLOCKED_FORK     = uint32(C.QUARK_BLOCKED_FORK)
+	QUARK_BLOCKED_EXEC     = uint32(C.QUARK_BLOCKED_EXEC)
+	QUARK_BLOCKED_CREATE   = uint32(C.QUARK_BLOCKED_CREATE)
+	QUARK_BLOCKED_CHMOD    = uint32(C.QUARK_BLOCKED_CHMOD)
+	QUARK_BLOCKED_OPEN     = uint32(C.QUARK_BLOCKED_OPEN)
+	QUARK_BLOCKED_TRUNCATE = uint32(C.QUARK_BLOCKED_TRUNCATE)
+	QUARK_BLOCKED_RENAME   = uint32(C.QUARK_BLOCKED_RENAME)
+	QUARK_BLOCKED_LINK     = uint32(C.QUARK_BLOCKED_LINK)
+	QUARK_BLOCKED_UNLINK   = uint32(C.QUARK_BLOCKED_UNLINK)
 
 	// EntryLeaderType
 	QUARK_ELT_UNKNOWN   = int(C.QUARK_ELT_UNKNOWN)

@@ -2398,6 +2398,33 @@ bpf_type_str(const struct quark_bpf *bpf, char *buf, size_t len)
 		P(__VA_ARGS__);					\
 	} while(0)						\
 
+static const char *
+blocked_op_str(u32 op)
+{
+	switch (op) {
+	case QUARK_BLOCKED_FORK:
+		return "fork";
+	case QUARK_BLOCKED_EXEC:
+		return "exec";
+	case QUARK_BLOCKED_CREATE:
+		return "create";
+	case QUARK_BLOCKED_CHMOD:
+		return "chmod";
+	case QUARK_BLOCKED_OPEN:
+		return "open";
+	case QUARK_BLOCKED_TRUNCATE:
+		return "truncate";
+	case QUARK_BLOCKED_RENAME:
+		return "rename";
+	case QUARK_BLOCKED_LINK:
+		return "link";
+	case QUARK_BLOCKED_UNLINK:
+		return "unlink";
+	default:
+		return "?";
+	}
+}
+
 int
 quark_event_dump(const struct quark_event *qev, FILE *f)
 {
@@ -2562,8 +2589,7 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 
 		fl = "BLOCKED";
 		PF(fl, "op=%s block=%u pid=%u tid=%u comm=%s\n",
-		    blocked->op == QUARK_BLOCKED_FORK ? "fork" :
-		    blocked->op == QUARK_BLOCKED_EXEC ? "exec" : "?",
+		    blocked_op_str(blocked->op),
 		    blocked->block, blocked->pid, blocked->tid, blocked->comm);
 		PF(fl, "path=%s\n", blocked->path);
 		if (blocked->path2[0] != 0)

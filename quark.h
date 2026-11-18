@@ -486,11 +486,23 @@ struct raw_bpf {
 /*
  * An operation that a block of the ruleset denied, QUARK_EV_BLOCKED. It
  * did not happen: a denied fork has no child, a denied exec left the
- * process as it was. The event has the tag blocked and is always
- * delivered, no rule is evaluated on it.
+ * process as it was, a denied file operation left the file as it was. The
+ * event has the tag blocked and is always delivered, no rule is evaluated
+ * on it.
+ *
+ * The file operations are what the kernel was asked to do, not system
+ * calls: an open that would create a file is QUARK_BLOCKED_CREATE, and
+ * QUARK_BLOCKED_OPEN is an open for writing of a file that exists.
  */
 #define QUARK_BLOCKED_FORK	NOVA_OP_FORK
 #define QUARK_BLOCKED_EXEC	NOVA_OP_EXEC
+#define QUARK_BLOCKED_CREATE	NOVA_OP_CREATE
+#define QUARK_BLOCKED_CHMOD	NOVA_OP_CHMOD
+#define QUARK_BLOCKED_OPEN	NOVA_OP_OPEN
+#define QUARK_BLOCKED_TRUNCATE	NOVA_OP_TRUNCATE
+#define QUARK_BLOCKED_RENAME	NOVA_OP_RENAME
+#define QUARK_BLOCKED_LINK	NOVA_OP_LINK
+#define QUARK_BLOCKED_UNLINK	NOVA_OP_UNLINK
 struct quark_blocked {
 	u32	op;			/* QUARK_BLOCKED_*, what was tried */
 	u32	block;			/* the block that denied, from 0 */
@@ -498,8 +510,10 @@ struct quark_blocked {
 	u32	tid;
 	char	comm[16];
 	char	path[NOVA_PATHLEN];	/* the executable: of the parent for a
-					   fork, the new program for an exec */
-	char	path2[NOVA_PATHLEN];	/* a second path, or empty */
+					   fork, the new program for an exec.
+					   Or the file, as the process sees it */
+	char	path2[NOVA_PATHLEN];	/* the new path of a rename or a link,
+					   or empty */
 };
 
 struct raw_blocked {

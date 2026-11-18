@@ -143,13 +143,24 @@ struct nova_block_cid {
 
 /* Counters of the block hooks, per CPU */
 struct nova_block_stats {
-	__u64	no_path;		/* a path was not resolved or too long */
+	__u64	no_path;		/* a path was not resolved or too long,
+					   or no scratch slot was free */
 	__u64	lost;			/* a denial that could not be reported */
 };
 
-/* What a block denied, nova_deny_event.op */
+/*
+ * What a block denied, nova_deny_event.op. The file operations are the
+ * hooks, not system calls: an open that creates a file is NOVA_OP_CREATE.
+ */
 #define NOVA_OP_FORK		1
 #define NOVA_OP_EXEC		2
+#define NOVA_OP_CREATE		3	/* a new regular file */
+#define NOVA_OP_CHMOD		4	/* the mode of a regular file */
+#define NOVA_OP_OPEN		5	/* a regular file, for writing */
+#define NOVA_OP_TRUNCATE	6	/* a regular file */
+#define NOVA_OP_RENAME		7	/* path to path2 */
+#define NOVA_OP_LINK		8	/* a hard link to path, named path2 */
+#define NOVA_OP_UNLINK		9
 
 /*
  * Input of the test program blk_test, which evaluates the blocks for a
@@ -248,7 +259,7 @@ struct nova_deny_event {
 	__u32			pid;		/* of the process that tried */
 	__u32			tid;
 	char			comm[16];
-	char			path[NOVA_PATHLEN];	/* the executable */
+	char			path[NOVA_PATHLEN];	/* the executable or the file */
 	char			path2[NOVA_PATHLEN];	/* a second path, or empty */
 	char			pad0[4];
 } __aligned(8);

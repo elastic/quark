@@ -329,6 +329,7 @@ nova.bpf.o: $(NOVA_DEPS)
 	$(Q)$(CLANG)								\
 		-g -O2								\
 		-target $(BPF_ARCH)						\
+		-mcpu=v3							\
 		-Ielastic-ebpf/contrib/vmlinux/$(ARCH_ALT)			\
 		$(CPPFLAGS)							\
 		$(CDIAGFLAGS)	-Wno-strict-prototypes				\

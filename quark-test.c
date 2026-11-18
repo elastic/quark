@@ -26,6 +26,7 @@
 #include <linux/fs.h>
 
 #include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 #include <cjson/cJSON.h>
 
 #include <netinet/in.h>
@@ -40,6 +41,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <ifaddrs.h>
 #include <limits.h>
 #include <sched.h>
@@ -7410,6 +7412,528 @@ t_block_enforcer_backlog(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* What a child does to a file, see block_file_try() */
+enum block_fop {
+	BLOCK_F_CREATE,		/* open(2) with O_CREAT */
+	BLOCK_F_MKNOD,		/* mknod(2) without a file type */
+	BLOCK_F_MKFIFO,
+	BLOCK_F_READ,
+	BLOCK_F_WRITE,
+	BLOCK_F_CHMOD,
+	BLOCK_F_TRUNCATE,
+	BLOCK_F_OPEN_TRUNC,	/* open(2) for reading with O_TRUNC */
+	BLOCK_F_FTRUNCATE,	/* fd is a file that is open for writing */
+	BLOCK_F_RENAME,
+	BLOCK_F_LINK,
+	BLOCK_F_UNLINK,
+};
+
+static int
+block_fop(enum block_fop op, const char *path, const char *path2, int fd)
+{
+	switch (op) {
+	case BLOCK_F_CREATE:
+		if ((fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
+			return (-1);
+		close(fd);
+		return (0);
+	case BLOCK_F_MKNOD:
+		return (mknod(path, 0644, 0));
+	case BLOCK_F_MKFIFO:
+		return (mknod(path, S_IFIFO | 0644, 0));
+	case BLOCK_F_READ:
+		if ((fd = open(path, O_RDONLY)) == -1)
+			return (-1);
+		close(fd);
+		return (0);
+	case BLOCK_F_WRITE:
+		if ((fd = open(path, O_WRONLY)) == -1)
+			return (-1);
+		close(fd);
+		return (0);
+	case BLOCK_F_CHMOD:
+		return (chmod(path, 0600));
+	case BLOCK_F_TRUNCATE:
+		return (truncate(path, 0));
+	case BLOCK_F_OPEN_TRUNC:
+		if ((fd = open(path, O_RDONLY | O_TRUNC)) == -1)
+			return (-1);
+		close(fd);
+		return (0);
+	case BLOCK_F_FTRUNCATE:
+		return (ftruncate(fd, 0));
+	case BLOCK_F_RENAME:
+		return (rename(path, path2));
+	case BLOCK_F_LINK:
+		return (link(path, path2));
+	case BLOCK_F_UNLINK:
+		return (unlink(path));
+	}
+
+	return (errno = EINVAL, -1);
+}
+
+#define BLOCK_EXIT_EPERM	BLOCK_EXIT_EXEC_EPERM
+
+/*
+ * A child that may join the test cgroup and may change its root, then
+ * does one file operation. For BLOCK_F_FTRUNCATE it opens the file before
+ * all that, as a file that a container got from outside. Returns 0 if it
+ * worked, BLOCK_EXIT_EPERM if it was denied.
+ */
+static int
+block_file_try(int in_container, const char *root, enum block_fop op,
+    const char *path, const char *path2, pid_t *pidp)
+{
+	char	pidbuf[32];
+	pid_t	pid;
+	int	status;
+
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+	if (pidp != NULL)
+		*pidp = pid;
+	if (pid == 0) {
+		int	fd = -1;
+
+		if (op == BLOCK_F_FTRUNCATE &&
+		    (fd = open(path, O_WRONLY)) == -1)
+			_exit(BLOCK_EXIT_OTHER);
+		if (in_container) {
+			snprintf(pidbuf, sizeof(pidbuf), "%d", getpid());
+			if (block_write(BLOCK_CG_SCOPE "/cgroup.procs",
+			    pidbuf) == -1)
+				_exit(BLOCK_EXIT_OTHER);
+		}
+		if (root != NULL && (chroot(root) == -1 || chdir("/") == -1))
+			_exit(BLOCK_EXIT_OTHER);
+		if (block_fop(op, path, path2, fd) == -1)
+			_exit(errno == EPERM ? BLOCK_EXIT_EPERM :
+			    BLOCK_EXIT_OTHER);
+		_exit(0);
+	}
+	if (waitpid(pid, &status, 0) == -1)
+		err(1, "waitpid");
+
+	return (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+}
+
+/* A path below dir, good until four more were asked for */
+static const char *
+block_p(const char *dir, const char *rel)
+{
+	static char	bufs[4][PATH_MAX];
+	static int	next;
+	char		*buf;
+
+	buf = bufs[next++ % 4];
+	if (snprintf(buf, PATH_MAX, "%s/%s", dir, rel) >= PATH_MAX)
+		errx(1, "path too long");
+
+	return (buf);
+}
+
+static void
+block_touch(const char *path)
+{
+	int	fd;
+
+	if ((fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
+		err(1, "open %s", path);
+	close(fd);
+}
+
+static int
+block_rm_cb(const char *path, const struct stat *st, int flag, struct FTW *ftw)
+{
+	return (remove(path));
+}
+
+/*
+ * The scratch slots of the file hooks, the map blk_scratch of nova.bpf.c.
+ * It is found by name, the newest one is ours. A slot is the same memory
+ * on each CPU, and its first u64 says that it is taken.
+ */
+static int
+block_scratch_fd(struct bpf_map_info *info)
+{
+	__u32	id = 0, len;
+	int	fd, found = -1;
+
+	while (bpf_map_get_next_id(id, &id) == 0) {
+		if ((fd = bpf_map_get_fd_by_id(id)) == -1)
+			continue;
+		bzero(info, sizeof(*info));
+		len = sizeof(*info);
+		if (bpf_obj_get_info_by_fd(fd, info, &len) == 0 &&
+		    !strcmp(info->name, "blk_scratch")) {
+			if (found != -1)
+				close(found);
+			found = fd;
+		} else
+			close(fd);
+	}
+	if (found == -1)
+		errx(1, "no blk_scratch map");
+	len = sizeof(*info);
+	if (bpf_obj_get_info_by_fd(found, info, &len) != 0)
+		err(1, "bpf_obj_get_info_by_fd");
+
+	return (found);
+}
+
+/*
+ * Take slot on every CPU, or give it back. Returns how many CPUs had it
+ * taken before.
+ */
+static int
+block_scratch_set(int fd, const struct bpf_map_info *info, __u32 slot,
+    u64 busy)
+{
+	size_t	 vsize;
+	char	*values;
+	int	 i, ncpus, was_busy = 0;
+
+	if ((ncpus = libbpf_num_possible_cpus()) <= 0)
+		errx(1, "libbpf_num_possible_cpus");
+	vsize = (info->value_size + 7) & ~7ULL;
+	if ((values = calloc(ncpus, vsize)) == NULL)
+		err(1, "calloc");
+	if (bpf_map_lookup_elem(fd, &slot, values) != 0)
+		err(1, "bpf_map_lookup_elem");
+	for (i = 0; i < ncpus; i++) {
+		was_busy += *(u64 *)(values + i * vsize) != 0;
+		*(u64 *)(values + i * vsize) = busy;
+	}
+	if (bpf_map_update_elem(fd, &slot, values, BPF_ANY) != 0)
+		err(1, "bpf_map_update_elem");
+	free(values);
+
+	return (was_busy);
+}
+
+/*
+ * A denied file operation is one event, the denied attempt. It did not
+ * happen, so the EBPF backend has no file event for it.
+ */
+static void
+block_file_denied(struct quark_queue *qq, pid_t pid, u32 op, u32 block,
+    const char *path, const char *path2)
+{
+	const struct quark_event	*qev;
+	int				 i;
+
+	qev = drain_for_pid(qq, pid);
+	if (qev->events != QUARK_EV_BLOCKED)
+		errx(1, "%s: events 0x%llx is not a denied attempt", path,
+		    (unsigned long long)qev->events);
+	assert(qev->tags == 1);
+	if (qev->blocked.op != op || qev->blocked.block != block)
+		errx(1, "%s: op %u block %u, expected op %u block %u", path,
+		    qev->blocked.op, qev->blocked.block, op, block);
+	assert(qev->blocked.pid == (u32)pid);
+	if (strcmp(qev->blocked.path, path))
+		errx(1, "denied path %s, expected %s", qev->blocked.path, path);
+	if (strcmp(qev->blocked.path2, path2 != NULL ? path2 : ""))
+		errx(1, "denied path2 %s, expected %s", qev->blocked.path2,
+		    path2 != NULL ? path2 : "");
+	for (i = 0; i < 10; i++) {
+		if ((qev = quark_queue_get_event(qq)) == NULL) {
+			msleep(10);
+			continue;
+		}
+		if (qev->process != NULL && qev->process->pid == (u32)pid)
+			errx(1, "%s: a second event for a denied operation, "
+			    "events 0x%llx", path,
+			    (unsigned long long)qev->events);
+	}
+}
+
+/*
+ * The file hooks: a block on file.path denies the operations that make,
+ * change or remove a file, in a container only, and each denied operation
+ * is one event. The paths are in a directory of this test, so nothing else
+ * on the machine is denied.
+ */
+static int
+t_block_file(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct quark_queue_stats	 stats;
+	const struct quark_event	*qev;
+	char				 tmp[] = "/tmp/quark-test-block.XXXXXX";
+	char				 dir[PATH_MAX], longname[256];
+	char				*text, *longpath;
+	struct bpf_map_info		 info;
+	struct stat			 st;
+	u64				 no_path;
+	pid_t				 pid;
+	__u32				 slot;
+	int				 scratch;
+
+#define P(_rel)	block_p(dir, _rel)
+#define DENIED(_fop, _p, _p2, _op, _block) do {				\
+	assert(block_file_try(1, NULL, _fop, _p, _p2, &pid) ==		\
+	    BLOCK_EXIT_EPERM);						\
+	block_file_denied(&qq, pid, _op, _block, _p, _p2);		\
+} while (0)
+#define ALLOWED(_container, _fop, _p, _p2)				\
+	assert(block_file_try(_container, NULL, _fop, _p, _p2, NULL) == 0)
+
+	/* We are root and /tmp is for everybody, see block_copy_true() */
+	if (mkdtemp(tmp) == NULL)
+		err(1, "mkdtemp %s", tmp);
+	if (realpath(tmp, dir) == NULL)
+		err(1, "realpath %s", tmp);
+	if (mkdir(P("deny"), 0755) == -1 || mkdir(P("deny/d"), 0755) == -1 ||
+	    mkdir(P("deny/mnt"), 0755) == -1 || mkdir(P("free"), 0755) == -1 ||
+	    mkdir(P("quark-test-jail"), 0755) == -1)
+		err(1, "mkdir");
+	block_touch(P("deny/f"));
+	block_touch(P("free/g"));
+
+	/*
+	 * Block 0 denies below deny, but not a name that starts with ok.
+	 * Block 1 denies one path, block 2 is for a process with dir as its
+	 * root. The tag is for the file events of what is allowed. The first
+	 * block registered blocked as tag bit 0, so log is bit 1.
+	 */
+	assert(asprintf(&text,
+	    "block {\n"
+	    "	except on file.path %s/deny/ok*\n"
+	    "	on file.path %s/deny/*\n"
+	    "}\n"
+	    "block {\n"
+	    "	on file.path %s/fixed\n"
+	    "}\n"
+	    "block {\n"
+	    "	on file.path /quark-test-jail/*\n"
+	    "}\n"
+	    "tag log {\n"
+	    "	on file.path %s/*\n"
+	    "}\n"
+	    "drop on any\n", dir, dir, dir, dir) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->flags |= QQ_FILE;
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0) {
+		/* Where blocks can't work, the queue must not open */
+		if (errno != ENOTSUP || block_supported())
+			err(1, "%s: quark_queue_open", t->name);
+		quark_ruleset_clear(&ruleset);
+		(void)nftw(dir, block_rm_cb, 16, FTW_DEPTH | FTW_PHYS);
+		return (0);
+	}
+	assert(qq.enforcer != NULL);
+	block_cgroup_setup();
+
+	/* path_mknod: a new file, from open(2) and from mknod(2) */
+	DENIED(BLOCK_F_CREATE, P("deny/a"), NULL, QUARK_BLOCKED_CREATE, 0);
+	assert(access(P("deny/a"), F_OK) == -1);
+	DENIED(BLOCK_F_MKNOD, P("deny/m"), NULL, QUARK_BLOCKED_CREATE, 0);
+	assert(access(P("deny/m"), F_OK) == -1);
+	/* Not a regular file */
+	ALLOWED(1, BLOCK_F_MKFIFO, P("deny/fifo"), NULL);
+
+	/* file_open: for writing only */
+	ALLOWED(1, BLOCK_F_READ, P("deny/f"), NULL);
+	DENIED(BLOCK_F_WRITE, P("deny/f"), NULL, QUARK_BLOCKED_OPEN, 0);
+
+	/* path_chmod: a directory is not a regular file */
+	DENIED(BLOCK_F_CHMOD, P("deny/f"), NULL, QUARK_BLOCKED_CHMOD, 0);
+	ALLOWED(1, BLOCK_F_CHMOD, P("deny/d"), NULL);
+
+	/*
+	 * path_truncate, and file_truncate since Linux 6.2: by path, by an
+	 * open for reading, and through a file that was open before.
+	 */
+	assert(truncate(P("deny/f"), 100) == 0);
+	DENIED(BLOCK_F_TRUNCATE, P("deny/f"), NULL, QUARK_BLOCKED_TRUNCATE, 0);
+	DENIED(BLOCK_F_OPEN_TRUNC, P("deny/f"), NULL,
+	    QUARK_BLOCKED_TRUNCATE, 0);
+	DENIED(BLOCK_F_FTRUNCATE, P("deny/f"), NULL,
+	    QUARK_BLOCKED_TRUNCATE, 0);
+	if (stat(P("deny/f"), &st) == -1 || st.st_size != 100)
+		errx(1, "a denied truncate changed the file");
+
+	/* path_unlink */
+	DENIED(BLOCK_F_UNLINK, P("deny/f"), NULL, QUARK_BLOCKED_UNLINK, 0);
+	assert(access(P("deny/f"), F_OK) == 0);
+
+	/* path_rename: the old path and the new path */
+	DENIED(BLOCK_F_RENAME, P("deny/f"), P("free/f"),
+	    QUARK_BLOCKED_RENAME, 0);
+	DENIED(BLOCK_F_RENAME, P("free/g"), P("deny/g"),
+	    QUARK_BLOCKED_RENAME, 0);
+	assert(access(P("deny/f"), F_OK) == 0 && access(P("free/g"), F_OK) == 0);
+
+	/* path_link: the file and the new path */
+	DENIED(BLOCK_F_LINK, P("deny/f"), P("free/l"), QUARK_BLOCKED_LINK, 0);
+	DENIED(BLOCK_F_LINK, P("free/g"), P("deny/l"), QUARK_BLOCKED_LINK, 0);
+	assert(access(P("free/l"), F_OK) == -1 && access(P("deny/l"), F_OK) == -1);
+
+	/* A path below a mount point */
+	if (mount("none", P("deny/mnt"), "tmpfs", 0, NULL) == -1)
+		err(1, "mount tmpfs on %s", P("deny/mnt"));
+	DENIED(BLOCK_F_CREATE, P("deny/mnt/x"), NULL, QUARK_BLOCKED_CREATE, 0);
+	if (umount(P("deny/mnt")) == -1)
+		err(1, "umount %s", P("deny/mnt"));
+
+	/*
+	 * An except path is allowed, and what is allowed is an event of the
+	 * EBPF backend with the same path, here with its tag.
+	 */
+	assert(block_file_try(1, NULL, BLOCK_F_CREATE, P("deny/ok1"), NULL,
+	    &pid) == 0);
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events & QUARK_EV_FILE);
+	assert(qev->tags == 2);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 1), "log"));
+	assert(qev->file != NULL && !strcmp(qev->file->path, P("deny/ok1")));
+
+	/* A path without a star is that path only */
+	DENIED(BLOCK_F_CREATE, P("fixed"), NULL, QUARK_BLOCKED_CREATE, 1);
+	ALLOWED(1, BLOCK_F_CREATE, P("fixedx"), NULL);
+
+	/* Outside of a container nothing is denied */
+	ALLOWED(0, BLOCK_F_CREATE, P("deny/h"), NULL);
+	ALLOWED(0, BLOCK_F_UNLINK, P("deny/h"), NULL);
+
+	/*
+	 * The path is the one the process sees, from its root: with dir as
+	 * the root, deny is /deny, which no block names.
+	 */
+	assert(block_file_try(1, dir, BLOCK_F_CREATE, "/deny/c", NULL,
+	    NULL) == 0);
+	assert(block_file_try(1, dir, BLOCK_F_CREATE, "/quark-test-jail/x",
+	    NULL, &pid) == BLOCK_EXIT_EPERM);
+	block_file_denied(&qq, pid, QUARK_BLOCKED_CREATE, 2,
+	    "/quark-test-jail/x", NULL);
+
+	/*
+	 * A path that does not fit in a line matches no line: it is allowed
+	 * and counted.
+	 */
+	quark_queue_get_stats(&qq, &stats);
+	no_path = stats.block_no_path;
+	memset(longname, 'a', sizeof(longname) - 1);
+	longname[sizeof(longname) - 1] = 0;
+	assert(asprintf(&longpath, "%s/deny/%s", dir, longname) != -1);
+	ALLOWED(1, BLOCK_F_CREATE, longpath, NULL);
+	free(longpath);
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.block_no_path > no_path);
+
+	/*
+	 * The scratch slots. Every hook gave its slot back. A hook that
+	 * finds a slot taken, by a hook that was preempted on its CPU, uses
+	 * the next one. With no slot free the operation is allowed and
+	 * counted.
+	 */
+	scratch = block_scratch_fd(&info);
+	assert(info.max_entries == 4);
+	for (slot = 0; slot < info.max_entries; slot++)
+		assert(block_scratch_set(scratch, &info, slot, 0) == 0);
+	for (slot = 0; slot < info.max_entries - 1; slot++) {
+		(void)block_scratch_set(scratch, &info, slot, 1);
+		DENIED(BLOCK_F_CREATE, P("deny/s"), NULL,
+		    QUARK_BLOCKED_CREATE, 0);
+	}
+	(void)block_scratch_set(scratch, &info, slot, 1);
+	quark_queue_get_stats(&qq, &stats);
+	no_path = stats.block_no_path;
+	ALLOWED(1, BLOCK_F_CREATE, P("deny/s"), NULL);
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.block_no_path > no_path);
+	for (slot = 0; slot < info.max_entries; slot++)
+		(void)block_scratch_set(scratch, &info, slot, 0);
+	DENIED(BLOCK_F_UNLINK, P("deny/s"), NULL, QUARK_BLOCKED_UNLINK, 0);
+	for (slot = 0; slot < info.max_entries; slot++)
+		assert(block_scratch_set(scratch, &info, slot, 0) == 0);
+	close(scratch);
+
+	/* The denials of a block are the hits of its first line */
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 17);
+	assert(ruleset.rules[2].hits == 1);
+	assert(ruleset.rules[3].hits == 1);
+	assert(stats.block_lost == 0);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+	block_cgroup_cleanup();
+	if (nftw(dir, block_rm_cb, 16, FTW_DEPTH | FTW_PHYS) == -1)
+		err(1, "can't remove %s", dir);
+#undef P
+#undef DENIED
+#undef ALLOWED
+
+	return (0);
+}
+
+/*
+ * The file hooks with nova alone, which has no file events: an operation
+ * is denied, and the denied attempt is an event. Nova knows only the
+ * processes that were there when the queue opened, so the event of a new
+ * child has no process.
+ */
+static int
+t_block_file_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	const struct quark_event	*qev;
+	char				 tmp[] = "/tmp/quark-test-block.XXXXXX";
+	char				 dir[PATH_MAX];
+	char				*text;
+	pid_t				 pid;
+	int				 i, found;
+
+	if (mkdtemp(tmp) == NULL)
+		err(1, "mkdtemp %s", tmp);
+	if (realpath(tmp, dir) == NULL)
+		err(1, "realpath %s", tmp);
+	block_touch(block_p(dir, "f"));
+	assert(asprintf(&text,
+	    "block {\n\ton file.path %s/*\n}\ndrop on any\n", dir) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	block_cgroup_setup();
+
+	assert(block_file_try(0, NULL, BLOCK_F_WRITE, block_p(dir, "f"), NULL,
+	    NULL) == 0);
+	assert(block_file_try(1, NULL, BLOCK_F_WRITE, block_p(dir, "f"), NULL,
+	    &pid) == BLOCK_EXIT_EPERM);
+	for (i = 0, found = 0; i < 100 && !found; i++) {
+		if ((qev = quark_queue_get_event(&qq)) == NULL) {
+			msleep(10);
+			continue;
+		}
+		if (qev->events != QUARK_EV_BLOCKED ||
+		    qev->blocked.pid != (u32)pid)
+			continue;
+		assert(qev->tags == 1);
+		assert(qev->blocked.op == QUARK_BLOCKED_OPEN);
+		assert(!strcmp(qev->blocked.path, block_p(dir, "f")));
+		found = 1;
+	}
+	if (!found)
+		errx(1, "no event for the denied open");
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+	block_cgroup_cleanup();
+	if (nftw(dir, block_rm_cb, 16, FTW_DEPTH | FTW_PHYS) == -1)
+		err(1, "can't remove %s", dir);
+
+	return (0);
+}
+
 static int
 t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -9355,8 +9879,10 @@ struct test all_tests[] = {
 	T_NOVA(t_block_eval_nova),
 	T_NOVA(t_block_process_nova),
 	T_NOVA(t_block_container_nova),
+	T_NOVA(t_block_file_nova),
 	T_EBPF(t_block_enforcer),
 	T_EBPF(t_block_enforcer_backlog),
+	T_EBPF(t_block_file),
 	T(t_rule_pod_name),
 	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),

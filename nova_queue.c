@@ -267,30 +267,147 @@ block_nova_queue(struct quark_queue *qq)
 	return (NULL);
 }
 
-/*
- * Load what the blocks need and nothing else: the test program, the two
- * hooks if wanted, and none of the maps of the programs that send events.
- * What is left needs Linux 5.17, the other programs need 5.19.
- */
+/* The hooks of the blocks, and where the skeleton keeps their links */
+#define BLOCK_N_HOOKS	11
+
+struct block_hook {
+	struct bpf_program	 *prog;
+	struct bpf_link		**link;
+	int			  file;		/* a hook of the file blocks */
+};
+
 static void
-nova_blocks_only(struct nova *nova, int hooks)
+block_hooks(struct nova *nova, struct block_hook hooks[BLOCK_N_HOOKS])
 {
+#define H(_i, _name, _file)						\
+	hooks[_i] = (struct block_hook){ nova->progs._name,		\
+	    &nova->links._name, _file }
+	H(0, blk_bprm_check, 0);
+	H(1, blk_task_alloc, 0);
+	H(2, blk_path_mknod, 1);
+	H(3, blk_path_chmod, 1);
+	H(4, blk_file_open, 1);
+	H(5, blk_path_truncate, 1);
+	H(6, blk_file_truncate, 1);
+	H(7, blk_path_rename, 1);
+	H(8, blk_path_rename4, 1);
+	H(9, blk_path_link, 1);
+	H(10, blk_path_unlink, 1);
+#undef H
+}
+
+/*
+ * The number of arguments of an LSM hook in the running kernel, -1 if the
+ * kernel has no such hook.
+ */
+static int
+lsm_hook_nargs(const struct btf *btf, const char *hook)
+{
+	const struct btf_type	*t;
+	char			 name[64];
+	int			 id;
+
+	if (snprintf(name, sizeof(name), "bpf_lsm_%s", hook) >=
+	    (int)sizeof(name))
+		return (-1);
+	id = btf__find_by_name_kind(btf, name, BTF_KIND_FUNC);
+	if (id <= 0 || (t = btf__type_by_id(btf, id)) == NULL ||
+	    (t = btf__type_by_id(btf, t->type)) == NULL ||
+	    !btf_is_func_proto(t))
+		return (-1);
+
+	return (btf_vlen(t));
+}
+
+/*
+ * What the running kernel has for the file hooks, from its BTF. Two hooks
+ * are not the same in every kernel:
+ * - path_rename has four arguments up to Linux 5.18 and five since, and
+ *   there is one program for each form.
+ * - file_truncate is there since Linux 6.2.
+ * Returns -1 with errno set to ENOTSUP if the kernel has no path hooks, it
+ * then lacks CONFIG_SECURITY_PATH.
+ */
+static int
+file_hooks_probe(int *rename_nargs, int *file_truncate)
+{
+	struct btf	*btf;
+
+	if ((btf = btf__load_vmlinux_btf()) == NULL) {
+		qwarn("can't load the kernel BTF");
+		return (errno = ENOTSUP, -1);
+	}
+	*rename_nargs = lsm_hook_nargs(btf, "path_rename");
+	*file_truncate = lsm_hook_nargs(btf, "file_truncate") != -1;
+	btf__free(btf);
+	if (*rename_nargs != 4 && *rename_nargs != 5) {
+		qwarnx("a block on file.path needs the path hooks of the "
+		    "kernel, CONFIG_SECURITY_PATH");
+		return (errno = ENOTSUP, -1);
+	}
+
+	return (0);
+}
+
+/*
+ * Choose the programs of the blocks to load: the test program, and the
+ * hooks that the compiled blocks need, none for hooks == 0. A ruleset
+ * without a block on file.path does not pay for the file hooks, and the
+ * other way around. No hook attaches by itself, see attach_blocks().
+ */
+static int
+block_programs(struct nova_queue *nqq, int hooks)
+{
+	struct nova		*nova = nqq->nova;
+	struct block_hook	 bh[BLOCK_N_HOOKS];
+	int			 i, load, process, file;
+	int			 rename_nargs = 0, file_truncate = 0;
+
+	process = hooks && nqq->blocks != NULL && nqq->blocks->n_exe > 0;
+	file = hooks && nqq->blocks != NULL && nqq->blocks->n_file > 0;
+	if (file && file_hooks_probe(&rename_nargs, &file_truncate) == -1)
+		return (-1);
+	block_hooks(nova, bh);
+	for (i = 0; i < BLOCK_N_HOOKS; i++) {
+		load = bh[i].file ? file : process;
+		if (bh[i].prog == nova->progs.blk_path_rename)
+			load = load && rename_nargs == 5;
+		else if (bh[i].prog == nova->progs.blk_path_rename4)
+			load = load && rename_nargs == 4;
+		else if (bh[i].prog == nova->progs.blk_file_truncate)
+			load = load && file_truncate;
+		bpf_program__set_autoload(bh[i].prog, load);
+		bpf_program__set_autoattach(bh[i].prog, 0);
+	}
+	bpf_program__set_autoload(nova->progs.blk_test, nqq->blocks != NULL);
+	/* blk_test is run with BPF_PROG_TEST_RUN, never attached */
+	bpf_program__set_autoattach(nova->progs.blk_test, 0);
+	/* Only the file hooks build a path */
+	bpf_map__set_autocreate(nova->maps.blk_scratch, file);
+
+	return (0);
+}
+
+/*
+ * Load what the blocks need and nothing else: none of the programs that
+ * send events, and none of their maps. What is left needs Linux 5.17, the
+ * other programs need 5.19.
+ */
+static int
+nova_blocks_only(struct nova_queue *nqq, int hooks)
+{
+	struct nova		*nova = nqq->nova;
 	struct bpf_program	*prog;
 
-	bpf_object__for_each_program(prog, nova->obj) {
-		bpf_program__set_autoload(prog, prog == nova->progs.blk_test ||
-		    (hooks && (prog == nova->progs.blk_bprm_check ||
-		    prog == nova->progs.blk_task_alloc)));
-	}
-	/* blk_test is never attached, the hooks by attach_blocks() */
-	bpf_program__set_autoattach(nova->progs.blk_test, 0);
-	bpf_program__set_autoattach(nova->progs.blk_bprm_check, 0);
-	bpf_program__set_autoattach(nova->progs.blk_task_alloc, 0);
+	bpf_object__for_each_program(prog, nova->obj)
+		bpf_program__set_autoload(prog, 0);
 	bpf_map__set_autocreate(nova->maps.scratch_eval, 0);
 	bpf_map__set_autocreate(nova->maps.lpm_path, 0);
 	bpf_map__set_autocreate(nova->maps.ruleset, 0);
 	bpf_map__set_autocreate(nova->maps.ruleset_pcpu, 0);
 	bpf_map__set_autocreate(nova->maps.output_ring, 0);
+
+	return (block_programs(nqq, hooks));
 }
 
 #define NOVA_LSM_LIST	"/sys/kernel/security/lsm"
@@ -360,33 +477,20 @@ static int
 load_rodata(struct quark_queue *qq, struct nova_queue *nqq)
 {
 	struct nova	*nova = nqq->nova;
-	int		 has_blocks;
 
-	has_blocks = qq->ruleset != NULL && qq->ruleset->n_blocks > 0;
-	bpf_program__set_autoload(nova->progs.blk_bprm_check, has_blocks);
-	bpf_program__set_autoload(nova->progs.blk_task_alloc, has_blocks);
-	bpf_program__set_autoload(nova->progs.blk_test, has_blocks);
-	/* blk_test is run with BPF_PROG_TEST_RUN, never attached */
-	bpf_program__set_autoattach(nova->progs.blk_test, 0);
-	/* The hooks of the blocks are attached last, see attach_blocks() */
-	bpf_program__set_autoattach(nova->progs.blk_bprm_check, 0);
-	bpf_program__set_autoattach(nova->progs.blk_task_alloc, 0);
-
-	if (qq->ruleset == NULL)
-		return (0);
-	if (qq->ruleset->n_rules > NOVA_MAX_RULES)
-		return (errno = EFBIG, -1);
-
-	nova->rodata->rules_active = qq->ruleset->n_rules;
-
-	if (has_blocks) {
-		if (check_bpf_lsm() == -1)
-			return (-1);
-		if (load_block_rodata(nqq, qq->ruleset) == -1)
-			return (-1);
+	if (qq->ruleset != NULL) {
+		if (qq->ruleset->n_rules > NOVA_MAX_RULES)
+			return (errno = EFBIG, -1);
+		nova->rodata->rules_active = qq->ruleset->n_rules;
+		if (qq->ruleset->n_blocks > 0) {
+			if (check_bpf_lsm() == -1)
+				return (-1);
+			if (load_block_rodata(nqq, qq->ruleset) == -1)
+				return (-1);
+		}
 	}
 
-	return (0);
+	return (block_programs(nqq, 1));
 }
 
 /* Install the patterns of one field in its trie */
@@ -574,21 +678,20 @@ nova_deny_populate(struct quark_queue *qq, int max)
 static int
 attach_blocks(struct nova_queue *nqq)
 {
-	struct nova	*nova = nqq->nova;
+	struct block_hook	 bh[BLOCK_N_HOOKS];
+	int			 i;
 
 	if (nqq->blocks == NULL)
 		return (0);
-	nova->links.blk_bprm_check =
-	    bpf_program__attach(nova->progs.blk_bprm_check);
-	if (nova->links.blk_bprm_check == NULL) {
-		qwarn("can't attach blk_bprm_check");
-		return (-1);
-	}
-	nova->links.blk_task_alloc =
-	    bpf_program__attach(nova->progs.blk_task_alloc);
-	if (nova->links.blk_task_alloc == NULL) {
-		qwarn("can't attach blk_task_alloc");
-		return (-1);
+	block_hooks(nqq->nova, bh);
+	for (i = 0; i < BLOCK_N_HOOKS; i++) {
+		if (!bpf_program__autoload(bh[i].prog))
+			continue;
+		*bh[i].link = bpf_program__attach(bh[i].prog);
+		if (*bh[i].link == NULL) {
+			qwarn("can't attach %s", bpf_program__name(bh[i].prog));
+			return (-1);
+		}
 	}
 
 	return (0);
@@ -614,8 +717,9 @@ nova_block_test_open(const struct quark_ruleset *ruleset)
 		return (NULL);
 	if ((nqq->nova = nova_open_object()) == NULL)
 		goto fail;
-	nova_blocks_only(nqq->nova, 0);
 	if (load_block_rodata(nqq, ruleset) == -1)
+		goto fail;
+	if (nova_blocks_only(nqq, 0) == -1)
 		goto fail;
 	if (nova__load(nqq->nova) != 0)
 		goto fail;
@@ -1087,8 +1191,9 @@ nova_enforcer_open(struct quark_queue *qq)
 	qq->enforcer = nqq;
 	if ((nqq->nova = nova_open_object()) == NULL)
 		goto fail;
-	nova_blocks_only(nqq->nova, 1);
 	if (load_block_rodata(nqq, qq->ruleset) == -1)
+		goto fail;
+	if (nova_blocks_only(nqq, 1) == -1)
 		goto fail;
 	if (nova__load(nqq->nova) != 0) {
 		qwarn("can't load the programs of the blocks, "
