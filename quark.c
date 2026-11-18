@@ -4889,6 +4889,12 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		    !(qa->flags & QQ_EBPF) ||
 		    qa->kubefd != -1)
 			return (errno = EINVAL, -1);
+		/*
+		 * Bypass hands out the events of the ring as they are, it
+		 * has no queue for a denied attempt and no process cache.
+		 */
+		if (qa->ruleset != NULL && qa->ruleset->n_blocks > 0)
+			return (errno = EINVAL, -1);
 
 		/*
 		 * No buffering, we just pop one element from the ring and
@@ -5370,13 +5376,17 @@ quark_queue_populate(struct quark_queue *qq)
 {
 	int	n, m;
 
+	/*
+	 * The denied attempts of the blocks first: they get a share of the
+	 * room in the queue before the backend takes all of it, see
+	 * deny_ringbuf_populate() in nova_queue.c
+	 */
+	m = 0;
+	if (qq->enforcer != NULL && (m = nova_enforcer_populate(qq)) < 0)
+		m = 0;
 	n = qq->queue_ops->populate(qq);
-	/* The denied attempts of the blocks, see nova_enforcer_open() */
-	if (qq->enforcer != NULL) {
-		m = nova_enforcer_populate(qq);
-		if (n >= 0 && m > 0)
-			n += m;
-	}
+	if (n >= 0)
+		n += m;
 
 	return (n);
 }

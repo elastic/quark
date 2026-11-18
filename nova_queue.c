@@ -543,7 +543,14 @@ deny_ringbuf_close(struct quark_queue *qq, struct nova_queue *nqq)
 	nqq->deny_ringbuf = NULL;
 }
 
-/* Take the denied operations out of their ring, as many as fit */
+/*
+ * Take the denied operations out of their ring. This must run before the
+ * ring of the events is read, and it takes at most half of the room that
+ * is left in the queue, rounded up. Read last, the denials would wait for
+ * as long as the events have a backlog, since the events take every slot
+ * that gets free. Read first without a limit, a process that is denied in
+ * a loop would keep the events out.
+ */
 static int
 deny_ringbuf_populate(struct quark_queue *qq, struct nova_queue *nqq)
 {
@@ -555,7 +562,7 @@ deny_ringbuf_populate(struct quark_queue *qq, struct nova_queue *nqq)
 	    qq->max_length - qq->length;
 	if (space_left == 0)
 		return (0);
-	npop = ring_buffer__consume_n(nqq->deny_ringbuf, space_left);
+	npop = ring_buffer__consume_n(nqq->deny_ringbuf, (space_left + 1) / 2);
 
 	return (npop < 0 ? -1 : npop);
 }
@@ -860,20 +867,22 @@ nova_queue_populate(struct quark_queue *qq)
 	struct nova_queue	*nqq = qq->queue_be;
 	int			 npop, nblk, space_left;
 
+	/* The denials first, see deny_ringbuf_populate() */
+	if ((nblk = deny_ringbuf_populate(qq, nqq)) < 0)
+		nblk = 0;
+
 	space_left =
 	    qq->flags & QQ_BYPASS ? 1 :
 	    qq->length >= qq->max_length ? 0 :
 	    qq->max_length - qq->length;
 	if (space_left == 0)
-		return (0);
+		return (nblk);
 
 	npop = ring_buffer__consume_n(nqq->ringbuf, space_left);
 	if (npop < 0)
 		return (-1);
-	if ((nblk = deny_ringbuf_populate(qq, nqq)) > 0)
-		npop += nblk;
 
-	return (npop);
+	return (npop + nblk);
 }
 
 /*

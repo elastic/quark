@@ -277,7 +277,7 @@ type Event struct {
 	File       *File
 	Ptrace     *Ptrace
 	Mprotect   *Mprotect
-	Blocked    *Blocked // Set for QUARK_EV_BLOCKED
+	Blocked    *Blocked // Set for QUARK_EV_BLOCKED, Process may then be empty
 	ModuleLoad *ModuleLoad
 	Shm        *any // ShmGet, MemFd or ShmOpen
 	Tty        *Tty
@@ -551,7 +551,12 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	var event Event
 
 	cev := C.quark_queue_get_event(queue.quarkQueue)
-	if cev == nil || cev.process == nil {
+	if cev == nil {
+		return event, false
+	}
+	// An event has a process. The exception is a denied attempt, whose
+	// process may not be in the cache: Blocked.Pid says who tried.
+	if cev.process == nil && uint64(cev.events)&QUARK_EV_BLOCKED == 0 {
 		return event, false
 	}
 
@@ -559,7 +564,9 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	if cev.tags != 0 {
 		event.Tags = queue.tagsFromBits(uint64(cev.tags))
 	}
-	event.Process = processFromC(cev.process)
+	if cev.process != nil {
+		event.Process = processFromC(cev.process)
+	}
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)
 		event.Socket = &socket

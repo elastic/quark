@@ -9,9 +9,11 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -219,6 +221,87 @@ func TestQuark(t *testing.T) {
 			}
 		}
 		require.True(t, foundChild)
+	})
+
+	t.Run("RuleBlock", func(t *testing.T) {
+		// A block denies an exec in a container, and the denied
+		// attempt is an event with the tag blocked, as in
+		// t_block_enforcer of quark-test. The container is a cgroup
+		// named like a container scope, and the program a copy of
+		// true under a name of our own.
+		bin, err := os.ReadFile("/bin/true")
+		if err != nil {
+			bin, err = os.ReadFile("/usr/bin/true")
+		}
+		require.NoError(t, err)
+		tmp, err := os.CreateTemp("", "quark-go-test-true.")
+		require.NoError(t, err)
+		defer os.Remove(tmp.Name())
+		_, err = tmp.Write(bin)
+		require.NoError(t, err)
+		require.NoError(t, tmp.Chmod(0755))
+		require.NoError(t, tmp.Close())
+		path, err := filepath.EvalSymlinks(tmp.Name())
+		require.NoError(t, err)
+
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+		attr.RuleText = fmt.Sprintf(
+			"block {\n"+
+				"\ton process.exe %s\n"+
+				"}\n"+
+				"drop on any", path)
+		queue, err := OpenQueue(attr)
+		if err != nil {
+			t.Skipf("blocks are not supported here: %v", err)
+		}
+		defer queue.Close()
+		require.Equal(t, []string{"blocked"}, queue.tagNames)
+
+		// The pids controller must reach the scope, the hooks read
+		// the name of the pids cgroup of a task.
+		slice := "/sys/fs/cgroup/quark-go-test.slice"
+		scope := slice + "/docker-" +
+			strings.Repeat("0123456789abcdef", 4) + ".scope"
+		_ = os.WriteFile("/sys/fs/cgroup/cgroup.subtree_control",
+			[]byte("+pids"), 0)
+		require.NoError(t, os.MkdirAll(slice, 0755))
+		defer os.Remove(slice)
+		require.NoError(t, os.WriteFile(slice+"/cgroup.subtree_control",
+			[]byte("+pids"), 0))
+		require.NoError(t, os.MkdirAll(scope, 0755))
+		defer os.Remove(scope)
+		dir, err := os.Open(scope)
+		require.NoError(t, err)
+		defer dir.Close()
+
+		// The child starts in the cgroup, its exec is denied
+		cmd := exec.Command(path)
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			UseCgroupFD: true,
+			CgroupFD:    int(dir.Fd()),
+		}
+		err = cmd.Run()
+		require.ErrorIs(t, err, syscall.EPERM)
+
+		qevs, err := drainFor(queue, 300*time.Millisecond)
+		require.NoError(t, err)
+		var blocked []Event
+		for _, qev := range qevs {
+			if qev.Blocked != nil {
+				blocked = append(blocked, qev)
+			}
+		}
+		require.Len(t, blocked, 1)
+		qev := blocked[0]
+		require.Equal(t, QUARK_EV_BLOCKED, qev.Events)
+		require.Equal(t, []string{"blocked"}, qev.Tags)
+		require.Equal(t, QUARK_BLOCKED_EXEC, qev.Blocked.Op)
+		require.Equal(t, uint32(0), qev.Blocked.Block)
+		require.Equal(t, path, qev.Blocked.Path)
+		require.Empty(t, qev.Blocked.Path2)
+		require.NotZero(t, qev.Blocked.Pid)
+		require.Equal(t, qev.Blocked.Pid, qev.Process.Pid)
 	})
 
 	t.Run("SocketLookup", func(t *testing.T) {

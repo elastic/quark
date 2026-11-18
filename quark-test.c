@@ -5807,6 +5807,14 @@ t_rule_block(const struct test *t, struct quark_queue_attr *qa)
 	errno = 0;
 	assert(quark_queue_open(&qq, &attr) == -1);
 	assert(errno == ENOTSUP);
+	/* And not in bypass mode, which has no queue for a denied attempt */
+	quark_queue_default_attr(&attr);
+	attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
+	attr.flags |= QQ_EBPF | QQ_BYPASS;
+	attr.ruleset = &ruleset;
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EINVAL);
 	quark_ruleset_clear(&ruleset);
 	assert(ruleset.n_blocks == 0 && ruleset.blocked_tag == 0);
 
@@ -7212,6 +7220,72 @@ t_block_enforcer(const struct test *t, struct quark_queue_attr *qa)
 
 	quark_queue_close(&qq);
 	assert(qq.enforcer == NULL);
+	quark_ruleset_clear(&ruleset);
+	block_cgroup_cleanup();
+	(void)unlink(true_path);
+
+	return (0);
+}
+
+/*
+ * A denied attempt must reach the client when the event backend has a
+ * backlog. The queue is small, and a storm of forks waits in the ring of
+ * the backend when we start to read: the denial must not wait behind it.
+ */
+static int
+t_block_enforcer_backlog(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	const struct quark_event	*qev;
+	char				 true_path[PATH_MAX];
+	char				*text;
+	pid_t				 pid;
+	int				 i, status, found;
+
+	block_copy_true(true_path, sizeof(true_path));
+	assert(asprintf(&text,
+	    "block {\n\ton process.exe %s\n}\ndrop on any\n", true_path) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	qa->max_length = 4;
+	qa->hold_time = 50;
+	if (quark_queue_open(&qq, qa) != 0) {
+		if (errno != ENOTSUP || block_supported())
+			err(1, "%s: quark_queue_open", t->name);
+		quark_ruleset_clear(&ruleset);
+		(void)unlink(true_path);
+		return (0);
+	}
+	block_cgroup_setup();
+
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	for (i = 0; i < 600; i++) {
+		if ((pid = fork()) == -1)
+			err(1, "fork");
+		if (pid == 0)
+			_exit(0);
+		if (waitpid(pid, &status, 0) == -1)
+			err(1, "waitpid");
+	}
+
+	/*
+	 * Each call takes at most 4 events in, and the storm has more than
+	 * a thousand. One second is many hold times for the denial, and far
+	 * too short to get through the storm.
+	 */
+	for (i = 0, found = 0; i < 100 && !found; i++) {
+		qev = quark_queue_get_event(&qq);
+		if (qev != NULL && qev->events == QUARK_EV_BLOCKED)
+			found = 1;
+		else if (qev == NULL)
+			msleep(10);
+	}
+	if (!found)
+		errx(1, "the denied attempt waits behind the backlog");
+
+	quark_queue_close(&qq);
 	quark_ruleset_clear(&ruleset);
 	block_cgroup_cleanup();
 	(void)unlink(true_path);
@@ -9164,6 +9238,7 @@ struct test all_tests[] = {
 	T_NOVA(t_block_process_nova),
 	T_NOVA(t_block_container_nova),
 	T_EBPF(t_block_enforcer),
+	T_EBPF(t_block_enforcer_backlog),
 	T(t_rule_pod_name),
 	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),
