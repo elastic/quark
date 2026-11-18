@@ -1584,6 +1584,38 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
 
 	/*
+	 * After the ring, most of our kernel memory is in three preallocated
+	 * maps that the always loaded process probes never touch: the
+	 * scratch space of file renames (8MiB) with its init buffer, the
+	 * entry to exit state, and the socket owners. Only create them if
+	 * a user-selected feature uses them.
+	 */
+	if (!(qq->flags & QQ_FILE)) {
+		if (bpf_map__set_autocreate(
+		    p->maps.elastic_ebpf_events_scratch_space, 0) != 0 ||
+		    bpf_map__set_autocreate(
+		    p->maps.elastic_ebpf_events_init_buffer, 0) != 0) {
+			qwarn("bpf_map__set_autocreate scratch_space");
+			goto fail;
+		}
+	}
+	/* The tcp connect probes only keep state as kprobes */
+	if (!(qq->flags & (QQ_FILE | QQ_SHM)) &&
+	    !((qq->flags & QQ_SOCK_CONN) && !use_fentry)) {
+		if (bpf_map__set_autocreate(p->maps.elastic_ebpf_events_state,
+		    0) != 0) {
+			qwarn("bpf_map__set_autocreate state");
+			goto fail;
+		}
+	}
+	if (!(qq->flags & (QQ_SOCK_CONN | QQ_DNS))) {
+		if (bpf_map__set_autocreate(p->maps.sk_to_tgid, 0) != 0) {
+			qwarn("bpf_map__set_autocreate sk_to_tgid");
+			goto fail;
+		}
+	}
+
+	/*
 	 * Older kernels account BPF maps against RLIMIT_MEMLOCK. libbpf
 	 * tries to bump this itself but skips it when it (sometimes
 	 * wrongly) thinks the kernel uses memcg accounting. Do it before the

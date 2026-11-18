@@ -1244,6 +1244,83 @@ t_probe_all(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * How many BPF maps this process holds.
+ */
+static int
+bpf_maps_count(void)
+{
+	DIR		*dir;
+	struct dirent	*d;
+	char		 target[64];
+	ssize_t		 n;
+	int		 count;
+
+	if ((dir = opendir("/proc/self/fd")) == NULL)
+		err(1, "opendir /proc/self/fd");
+	count = 0;
+	while ((d = readdir(dir)) != NULL) {
+		if (!isnumber(d->d_name))
+			continue;
+		n = readlinkat(dirfd(dir), d->d_name, target,
+		    sizeof(target) - 1);
+		if (n == -1)
+			continue;
+		target[n] = 0;
+		if (!strcmp(target, "anon_inode:bpf-map"))
+			count++;
+	}
+	closedir(dir);
+
+	return (count);
+}
+
+/*
+ * The large maps of the file, socket and shared memory probes are only
+ * created for the features that use them. A program doesn't load without
+ * a map it refers to, so each feature must open on its own, and a queue
+ * with none of those features must end up with fewer maps.
+ */
+static int
+t_probe_each(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	const int		 features[] = {
+		QQ_SOCK_CONN, QQ_DNS, QQ_FILE, QQ_SHM, QQ_TTY, QQ_PTRACE,
+		QQ_MODULE_LOAD, QQ_GETPID, QQ_MPROTECT
+	};
+	const int		 base = qa->flags;
+	int			 maps_ours, maps_process, maps_most;
+	size_t			 i;
+
+	maps_ours = bpf_maps_count();
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	maps_process = bpf_maps_count() - maps_ours;
+	quark_queue_close(&qq);
+
+	for (i = 0; i < nitems(features); i++) {
+		qa->flags = base | features[i];
+		if (quark_queue_open(&qq, qa) != 0)
+			err(1, "%s: quark_queue_open with flag 0x%x",
+			    t->name, features[i]);
+		quark_queue_close(&qq);
+	}
+
+	qa->flags = base | QQ_FILE | QQ_SOCK_CONN | QQ_DNS | QQ_SHM;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	maps_most = bpf_maps_count() - maps_ours;
+	quark_queue_close(&qq);
+
+	if (maps_process >= maps_most)
+		errx(1, "%d maps for process events alone, %d with files "
+		    "and sockets", maps_process, maps_most);
+
+	return (0);
+}
+
+/*
  * CI boxes are small, so quark_queue_open() only allocates the 4 MiB
  * floor. Create a 64 MiB ringbuf so RLIMIT_MEMLOCK / memcg accounting
  * is exercised on every kernel we test.
@@ -5959,7 +6036,8 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 	}
 	close(fd);
 
-	qa->flags |= QQ_SOCK_CONN;
+	/* Each map is only created for a feature that uses it */
+	qa->flags |= QQ_SOCK_CONN | QQ_FILE;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
@@ -7110,6 +7188,7 @@ struct test all_tests[] = {
 	T(t_test_fs),
 	T_EBPF(t_probe),
 	T_EBPF(t_probe_all),
+	T_EBPF(t_probe_each),
 	T_EBPF(t_ringbuf_max),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
