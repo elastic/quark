@@ -67,7 +67,23 @@ struct sender {
 static struct sockaddr_in	dst;
 static const char		*ifname;	/* through which device */
 static const char		payload[64];
-static volatile int		go, stop;
+
+/*
+ * Set once, by the main thread or by a signal handler, otherwise polled.
+ */
+static int			go, stop;
+
+static int
+flag_get(int *flag)
+{
+	return (__atomic_load_n(flag, __ATOMIC_RELAXED));
+}
+
+static void
+flag_set(int *flag)
+{
+	__atomic_store_n(flag, 1, __ATOMIC_RELAXED);
+}
 
 static uint64_t
 now(void)
@@ -131,7 +147,7 @@ send1(int fd, const struct sockaddr_in *to, struct count *c)
 static void
 sigstop(int sig)
 {
-	stop = 1;
+	flag_set(&stop);
 }
 
 static void
@@ -155,11 +171,11 @@ flows(int nflows, int period_ms)
 	to = dst;
 	n = 0;
 	start = now();
-	while (!stop) {
+	while (!flag_get(&stop)) {
 		elapsed = now() - start;
 		/* How many should have left by now */
 		due = elapsed * nflows / (period_ms * NS_PER_MS);
-		for (; n < due && !stop; n++) {
+		for (; n < due && !flag_get(&stop); n++) {
 			to.sin_port = htons(FLOWS_PORT + n % nflows);
 			send1(fd, &to, &c);
 		}
@@ -197,9 +213,9 @@ pps_thread(void *arg)
 	struct count	 c = { 0, 0 };
 
 	pin(s->cpu);
-	while (!go)
+	while (!flag_get(&go))
 		usleep(100);
-	while (!stop)
+	while (!flag_get(&stop))
 		send1(s->fd, NULL, &c);
 	s->count = c;
 
@@ -229,9 +245,9 @@ pps(int threads, int seconds)
 	}
 	usleep(100000);		/* let them reach their cpus */
 	start = now();
-	go = 1;
+	flag_set(&go);
 	sleep(seconds);
-	stop = 1;
+	flag_set(&stop);
 	elapsed = now() - start;
 	for (i = 0; i < threads; i++) {
 		pthread_join(s[i].thread, NULL);
