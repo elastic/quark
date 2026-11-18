@@ -143,7 +143,7 @@ ebpf_ctx_to_task(struct quark_queue *qq, struct ebpf_ctx *ebpf_ctx, struct raw_t
 	task->cap_effective = ebpf_ctx->creds->cap_effective;
 	task->cap_bset = 0; /* unavailable */
 	task->cap_ambient = 0; /* unavailable */
-	task->start_boottime = ebpf_ctx->pids->start_time_ns; /* XXX check format */
+	task->start_boottime = ebpf_ctx->pids->start_time_ns;
 	task->uid = ebpf_ctx->creds->ruid;
 	task->gid = ebpf_ctx->creds->rgid;
 	task->suid = ebpf_ctx->creds->suid;

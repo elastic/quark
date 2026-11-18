@@ -454,7 +454,7 @@ struct raw_mprotect {
 #define QUARK_BPF_VALID_ATTR    (1U << 0)
 #define QUARK_BPF_VALID_OBJECT  (1U << 1)
 struct quark_bpf {
-	u64	 start_time_ns; /* actor process start, CLOCK_MONOTONIC */
+	u64	 start_time_ns; /* actor process start, CLOCK_BOOTTIME */
 	u32	 tgid;          /* actor process, in the host pid namespace */
 	s64	 ret;           /* operation result, fd or negative errno */
 	u32	 cmd;           /* normalized enum bpf_cmd */

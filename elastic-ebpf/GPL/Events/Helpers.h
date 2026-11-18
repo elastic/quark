@@ -42,6 +42,7 @@
 #define EBPF_EVENTPROBE_HELPERS_H
 
 #include "EbpfEventProto.h"
+#include "vmlinux_extra.h"
 
 const volatile int consumer_pid = 0;
 
@@ -317,6 +318,21 @@ static void ebpf_ctty__fill(struct ebpf_tty_dev *ctty, const struct task_struct 
     ebpf_tty_dev__fill(ctty, tty);
 }
 
+// Start time of the thread group, in CLOCK_BOOTTIME like the event
+// timestamps (bpf_ktime_get_boot_ns()) and /proc/<pid>/stat starttime.
+// task_struct.start_time is CLOCK_MONOTONIC, which stops during suspend: a
+// process started after the host slept would read as started earlier by
+// the total time asleep since boot. The field was real_start_time before 5.5.
+static u64 ebpf_task_start_boottime(const struct task_struct *task)
+{
+    const struct task_struct *leader = BPF_CORE_READ(task, group_leader);
+
+    if (bpf_core_field_exists(leader->start_boottime))
+        return BPF_CORE_READ(leader, start_boottime);
+
+    return BPF_CORE_READ((const struct task_struct___pre_5_5 *)leader, real_start_time);
+}
+
 static void ebpf_pid_info__fill(struct ebpf_pid_info *pi, const struct task_struct *task)
 {
     int e_pgid, e_sid;
@@ -334,7 +350,7 @@ static void ebpf_pid_info__fill(struct ebpf_pid_info *pi, const struct task_stru
     pi->ppid          = BPF_CORE_READ(task, group_leader, real_parent, tgid);
     pi->pgid          = BPF_CORE_READ(task, group_leader, signal, pids[e_pgid], numbers[0].nr);
     pi->sid           = BPF_CORE_READ(task, group_leader, signal, pids[e_sid], numbers[0].nr);
-    pi->start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
+    pi->start_time_ns = ebpf_task_start_boottime(task);
 }
 
 static void ebpf_cred_info__fill(struct ebpf_cred_info *ci, const struct task_struct *task)

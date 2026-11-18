@@ -332,3 +332,9 @@ Changes from 0.11 to 0.12
     tag blocks with ENOTSUP.
   o quark_event_dump() prints a TAGS line with the tag names of an event,
     and go/quark has them in Event.Tags.
+  o The EBPF backend now reports process start times, proc_time_boot
+    and bpf.start_time_ns, in CLOCK_BOOTTIME like event times and the
+    kprobe backend. They were CLOCK_MONOTONIC, which stops during
+    suspend, so a process started after the host had slept read as
+    started earlier by the total time asleep since boot. For those
+    processes, proc_entity_id, which hashes proc_time_boot, changes too.

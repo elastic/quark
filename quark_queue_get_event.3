@@ -109,7 +109,8 @@ and
 .Em bpf.start_time_ns
 retain its host process ID, invoking thread ID and process start time even
 when the process cache has no entry.
-The start time uses CLOCK_MONOTONIC.
+The start time uses CLOCK_BOOTTIME, like
+.Em proc_time_boot .
 .Pp
 .Em valid
 indicates which metadata was captured.

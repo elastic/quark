@@ -163,7 +163,8 @@ task_to_nova(struct task_struct *task, struct nova_task *nt)
 	bpf_core_read(&nt->cap_eff, sizeof(nt->cap_eff), &cred->cap_effective);
 	bpf_core_read(&nt->cap_perm, sizeof(nt->cap_perm), &cred->cap_permitted);
 
-	nt->start_time_ns = BPF_CORE_READ(gl, start_time);
+	/* CLOCK_BOOTTIME, start_time is CLOCK_MONOTONIC and misses suspend */
+	nt->start_time_ns = BPF_CORE_READ(gl, start_boottime);
 	nt->tid = BPF_CORE_READ(task, pid);
 	nt->pid = BPF_CORE_READ(task, tgid);
 	nt->ppid = BPF_CORE_READ(gl, real_parent, tgid);
