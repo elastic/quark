@@ -1228,6 +1228,100 @@ t_ringbuf_max(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * List the descriptors of this process that would be inherited on exec.
+ * The caller frees the list.
+ */
+static int *
+inheritable_fds(size_t *nfds)
+{
+	DIR		*dir;
+	struct dirent	*d;
+	struct rlimit	 rl;
+	int		*fds, *tmp, fd, fl;
+	size_t		 n;
+
+	if (getrlimit(RLIMIT_NOFILE, &rl) == -1)
+		err(1, "getrlimit");
+	if ((dir = opendir("/proc/self/fd")) == NULL)
+		err(1, "opendir /proc/self/fd");
+	fds = NULL;
+	n = 0;
+	while ((d = readdir(dir)) != NULL) {
+		if (!isnumber(d->d_name))
+			continue;
+		fd = atoi(d->d_name);
+		if ((rlim_t)fd >= rl.rlim_cur)
+			/*
+			 * A descriptor at or above the soft limit is not ours
+			 * (e.g. it is where valgrind keeps its own fds).
+			 */
+			continue;
+		if ((fl = fcntl(fd, F_GETFD)) == -1)
+			err(1, "fcntl descriptor %d", fd);
+		if (fl & FD_CLOEXEC)
+			continue;
+		if ((tmp = realloc(fds, (n + 1) * sizeof(*fds))) == NULL)
+			err(1, "realloc");
+		fds = tmp;
+		fds[n++] = fd;
+	}
+	closedir(dir);
+	*nfds = n;
+
+	return (fds);
+}
+
+/*
+ * A queue must not add descriptors that survive an exec. An inherited
+ * perf descriptor of the KPROBE backend keeps its event alive in the
+ * child, quark_queue_close() can then no longer uninstall the kprobes and
+ * leaves them behind for good.
+ */
+static int
+t_cloexec(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	int			*before, *after;
+	size_t			 nbefore, nafter, i, j;
+	char			 path[64], target[256];
+	ssize_t			 n;
+	int			 leaked;
+
+	before = inheritable_fds(&nbefore);
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	after = inheritable_fds(&nafter);
+
+	leaked = 0;
+	/*
+	 * Report each descriptor that is inheritable now and wasn't before the
+	 * open (so it must have been added by the queue). The inner loop
+	 * only scans and it stops short of nbefore when after[i] was in the old
+	 * list.
+	 */
+	for (i = 0; i < nafter; i++) {
+		for (j = 0; j < nbefore && before[j] != after[i]; j++)
+			;	/* Nothing */
+		if (j < nbefore)
+			continue;
+		snprintf(path, sizeof(path), "/proc/self/fd/%d", after[i]);
+		if ((n = readlink(path, target, sizeof(target) - 1)) == -1)
+			n = 0;
+		target[n] = 0;
+		warnx("descriptor %d (%s) lacks close-on-exec", after[i],
+		    target);
+		leaked++;
+	}
+	quark_queue_close(&qq);
+	free(before);
+	free(after);
+	if (leaked != 0)
+		errx(1, "%d descriptors would be inherited", leaked);
+
+	return (0);
+}
+
+/*
  * Return 1 if perf can stamp samples with a selectable clock,
  * kernels >= 4.1 and RHEL >= 7.4.
  */
@@ -6845,6 +6939,8 @@ struct test all_tests[] = {
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
 	T_KPROBE(t_kprobe_clockid),
+	T_EBPF(t_cloexec),
+	T_KPROBE(t_cloexec),
 	T_EBPF(t_os_release),
 	T_KPROBE(t_os_release),
 	T_EBPF(t_fork_exec_exit),
