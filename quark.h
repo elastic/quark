@@ -162,7 +162,6 @@ int			 nova_queue_open(struct quark_queue *);
 int			 nova_enforcer_open(struct quark_queue *);
 void			 nova_enforcer_close(struct quark_queue *);
 int			 nova_enforcer_update_stats(struct quark_queue *);
-int			 nova_enforcer_populate(struct quark_queue *);
 void			 nova_enforcer_container(struct quark_queue *,
 			     const struct quark_container *, int);
 void			*nova_block_test_open(const struct quark_ruleset *);
@@ -1019,6 +1018,13 @@ struct quark_queue {
 	 * a backend that can't, see nova_enforcer_open(). NULL without.
 	 */
 	void				*enforcer;
+	/*
+	 * Reads up to that many denied attempts into the queue, NULL
+	 * without blocks. The denials and the events of the backend take
+	 * turns, see quark_queue_populate().
+	 */
+	int				(*deny_populate)(struct quark_queue *, int);
+	int				 deny_turn;
 };
 
 #endif /* _QUARK_H_ */

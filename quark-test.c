@@ -6014,6 +6014,123 @@ t_rule_blocked(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * The events of the backend and the denied attempts share the queue. Both
+ * sides here always have more to give, as two rings with a backlog. Each
+ * read frees one slot, and neither side may take it every time.
+ */
+static u64	fair_time;
+static int	fair_events, fair_denials, fair_stop;
+
+static void
+fair_insert(struct quark_queue *qq, int type)
+{
+	struct raw_event	*raw;
+
+	raw = raw_event_alloc(type);
+	assert(raw != NULL);
+	raw->time = ++fair_time;
+	raw->pid = 100000 + fair_time;
+	assert(raw_event_insert(qq, raw) == 0);
+}
+
+static int
+fair_backend_populate(struct quark_queue *qq)
+{
+	int	n;
+
+	for (n = 0; !fair_stop && qq->length < qq->max_length; n++) {
+		fair_insert(qq, RAW_GETPID);
+		fair_events++;
+	}
+
+	return (n);
+}
+
+static int
+fair_deny_populate(struct quark_queue *qq, int max)
+{
+	int	n;
+
+	for (n = 0; !fair_stop && n < max && qq->length < qq->max_length;
+	    n++) {
+		fair_insert(qq, RAW_BLOCKED);
+		fair_denials++;
+	}
+
+	return (n);
+}
+
+static int
+fair_nop(struct quark_queue *qq)
+{
+	return (0);
+}
+
+static void
+fair_close(struct quark_queue *qq)
+{
+}
+
+static struct quark_queue_ops fair_ops = {
+	.open		= fair_nop,
+	.populate	= fair_backend_populate,
+	.update_stats	= fair_nop,
+	.close		= fair_close,
+};
+
+static int
+t_block_populate_fair(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	/*
+	 * Below 10: a bare queue has no hold time, and with more room
+	 * raw_event_target_age() divides by it.
+	 */
+	int				 caps[] = { 1, 2, 4, 8 };
+	size_t				 c;
+	int				 i, got_events, got_denials;
+
+	for (c = 0; c < nitems(caps); c++) {
+		quark_queue_init_bare(&qq);
+		qq.max_length = caps[c];
+		qq.queue_ops = &fair_ops;
+		qq.deny_populate = fair_deny_populate;
+		fair_events = fair_denials = fair_stop = 0;
+		got_events = got_denials = 0;
+
+		for (i = 0; i < 1000; i++) {
+			qev = quark_queue_get_event(&qq);
+			assert(qev != NULL);
+			if (qev->events & QUARK_EV_BLOCKED)
+				got_denials++;
+			else
+				got_events++;
+		}
+		/* Neither side is kept out, here each gets about half */
+		if (fair_events < 400 || fair_denials < 400 ||
+		    got_events < 400 || got_denials < 400)
+			errx(1, "queue of %d: %d events and %d denials read, "
+			    "%d and %d delivered", caps[c], fair_events,
+			    fair_denials, got_events, got_denials);
+
+		/* Only one side has something: it gets all the room */
+		qq.deny_populate = NULL;
+		fair_events = 0;
+		for (i = 0; i < 100; i++)
+			assert(quark_queue_get_event(&qq) != NULL);
+		assert(fair_events == 100);
+
+		fair_stop = 1;
+		while (quark_queue_get_event(&qq) != NULL)
+			;
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
 /* Find a pattern in a compiled path list by its bytes */
 static const struct quark_block_path *
 block_path_find(const struct quark_block_path *paths, size_t n_paths,
@@ -9229,6 +9346,7 @@ struct test all_tests[] = {
 	T(t_rule_tag_api),
 	T(t_rule_block),
 	T(t_rule_blocked),
+	T(t_block_populate_fair),
 	T(t_rule_block_compile),
 	T(t_rule_block_eval),
 	T(t_rule_scope),

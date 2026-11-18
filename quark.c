@@ -5374,21 +5374,36 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 int
 quark_queue_populate(struct quark_queue *qq)
 {
-	int	n, m;
+	int	n, m, room;
+
+	if (qq->deny_populate == NULL)
+		return (qq->queue_ops->populate(qq));
 
 	/*
-	 * The denied attempts of the blocks first: they get a share of the
-	 * room in the queue before the backend takes all of it, see
-	 * deny_ringbuf_populate() in nova_queue.c
+	 * Two sources, the events of the backend and the denied attempts of
+	 * the blocks, and one queue. The backend takes all the room there
+	 * is. With a backlog on both sides, whoever always reads first
+	 * starves the other: in a full queue each read frees one slot, and
+	 * the first reader takes it. So they take turns to go first. On its
+	 * turn the denial ring takes at most half of the room, rounded up,
+	 * the events need the rest more: a lost event is a process cache
+	 * that is wrong, a lost denial is counted.
 	 */
-	m = 0;
-	if (qq->enforcer != NULL && (m = nova_enforcer_populate(qq)) < 0)
+	qq->deny_turn = !qq->deny_turn;
+	room = qq->length >= qq->max_length ? 0 : qq->max_length - qq->length;
+	if (qq->deny_turn) {
+		m = qq->deny_populate(qq, (room + 1) / 2);
+		n = qq->queue_ops->populate(qq);
+	} else {
+		n = qq->queue_ops->populate(qq);
+		room = qq->length >= qq->max_length ? 0 :
+		    qq->max_length - qq->length;
+		m = qq->deny_populate(qq, room);
+	}
+	if (m < 0)
 		m = 0;
-	n = qq->queue_ops->populate(qq);
-	if (n >= 0)
-		n += m;
 
-	return (n);
+	return (n < 0 ? n : n + m);
 }
 
 static struct raw_event *
