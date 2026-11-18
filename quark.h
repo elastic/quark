@@ -159,6 +159,11 @@ int			 kprobe_queue_open(struct quark_queue *);
 
 /* nova_queue.c */
 int			 nova_queue_open(struct quark_queue *);
+int			 nova_enforcer_open(struct quark_queue *);
+void			 nova_enforcer_close(struct quark_queue *);
+int			 nova_enforcer_update_stats(struct quark_queue *);
+void			 nova_enforcer_container(struct quark_queue *,
+			     const struct quark_container *, int);
 void			*nova_block_test_open(const struct quark_ruleset *);
 int			 nova_block_test_run(void *,
 			     const struct nova_block_test *);
@@ -980,6 +985,11 @@ struct quark_queue {
 	/* Backend related state */
 	struct quark_queue_ops		*queue_ops;
 	void				*queue_be;
+	/*
+	 * The LSM programs that enforce the blocks of the ruleset, next to
+	 * a backend that can't, see nova_enforcer_open(). NULL without.
+	 */
+	void				*enforcer;
 };
 
 #endif /* _QUARK_H_ */

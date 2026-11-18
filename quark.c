@@ -873,6 +873,8 @@ container_notify(struct quark_queue *qq,
 {
 	if (qq->queue_ops != NULL && qq->queue_ops->container != NULL)
 		qq->queue_ops->container(qq, container, removed);
+	if (qq->enforcer != NULL)
+		nova_enforcer_container(qq, container, removed);
 }
 
 static void
@@ -4734,6 +4736,8 @@ void
 quark_queue_get_stats(struct quark_queue *qq, struct quark_queue_stats *qs)
 {
 	qq->queue_ops->update_stats(qq);
+	if (qq->enforcer != NULL)
+		(void)nova_enforcer_update_stats(qq);
 	*qs = qq->stats;
 }
 
@@ -4881,9 +4885,12 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	/* A tag block must be closed, see quark_ruleset_tag_end() */
 	if (qa->ruleset != NULL && qa->ruleset->block_open)
 		return (errno = EINVAL, -1);
-	/* Only nova enforces a block */
+	/*
+	 * A block is enforced by nova, as the backend or next to the EBPF
+	 * backend, see nova_enforcer_open()
+	 */
 	if (qa->ruleset != NULL && qa->ruleset->n_blocks > 0 &&
-	    backends != QQ_NOVA)
+	    backends == QQ_KPROBE)
 		return (errno = ENOTSUP, -1);
 
 	if (quark_init() == -1)
@@ -4998,6 +5005,16 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		}
 	}
 
+	/*
+	 * The EBPF backend can't deny an operation, the LSM programs of nova
+	 * do it next to it. A ruleset that asks for a denial must not run
+	 * without one, so this is fatal.
+	 */
+	if (backends == QQ_EBPF && nova_enforcer_open(qq) != 0) {
+		qwarnx("can't open the enforcer of the blocks");
+		goto fail;
+	}
+
 	if ((qq->flags & QQ_BYPASS) == 0) {
 		/*
 		 * Now that the rings are opened, we can scrape proc. If we would scrape
@@ -5104,6 +5121,7 @@ quark_queue_close(struct quark_queue *qq)
 	/* Clean up backend */
 	if (qq->queue_ops != NULL)
 		qq->queue_ops->close(qq);
+	nova_enforcer_close(qq);
 	/* Clean up all pods (transitively cleans up their containers) */
 	while ((pod = RB_ROOT(&qq->pod_by_uid)) != NULL)
 		pod_delete(qq, pod);

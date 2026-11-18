@@ -20,6 +20,7 @@
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 
 #include <linux/fs.h>
@@ -5798,8 +5799,10 @@ t_rule_block(const struct test *t, struct quark_queue_attr *qa)
 			assert(rule->evals == 1 && rule->hits == 1);
 	}
 
-	/* Only the nova backend enforces a block, this is EBPF */
+	/* Nova enforces a block, the kprobe backend can't have it */
 	quark_queue_default_attr(&attr);
+	attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
+	attr.flags |= QQ_KPROBE;
 	attr.ruleset = &ruleset;
 	errno = 0;
 	assert(quark_queue_open(&qq, &attr) == -1);
@@ -6621,7 +6624,8 @@ block_cgroup_cleanup(void)
  * the operation was denied, the status of the program otherwise.
  */
 static int
-block_try(int in_container, const char *exec_path, const char *exec_arg)
+block_try_pid(int in_container, const char *exec_path, const char *exec_arg,
+    pid_t *pidp)
 {
 	char	pidbuf[32];
 	pid_t	pid, gc;
@@ -6629,6 +6633,8 @@ block_try(int in_container, const char *exec_path, const char *exec_arg)
 
 	if ((pid = fork()) == -1)
 		err(1, "fork");
+	if (pidp != NULL)
+		*pidp = pid;
 	if (pid == 0) {
 		if (in_container) {
 			snprintf(pidbuf, sizeof(pidbuf), "%d", getpid());
@@ -6663,6 +6669,12 @@ block_try(int in_container, const char *exec_path, const char *exec_arg)
 		err(1, "waitpid");
 
 	return (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+}
+
+static int
+block_try(int in_container, const char *exec_path, const char *exec_arg)
+{
+	return (block_try_pid(in_container, exec_path, exec_arg, NULL));
 }
 
 /*
@@ -6946,6 +6958,153 @@ t_block_container_nova(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Blocks need Linux 5.17 on x86_64 with the BPF LSM active. Where they
+ * can't work, a ruleset with a block must fail to open with ENOTSUP.
+ */
+static int
+block_supported(void)
+{
+	struct utsname	 un;
+	char		 buf[1024], *tok, *next;
+	ssize_t		 n;
+	int		 fd, major, minor;
+
+	if (uname(&un) == -1)
+		err(1, "uname");
+	if (strcmp(un.machine, "x86_64"))
+		return (0);
+	if (sscanf(un.release, "%d.%d", &major, &minor) != 2)
+		errx(1, "can't parse kernel release %s", un.release);
+	if (major < 5 || (major == 5 && minor < 17))
+		return (0);
+	if ((fd = open("/sys/kernel/security/lsm", O_RDONLY)) == -1)
+		return (0);
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return (0);
+	buf[n] = 0;
+	buf[strcspn(buf, "\n")] = 0;
+	for (next = buf; (tok = strsep(&next, ",")) != NULL; ) {
+		if (!strcmp(tok, "bpf"))
+			return (1);
+	}
+
+	return (0);
+}
+
+/*
+ * The enforcer: with the EBPF backend, the blocks of the ruleset are
+ * enforced by the LSM programs of nova, and the EBPF backend delivers the
+ * events, which userspace tags. One operation gives one result: an exec
+ * that is allowed is an event, an exec that is denied is not.
+ */
+static int
+t_block_enforcer(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct quark_queue_stats	 stats;
+	const struct quark_event	*qev;
+	char				 self[PATH_MAX], true_path[PATH_MAX];
+	char				*text;
+	pid_t				 pid;
+	int				 i;
+
+	if (realpath("/proc/self/exe", self) == NULL)
+		err(1, "realpath self");
+	block_copy_true(true_path, sizeof(true_path));
+
+	/* No block: nothing of nova is loaded */
+	assert(asprintf(&text,
+	    "tag log {\n\ton process.exe %s\n}\ndrop on any\n",
+	    true_path) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	assert(qq.enforcer == NULL);
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	/*
+	 * The first block denies an exec of true, the second a fork of this
+	 * program in a pod named web-*. The tag block tags an exec of true,
+	 * and nothing else is delivered. The first block registered blocked
+	 * as tag bit 0, so log is bit 1.
+	 */
+	assert(asprintf(&text,
+	    "block {\n"
+	    "	on process.exe %s\n"
+	    "}\n"
+	    "block {\n"
+	    "	on process.exe %s pod.name web-*\n"
+	    "}\n"
+	    "tag log {\n"
+	    "	on process.exe %s\n"
+	    "}\n"
+	    "drop on any\n", true_path, self, true_path) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0) {
+		/* Where blocks can't work, the queue must not open */
+		if (errno != ENOTSUP || block_supported())
+			err(1, "%s: quark_queue_open", t->name);
+		quark_ruleset_clear(&ruleset);
+		(void)unlink(true_path);
+		return (0);
+	}
+	assert(qq.enforcer != NULL);
+	block_cgroup_setup();
+
+	/*
+	 * A denied exec fails, and is not an event: no exec happened. Only
+	 * an exec of true has a tag, so nothing at all is delivered.
+	 */
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	for (i = 0; i < 50; i++) {
+		if ((qev = quark_queue_get_event(&qq)) != NULL)
+			errx(1, "an event for a denied exec, events 0x%llx",
+			    qev->events);
+		msleep(10);
+	}
+
+	/* An allowed exec is one event, with its tag */
+	assert(block_try_pid(0, true_path, NULL, &pid) == 0);
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events & QUARK_EV_EXEC);
+	assert(qev->process != NULL && qev->process->exe != NULL);
+	assert(!strcmp(qev->process->exe, true_path));
+	assert(qev->tags == 2);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 1), "log"));
+
+	/* The counters of the blocks come from the enforcer */
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 1);
+	assert(ruleset.rules[1].hits == 0);
+
+	/* The metadata of a container reaches the enforcer */
+	assert(block_try(1, NULL, NULL) == 0);
+	assert(quark_pod_create(&qq, "pod-e", "web-1", "default", NULL) != NULL);
+	assert(quark_container_create(&qq, BLOCK_CONTAINER, "pod-e", "c",
+	    "registry.k8s.io/nginx:1.25") != NULL);
+	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+	assert(block_try(0, NULL, NULL) == 0);
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[1].hits == 1);
+
+	quark_queue_close(&qq);
+	assert(qq.enforcer == NULL);
+	quark_ruleset_clear(&ruleset);
+	block_cgroup_cleanup();
+	(void)unlink(true_path);
+
+	return (0);
+}
+
 static int
 t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -7197,6 +7356,7 @@ t_rule_container_kprobe(const struct test *t, struct quark_queue_attr *qa)
 		"pass on event.scope container\ndrop on any\n",
 		"drop on pod.name nginx-*\n",
 		"drop on container.image docker.io/library/nginx:1.25\n",
+		"block {\n\ton process.exe /usr/bin/curl\n}\n",
 		NULL
 	};
 
@@ -8888,6 +9048,7 @@ struct test all_tests[] = {
 	T_NOVA(t_block_eval_nova),
 	T_NOVA(t_block_process_nova),
 	T_NOVA(t_block_container_nova),
+	T_EBPF(t_block_enforcer),
 	T(t_rule_pod_name),
 	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),

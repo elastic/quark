@@ -250,6 +250,47 @@ nova_open_object(void)
 	return (nova__open());
 }
 
+/*
+ * The blocks of a queue are in the nova backend, or in the enforcer next
+ * to another backend, see nova_enforcer_open(). NULL for neither.
+ */
+static struct nova_queue *
+block_nova_queue(struct quark_queue *qq)
+{
+	if (qq->enforcer != NULL)
+		return (qq->enforcer);
+	if (qq->queue_ops == &queue_ops_nova)
+		return (qq->queue_be);
+
+	return (NULL);
+}
+
+/*
+ * Load what the blocks need and nothing else: the test program, the two
+ * hooks if wanted, and none of the maps of the programs that send events.
+ * What is left needs Linux 5.17, the other programs need 5.19.
+ */
+static void
+nova_blocks_only(struct nova *nova, int hooks)
+{
+	struct bpf_program	*prog;
+
+	bpf_object__for_each_program(prog, nova->obj) {
+		bpf_program__set_autoload(prog, prog == nova->progs.blk_test ||
+		    (hooks && (prog == nova->progs.blk_bprm_check ||
+		    prog == nova->progs.blk_task_alloc)));
+	}
+	/* blk_test is never attached, the hooks by attach_blocks() */
+	bpf_program__set_autoattach(nova->progs.blk_test, 0);
+	bpf_program__set_autoattach(nova->progs.blk_bprm_check, 0);
+	bpf_program__set_autoattach(nova->progs.blk_task_alloc, 0);
+	bpf_map__set_autocreate(nova->maps.scratch_eval, 0);
+	bpf_map__set_autocreate(nova->maps.lpm_path, 0);
+	bpf_map__set_autocreate(nova->maps.ruleset, 0);
+	bpf_map__set_autocreate(nova->maps.ruleset_pcpu, 0);
+	bpf_map__set_autocreate(nova->maps.output_ring, 0);
+}
+
 #define NOVA_LSM_LIST	"/sys/kernel/security/lsm"
 
 /*
@@ -453,7 +494,6 @@ void *
 nova_block_test_open(const struct quark_ruleset *ruleset)
 {
 	struct nova_queue	*nqq;
-	struct bpf_program	*prog;
 
 	if (ruleset == NULL || ruleset->n_blocks == 0)
 		return (errno = EINVAL, NULL);
@@ -462,8 +502,7 @@ nova_block_test_open(const struct quark_ruleset *ruleset)
 		return (NULL);
 	if ((nqq->nova = nova_open_object()) == NULL)
 		goto fail;
-	bpf_object__for_each_program(prog, nqq->nova->obj)
-		bpf_program__set_autoload(prog, prog == nqq->nova->progs.blk_test);
+	nova_blocks_only(nqq->nova, 0);
 	if (load_block_rodata(nqq, ruleset) == -1)
 		goto fail;
 	if (nova__load(nqq->nova) != 0)
@@ -730,8 +769,8 @@ nova_queue_populate(struct quark_queue *qq)
 static int
 nova_queue_update_block_stats(struct quark_queue *qq, int num_cpus)
 {
-	struct nova_queue	*nqq = qq->queue_be;
-	struct nova		*nova = nqq->nova;
+	struct nova_queue	*nqq = block_nova_queue(qq);
+	struct nova		*nova;
 	struct quark_rule	*qr;
 	struct nova_block_stats	*st;
 	u64			*denied;
@@ -739,8 +778,9 @@ nova_queue_update_block_stats(struct quark_queue *qq, int num_cpus)
 	u32			 block, zero = 0;
 	int			 j, r = -1;
 
-	if (nqq->blocks == NULL)
+	if (nqq == NULL || nqq->blocks == NULL)
 		return (0);
+	nova = nqq->nova;
 	denied = calloc(num_cpus, sizeof(*denied));
 	st = calloc(num_cpus, sizeof(*st));
 	if (denied == NULL || st == NULL) {
@@ -879,7 +919,7 @@ static void
 nova_queue_container(struct quark_queue *qq,
     const struct quark_container *container, int removed)
 {
-	struct nova_queue	*nqq = qq->queue_be;
+	struct nova_queue	*nqq = block_nova_queue(qq);
 	struct bpf_map		*map;
 	struct nova_block_cid	 cid;
 	u64			 lines;
@@ -905,6 +945,88 @@ nova_queue_container(struct quark_queue *qq,
 	    &lines, sizeof(lines), BPF_ANY) != 0)
 		qwarn("can't store the block lines of container %s",
 		    container->container_id);
+}
+
+/*
+ * The enforcer: the blocks of the ruleset, enforced by the LSM programs
+ * of nova next to a backend that can't deny, the EBPF one. That backend
+ * delivers the events and userspace evaluates the other rules on them,
+ * nova only denies. Nothing is loaded for a ruleset without blocks.
+ * Returns -1 with errno set, ENOTSUP where blocks can't work: no BPF LSM,
+ * or a kernel before Linux 5.17.
+ */
+int
+nova_enforcer_open(struct quark_queue *qq)
+{
+	struct nova_queue	*nqq;
+
+	if (qq->ruleset == NULL || qq->ruleset->n_blocks == 0)
+		return (0);
+	setup_libbpf_logs();
+	if (check_bpf_lsm() == -1)
+		return (-1);
+	if ((nqq = calloc(1, sizeof(*nqq))) == NULL)
+		return (-1);
+	qq->enforcer = nqq;
+	if ((nqq->nova = nova_open_object()) == NULL)
+		goto fail;
+	nova_blocks_only(nqq->nova, 1);
+	if (load_block_rodata(nqq, qq->ruleset) == -1)
+		goto fail;
+	if (nova__load(nqq->nova) != 0) {
+		qwarn("can't load the programs of the blocks, "
+		    "they need Linux 5.17");
+		goto unsupported;
+	}
+	if (load_blocks(nqq) == -1)
+		goto fail;
+	if (attach_blocks(nqq) == -1)
+		goto unsupported;
+
+	return (0);
+
+unsupported:
+	/* Not ours to judge when we may not, or can not, load anything */
+	if (errno != EPERM && errno != EACCES && errno != ENOMEM)
+		errno = ENOTSUP;
+fail:
+	nova_enforcer_close(qq);
+
+	return (-1);
+}
+
+void
+nova_enforcer_close(struct quark_queue *qq)
+{
+	struct nova_queue	*nqq = qq->enforcer;
+	int			 saved_errno = errno;
+
+	if (nqq == NULL)
+		return;
+	if (nqq->nova != NULL)
+		nova__destroy(nqq->nova);
+	quark_block_free(nqq->blocks);
+	free(nqq);
+	qq->enforcer = NULL;
+	errno = saved_errno;
+}
+
+int
+nova_enforcer_update_stats(struct quark_queue *qq)
+{
+	int	num_cpus;
+
+	if ((num_cpus = libbpf_num_possible_cpus()) <= 0)
+		return (-1);
+
+	return (nova_queue_update_block_stats(qq, num_cpus));
+}
+
+void
+nova_enforcer_container(struct quark_queue *qq,
+    const struct quark_container *container, int removed)
+{
+	nova_queue_container(qq, container, removed);
 }
 
 static void
