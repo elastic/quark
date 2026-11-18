@@ -105,10 +105,14 @@
       on the <code class="Dv">QQ_KPROBE</code> backend, zero on
       <code class="Dv">QQ_EBPF</code>.</dd>
   <dt id="block_no_path"><a class="permalink" href="#block_no_path"><i class="Em">block_no_path</i></a></dt>
-  <dd>Operations that the blocks of the ruleset evaluated without a path: the
-      path could not be resolved, or it was too long for a line to match. No
-      line with a path matches such an operation, so it is not denied. A long
-      path is nothing special, this counter is not zero on a busy system.</dd>
+  <dd>Operations that the blocks of the ruleset evaluated with a path missing:
+      the path could not be resolved, or it was too long for a line to match. No
+      line matches a path that is missing. An operation with one path is then
+      not denied. A rename and a hard link have two paths, and are counted when
+      at least one of them is missing: the other path can still match a line,
+      and the operation is then denied. So this counter does not say that an
+      operation was allowed. A long path is nothing special, this counter is not
+      zero on a busy system.</dd>
   <dt id="block_lost"><a class="permalink" href="#block_lost"><i class="Em">block_lost</i></a></dt>
   <dd>Denied operations without an event, because the ring buffer of the denials
       was full. The operation was denied all the same.</dd>

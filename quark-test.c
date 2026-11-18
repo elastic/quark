@@ -7847,6 +7847,21 @@ t_block_file(const struct test *t, struct quark_queue_attr *qa)
 	assert(stats.block_no_slot == no_slot);
 
 	/*
+	 * With two paths one of them is enough to deny: a rename to a path
+	 * that does not fit is counted, and denied for the old path. The
+	 * event has only the path that was resolved.
+	 */
+	no_path = stats.block_no_path;
+	assert(asprintf(&longpath, "%s/free/%s", dir, longname) != -1);
+	assert(block_file_try(1, NULL, BLOCK_F_RENAME, P("deny/f"), longpath,
+	    &pid) == BLOCK_EXIT_EPERM);
+	block_file_denied(&qq, pid, QUARK_BLOCKED_RENAME, 0, P("deny/f"), NULL);
+	free(longpath);
+	assert(access(P("deny/f"), F_OK) == 0);
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.block_no_path > no_path);
+
+	/*
 	 * The scratch slots. Every hook gave its slot back. A hook that
 	 * finds a slot taken, by a hook that was preempted on its CPU, uses
 	 * the next one. With no slot free the operation is allowed and
@@ -7874,7 +7889,7 @@ t_block_file(const struct test *t, struct quark_queue_attr *qa)
 
 	/* The denials of a block are the hits of its first line */
 	quark_queue_get_stats(&qq, &stats);
-	assert(ruleset.rules[0].hits == 17);
+	assert(ruleset.rules[0].hits == 18);
 	assert(ruleset.rules[2].hits == 1);
 	assert(ruleset.rules[3].hits == 1);
 	assert(stats.block_lost == 0);

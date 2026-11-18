@@ -92,9 +92,14 @@ Only meaningful on the
 backend, zero on
 .Dv QQ_EBPF .
 .It Em block_no_path
-Operations that the blocks of the ruleset evaluated without a path: the path
-could not be resolved, or it was too long for a line to match.
-No line with a path matches such an operation, so it is not denied.
+Operations that the blocks of the ruleset evaluated with a path missing: the
+path could not be resolved, or it was too long for a line to match.
+No line matches a path that is missing.
+An operation with one path is then not denied.
+A rename and a hard link have two paths, and are counted when at least one of
+them is missing: the other path can still match a line, and the operation is
+then denied.
+So this counter does not say that an operation was allowed.
 A long path is nothing special, this counter is not zero on a busy system.
 .It Em block_lost
 Denied operations without an event, because the ring buffer of the denials
