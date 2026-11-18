@@ -511,7 +511,8 @@ struct quark_blocked {
 	char	comm[16];
 	char	path[NOVA_PATHLEN];	/* the executable: of the parent for a
 					   fork, the new program for an exec.
-					   Or the file, as the process sees it */
+					   Or the file. From the root of the
+					   mount namespace, not of the process */
 	char	path2[NOVA_PATHLEN];	/* the new path of a rename or a link,
 					   or empty */
 };

@@ -199,7 +199,8 @@ and
 are of the thread that tried.
 .Em path
 is the executable for a fork and an exec, of the parent for a fork, and the
-file otherwise, as the process sees it.
+file otherwise, from the root of the mount namespace of the process, also when
+the process changed its root directory.
 .Em path2
 is the new path of a rename or a link, and empty otherwise.
 .Pp

@@ -6893,6 +6893,46 @@ block_try_pid(int in_container, const char *exec_path, const char *exec_arg,
 	return (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
 }
 
+/*
+ * A child in the test cgroup that changes its root to the directory of
+ * path, then executes path by its name in that root. Returns its exit
+ * status, as block_try_pid().
+ */
+static int
+block_try_chroot(const char *path, pid_t *pidp)
+{
+	char		 pidbuf[32], dir[PATH_MAX], *slash;
+	const char	*name;
+	pid_t		 pid;
+	int		 status;
+
+	if (strlcpy(dir, path, sizeof(dir)) >= sizeof(dir) ||
+	    (slash = strrchr(dir, '/')) == NULL || slash == dir)
+		errx(1, "bad path %s", path);
+	/* "/name", the path in the new root */
+	name = path + (slash - dir);
+	*slash = 0;
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+	if (pidp != NULL)
+		*pidp = pid;
+	if (pid == 0) {
+		snprintf(pidbuf, sizeof(pidbuf), "%d", getpid());
+		if (block_write(BLOCK_CG_SCOPE "/cgroup.procs", pidbuf) == -1)
+			_exit(BLOCK_EXIT_OTHER);
+		if (chroot(dir) == -1 || chdir("/") == -1)
+			_exit(BLOCK_EXIT_OTHER);
+		/* A dynamic program then fails for its loader, not with EPERM */
+		execl(name, name, (char *)NULL);
+		_exit(errno == EPERM ? BLOCK_EXIT_EXEC_EPERM :
+		    BLOCK_EXIT_OTHER);
+	}
+	if (waitpid(pid, &status, 0) == -1)
+		err(1, "waitpid");
+
+	return (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+}
+
 static int
 block_try(int in_container, const char *exec_path, const char *exec_arg)
 {
@@ -7323,6 +7363,18 @@ t_block_enforcer(const struct test *t, struct quark_queue_attr *qa)
 		msleep(10);
 	}
 
+	/*
+	 * A process with another root gets no way around the block: the
+	 * executable is named from the root of the mount namespace. The
+	 * copy of true is dynamic, so without the denial the exec would fail
+	 * for its loader, with another error.
+	 */
+	assert(block_try_chroot(true_path, &pid) == BLOCK_EXIT_EXEC_EPERM);
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events == QUARK_EV_BLOCKED);
+	assert(qev->blocked.op == QUARK_BLOCKED_EXEC);
+	assert(!strcmp(qev->blocked.path, true_path));
+
 	/* An allowed exec is one event, with its tag */
 	assert(block_try_pid(0, true_path, NULL, &pid) == 0);
 	qev = drain_for_pid(&qq, pid);
@@ -7334,7 +7386,7 @@ t_block_enforcer(const struct test *t, struct quark_queue_attr *qa)
 
 	/* The counters of the blocks come from the enforcer */
 	quark_queue_get_stats(&qq, &stats);
-	assert(ruleset.rules[0].hits == 1);
+	assert(ruleset.rules[0].hits == 2);
 	assert(ruleset.rules[1].hits == 0);
 
 	/* The metadata of a container reaches the enforcer */
@@ -7713,8 +7765,9 @@ t_block_file(const struct test *t, struct quark_queue_attr *qa)
 
 	/*
 	 * Block 0 denies below deny, but not a name that starts with ok.
-	 * Block 1 denies one path, block 2 is for a process with dir as its
-	 * root. The tag is for the file events of what is allowed. The first
+	 * Block 1 denies one path. Block 2 names a path as a process with dir
+	 * as its root would see it, and must never deny. The tag is for the
+	 * file events of what is allowed. The first
 	 * block registered blocked as tag bit 0, so log is bit 1.
 	 */
 	assert(asprintf(&text,
@@ -7820,15 +7873,21 @@ t_block_file(const struct test *t, struct quark_queue_attr *qa)
 	ALLOWED(0, BLOCK_F_UNLINK, P("deny/h"), NULL);
 
 	/*
-	 * The path is the one the process sees, from its root: with dir as
-	 * the root, deny is /deny, which no block names.
+	 * The path is from the root of the mount namespace, also for a
+	 * process that changed its root with chroot(2): the root of a process
+	 * must not change what a block sees. With dir as the root, /deny/c is
+	 * dir/deny/c, and with dir/deny as the root, /c is dir/deny/c. The
+	 * path that the process sees matches nothing.
 	 */
 	assert(block_file_try(1, dir, BLOCK_F_CREATE, "/deny/c", NULL,
-	    NULL) == 0);
+	    &pid) == BLOCK_EXIT_EPERM);
+	block_file_denied(&qq, pid, QUARK_BLOCKED_CREATE, 0, P("deny/c"), NULL);
+	assert(block_file_try(1, P("deny"), BLOCK_F_CREATE, "/c", NULL,
+	    &pid) == BLOCK_EXIT_EPERM);
+	block_file_denied(&qq, pid, QUARK_BLOCKED_CREATE, 0, P("deny/c"), NULL);
+	assert(access(P("deny/c"), F_OK) == -1);
 	assert(block_file_try(1, dir, BLOCK_F_CREATE, "/quark-test-jail/x",
-	    NULL, &pid) == BLOCK_EXIT_EPERM);
-	block_file_denied(&qq, pid, QUARK_BLOCKED_CREATE, 2,
-	    "/quark-test-jail/x", NULL);
+	    NULL, NULL) == 0);
 
 	/*
 	 * A path that does not fit in a line matches no line: it is allowed
@@ -7889,9 +7948,9 @@ t_block_file(const struct test *t, struct quark_queue_attr *qa)
 
 	/* The denials of a block are the hits of its first line */
 	quark_queue_get_stats(&qq, &stats);
-	assert(ruleset.rules[0].hits == 18);
+	assert(ruleset.rules[0].hits == 20);
 	assert(ruleset.rules[2].hits == 1);
-	assert(ruleset.rules[3].hits == 1);
+	assert(ruleset.rules[3].hits == 0);
 	assert(stats.block_lost == 0);
 
 	quark_queue_close(&qq);

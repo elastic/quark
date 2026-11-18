@@ -875,27 +875,6 @@ blk_task_lines(__u64 *m)
 }
 
 /*
- * The lines that accept the executable. -1 if the path can't be had, also
- * when it does not fit in the key. The key is on the stack of this
- * function, so it must not be inlined.
- */
-static __noinline int
-blk_exe_bits(struct path *path, __u64 *bits)
-{
-	struct nova_block_path_key	 key;
-	__u64				*v;
-
-	__builtin_memset(&key, 0, sizeof(key));
-	key.prefixlen = NOVA_PATHLEN * 8;
-	if (bpf_d_path(path, key.path, NOVA_PATHLEN) < 0)
-		return (-1);
-	v = bpf_map_lookup_elem(&blk_path_exe, &key);
-	*bits = v != NULL ? *v : 0;
-
-	return (0);
-}
-
-/*
  * The lines that match an operation: m are the lines of the container,
  * bits the lines that accept the path. A line with a path field does not
  * match without a path, and a line about files never matches a process
@@ -1002,81 +981,17 @@ blk_report(__u32 op, __u32 block)
 	return (ev);
 }
 
-/* A fork or an exec with this executable, NULL if there is none */
-static __always_inline int
-blk_process(__u32 op, struct path *exe, int has_exe)
-{
-	struct nova_deny_event	*ev;
-	__u64			 m, bits = 0;
-	int			 block;
-
-	if (blk_task_lines(&m) != 0)
-		return (0);
-	if (has_exe && blk_exe_bits(exe, &bits) != 0)
-		has_exe = 0;
-	if (!has_exe)
-		blk_count_no_path();
-	m = blk_match(m, 0, has_exe, bits);
-	if ((block = blk_decide(m)) < 0)
-		return (0);
-	blk_count_denied(block);
-	if ((ev = blk_report(op, block)) != NULL) {
-		/* It fits and resolves, it did a moment ago for the lookup */
-		if (has_exe)
-			bpf_d_path(exe, ev->path, sizeof(ev->path));
-		bpf_ringbuf_submit(ev, 0);
-	}
-
-	return (-EPERM);
-}
-
-/* An exec, the executable is the new program */
-SEC("lsm/bprm_check_security")
-int
-BPF_PROG(blk_bprm_check, struct linux_binprm *bprm, int ret)
-{
-	struct task_struct	*task = bpf_get_current_task_btf();
-	struct file		*file = bprm->file;
-
-	if (ret != 0)
-		return (ret);
-	if (blk_n_blocks == 0 || (task->flags & BLK_PF_KTHREAD))
-		return (0);
-	if (file == NULL)
-		return (blk_process(NOVA_OP_EXEC, NULL, 0));
-
-	return (blk_process(NOVA_OP_EXEC, &file->f_path, 1));
-}
-
 /*
- * A fork, the executable is the one of the parent. The child has no pid
- * yet. A new thread is not a fork.
- */
-SEC("lsm/task_alloc")
-int
-BPF_PROG(blk_task_alloc, struct task_struct *child, unsigned long clone_flags,
-    int ret)
-{
-	struct task_struct	*task = bpf_get_current_task_btf();
-	struct mm_struct	*mm = child->mm;
-	struct file		*file;
-
-	if (ret != 0)
-		return (ret);
-	if (blk_n_blocks == 0 || (clone_flags & BLK_CLONE_THREAD) ||
-	    (task->flags & BLK_PF_KTHREAD))
-		return (0);
-	if (mm == NULL || (file = mm->exe_file) == NULL)
-		return (blk_process(NOVA_OP_FORK, NULL, 0));
-
-	return (blk_process(NOVA_OP_FORK, &file->f_path, 1));
-}
-
-/*
- * File blocks. A file hook can't use bpf_d_path(): up to Linux 6.6 only
- * file_open may call it, and path_mknod never. So the path is built here
- * from the dentries, as ebpf_resolve_path_to_string() of the EBPF backend
- * does, and both backends give the same path for a file.
+ * The path of an executable or a file, built from the dentries. A file
+ * hook can't use bpf_d_path(): up to Linux 6.6 only file_open may call it,
+ * and path_mknod never.
+ *
+ * The path goes up to the root of the mount namespace, not to the root of
+ * the task, as cloud-defend does it: a process that changes its root with
+ * chroot(2) must not change the path that a block sees. bpf_d_path() stops
+ * at the root of the task, so the process hooks use this walk too. The
+ * EBPF backend gives a path from the root of the task, so the two differ
+ * for a process with a root of its own, and only there.
  *
  * The path is built in scratch memory of the CPU. A hook can be preempted
  * by a task that runs a hook on the same CPU, so there are a few scratch
@@ -1160,8 +1075,6 @@ struct blk_walk {
 	struct dentry	*dentry;	/* where we are */
 	struct vfsmount	*vfsmnt;
 	struct mount	*mnt;
-	struct dentry	*root_dentry;	/* the root of the task */
-	struct vfsmount	*root_mnt;
 	__u32		 slot;
 	__u32		 pos;		/* start of the path in work */
 	__u32		 done;
@@ -1179,17 +1092,13 @@ blk_walk_cb(__u32 i, struct blk_walk *w)
 	struct qstr		 name;
 	__u32			 len, pos, slot = w->slot;
 
-	if (dentry == w->root_dentry && vfsmnt == w->root_mnt) {
-		w->done = 1;
-		return (LOOP_STOP);
-	}
 	parent = BPF_CORE_READ(dentry, d_parent);
 	if (dentry == parent || dentry == BPF_CORE_READ(vfsmnt, mnt_root)) {
 		parent_mnt = BPF_CORE_READ(mnt, mnt_parent);
 		/*
-		 * The root of a mount without a parent: the file is not
-		 * below the root of the task. As d_path(), stop with the
-		 * path in that mount.
+		 * The root of a mount without a parent: the root of the
+		 * mount namespace, or a mount that was detached. The path
+		 * is complete.
 		 */
 		if (parent_mnt == mnt) {
 			w->done = 1;
@@ -1222,20 +1131,17 @@ blk_walk_cb(__u32 i, struct blk_walk *w)
 }
 
 /*
- * The path of a file as the task sees it, from its root, in key i of the
+ * The path of a file from the root of the mount namespace, in key i of the
  * scratch slot, ready for a lookup. -1 if the path can't be had, also when
  * it does not fit in the key.
  */
 static __noinline int
-blk_file_path(__u32 slot, __u32 i, struct vfsmount *vfsmnt,
-    struct dentry *dentry)
+blk_path(__u32 slot, __u32 i, struct vfsmount *vfsmnt, struct dentry *dentry)
 {
 	struct blk_scratch		*s;
 	struct nova_block_path_key	*key;
-	struct task_struct		*task;
 	const struct dentry_operations	*d_op;
 	struct blk_walk			 w;
-	struct path			 root;
 	struct qstr			 name;
 	__u32				 pos;
 	long				 n;
@@ -1249,8 +1155,8 @@ blk_file_path(__u32 slot, __u32 i, struct vfsmount *vfsmnt,
 	key->prefixlen = NOVA_PATHLEN * 8;
 
 	/*
-	 * A file that is in no directory, a memfd: its name alone, as
-	 * d_path() gives it through d_dname().
+	 * A file that is in no directory, a memfd: its name alone, as the
+	 * EBPF backend gives it. d_path() gives "/memfd:name (deleted)".
 	 */
 	d_op = BPF_CORE_READ(dentry, d_op);
 	if (dentry == BPF_CORE_READ(dentry, d_parent) && d_op != NULL &&
@@ -1262,14 +1168,10 @@ blk_file_path(__u32 slot, __u32 i, struct vfsmount *vfsmnt,
 		return (n > 0 && n < NOVA_PATHLEN ? 0 : -1);
 	}
 
-	task = (struct task_struct *)bpf_get_current_task();
-	root = BPF_CORE_READ(task, fs, root);
 	w.dentry = dentry;
 	w.vfsmnt = vfsmnt;
 	/* container_of(), which the warnings of this file don't take */
 	w.mnt = (struct mount *)((char *)vfsmnt - offsetof(struct mount, mnt));
-	w.root_dentry = root.dentry;
-	w.root_mnt = root.mnt;
 	w.slot = slot;
 	w.pos = NOVA_PATHLEN - 1;
 	w.done = 0;
@@ -1291,23 +1193,28 @@ blk_file_path(__u32 slot, __u32 i, struct vfsmount *vfsmnt,
 	return (0);
 }
 
-/* The lines that accept the path in key i */
+/* The lines that accept the path in key i, of a file or an executable */
 static __always_inline __u64
-blk_file_bits(struct blk_scratch *s, __u32 i)
+blk_path_bits(struct blk_scratch *s, __u32 i, int file)
 {
 	__u64	*v;
 
-	v = bpf_map_lookup_elem(&blk_path_file, &s->key[i & 1]);
+	if (file)
+		v = bpf_map_lookup_elem(&blk_path_file, &s->key[i & 1]);
+	else
+		v = bpf_map_lookup_elem(&blk_path_exe, &s->key[i & 1]);
 
 	return (v != NULL ? *v : 0);
 }
 
 /*
- * An operation on a file, or on two for a rename and a link: one denial
- * is enough. Both paths are resolved first, the report has both.
+ * An operation on one path, or on two for a rename and a link: one denial
+ * is enough. Both paths are resolved first, the report has both. file
+ * says which lines apply: the ones on file.path, or on process.exe. A
+ * NULL dentry is an operation without a path.
  */
 static __always_inline int
-blk_file(__u32 op, struct vfsmount *mnt, struct dentry *dentry,
+blk_eval(__u32 op, int file, struct vfsmount *mnt, struct dentry *dentry,
     struct vfsmount *mnt2, struct dentry *dentry2, int two)
 {
 	struct nova_deny_event	*ev;
@@ -1324,20 +1231,20 @@ blk_file(__u32 op, struct vfsmount *mnt, struct dentry *dentry,
 			st->no_slot++;
 		return (0);
 	}
-	if (blk_file_path(slot, 0, mnt, dentry) == 0) {
+	if (blk_path(slot, 0, mnt, dentry) == 0) {
 		has = 1;
-		bits = blk_file_bits(s, 0);
+		bits = blk_path_bits(s, 0, file);
 	}
-	if (two && blk_file_path(slot, 1, mnt2, dentry2) == 0) {
+	if (two && blk_path(slot, 1, mnt2, dentry2) == 0) {
 		has2 = 1;
-		bits2 = blk_file_bits(s, 1);
+		bits2 = blk_path_bits(s, 1, file);
 	}
 	if (!has || (two && !has2))
 		blk_count_no_path();
 
-	block = blk_decide(blk_match(cm, 1, has, bits));
+	block = blk_decide(blk_match(cm, file, has, bits));
 	if (block < 0 && two)
-		block = blk_decide(blk_match(cm, 1, has2, bits2));
+		block = blk_decide(blk_match(cm, file, has2, bits2));
 	if (block >= 0) {
 		blk_count_denied(block);
 		if ((ev = blk_report(op, block)) != NULL) {
@@ -1354,6 +1261,68 @@ blk_file(__u32 op, struct vfsmount *mnt, struct dentry *dentry,
 	blk_scratch_put(s);
 
 	return (ret);
+}
+
+
+/* A fork or an exec with this executable, NULL if there is none */
+static __always_inline int
+blk_process(__u32 op, struct path *exe)
+{
+	if (exe == NULL)
+		return (blk_eval(op, 0, NULL, NULL, NULL, NULL, 0));
+
+	return (blk_eval(op, 0, BPF_CORE_READ(exe, mnt),
+	    BPF_CORE_READ(exe, dentry), NULL, NULL, 0));
+}
+
+/* An exec, the executable is the new program */
+SEC("lsm/bprm_check_security")
+int
+BPF_PROG(blk_bprm_check, struct linux_binprm *bprm, int ret)
+{
+	struct task_struct	*task = bpf_get_current_task_btf();
+	struct file		*file = bprm->file;
+
+	if (ret != 0)
+		return (ret);
+	if (blk_n_blocks == 0 || (task->flags & BLK_PF_KTHREAD))
+		return (0);
+	if (file == NULL)
+		return (blk_process(NOVA_OP_EXEC, NULL));
+
+	return (blk_process(NOVA_OP_EXEC, &file->f_path));
+}
+
+/*
+ * A fork, the executable is the one of the parent. The child has no pid
+ * yet. A new thread is not a fork.
+ */
+SEC("lsm/task_alloc")
+int
+BPF_PROG(blk_task_alloc, struct task_struct *child, unsigned long clone_flags,
+    int ret)
+{
+	struct task_struct	*task = bpf_get_current_task_btf();
+	struct mm_struct	*mm = child->mm;
+	struct file		*file;
+
+	if (ret != 0)
+		return (ret);
+	if (blk_n_blocks == 0 || (clone_flags & BLK_CLONE_THREAD) ||
+	    (task->flags & BLK_PF_KTHREAD))
+		return (0);
+	if (mm == NULL || (file = mm->exe_file) == NULL)
+		return (blk_process(NOVA_OP_FORK, NULL));
+
+	return (blk_process(NOVA_OP_FORK, &file->f_path));
+}
+
+/* An operation on one file, or on two for a rename and a link */
+static __always_inline int
+blk_file(__u32 op, struct vfsmount *mnt, struct dentry *dentry,
+    struct vfsmount *mnt2, struct dentry *dentry2, int two)
+{
+	return (blk_eval(op, 1, mnt, dentry, mnt2, dentry2, two));
 }
 
 static __always_inline int

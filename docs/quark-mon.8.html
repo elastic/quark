@@ -372,9 +372,16 @@ block {
       the new name, and an unlink. A read is not denied. An open, a change of
       mode and a truncate are denied for a regular file only. A directory, a
       symbolic link or a special file can still be made, and a directory
-      removed. The path is the one the process sees, from its root
-    directory.</dd>
+      removed.</dd>
 </dl>
+<p class="Pp">A path is from the root of the mount namespace of the process: in
+    a container, the path that the container sees. A process that changed its
+    root directory with <a class="Xr" href="chroot.2.html">chroot(2)</a> still
+    has that path. So a block on <span class="Pa">/etc/*</span> also denies a
+    write to <span class="Pa">/passwd</span> by a process with
+    <span class="Pa">/etc</span> as its root. Events of the EBPF backend have
+    the path from the root of the process, so for such a process an event and a
+    block show different paths.</p>
 <p class="Pp">A block denies only in a container, unless
     <code class="Fl">-a</code> is given. A container is what
     <code class="Cm">event.scope</code> calls one, see

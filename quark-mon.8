@@ -424,8 +424,22 @@ A read is not denied.
 An open, a change of mode and a truncate are denied for a regular file only.
 A directory, a symbolic link or a special file can still be made, and a
 directory removed.
-The path is the one the process sees, from its root directory.
 .El
+.Pp
+A path is from the root of the mount namespace of the process: in a
+container, the path that the container sees.
+A process that changed its root directory with
+.Xr chroot 2
+still has that path.
+So a block on
+.Pa /etc/*
+also denies a write to
+.Pa /passwd
+by a process with
+.Pa /etc
+as its root.
+Events of the EBPF backend have the path from the root of the process, so
+for such a process an event and a block show different paths.
 .Pp
 A block denies only in a container, unless
 .Fl a

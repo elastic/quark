@@ -382,8 +382,8 @@ block_programs(struct nova_queue *nqq, int hooks)
 	bpf_program__set_autoload(nova->progs.blk_test, nqq->blocks != NULL);
 	/* blk_test is run with BPF_PROG_TEST_RUN, never attached */
 	bpf_program__set_autoattach(nova->progs.blk_test, 0);
-	/* Only the file hooks build a path */
-	bpf_map__set_autocreate(nova->maps.blk_scratch, file);
+	/* Every hook builds its paths there, the test program does not */
+	bpf_map__set_autocreate(nova->maps.blk_scratch, process || file);
 
 	return (0);
 }
