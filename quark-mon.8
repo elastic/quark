@@ -495,6 +495,45 @@ also needs the path hooks of the kernel,
 Where blocks can't work,
 .Nm
 fails to start on a ruleset with a block.
+.Pp
+Blocks have these limits:
+.Bl -dash
+.It
+A block on a directory, as
+.Dq file.path /app/conf/* ,
+does not stop a rename of the directory itself, which is tested with the
+paths
+.Pa /app/conf
+and the new name.
+A process can rename the directory, change the files under the new name,
+and rename it back.
+.It
+A directory or a symbolic link can be made at a path that a block names, as
+said above.
+A symbolic link at a path that does not exist yet, as
+.Pa /etc/ld.so.preload ,
+can point to a file that no block names.
+.It
+A container is a cgroup named
+.Ar runtime Ns - Ns Ar id Ns .scope
+with the pids controller, the layout of the systemd cgroup driver.
+With the cgroupfs driver, in a cgroup nested in a container, or on a kernel
+without
+.Dv CONFIG_CGROUP_PIDS ,
+no process is in a container, and a block denies nothing, without an error.
+.It
+While
+.Nm
+starts, the kernel does not have the metadata of the running containers for
+a moment, even when
+.Nm
+has it.
+A line with
+.Cm pod.name
+or
+.Cm container.image
+does not match then, as for a container whose metadata did not arrive.
+.El
 .Ss Evaluation
 The rules are evaluated from top to bottom.
 The first matching

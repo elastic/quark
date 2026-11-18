@@ -413,6 +413,30 @@ block {
     path hooks of the kernel, <code class="Dv">CONFIG_SECURITY_PATH</code>.
     Where blocks can't work, <code class="Nm">quark-mon</code> fails to start on
     a ruleset with a block.</p>
+<p class="Pp">Blocks have these limits:</p>
+<ul class="Bl-dash">
+  <li>A block on a directory, as &#x201C;file.path /app/conf/*&#x201D;, does not
+      stop a rename of the directory itself, which is tested with the paths
+      <span class="Pa">/app/conf</span> and the new name. A process can rename
+      the directory, change the files under the new name, and rename it
+    back.</li>
+  <li>A directory or a symbolic link can be made at a path that a block names,
+      as said above. A symbolic link at a path that does not exist yet, as
+      <span class="Pa">/etc/ld.so.preload</span>, can point to a file that no
+      block names.</li>
+  <li>A container is a cgroup named
+      <var class="Ar">runtime</var>-<var class="Ar">id</var>.scope with the pids
+      controller, the layout of the systemd cgroup driver. With the cgroupfs
+      driver, in a cgroup nested in a container, or on a kernel without
+      <code class="Dv">CONFIG_CGROUP_PIDS</code>, no process is in a container,
+      and a block denies nothing, without an error.</li>
+  <li>While <code class="Nm">quark-mon</code> starts, the kernel does not have
+      the metadata of the running containers for a moment, even when
+      <code class="Nm">quark-mon</code> has it. A line with
+      <code class="Cm">pod.name</code> or
+      <code class="Cm">container.image</code> does not match then, as for a
+      container whose metadata did not arrive.</li>
+</ul>
 </section>
 <section class="Ss">
 <h2 class="Ss" id="Evaluation"><a class="permalink" href="#Evaluation">Evaluation</a></h2>
