@@ -329,7 +329,9 @@ Changes from 0.11 to 0.12
     quark_ruleset_tag_end() and quark_ruleset_tag_name(), and new rule
     actions QUARK_RA_TAG and QUARK_RA_EXCEPT. quark_queue_open() fails
     with EINVAL on a ruleset with an open block. The nova backend rejects
-    tag blocks with ENOTSUP.
+    tag blocks with ENOTSUP. tag and except are now reserved words, like
+    pass, drop, poison, on, any and the field names, so a value spelled
+    like any of them must be quoted, as in drop on pod.name "tag".
   o quark_event_dump() prints a TAGS line with the tag names of an event,
     and go/quark has them in Event.Tags.
   o The EBPF backend now reports process start times, proc_time_boot
