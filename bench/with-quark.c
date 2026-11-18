@@ -229,7 +229,7 @@ main(int argc, char *argv[])
 	struct quark_queue_stats	 st;
 	struct sigaction		 sa;
 	cpu_set_t			 set;
-	pid_t				 child;
+	pid_t				 child, parent;
 	struct prog			*p;
 	int				 ch, measuring, killed, pflag, status;
 	u64				 cpu_ns, wall_ns, t0, warmup, duration;
@@ -356,12 +356,19 @@ main(int argc, char *argv[])
 		progs_find();
 	}
 
+	parent = getpid();
 	if ((child = fork()) == -1)
 		err(1, "fork");
 	else if (child == 0) {
-		/* A command told to run until stopped must not outlive us */
+		/*
+		 * A command told to run until stopped must not outlive us.
+		 * The signal only comes if we die from here on, so check
+		 * that we didn't just before.
+		 */
 		if (prctl(PR_SET_PDEATHSIG, SIGTERM) == -1)
 			err(1, "prctl");
+		if (getppid() != parent)
+			_exit(1);
 		execvp(argv[0], argv);
 		err(127, "%s", argv[0]);
 	}
