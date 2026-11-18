@@ -168,7 +168,12 @@ function __median {
          }'
 }
 
-# Run the loader with a queue open: __with_quark <with-quark flags> -- <loader args>
+# Run the loader with a queue open:
+# __with_quark <with-quark flags> -- <loader command> [loader args].
+#
+# What we add goes right after the command, ahead of any operand.
+# Only glibc's getopt takes options in any order, musl (e.g. alpine)
+# stops at the first non-option.
 function __with_quark {
   local flags=()
 
@@ -179,7 +184,7 @@ function __with_quark {
   shift
 
   "${dir}/../with-quark" "${flags[@]}" \
-    "${load}" "$@" -d "${ADDR}" ${IFACE:+-i "${IFACE}"}
+    "${load}" "$1" -d "${ADDR}" ${IFACE:+-i "${IFACE}"} "${@:2}"
 }
 
 function cmd_flows {
