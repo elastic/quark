@@ -1056,7 +1056,8 @@ BPF_PROG(blk_task_alloc, struct task_struct *child, unsigned long clone_flags,
  * The path is built in scratch memory of the CPU. A hook can be preempted
  * by a task that runs a hook on the same CPU, so there are a few scratch
  * slots and a hook takes a free one with an atomic exchange. With no slot
- * free the operation is allowed, and counted as one without a path.
+ * free the operation is allowed, and counted: nova_block_stats.no_slot is
+ * not zero when BLK_NSLOTS is too small.
  */
 
 #define BLK_S_IFMT	00170000
@@ -1285,6 +1286,7 @@ blk_file(__u32 op, struct vfsmount *mnt, struct dentry *dentry,
     struct vfsmount *mnt2, struct dentry *dentry2, int two)
 {
 	struct nova_deny_event	*ev;
+	struct nova_block_stats	*st;
 	struct blk_scratch	*s;
 	__u64			 cm, bits = 0, bits2 = 0;
 	__u32			 slot = 0;
@@ -1293,7 +1295,8 @@ blk_file(__u32 op, struct vfsmount *mnt, struct dentry *dentry,
 	if (blk_cbits_task(&cm) != 0)
 		return (0);
 	if ((s = blk_scratch_get(&slot)) == NULL) {
-		blk_count_no_path();
+		if ((st = bpf_map_lookup_elem(&blk_stats, &(__u32){0})) != NULL)
+			st->no_slot++;
 		return (0);
 	}
 	if (blk_file_path(slot, 0, mnt, dentry) == 0) {

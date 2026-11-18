@@ -143,9 +143,9 @@ struct nova_block_cid {
 
 /* Counters of the block hooks, per CPU */
 struct nova_block_stats {
-	__u64	no_path;		/* a path was not resolved or too long,
-					   or no scratch slot was free */
+	__u64	no_path;		/* a path was not resolved or too long */
 	__u64	lost;			/* a denial that could not be reported */
+	__u64	no_slot;		/* a file hook without a scratch slot */
 };
 
 /*

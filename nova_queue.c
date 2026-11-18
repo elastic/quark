@@ -1034,9 +1034,11 @@ nova_queue_update_block_stats(struct quark_queue *qq, int num_cpus)
 	}
 	qq->stats.block_no_path = 0;
 	qq->stats.block_lost = 0;
+	qq->stats.block_no_slot = 0;
 	for (j = 0; j < num_cpus; j++) {
 		qq->stats.block_no_path += st[j].no_path;
 		qq->stats.block_lost += st[j].lost;
+		qq->stats.block_no_slot += st[j].no_slot;
 	}
 	r = 0;
 done:

@@ -7667,7 +7667,7 @@ t_block_file(const struct test *t, struct quark_queue_attr *qa)
 	char				*text, *longpath;
 	struct bpf_map_info		 info;
 	struct stat			 st;
-	u64				 no_path;
+	u64				 no_path, no_slot;
 	pid_t				 pid;
 	__u32				 slot;
 	int				 scratch;
@@ -7818,6 +7818,7 @@ t_block_file(const struct test *t, struct quark_queue_attr *qa)
 	 */
 	quark_queue_get_stats(&qq, &stats);
 	no_path = stats.block_no_path;
+	no_slot = stats.block_no_slot;
 	memset(longname, 'a', sizeof(longname) - 1);
 	longname[sizeof(longname) - 1] = 0;
 	assert(asprintf(&longpath, "%s/deny/%s", dir, longname) != -1);
@@ -7825,12 +7826,13 @@ t_block_file(const struct test *t, struct quark_queue_attr *qa)
 	free(longpath);
 	quark_queue_get_stats(&qq, &stats);
 	assert(stats.block_no_path > no_path);
+	assert(stats.block_no_slot == no_slot);
 
 	/*
 	 * The scratch slots. Every hook gave its slot back. A hook that
 	 * finds a slot taken, by a hook that was preempted on its CPU, uses
 	 * the next one. With no slot free the operation is allowed and
-	 * counted.
+	 * counted, on its own: that count says that there are too few slots.
 	 */
 	scratch = block_scratch_fd(&info);
 	assert(info.max_entries == 4);
@@ -7842,11 +7844,9 @@ t_block_file(const struct test *t, struct quark_queue_attr *qa)
 		    QUARK_BLOCKED_CREATE, 0);
 	}
 	(void)block_scratch_set(scratch, &info, slot, 1);
-	quark_queue_get_stats(&qq, &stats);
-	no_path = stats.block_no_path;
 	ALLOWED(1, BLOCK_F_CREATE, P("deny/s"), NULL);
 	quark_queue_get_stats(&qq, &stats);
-	assert(stats.block_no_path > no_path);
+	assert(stats.block_no_slot > no_slot);
 	for (slot = 0; slot < info.max_entries; slot++)
 		(void)block_scratch_set(scratch, &info, slot, 0);
 	DENIED(BLOCK_F_UNLINK, P("deny/s"), NULL, QUARK_BLOCKED_UNLINK, 0);

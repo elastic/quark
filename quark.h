@@ -953,6 +953,7 @@ struct quark_queue_stats {
 	u64	stalls;     /* stalled perf rings due to corruption, only for QQ_KPROBE */
 	u64	block_no_path; /* block hooks that could not use a path */
 	u64	block_lost; /* denials that could not be reported */
+	u64	block_no_slot; /* file hooks of blocks without scratch memory */
 	int	bpf_retprobe_stats_valid; /* last miss-count refresh succeeded */
 	int	backend;    /* active backend, QQ_EBPF or QQ_KPROBE */
 	/* TODO u64    peak_nodes; */
