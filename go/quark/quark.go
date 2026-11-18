@@ -203,6 +203,19 @@ type Ptrace struct {
 	Data     uint64
 }
 
+// Blocked describes an operation that a block of the ruleset denied. It did
+// not happen: a denied fork has no child, a denied exec left the process as
+// it was. The event has the tag "blocked" and is always delivered.
+type Blocked struct {
+	Op    uint32 // QUARK_BLOCKED_FORK or QUARK_BLOCKED_EXEC
+	Block uint32 // The block of the ruleset that denied it, from 0
+	Pid   uint32 // Who tried, also in Process when it is known
+	Tid   uint32
+	Comm  string
+	Path  string // The executable: of the parent for a fork, the new program for an exec
+	Path2 string // A second path, or empty
+}
+
 // Mprotect describes an executable protection attempt observed for one VMA.
 // The LSM check happens before the kernel commits the protection change.
 type Mprotect struct {
@@ -264,6 +277,7 @@ type Event struct {
 	File       *File
 	Ptrace     *Ptrace
 	Mprotect   *Mprotect
+	Blocked    *Blocked // Set for QUARK_EV_BLOCKED
 	ModuleLoad *ModuleLoad
 	Shm        *any // ShmGet, MemFd or ShmOpen
 	Tty        *Tty
@@ -316,6 +330,11 @@ const (
 	QUARK_EV_SHM                   = uint64(C.QUARK_EV_SHM)
 	QUARK_EV_TTY                   = uint64(C.QUARK_EV_TTY)
 	QUARK_EV_MPROTECT              = uint64(C.QUARK_EV_MPROTECT)
+	QUARK_EV_BLOCKED               = uint64(C.QUARK_EV_BLOCKED)
+
+	// What a block denied, Blocked.Op
+	QUARK_BLOCKED_FORK = uint32(C.QUARK_BLOCKED_FORK)
+	QUARK_BLOCKED_EXEC = uint32(C.QUARK_BLOCKED_EXEC)
 
 	// EntryLeaderType
 	QUARK_ELT_UNKNOWN   = int(C.QUARK_ELT_UNKNOWN)
@@ -556,6 +575,10 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	if event.Events&QUARK_EV_MPROTECT != 0 {
 		mprotect := mprotectFromC(&cev.mprotect)
 		event.Mprotect = &mprotect
+	}
+	if event.Events&QUARK_EV_BLOCKED != 0 {
+		blocked := blockedFromC(&cev.blocked)
+		event.Blocked = &blocked
 	}
 	if cev.module_load != nil {
 		ml := moduleLoadFromC(cev.module_load)
@@ -1002,6 +1025,20 @@ func ptraceFromC(cPtrace *C.struct_quark_ptrace) Ptrace {
 	ptrace.Data = uint64(cPtrace.data)
 
 	return ptrace
+}
+
+func blockedFromC(cBlocked *C.struct_quark_blocked) Blocked {
+	var blocked Blocked
+
+	blocked.Op = uint32(cBlocked.op)
+	blocked.Block = uint32(cBlocked.block)
+	blocked.Pid = uint32(cBlocked.pid)
+	blocked.Tid = uint32(cBlocked.tid)
+	blocked.Comm = C.GoString(&cBlocked.comm[0])
+	blocked.Path = C.GoString(&cBlocked.path[0])
+	blocked.Path2 = C.GoString(&cBlocked.path2[0])
+
+	return blocked
 }
 
 func mprotectFromC(cMprotect *C.struct_quark_mprotect) Mprotect {

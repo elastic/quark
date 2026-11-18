@@ -5929,6 +5929,83 @@ t_rule_block(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * The event of a denied attempt: it has the tag blocked and no other, no
+ * rule is evaluated on it, and no drop removes it.
+ */
+static int
+t_rule_blocked(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct raw_event		*raw;
+	struct quark_blocked		*blocked;
+	const struct quark_event	*qev;
+	char				*dump;
+	size_t				 dump_len;
+	FILE				*f;
+
+	quark_queue_init_bare(&qq);
+	/* The tag block and the drop match every other event */
+	ruleset_from_string(&ruleset,
+	    "tag log {\n\ton any\n}\n"
+	    "block {\n\ton process.exe /usr/bin/curl\n}\n"
+	    "drop on any\n");
+	assert(ruleset.blocked_tag == 2);
+	qq.ruleset = &ruleset;
+
+	raw = raw_event_alloc(RAW_BLOCKED);
+	assert(raw != NULL);
+	raw->pid = 4242;
+	blocked = &raw->blocked.quark_blocked;
+	blocked->op = QUARK_BLOCKED_EXEC;
+	blocked->block = 0;
+	blocked->pid = 4242;
+	blocked->tid = 4243;
+	strlcpy(blocked->comm, "sh", sizeof(blocked->comm));
+	strlcpy(blocked->path, "/usr/bin/curl", sizeof(blocked->path));
+	assert(raw_event_insert(&qq, raw) == 0);
+
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_BLOCKED);
+	assert(qev->tags == 2 && qev->ruleset == &ruleset);
+	assert(qev->process == NULL);
+	assert(qev->blocked.op == QUARK_BLOCKED_EXEC && qev->blocked.block == 0);
+	assert(qev->blocked.pid == 4242 && qev->blocked.tid == 4243);
+	assert(!strcmp(qev->blocked.comm, "sh"));
+	assert(!strcmp(qev->blocked.path, "/usr/bin/curl"));
+	assert(qev->blocked.path2[0] == 0);
+	/* No rule saw it */
+	assert(ruleset.rules[0].evals == 0 && ruleset.rules[2].evals == 0);
+
+	if ((f = open_memstream(&dump, &dump_len)) == NULL)
+		err(1, "open_memstream");
+	assert(quark_event_dump(qev, f) == 0);
+	fclose(f);
+	assert(strstr(dump, "->4242 (BLOCKED)\n") != NULL);
+	assert(strstr(dump, "tags=[ blocked ]\n") != NULL);
+	assert(strstr(dump, "op=exec block=0 pid=4242 tid=4243 comm=sh\n") != NULL);
+	assert(strstr(dump, "path=/usr/bin/curl\n") != NULL);
+	assert(strstr(dump, "path2=") == NULL);
+	free(dump);
+
+	/* The next event has nothing left of it */
+	raw = raw_event_alloc(RAW_GETPID);
+	assert(raw != NULL);
+	raw->pid = 4244;
+	assert(raw_event_insert(&qq, raw) == 0);
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL && !(qev->events & QUARK_EV_BLOCKED));
+	assert(qev->tags == 1);
+	assert(qev->blocked.op == 0 && qev->blocked.path[0] == 0);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
 /* Find a pattern in a compiled path list by its bytes */
 static const struct quark_block_path *
 block_path_find(const struct quark_block_path *paths, size_t n_paths,
@@ -6853,10 +6930,12 @@ t_block_container_nova(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue		 qq;
 	struct quark_ruleset		 ruleset;
 	struct quark_queue_stats	 stats;
+	const struct quark_event	*qev;
 	char				 self[PATH_MAX], true_path[PATH_MAX];
 	char				*text;
 	cJSON				*json;
-	int				 pfd[2];
+	pid_t				 pid;
+	int				 pfd[2], i;
 
 	if (realpath("/proc/self/exe", self) == NULL)
 		err(1, "realpath self");
@@ -6910,7 +6989,21 @@ t_block_container_nova(const struct test *t, struct quark_queue_attr *qa)
 	 * protect.
 	 */
 	assert(block_try(1, true_path, NULL) == 0);
-	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+	assert(block_try_pid(1, NULL, NULL, &pid) == BLOCK_EXIT_FORK_EPERM);
+	/*
+	 * The denied attempt is an event here too. Nova alone does not know
+	 * the process, the event has its pid.
+	 */
+	for (i = 0, qev = NULL; i < 200 && qev == NULL; i++) {
+		if ((qev = quark_queue_get_event(&qq)) == NULL)
+			msleep(10);
+	}
+	assert(qev != NULL && qev->events == QUARK_EV_BLOCKED);
+	assert(qev->blocked.op == QUARK_BLOCKED_FORK);
+	assert(qev->blocked.block == 1);
+	assert(qev->blocked.pid == (u32)pid);
+	assert(!strcmp(qev->blocked.path, self));
+	assert(qev->tags == ruleset.blocked_tag);
 
 	/* The container is in the pod web-1 */
 	assert(quark_pod_create(&qq, "pod-b", "web-1", "default", NULL) != NULL);
@@ -7061,14 +7154,27 @@ t_block_enforcer(const struct test *t, struct quark_queue_attr *qa)
 	block_cgroup_setup();
 
 	/*
-	 * A denied exec fails, and is not an event: no exec happened. Only
-	 * an exec of true has a tag, so nothing at all is delivered.
+	 * A denied exec fails, and is one event: the denied attempt, of the
+	 * process that tried. It is not an exec event, no exec happened.
+	 * The fork of that process has no tag and is dropped.
 	 */
-	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	assert(block_try_pid(1, true_path, NULL, &pid) == BLOCK_EXIT_EXEC_EPERM);
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events == QUARK_EV_BLOCKED);
+	assert(qev->tags == 1);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 0), "blocked"));
+	assert(qev->blocked.op == QUARK_BLOCKED_EXEC);
+	assert(qev->blocked.block == 0);
+	assert(qev->blocked.pid == (u32)pid);
+	assert(!strcmp(qev->blocked.path, true_path));
+	assert(qev->blocked.path2[0] == 0);
+	assert(!strncmp(qev->blocked.comm, "quark-test", 10));
+	/* The process is the one that tried, before the exec */
+	assert(qev->process->exe != NULL && !strcmp(qev->process->exe, self));
 	for (i = 0; i < 50; i++) {
 		if ((qev = quark_queue_get_event(&qq)) != NULL)
-			errx(1, "an event for a denied exec, events 0x%llx",
-			    qev->events);
+			errx(1, "a second event for a denied exec, events "
+			    "0x%llx", qev->events);
 		msleep(10);
 	}
 
@@ -7091,10 +7197,18 @@ t_block_enforcer(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_pod_create(&qq, "pod-e", "web-1", "default", NULL) != NULL);
 	assert(quark_container_create(&qq, BLOCK_CONTAINER, "pod-e", "c",
 	    "registry.k8s.io/nginx:1.25") != NULL);
-	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+	assert(block_try_pid(1, NULL, NULL, &pid) == BLOCK_EXIT_FORK_EPERM);
+	/* A denied fork: there is no child, the event is of the parent */
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events == QUARK_EV_BLOCKED && qev->tags == 1);
+	assert(qev->blocked.op == QUARK_BLOCKED_FORK);
+	assert(qev->blocked.block == 1);
+	assert(qev->blocked.pid == (u32)pid);
+	assert(!strcmp(qev->blocked.path, self));
 	assert(block_try(0, NULL, NULL) == 0);
 	quark_queue_get_stats(&qq, &stats);
 	assert(ruleset.rules[1].hits == 1);
+	assert(stats.block_lost == 0);
 
 	quark_queue_close(&qq);
 	assert(qq.enforcer == NULL);
@@ -9040,6 +9154,7 @@ struct test all_tests[] = {
 	T(t_rule_tag_delivery),
 	T(t_rule_tag_api),
 	T(t_rule_block),
+	T(t_rule_blocked),
 	T(t_rule_block_compile),
 	T(t_rule_block_eval),
 	T(t_rule_scope),

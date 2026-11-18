@@ -162,6 +162,7 @@ int			 nova_queue_open(struct quark_queue *);
 int			 nova_enforcer_open(struct quark_queue *);
 void			 nova_enforcer_close(struct quark_queue *);
 int			 nova_enforcer_update_stats(struct quark_queue *);
+int			 nova_enforcer_populate(struct quark_queue *);
 void			 nova_enforcer_container(struct quark_queue *,
 			     const struct quark_container *, int);
 void			*nova_block_test_open(const struct quark_ruleset *);
@@ -279,6 +280,7 @@ enum raw_types {
 	RAW_GETPID,
 	RAW_MPROTECT,
 	RAW_BPF,
+	RAW_BLOCKED,
 	RAW_NUM_TYPES		/* must be last */
 };
 
@@ -482,6 +484,29 @@ struct raw_bpf {
 	struct quark_bpf quark_bpf;
 };
 
+/*
+ * An operation that a block of the ruleset denied, QUARK_EV_BLOCKED. It
+ * did not happen: a denied fork has no child, a denied exec left the
+ * process as it was. The event has the tag blocked and is always
+ * delivered, no rule is evaluated on it.
+ */
+#define QUARK_BLOCKED_FORK	NOVA_OP_FORK
+#define QUARK_BLOCKED_EXEC	NOVA_OP_EXEC
+struct quark_blocked {
+	u32	op;			/* QUARK_BLOCKED_*, what was tried */
+	u32	block;			/* the block that denied, from 0 */
+	u32	pid;			/* who tried, also in process if cached */
+	u32	tid;
+	char	comm[16];
+	char	path[NOVA_PATHLEN];	/* the executable: of the parent for a
+					   fork, the new program for an exec */
+	char	path2[NOVA_PATHLEN];	/* a second path, or empty */
+};
+
+struct raw_blocked {
+	struct quark_blocked quark_blocked;
+};
+
 struct quark_module_load {
 	char *name;
 	char *version;
@@ -556,6 +581,7 @@ struct raw_event {
 		struct raw_ptrace		ptrace;
 		struct raw_mprotect		mprotect;
 		struct raw_bpf			bpf;
+		struct raw_blocked		blocked;
 		struct raw_module_load		module_load;
 		struct raw_shm			shm;
 		struct raw_tty			tty;
@@ -594,6 +620,7 @@ struct quark_event {
 #define QUARK_EV_GETPID			(1 << 14)
 #define QUARK_EV_MPROTECT		(1 << 15)
 #define QUARK_EV_BPF			(1 << 16)
+#define QUARK_EV_BLOCKED		(1 << 17)
 	u64				 events;
 	u64				 time;
 	const struct quark_process	*process;
@@ -604,6 +631,7 @@ struct quark_event {
 	struct quark_ptrace		 ptrace;
 	struct quark_mprotect		 mprotect;
 	struct quark_bpf		 bpf;
+	struct quark_blocked		 blocked;
 	struct quark_module_load	*module_load;
 	struct quark_shm		*shm;
 	struct quark_tty		*tty;
@@ -910,7 +938,8 @@ struct quark_queue_stats {
 	u64	bpf_metadata_lost; /* metadata capture failed for an operation */
 	u64	bpf_retprobe_missed; /* tracefs misses; may overlap state_lost */
 	u64	stalls;     /* stalled perf rings due to corruption, only for QQ_KPROBE */
-	u64	block_no_path; /* block hooks that could not use a path, only for QQ_NOVA */
+	u64	block_no_path; /* block hooks that could not use a path */
+	u64	block_lost; /* denials that could not be reported */
 	int	bpf_retprobe_stats_valid; /* last miss-count refresh succeeded */
 	int	backend;    /* active backend, QQ_EBPF or QQ_KPROBE */
 	/* TODO u64    peak_nodes; */

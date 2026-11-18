@@ -144,7 +144,12 @@ struct nova_block_cid {
 /* Counters of the block hooks, per CPU */
 struct nova_block_stats {
 	__u64	no_path;		/* a path was not resolved or too long */
+	__u64	lost;			/* a denial that could not be reported */
 };
+
+/* What a block denied, nova_deny_event.op */
+#define NOVA_OP_FORK		1
+#define NOVA_OP_EXEC		2
 
 /*
  * Input of the test program blk_test, which evaluates the blocks for a
@@ -179,6 +184,7 @@ enum nova_kind {
 	NOVA_FORK,
 	NOVA_EXEC,
 	NOVA_EXIT,
+	NOVA_DENY,	/* struct nova_deny_event */
 	NOVA_MAX,
 };
 
@@ -228,6 +234,23 @@ struct nova_event {
 struct nova_task_event {
 	struct nova_event	ev;
 	struct nova_task	nt;
+} __aligned(8);
+
+/*
+ * An operation that a block denied. The size is fixed: a path that is
+ * denied always fits in NOVA_PATHLEN, a longer one matches no line. So
+ * the hooks need only the plain ring buffer calls.
+ */
+struct nova_deny_event {
+	struct nova_event	ev;
+	__u32			op;		/* NOVA_OP_* */
+	__u32			block;		/* number of the block, from 0 */
+	__u32			pid;		/* of the process that tried */
+	__u32			tid;
+	char			comm[16];
+	char			path[NOVA_PATHLEN];	/* the executable */
+	char			path2[NOVA_PATHLEN];	/* a second path, or empty */
+	char			pad0[4];
 } __aligned(8);
 
 #if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 10))

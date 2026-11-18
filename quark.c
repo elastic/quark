@@ -218,6 +218,7 @@ raw_event_alloc(int type)
 	case RAW_PTRACE:	/* nada */
 	case RAW_MPROTECT:	/* nada */
 	case RAW_BPF:		/* nada */
+	case RAW_BLOCKED:	/* nada */
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
@@ -262,6 +263,7 @@ raw_event_free(struct raw_event *raw)
 		free(raw->mprotect.quark_mprotect.path);
 		break;
 	case RAW_BPF:		/* nada */
+	case RAW_BLOCKED:	/* nada */
 		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
@@ -485,6 +487,7 @@ event_storage_clear(struct quark_queue *qq)
 	free(qq->event_storage.mprotect.path);
 	bzero(&qq->event_storage.mprotect, sizeof(qq->event_storage.mprotect));
 	bzero(&qq->event_storage.bpf, sizeof(qq->event_storage.bpf));
+	bzero(&qq->event_storage.blocked, sizeof(qq->event_storage.blocked));
 	if (qq->event_storage.module_load != NULL) {
 		free(qq->event_storage.module_load->name);
 		free(qq->event_storage.module_load->version);
@@ -1998,6 +2001,8 @@ event_type_str(u64 event)
 		return "MPROTECT";
 	case QUARK_EV_BPF:
 		return "BPF";
+	case QUARK_EV_BLOCKED:
+		return "BLOCKED";
 	default:
 		return "?";
 	}
@@ -2427,6 +2432,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	file = qev->file;
 
 	pid = qp != NULL ? qp->pid : 0;
+	/* We may not know the process of a denied attempt, only its pid */
+	if (qp == NULL && (qev->events & QUARK_EV_BLOCKED))
+		pid = qev->blocked.pid;
 	events_type_str(qev->events, buf, sizeof(buf));
 	P("->%d", pid);
 	if (qev->events)
@@ -2549,6 +2557,19 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 			PF(fl, "path=%s\n", mprotect->path);
 	}
 
+	if (qev->events & QUARK_EV_BLOCKED) {
+		const struct quark_blocked	*blocked = &qev->blocked;
+
+		fl = "BLOCKED";
+		PF(fl, "op=%s block=%u pid=%u tid=%u comm=%s\n",
+		    blocked->op == QUARK_BLOCKED_FORK ? "fork" :
+		    blocked->op == QUARK_BLOCKED_EXEC ? "exec" : "?",
+		    blocked->block, blocked->pid, blocked->tid, blocked->comm);
+		PF(fl, "path=%s\n", blocked->path);
+		if (blocked->path2[0] != 0)
+			PF(fl, "path2=%s\n", blocked->path2);
+	}
+
 	if (qev->events & QUARK_EV_BPF) {
 		fl = "BPF";
 
@@ -2578,8 +2599,14 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		P("\n");
 	}
 
-	if (qp == NULL)
+	if (qp == NULL) {
+		/* A denied attempt is complete without its process */
+		if (qev->events & QUARK_EV_BLOCKED) {
+			fflush(f);
+			return (0);
+		}
 		return (-1);
+	}
 
 	if (qp->comm[0] != 0) {
 		fl = "COMM";
@@ -5341,7 +5368,17 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 int
 quark_queue_populate(struct quark_queue *qq)
 {
-	return (qq->queue_ops->populate(qq));
+	int	n, m;
+
+	n = qq->queue_ops->populate(qq);
+	/* The denied attempts of the blocks, see nova_enforcer_open() */
+	if (qq->enforcer != NULL) {
+		m = nova_enforcer_populate(qq);
+		if (n >= 0 && m > 0)
+			n += m;
+	}
+
+	return (n);
 }
 
 static struct raw_event *
@@ -5525,6 +5562,25 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
+/*
+ * An operation that a block denied. Nothing happened, so the process
+ * cache does not change. The process is the one that tried, when we know
+ * it: with the nova backend alone we may not.
+ */
+static struct quark_event *
+raw_event_blocked(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_BLOCKED;
+	qev->process = process_cache_get(qq, raw->pid, 0);
+	qev->blocked = raw->blocked.quark_blocked;
+
+	return (qev);
+}
+
 static struct quark_event *
 raw_event_bpf(struct quark_queue *qq, struct raw_event *raw)
 {
@@ -5681,6 +5737,9 @@ quark_queue_get_event1(struct quark_queue *qq)
 			break;
 		case RAW_BPF:
 			qev = raw_event_bpf(qq, raw);
+			break;
+		case RAW_BLOCKED:
+			qev = raw_event_blocked(qq, raw);
 			break;
 		case RAW_MODULE_LOAD:
 			qev = raw_event_module_load(qq, raw);

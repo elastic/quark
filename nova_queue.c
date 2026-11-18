@@ -25,6 +25,7 @@ struct nova_queue {
 	struct nova		*nova;
 	struct ring_buffer	*ringbuf;
 	struct quark_block_prog	*blocks;	/* NULL without blocks */
+	struct ring_buffer	*deny_ringbuf;	/* denied operations, with blocks */
 };
 
 static int	nova_queue_populate(struct quark_queue *);
@@ -452,6 +453,114 @@ load_blocks(struct nova_queue *nqq)
 }
 
 /*
+ * A denied operation from a hook of the blocks becomes a raw event, which
+ * the queue orders by time with the events of the backend.
+ */
+static int
+nova_deny_cb(void *vqq, void *vdata, size_t len)
+{
+	struct quark_queue	*qq = vqq;
+	struct nova_deny_event	*ev = vdata;
+	struct raw_event	*raw;
+	struct quark_blocked	*blocked;
+
+	if (len < sizeof(*ev) || ev->ev.kind != NOVA_DENY) {
+		qwarnx("unexpected event in the ring of the blocks");
+		return (0);
+	}
+	if ((raw = raw_event_alloc(RAW_BLOCKED)) == NULL)
+		return (0);
+	raw->pid = ev->pid;
+	raw->tid = ev->tid;
+	raw->time = ev->ev.ts;
+	blocked = &raw->blocked.quark_blocked;
+	blocked->op = ev->op;
+	blocked->block = ev->block;
+	blocked->pid = ev->pid;
+	blocked->tid = ev->tid;
+	/*
+	 * The ring is read only for us, and its strings may lack a NUL:
+	 * copy with a bound, then terminate the copy. raw_event_alloc()
+	 * gave us zeroes.
+	 */
+	memcpy(blocked->comm, ev->comm, sizeof(blocked->comm) - 1);
+	memcpy(blocked->path, ev->path, sizeof(blocked->path) - 1);
+	memcpy(blocked->path2, ev->path2, sizeof(blocked->path2) - 1);
+	if (raw_event_insert(qq, raw) == -1)
+		raw_event_free(raw);
+
+	return (0);
+}
+
+/* The ring of the denied operations, watched by the epoll of the queue */
+static int
+deny_ringbuf_setup(struct quark_queue *qq, struct nova_queue *nqq)
+{
+	struct epoll_event	ev;
+	int			fd;
+
+	if (nqq->blocks == NULL)
+		return (0);
+	nqq->deny_ringbuf = ring_buffer__new(
+	    bpf_map__fd(nqq->nova->maps.blk_ring), nova_deny_cb, qq, NULL);
+	if (nqq->deny_ringbuf == NULL) {
+		qwarn("can't setup the ring of the blocks");
+		return (-1);
+	}
+	if ((fd = ring_buffer__epoll_fd(nqq->deny_ringbuf)) < 0) {
+		qwarnx("ring_buffer__epoll_fd failed");
+		goto fail;
+	}
+	bzero(&ev, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.fd = fd;
+	if (epoll_ctl(qq->epollfd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+		qwarn("epoll_ctl");
+		goto fail;
+	}
+
+	return (0);
+fail:
+	/* this closes the fd */
+	ring_buffer__free(nqq->deny_ringbuf);
+	nqq->deny_ringbuf = NULL;
+
+	return (-1);
+}
+
+static void
+deny_ringbuf_close(struct quark_queue *qq, struct nova_queue *nqq)
+{
+	int	fd;
+
+	if (nqq->deny_ringbuf == NULL)
+		return;
+	fd = ring_buffer__epoll_fd(nqq->deny_ringbuf);
+	if (fd >= 0 && qq->epollfd != -1 &&
+	    epoll_ctl(qq->epollfd, EPOLL_CTL_DEL, fd, NULL) == -1)
+		qwarn("epoll_ctl EPOLL_CTL_DEL");
+	ring_buffer__free(nqq->deny_ringbuf);
+	nqq->deny_ringbuf = NULL;
+}
+
+/* Take the denied operations out of their ring, as many as fit */
+static int
+deny_ringbuf_populate(struct quark_queue *qq, struct nova_queue *nqq)
+{
+	int	npop, space_left;
+
+	if (nqq == NULL || nqq->deny_ringbuf == NULL)
+		return (0);
+	space_left = qq->length >= qq->max_length ? 0 :
+	    qq->max_length - qq->length;
+	if (space_left == 0)
+		return (0);
+	npop = ring_buffer__consume_n(nqq->deny_ringbuf, space_left);
+
+	return (npop < 0 ? -1 : npop);
+}
+
+/*
  * Attach the hooks of the blocks, after the others. With two programs on
  * one hook the kernel runs the last attached first, and the first that
  * denies ends the chain. The hook of a block must be that one: a denied
@@ -729,6 +838,8 @@ nova_queue_open(struct quark_queue *qq)
 		goto fail;
 	if (ringbuf_setup(qq, nqq) == -1)
 		goto fail;
+	if (deny_ringbuf_setup(qq, nqq) == -1)
+		goto fail;
 	if (nova__attach(nqq->nova) != 0)
 		goto fail;
 	if (attach_blocks(nqq) == -1)
@@ -747,7 +858,7 @@ static int
 nova_queue_populate(struct quark_queue *qq)
 {
 	struct nova_queue	*nqq = qq->queue_be;
-	int			 npop, space_left;
+	int			 npop, nblk, space_left;
 
 	space_left =
 	    qq->flags & QQ_BYPASS ? 1 :
@@ -757,8 +868,12 @@ nova_queue_populate(struct quark_queue *qq)
 		return (0);
 
 	npop = ring_buffer__consume_n(nqq->ringbuf, space_left);
+	if (npop < 0)
+		return (-1);
+	if ((nblk = deny_ringbuf_populate(qq, nqq)) > 0)
+		npop += nblk;
 
-	return (npop < 0 ? -1 : npop);
+	return (npop);
 }
 
 /*
@@ -815,8 +930,11 @@ nova_queue_update_block_stats(struct quark_queue *qq, int num_cpus)
 		goto done;
 	}
 	qq->stats.block_no_path = 0;
-	for (j = 0; j < num_cpus; j++)
+	qq->stats.block_lost = 0;
+	for (j = 0; j < num_cpus; j++) {
 		qq->stats.block_no_path += st[j].no_path;
+		qq->stats.block_lost += st[j].lost;
+	}
 	r = 0;
 done:
 	free(denied);
@@ -980,6 +1098,8 @@ nova_enforcer_open(struct quark_queue *qq)
 	}
 	if (load_blocks(nqq) == -1)
 		goto fail;
+	if (deny_ringbuf_setup(qq, nqq) == -1)
+		goto fail;
 	if (attach_blocks(nqq) == -1)
 		goto unsupported;
 
@@ -1003,12 +1123,19 @@ nova_enforcer_close(struct quark_queue *qq)
 
 	if (nqq == NULL)
 		return;
+	deny_ringbuf_close(qq, nqq);
 	if (nqq->nova != NULL)
 		nova__destroy(nqq->nova);
 	quark_block_free(nqq->blocks);
 	free(nqq);
 	qq->enforcer = NULL;
 	errno = saved_errno;
+}
+
+int
+nova_enforcer_populate(struct quark_queue *qq)
+{
+	return (deny_ringbuf_populate(qq, qq->enforcer));
 }
 
 int
@@ -1036,6 +1163,7 @@ nova_queue_close(struct quark_queue *qq)
 
 	if (nqq == NULL)
 		return;
+	deny_ringbuf_close(qq, nqq);
 	if (nqq->nova != NULL) {
 		nova__destroy(nqq->nova);
 		nqq->nova = NULL;

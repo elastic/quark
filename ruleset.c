@@ -331,6 +331,15 @@ quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 	qev->tags = 0;
 	qev->ruleset = ruleset;
 
+	/*
+	 * A denied attempt is not a fork, an exec or a file event, no rule
+	 * is about it. It has the tag blocked, so it is always delivered.
+	 */
+	if (qev->events & QUARK_EV_BLOCKED) {
+		qev->tags = ruleset->blocked_tag;
+		return (NULL);
+	}
+
 	for (i = 0; i < ruleset->n_rules; i++) {
 		rule = ruleset->rules + i;
 		/* A block is enforced in the kernel, never evaluated here */

@@ -716,6 +716,12 @@ struct {
 	__uint(max_entries, NOVA_BLOCK_MAX_PATHS);
 } blk_path_file SEC(".maps");
 
+/* Denied operations, struct nova_deny_event */
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 256 * 1024);
+} blk_ring SEC(".maps");
+
 /* Denials of each block */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -940,9 +946,41 @@ blk_count_no_path(void)
 		st->no_path++;
 }
 
+/*
+ * Tell userspace about a denied operation. The operation is denied
+ * whatever happens here: a full ring buffer must not switch a block off,
+ * the report is counted as lost.
+ */
+static __always_inline void
+blk_report(__u32 op, __u32 block, struct path *path, int has_path)
+{
+	struct nova_deny_event	*ev;
+	struct nova_block_stats	*st;
+	__u64			 id;
+
+	if ((ev = bpf_ringbuf_reserve(&blk_ring, sizeof(*ev), 0)) == NULL) {
+		if ((st = bpf_map_lookup_elem(&blk_stats, &(__u32){0})) != NULL)
+			st->lost++;
+		return;
+	}
+	__builtin_memset(ev, 0, sizeof(*ev));
+	ev->ev.kind = NOVA_DENY;
+	ev->ev.ts = bpf_ktime_get_boot_ns();
+	ev->op = op;
+	ev->block = block;
+	id = bpf_get_current_pid_tgid();
+	ev->pid = id >> 32;
+	ev->tid = (__u32)id;
+	bpf_get_current_comm(ev->comm, sizeof(ev->comm));
+	/* It fits and resolves, it did a moment ago for the lookup */
+	if (has_path)
+		bpf_d_path(path, ev->path, sizeof(ev->path));
+	bpf_ringbuf_submit(ev, 0);
+}
+
 /* A fork or an exec with this executable, NULL if there is none */
 static __always_inline int
-blk_process(struct path *exe, int has_exe)
+blk_process(__u32 op, struct path *exe, int has_exe)
 {
 	__u64	m, bits = 0;
 	int	block;
@@ -957,6 +995,7 @@ blk_process(struct path *exe, int has_exe)
 	if ((block = blk_decide(m)) < 0)
 		return (0);
 	blk_count_denied(block);
+	blk_report(op, block, exe, has_exe);
 
 	return (-EPERM);
 }
@@ -974,9 +1013,9 @@ BPF_PROG(blk_bprm_check, struct linux_binprm *bprm, int ret)
 	if (blk_n_blocks == 0 || (task->flags & BLK_PF_KTHREAD))
 		return (0);
 	if (file == NULL)
-		return (blk_process(NULL, 0));
+		return (blk_process(NOVA_OP_EXEC, NULL, 0));
 
-	return (blk_process(&file->f_path, 1));
+	return (blk_process(NOVA_OP_EXEC, &file->f_path, 1));
 }
 
 /*
@@ -998,9 +1037,9 @@ BPF_PROG(blk_task_alloc, struct task_struct *child, unsigned long clone_flags,
 	    (task->flags & BLK_PF_KTHREAD))
 		return (0);
 	if (mm == NULL || (file = mm->exe_file) == NULL)
-		return (blk_process(NULL, 0));
+		return (blk_process(NOVA_OP_FORK, NULL, 0));
 
-	return (blk_process(&file->f_path, 1));
+	return (blk_process(NOVA_OP_FORK, &file->f_path, 1));
 }
 
 /*
