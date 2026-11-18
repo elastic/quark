@@ -28,6 +28,9 @@ struct quark_queue_stats {
 	u64	bpf_metadata_lost;
 	u64	bpf_retprobe_missed;
 	u64	stalls;
+	u64	block_no_path;
+	u64	block_lost;
+	u64	block_no_slot;
 	int	bpf_retprobe_stats_valid;
 	int	backend;
 };
@@ -88,6 +91,25 @@ Only meaningful on the
 .Dv QQ_KPROBE
 backend, zero on
 .Dv QQ_EBPF .
+.It Em block_no_path
+Operations that the blocks of the ruleset evaluated without a path: the path
+could not be resolved, or it was too long for a line to match.
+No line with a path matches such an operation, so it is not denied.
+A long path is nothing special, this counter is not zero on a busy system.
+.It Em block_lost
+Denied operations without an event, because the ring buffer of the denials
+was full.
+The operation was denied all the same.
+.It Em block_no_slot
+File operations that were not evaluated, and so not denied, because the
+kernel programs of the blocks had no scratch memory left on the CPU.
+This should stay zero.
+.Pp
+The three counters are zero for a ruleset without a
+.Cm block .
+The denials of a block are counted in the
+.Em hits
+of its first line.
 .It Em backend
 Active queue backend, either
 .Dv QQ_EBPF

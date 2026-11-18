@@ -163,6 +163,12 @@
     set. In the case of an error, the internal state is cleared up and a
     <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>
     should NOT be issued.</p>
+<p class="Pp">A ruleset with a <code class="Cm">block</code> fails with
+    <code class="Er">ENOTSUP</code> where blocks can't be enforced: on the
+    kprobe backend, on a kernel before Linux 5.17, or without the BPF LSM, see
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>. It fails with
+    <code class="Er">EINVAL</code> together with
+    <code class="Dv">QQ_BYPASS</code>.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="ENVIRONMENT"><a class="permalink" href="#ENVIRONMENT">ENVIRONMENT</a></h1>

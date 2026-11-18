@@ -57,6 +57,7 @@
     <ul class="Bl-compact">
       <li><a href="#Value_lists">Value lists</a></li>
       <li><a href="#Tag_blocks">Tag blocks</a></li>
+      <li><a href="#Blocks">Blocks</a></li>
       <li><a href="#Evaluation">Evaluation</a></li>
       <li><a href="#Backends">Backends</a></li>
     </ul>
@@ -321,6 +322,92 @@ drop on any</pre>
     <a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>.</p>
 </section>
 <section class="Ss">
+<h2 class="Ss" id="Blocks"><a class="permalink" href="#Blocks">Blocks</a></h2>
+<p class="Pp">A <code class="Cm">block</code> denies an operation before it
+    happens. It has <code class="Cm">except on</code> lines, then
+    <code class="Cm">on</code> lines, as a tag block, and no name:</p>
+<div class="Bd Pp Bd-indent Li">
+<pre>block {
+	on process.exe /usr/bin/wget
+}
+block {
+	except on file.path /etc/hostname
+	except on pod.name debug-*
+	on file.path /etc/*
+}</pre>
+</div>
+<p class="Pp">A block denies an operation when no <code class="Cm">except
+    on</code> line matches and one <code class="Cm">on</code> line matches. The
+    operation then fails with <code class="Er">EPERM</code>. In the example no
+    process in a container runs wget. And no process in a container changes a
+    file under <span class="Pa">/etc</span>, other than
+    <span class="Pa">/etc/hostname</span>, unless its pod has a name that starts
+    with debug-.</p>
+<p class="Pp">The fields of a line are <code class="Cm">process.exe</code>,
+    <code class="Cm">file.path</code>, <code class="Cm">pod.name</code> and
+    <code class="Cm">container.image</code>. A block is about processes or about
+    files:</p>
+<ul class="Bl-dash Bl-compact">
+  <li>Every <code class="Cm">on</code> line has
+      <code class="Cm">process.exe</code> or <code class="Cm">file.path</code>,
+      and all <code class="Cm">on</code> lines of a block have the same one. An
+      <code class="Cm">except on</code> line does not have the other one.</li>
+  <li>&#x201C;process.exe *&#x201D; selects every program, and &#x201C;file.path
+      *&#x201D; every file.</li>
+  <li>A &#x2018;*&#x2019; is only allowed at the end of a path, and a path is
+      shorter than 250 bytes.</li>
+  <li>A field appears once in a line.</li>
+  <li>A ruleset has at most 64 blocks and 64 different lines in them.</li>
+</ul>
+<p class="Pp">What a line denies depends on its path field:</p>
+<dl class="Bl-tag">
+  <dt id="process.exe~2"><a class="permalink" href="#process.exe~2"><code class="Cm">process.exe</code></a></dt>
+  <dd>An exec of the program, and a fork of a process that runs it. A new thread
+      is not a fork. A script is denied when it is executed, not when it is
+      given to its interpreter as an argument.</dd>
+  <dt id="file.path~2"><a class="permalink" href="#file.path~2"><code class="Cm">file.path</code></a></dt>
+  <dd>The operations that make, change or remove the file: the creation of a
+      regular file, an open for writing, a change of its mode, a truncate, a
+      rename from the path or to it, a hard link to the file or with the path as
+      the new name, and an unlink. A read is not denied. An open, a change of
+      mode and a truncate are denied for a regular file only. A directory, a
+      symbolic link or a special file can still be made, and a directory
+      removed. The path is the one the process sees, from its root
+    directory.</dd>
+</dl>
+<p class="Pp">A block denies only in a container, unless
+    <code class="Fl">-a</code> is given. A container is what
+    <code class="Cm">event.scope</code> calls one, see
+    <a class="Sx" href="#CONTAINER_SCOPE">CONTAINER SCOPE</a>, so without
+    <code class="Fl">-a</code> a process in the <code class="Cm">host</code> or
+    the <code class="Cm">unknown</code> scope is not denied.
+    <code class="Cm">event.scope</code> is not a field of a block.</p>
+<p class="Pp">A field without data does not match, also in an
+    <code class="Cm">except on</code> line. So &#x201C;except on pod.name
+    debug-*&#x201D; does not protect a pod before its metadata arrived, and a
+    line with <code class="Cm">pod.name</code> or
+    <code class="Cm">container.image</code> never matches a container that
+    Kubernetes does not know. A path that can't be resolved, or is 250 bytes or
+    longer, matches no line.</p>
+<p class="Pp" id="BLOCKED">A denied operation is one event,
+    <a class="permalink" href="#BLOCKED"><b class="Sy">BLOCKED</b></a>, with the
+    operation, the block and the path, see
+    <a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>. It did
+    not happen, so it is no other event: a denied exec is not an exec event. The
+    event has the tag
+    <a class="permalink" href="#blocked"><b class="Sy" id="blocked">blocked</b></a>
+    and is always delivered.</p>
+<p class="Pp" id="bpf">Blocks need Linux 5.17 on x86_64, other architectures are
+    not tested, with the BPF LSM active:
+    <a class="permalink" href="#bpf"><b class="Sy">bpf</b></a> must be in
+    <span class="Pa">/sys/kernel/security/lsm</span>, which the
+    <a class="permalink" href="#lsm="><b class="Sy" id="lsm=">lsm=</b></a> boot
+    parameter sets. A block on <code class="Cm">file.path</code> also needs the
+    path hooks of the kernel, <code class="Dv">CONFIG_SECURITY_PATH</code>.
+    Where blocks can't work, <code class="Nm">quark-mon</code> fails to start on
+    a ruleset with a block.</p>
+</section>
+<section class="Ss">
 <h2 class="Ss" id="Evaluation"><a class="permalink" href="#Evaluation">Evaluation</a></h2>
 <p class="Pp">The rules are evaluated from top to bottom. The first matching
     <code class="Cm">pass</code> or <code class="Cm">drop</code> rule ends the
@@ -331,18 +418,30 @@ drop on any</pre>
     rule matched. So a <code class="Cm">drop</code> rule before a tag block
     removes an event, and &#x201C;drop on any&#x201D; as the last rule removes
     every event without a tag.</p>
+<p class="Pp">A <code class="Cm">block</code> is not part of this evaluation. It
+    is enforced in the kernel before the operation, and the other rules see
+    events after it. So a <code class="Cm">pass</code> or a
+    <code class="Cm">drop</code> rule above a block does not stop it, and the
+    place of a block in the file does not matter. No rule is evaluated on a
+    denied operation.</p>
 <p class="Pp">The initial snapshot of existing processes, see
     <code class="Fl">-s</code>, is not filtered by the rules.</p>
 </section>
 <section class="Ss">
 <h2 class="Ss" id="Backends"><a class="permalink" href="#Backends">Backends</a></h2>
-<p class="Pp">The EBPF backend supports every rule. The kprobe backend does not
-    report the cgroup of new processes, so it rejects
-    <code class="Cm">event.scope</code>, <code class="Cm">pod.name</code> and
-    <code class="Cm">container.image</code>. The NOVA backend rejects these
-    three fields, <code class="Cm">file.exec_change</code>, value lists with
-    more than one value, a field that is repeated in one rule and tag
-  blocks.</p>
+<p class="Pp">The EBPF backend supports every rule. For a ruleset with a
+    <code class="Cm">block</code> it also loads the LSM programs of the NOVA
+    backend, which only deny, and it loads nothing of NOVA for a ruleset without
+    one. The kprobe backend does not report the cgroup of new processes, so it
+    rejects <code class="Cm">event.scope</code>,
+    <code class="Cm">pod.name</code> and
+    <code class="Cm">container.image</code>. It also rejects a ruleset with a
+    <code class="Cm">block</code>. The NOVA backend enforces blocks. Outside of
+    a block it rejects these three fields,
+    <code class="Cm">file.exec_change</code>, value lists with more than one
+    value, a field that is repeated in one rule and tag blocks. A ruleset with a
+    <code class="Cm">block</code> can't be used with
+  <code class="Fl">-B</code>.</p>
 </section>
 </section>
 <section class="Sh">

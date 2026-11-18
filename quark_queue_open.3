@@ -168,6 +168,18 @@ is set.
 In the case of an error, the internal state is cleared up and a
 .Xr quark_queue_close 3
 should NOT be issued.
+.Pp
+A ruleset with a
+.Cm block
+fails with
+.Er ENOTSUP
+where blocks can't be enforced: on the kprobe backend, on a kernel before
+Linux 5.17, or without the BPF LSM, see
+.Xr quark-mon 8 .
+It fails with
+.Er EINVAL
+together with
+.Dv QQ_BYPASS .
 .Sh ENVIRONMENT
 .Bl -tag -width Ds
 .It Ev QUARK_BPF_KPROBE

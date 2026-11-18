@@ -338,6 +338,149 @@ No rule tests a tag, a tag is an output:
 .Nm
 prints it, see
 .Xr quark_event_dump 3 .
+.Ss Blocks
+A
+.Cm block
+denies an operation before it happens.
+It has
+.Cm except on
+lines, then
+.Cm on
+lines, as a tag block, and no name:
+.Bd -literal -offset indent
+block {
+	on process.exe /usr/bin/wget
+}
+block {
+	except on file.path /etc/hostname
+	except on pod.name debug-*
+	on file.path /etc/*
+}
+.Ed
+.Pp
+A block denies an operation when no
+.Cm except on
+line matches and one
+.Cm on
+line matches.
+The operation then fails with
+.Er EPERM .
+In the example no process in a container runs wget.
+And no process in a container changes a file under
+.Pa /etc ,
+other than
+.Pa /etc/hostname ,
+unless its pod has a name that starts with debug-.
+.Pp
+The fields of a line are
+.Cm process.exe ,
+.Cm file.path ,
+.Cm pod.name
+and
+.Cm container.image .
+A block is about processes or about files:
+.Bl -dash -compact
+.It
+Every
+.Cm on
+line has
+.Cm process.exe
+or
+.Cm file.path ,
+and all
+.Cm on
+lines of a block have the same one.
+An
+.Cm except on
+line does not have the other one.
+.It
+.Dq process.exe *
+selects every program, and
+.Dq file.path *
+every file.
+.It
+A
+.Sq *
+is only allowed at the end of a path, and a path is shorter than 250 bytes.
+.It
+A field appears once in a line.
+.It
+A ruleset has at most 64 blocks and 64 different lines in them.
+.El
+.Pp
+What a line denies depends on its path field:
+.Bl -tag -width "process.exe"
+.It Cm process.exe
+An exec of the program, and a fork of a process that runs it.
+A new thread is not a fork.
+A script is denied when it is executed, not when it is given to its
+interpreter as an argument.
+.It Cm file.path
+The operations that make, change or remove the file: the creation of a
+regular file, an open for writing, a change of its mode, a truncate, a
+rename from the path or to it, a hard link to the file or with the path as
+the new name, and an unlink.
+A read is not denied.
+An open, a change of mode and a truncate are denied for a regular file only.
+A directory, a symbolic link or a special file can still be made, and a
+directory removed.
+The path is the one the process sees, from its root directory.
+.El
+.Pp
+A block denies only in a container, unless
+.Fl a
+is given.
+A container is what
+.Cm event.scope
+calls one, see
+.Sx CONTAINER SCOPE ,
+so without
+.Fl a
+a process in the
+.Cm host
+or the
+.Cm unknown
+scope is not denied.
+.Cm event.scope
+is not a field of a block.
+.Pp
+A field without data does not match, also in an
+.Cm except on
+line.
+So
+.Dq except on pod.name debug-*
+does not protect a pod before its metadata arrived, and a line with
+.Cm pod.name
+or
+.Cm container.image
+never matches a container that Kubernetes does not know.
+A path that can't be resolved, or is 250 bytes or longer, matches no line.
+.Pp
+A denied operation is one event,
+.Sy BLOCKED ,
+with the operation, the block and the path, see
+.Xr quark_event_dump 3 .
+It did not happen, so it is no other event: a denied exec is not an exec
+event.
+The event has the tag
+.Sy blocked
+and is always delivered.
+.Pp
+Blocks need Linux 5.17 on x86_64, other architectures are not tested, with
+the BPF LSM active:
+.Sy bpf
+must be in
+.Pa /sys/kernel/security/lsm ,
+which the
+.Sy lsm=
+boot parameter sets.
+A block on
+.Cm file.path
+also needs the path hooks of the kernel,
+.Dv CONFIG_SECURITY_PATH .
+Where blocks can't work,
+.Nm
+fails to start on a ruleset with a block.
 .Ss Evaluation
 The rules are evaluated from top to bottom.
 The first matching
@@ -357,21 +500,45 @@ rule before a tag block removes an event, and
 .Dq drop on any
 as the last rule removes every event without a tag.
 .Pp
+A
+.Cm block
+is not part of this evaluation.
+It is enforced in the kernel before the operation, and the other rules see
+events after it.
+So a
+.Cm pass
+or a
+.Cm drop
+rule above a block does not stop it, and the place of a block in the file
+does not matter.
+No rule is evaluated on a denied operation.
+.Pp
 The initial snapshot of existing processes, see
 .Fl s ,
 is not filtered by the rules.
 .Ss Backends
 The EBPF backend supports every rule.
+For a ruleset with a
+.Cm block
+it also loads the LSM programs of the NOVA backend, which only deny, and it
+loads nothing of NOVA for a ruleset without one.
 The kprobe backend does not report the cgroup of new processes, so it
 rejects
 .Cm event.scope ,
 .Cm pod.name
 and
 .Cm container.image .
-The NOVA backend rejects these three fields,
+It also rejects a ruleset with a
+.Cm block .
+The NOVA backend enforces blocks.
+Outside of a block it rejects these three fields,
 .Cm file.exec_change ,
 value lists with more than one value, a field that is repeated in one rule
 and tag blocks.
+A ruleset with a
+.Cm block
+can't be used with
+.Fl B .
 .Sh CONTAINER SCOPE
 The
 .Cm event.scope

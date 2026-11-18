@@ -336,3 +336,36 @@ Changes from 0.11 to 0.12
     process.uid 1 process.uid 2", with ENOTSUP. Such a rule is an AND
     that never matches in userspace, while nova used the last value,
     and matched either of two paths.
+  o The rule DSL learned blocks, which deny an operation before it
+    happens. "block {", then "except on" lines, then "on" lines, then
+    "}". An operation is denied with EPERM when no except line and one
+    on line match. The fields are process.exe, file.path, pod.name and
+    container.image, and every on line has process.exe or file.path.
+    process.exe denies a fork and an exec. file.path denies the creation
+    of a regular file, an open for writing, a change of mode, a
+    truncate, a rename, a hard link and an unlink. A block is enforced
+    in the kernel and is not part of the rule evaluation: pass and drop
+    don't stop it. It denies only in a container. See quark-mon(8) for
+    the limits. New functions quark_ruleset_block_begin() and
+    quark_ruleset_block_end(), and new rule actions QUARK_RA_BLOCK_ON
+    and QUARK_RA_BLOCK_EXCEPT.
+  o Blocks are enforced by LSM programs of the nova backend. With the
+    EBPF backend they are loaded next to it, only for a ruleset with a
+    block. They need Linux 5.17 on x86_64 with the BPF LSM active, and
+    CONFIG_SECURITY_PATH for a block on file.path. quark_queue_open()
+    fails with ENOTSUP on a ruleset with a block where that is missing
+    and on the kprobe backend, and with EINVAL together with QQ_BYPASS.
+  o quark_event{} got a new member blocked, a quark_blocked{}, for the
+    new event QUARK_EV_BLOCKED: an operation that a block denied. It
+    has the operation, QUARK_BLOCKED_*, the number of the block, the
+    pid, tid and comm of the thread that tried, and one or two paths.
+    The event has the reserved tag blocked and is always delivered, no
+    rule is evaluated on it. Its process can be NULL with the nova
+    backend alone. quark_event_dump() prints it in BLOC lines, and
+    go/quark has it in Event.Blocked. Change in behavior for go/quark:
+    GetEvent() delivers such an event without a process.
+  o quark_queue_stats{} got the members block_no_path, block_lost and
+    block_no_slot. The denials of a block are the hits of its first
+    rule.
+  o QQ_BLOCK_HOST was added, with it the blocks also deny outside of
+    containers. quark-mon(8) has it as -a.
