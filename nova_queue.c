@@ -453,7 +453,8 @@ check_bpf_lsm(void)
  * blocks take as constants.
  */
 static int
-load_block_rodata(struct nova_queue *nqq, const struct quark_ruleset *ruleset)
+load_block_rodata(struct nova_queue *nqq, const struct quark_ruleset *ruleset,
+    int host)
 {
 	struct nova	*nova = nqq->nova;
 
@@ -465,6 +466,7 @@ load_block_rodata(struct nova_queue *nqq, const struct quark_ruleset *ruleset)
 	nova->rodata->blk_dc_exe = nqq->blocks->dc_exe;
 	nova->rodata->blk_dc_file = nqq->blocks->dc_file;
 	nova->rodata->blk_dc_container = nqq->blocks->dc_container;
+	nova->rodata->blk_host = host;
 
 	return (0);
 }
@@ -485,7 +487,8 @@ load_rodata(struct quark_queue *qq, struct nova_queue *nqq)
 		if (qq->ruleset->n_blocks > 0) {
 			if (check_bpf_lsm() == -1)
 				return (-1);
-			if (load_block_rodata(nqq, qq->ruleset) == -1)
+			if (load_block_rodata(nqq, qq->ruleset,
+			    (qq->flags & QQ_BLOCK_HOST) != 0) == -1)
 				return (-1);
 		}
 	}
@@ -701,12 +704,13 @@ attach_blocks(struct nova_queue *nqq)
  * For tests: the blocks of a ruleset in the kernel, with their maps and
  * the test program, and no hook. Nothing is attached, so nothing on the
  * machine is denied, whatever the blocks say. nova_block_test_run()
- * evaluates a made up operation with the code of the hooks. Returns a
+ * evaluates a made up operation with the code of the hooks, host is
+ * QQ_BLOCK_HOST: a cgroup that is not a container is evaluated. Returns a
  * handle for the other two calls, or NULL with errno set, EINVAL for a
  * ruleset without blocks.
  */
 void *
-nova_block_test_open(const struct quark_ruleset *ruleset)
+nova_block_test_open(const struct quark_ruleset *ruleset, int host)
 {
 	struct nova_queue	*nqq;
 
@@ -717,7 +721,7 @@ nova_block_test_open(const struct quark_ruleset *ruleset)
 		return (NULL);
 	if ((nqq->nova = nova_open_object()) == NULL)
 		goto fail;
-	if (load_block_rodata(nqq, ruleset) == -1)
+	if (load_block_rodata(nqq, ruleset, host) == -1)
 		goto fail;
 	if (nova_blocks_only(nqq, 0) == -1)
 		goto fail;
@@ -1193,7 +1197,8 @@ nova_enforcer_open(struct quark_queue *qq)
 	qq->enforcer = nqq;
 	if ((nqq->nova = nova_open_object()) == NULL)
 		goto fail;
-	if (load_block_rodata(nqq, qq->ruleset) == -1)
+	if (load_block_rodata(nqq, qq->ruleset,
+	    (qq->flags & QQ_BLOCK_HOST) != 0) == -1)
 		goto fail;
 	if (nova_blocks_only(nqq, 1) == -1)
 		goto fail;

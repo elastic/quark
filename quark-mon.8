@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDEeFGgHhkLMNnSsTtuv
+.Op Fl aBbDEeFGgHhkLMNnSsTtuv
 .Op Fl C Ar filename
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
@@ -31,6 +31,21 @@ runs until a SIGINT is received.
 .Pp
 The options are as follows:
 .Bl -tag -width Dtb
+.It Fl a
+The blocks of the ruleset also deny outside of containers.
+By default a
+.Em block
+denies only the operations of a process in a container.
+With this option it denies them for every process of the machine.
+A line with a container field,
+.Em pod.name
+or
+.Em container.image ,
+still matches only in a container.
+Use it with care: a block on a path that the system needs can stop the
+machine from working until
+.Nm
+exits.
 .It Fl B
 Test bypass mode, where EBPF events are passed up directly without any
 processing.

@@ -664,7 +664,7 @@ BPF_PROG(sched_exit, struct task_struct *task)
 
 /*
  * Blocks: deny an operation of a process in a container when a block of
- * the ruleset matches it. The blocks are compiled in userspace, see
+ * the ruleset matches it, and of any process if blk_host is set. The blocks are compiled in userspace, see
  * block.c: every line of every block is one bit, and each field gives the
  * set of lines that accept its value. A hook ANDs these sets into M, the
  * lines that match, and a block denies when (on & M) != 0 and
@@ -684,6 +684,7 @@ const volatile __u32	blk_n_blocks;
 const volatile __u64	blk_dc_exe;		/* lines without process.exe */
 const volatile __u64	blk_dc_file;		/* lines without file.path */
 const volatile __u64	blk_dc_container;	/* lines without a container field */
+const volatile __u32	blk_host;		/* also deny outside of a container */
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -850,6 +851,30 @@ blk_cbits_task(__u64 *bits)
 }
 
 /*
+ * The lines that the container fields allow for the current task, where
+ * every hook starts. -1 if the task is not evaluated: it is not in a
+ * container, see blk_cbits_task(). With blk_host such a task is evaluated
+ * too, with the lines without container fields, as a container without
+ * metadata. A kernel thread never is.
+ */
+static __always_inline int
+blk_task_lines(__u64 *m)
+{
+	struct task_struct	*task;
+
+	if (blk_cbits_task(m) == 0)
+		return (0);
+	if (!blk_host)
+		return (-1);
+	task = (struct task_struct *)bpf_get_current_task();
+	if (BPF_CORE_READ(task, flags) & BLK_PF_KTHREAD)
+		return (-1);
+	*m = blk_dc_container;
+
+	return (0);
+}
+
+/*
  * The lines that accept the executable. -1 if the path can't be had, also
  * when it does not fit in the key. The key is on the stack of this
  * function, so it must not be inlined.
@@ -985,7 +1010,7 @@ blk_process(__u32 op, struct path *exe, int has_exe)
 	__u64			 m, bits = 0;
 	int			 block;
 
-	if (blk_cbits_task(&m) != 0)
+	if (blk_task_lines(&m) != 0)
 		return (0);
 	if (has_exe && blk_exe_bits(exe, &bits) != 0)
 		has_exe = 0;
@@ -1292,7 +1317,7 @@ blk_file(__u32 op, struct vfsmount *mnt, struct dentry *dentry,
 	__u32			 slot = 0;
 	int			 has = 0, has2 = 0, block, ret = 0;
 
-	if (blk_cbits_task(&cm) != 0)
+	if (blk_task_lines(&cm) != 0)
 		return (0);
 	if ((s = blk_scratch_get(&slot)) == NULL) {
 		if ((st = bpf_map_lookup_elem(&blk_stats, &(__u32){0})) != NULL)
@@ -1545,8 +1570,11 @@ BPF_PROG(blk_test, const char *in)
 	if (hdr.flags & NOVA_BT_HAS_CBITS)
 		m = hdr.cbits;
 	else if (blk_test_cbits(in +
-	    __builtin_offsetof(struct nova_block_test, cgroup), &m) != 0)
-		return (NOVA_BT_NOT_CONTAINER);
+	    __builtin_offsetof(struct nova_block_test, cgroup), &m) != 0) {
+		if (!blk_host)
+			return (NOVA_BT_NOT_CONTAINER);
+		m = blk_dc_container;
+	}
 	if (has_path && blk_test_path_bits(in +
 	    __builtin_offsetof(struct nova_block_test, path), file, &bits) != 0)
 		return (NOVA_BT_FAULT);

@@ -164,7 +164,7 @@ void			 nova_enforcer_close(struct quark_queue *);
 int			 nova_enforcer_update_stats(struct quark_queue *);
 void			 nova_enforcer_container(struct quark_queue *,
 			     const struct quark_container *, int);
-void			*nova_block_test_open(const struct quark_ruleset *);
+void			*nova_block_test_open(const struct quark_ruleset *, int);
 int			 nova_block_test_run(void *,
 			     const struct nova_block_test *);
 void			 nova_block_test_close(void *);
@@ -989,6 +989,7 @@ struct quark_queue_attr {
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
 #define QQ_MPROTECT		(1 << 15)
+#define QQ_BLOCK_HOST		(1 << 16)
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */

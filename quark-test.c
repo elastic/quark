@@ -6630,7 +6630,7 @@ block_nova_open(struct quark_ruleset *ruleset)
 {
 	void	*bt;
 
-	if ((bt = nova_block_test_open(ruleset)) == NULL)
+	if ((bt = nova_block_test_open(ruleset, 0)) == NULL)
 		err(1, "nova_block_test_open");
 
 	return (bt);
@@ -6730,7 +6730,7 @@ t_block_eval_nova(const struct test *t, struct quark_queue_attr *qa)
 	ruleset_from_string(&ruleset,
 	    "block {\n\ton process.exe /bin/blocked\n}\n"
 	    "block {\n\ton process.exe /bin/other pod.name web-*\n}\n");
-	if ((qq = nova_block_test_open(&ruleset)) == NULL)
+	if ((qq = nova_block_test_open(&ruleset, 0)) == NULL)
 		err(1, "%s: nova_block_test_open", t->name);
 	bzero(&bt, sizeof(bt));
 	bt.kind = NOVA_BT_PROCESS;
@@ -6759,12 +6759,30 @@ t_block_eval_nova(const struct test *t, struct quark_queue_attr *qa)
 	bt.flags = 0;
 	assert(nova_block_test_run(qq, &bt) == NOVA_BT_ALLOW);
 	nova_block_test_close(qq);
+
+	/*
+	 * With QQ_BLOCK_HOST a name that is not a container is evaluated
+	 * too, as a container without metadata: the first block denies, the
+	 * second, with its container field, never.
+	 */
+	if ((qq = nova_block_test_open(&ruleset, 1)) == NULL)
+		err(1, "%s: nova_block_test_open", t->name);
+	bt.flags = NOVA_BT_HAS_PATH;
+	for (i = 0; i < nitems(names); i++) {
+		strlcpy(bt.cgroup, names[i].name, sizeof(bt.cgroup));
+		strlcpy(bt.path, "/bin/blocked", sizeof(bt.path));
+		if ((r = nova_block_test_run(qq, &bt)) != 1)
+			errx(1, "kernel, host: %s: got %d", names[i].name, r);
+		strlcpy(bt.path, "/bin/other", sizeof(bt.path));
+		assert(nova_block_test_run(qq, &bt) == NOVA_BT_ALLOW);
+	}
+	nova_block_test_close(qq);
 	quark_ruleset_clear(&ruleset);
 
 	/* Nothing to test without a block */
 	ruleset_from_string(&ruleset, "drop on any\n");
 	errno = 0;
-	assert(nova_block_test_open(&ruleset) == NULL && errno == EINVAL);
+	assert(nova_block_test_open(&ruleset, 0) == NULL && errno == EINVAL);
 	quark_ruleset_clear(&ruleset);
 
 	return (0);
@@ -6940,7 +6958,7 @@ t_block_process_nova(const struct test *t, struct quark_queue_attr *qa)
 	 * every process loaded, a fork and an exec in the container work.
 	 */
 	ruleset_from_string(&ruleset, "block {\n\ton process.exe *\n}\n");
-	if ((bt = nova_block_test_open(&ruleset)) == NULL)
+	if ((bt = nova_block_test_open(&ruleset, 0)) == NULL)
 		err(1, "%s: nova_block_test_open", t->name);
 	assert(block_try(1, NULL, NULL) == 0);
 	assert(block_try(1, true_path, NULL) == 0);
@@ -7869,6 +7887,91 @@ t_block_file(const struct test *t, struct quark_queue_attr *qa)
 #undef P
 #undef DENIED
 #undef ALLOWED
+
+	return (0);
+}
+
+/*
+ * QQ_BLOCK_HOST: the blocks also deny outside of a container. Such a
+ * process is evaluated as a container without metadata, so a line with a
+ * container field does not match it. The blocks name a copy of true(1) and
+ * a directory of this test, nothing else on the machine is denied.
+ */
+static int
+t_block_host(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	const struct quark_event	*qev;
+	char				 tmp[] = "/tmp/quark-test-block.XXXXXX";
+	char				 dir[PATH_MAX], self[PATH_MAX];
+	char				 true_path[PATH_MAX];
+	char				*text;
+	pid_t				 pid;
+
+	if (realpath("/proc/self/exe", self) == NULL)
+		err(1, "realpath self");
+	block_copy_true(true_path, sizeof(true_path));
+	if (mkdtemp(tmp) == NULL)
+		err(1, "mkdtemp %s", tmp);
+	if (realpath(tmp, dir) == NULL)
+		err(1, "realpath %s", tmp);
+
+	assert(asprintf(&text,
+	    "block {\n"
+	    "	on process.exe %s\n"
+	    "}\n"
+	    "block {\n"
+	    "	on process.exe %s pod.name web-*\n"
+	    "}\n"
+	    "block {\n"
+	    "	on file.path %s/*\n"
+	    "}\n"
+	    "drop on any\n", true_path, self, dir) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->flags |= QQ_BLOCK_HOST;
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0) {
+		if (errno != ENOTSUP || block_supported())
+			err(1, "%s: quark_queue_open", t->name);
+		quark_ruleset_clear(&ruleset);
+		(void)unlink(true_path);
+		(void)rmdir(dir);
+		return (0);
+	}
+	block_cgroup_setup();
+
+	/* An exec outside of a container is denied, and is an event */
+	assert(block_try_pid(0, true_path, NULL, &pid) == BLOCK_EXIT_EXEC_EPERM);
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events == QUARK_EV_BLOCKED && qev->tags == 1);
+	assert(qev->blocked.op == QUARK_BLOCKED_EXEC);
+	assert(qev->blocked.block == 0);
+	assert(!strcmp(qev->blocked.path, true_path));
+	/* And still in a container */
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+
+	/*
+	 * The second block has a container field: no fork of this program
+	 * is denied outside of a container, here or in the helpers above.
+	 */
+	assert(block_try(0, NULL, NULL) == 0);
+
+	/* A file operation outside of a container */
+	assert(block_file_try(0, NULL, BLOCK_F_CREATE, block_p(dir, "a"), NULL,
+	    &pid) == BLOCK_EXIT_EPERM);
+	block_file_denied(&qq, pid, QUARK_BLOCKED_CREATE, 2, block_p(dir, "a"),
+	    NULL);
+	assert(access(block_p(dir, "a"), F_OK) == -1);
+
+	/* We are outside of a container too: close before the clean up */
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+	block_cgroup_cleanup();
+	(void)unlink(true_path);
+	if (rmdir(dir) == -1)
+		err(1, "rmdir %s", dir);
 
 	return (0);
 }
@@ -9883,6 +9986,7 @@ struct test all_tests[] = {
 	T_EBPF(t_block_enforcer),
 	T_EBPF(t_block_enforcer_backlog),
 	T_EBPF(t_block_file),
+	T_EBPF(t_block_host),
 	T(t_rule_pod_name),
 	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),

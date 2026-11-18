@@ -123,6 +123,15 @@ Enable EBPF-only executable mprotect attempt events.
 Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
+.It Dv QQ_BLOCK_HOST
+The blocks of the ruleset also deny the operations of a process that is not
+in a container.
+By default a block denies only in a container.
+With this flag such a process is evaluated as a container without metadata:
+a line with a container field does not match it.
+A block on a path that the system needs can stop the machine from working
+until the queue is closed.
+The flag does nothing for a ruleset without a block.
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.

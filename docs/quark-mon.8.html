@@ -25,7 +25,7 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-mon</code></td>
-    <td>[<code class="Fl">-BbDEeFGgHhkLMNnSsTtuv</code>]
+    <td>[<code class="Fl">-aBbDEeFGgHhkLMNnSsTtuv</code>]
       [<code class="Fl">-C</code> <var class="Ar">filename</var>]
       [<code class="Fl">-K</code> <var class="Ar">kubeconfig</var>]
       [<code class="Fl">-l</code> <var class="Ar">maxlength</var>]
@@ -77,6 +77,15 @@
     until a SIGINT is received.</p>
 <p class="Pp">The options are as follows:</p>
 <dl class="Bl-tag">
+  <dt id="a"><a class="permalink" href="#a"><code class="Fl">-a</code></a></dt>
+  <dd>The blocks of the ruleset also deny outside of containers. By default a
+      <a class="permalink" href="#block"><i class="Em" id="block">block</i></a>
+      denies only the operations of a process in a container. With this option
+      it denies them for every process of the machine. A line with a container
+      field, <i class="Em">pod.name</i> or <i class="Em">container.image</i>,
+      still matches only in a container. Use it with care: a block on a path
+      that the system needs can stop the machine from working until
+      <code class="Nm">quark-mon</code> exits.</dd>
   <dt id="B"><a class="permalink" href="#B"><code class="Fl">-B</code></a></dt>
   <dd>Test bypass mode, where EBPF events are passed up directly without any
       processing. A
@@ -439,7 +448,7 @@ drop on any</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 17, 2026</td>
+    <td class="foot-date">November 18, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
