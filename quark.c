@@ -218,6 +218,7 @@ raw_event_alloc(int type)
 	case RAW_PTRACE:	/* nada */
 	case RAW_MPROTECT:	/* nada */
 	case RAW_BPF:		/* nada */
+	case RAW_BLOCKED:	/* nada */
 	case RAW_MODULE_LOAD:	/* caller allocates */
 	case RAW_SHM:		/* caller allocates */
 	case RAW_TTY:		/* caller allocates */
@@ -262,6 +263,7 @@ raw_event_free(struct raw_event *raw)
 		free(raw->mprotect.quark_mprotect.path);
 		break;
 	case RAW_BPF:		/* nada */
+	case RAW_BLOCKED:	/* nada */
 		break;
 	case RAW_PACKET:
 		free(raw->packet.quark_packet);
@@ -485,6 +487,7 @@ event_storage_clear(struct quark_queue *qq)
 	free(qq->event_storage.mprotect.path);
 	bzero(&qq->event_storage.mprotect, sizeof(qq->event_storage.mprotect));
 	bzero(&qq->event_storage.bpf, sizeof(qq->event_storage.bpf));
+	bzero(&qq->event_storage.blocked, sizeof(qq->event_storage.blocked));
 	if (qq->event_storage.module_load != NULL) {
 		free(qq->event_storage.module_load->name);
 		free(qq->event_storage.module_load->version);
@@ -860,6 +863,23 @@ container_by_id_cmp(struct quark_container *a, struct quark_container *b)
 	return (strcmp(a->container_id, b->container_id));
 }
 
+/*
+ * Tell the backend that the metadata of a container is new or has changed,
+ * or with removed that the container goes away. A backend that keeps data
+ * per container in the kernel needs this, nova for the blocks. Call it
+ * after every change of what a rule can see of a container: its image and
+ * the name of its pod.
+ */
+static void
+container_notify(struct quark_queue *qq,
+    const struct quark_container *container, int removed)
+{
+	if (qq->queue_ops != NULL && qq->queue_ops->container != NULL)
+		qq->queue_ops->container(qq, container, removed);
+	if (qq->enforcer != NULL)
+		nova_enforcer_container(qq, container, removed);
+}
+
 static void
 container_delete(struct quark_queue *qq, struct quark_container *container)
 {
@@ -867,6 +887,7 @@ container_delete(struct quark_queue *qq, struct quark_container *container)
 	struct quark_process	*qp;
 
 	if (container->linked_by_id) {
+		container_notify(qq, container, 1);
 		container_by_id_RB_REMOVE(&qq->container_by_id, container);
 		container->linked_by_id = 0;
 	}
@@ -1134,6 +1155,7 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 	char			*tmp;
 	int			 ip_found;
 	struct label_node	*node, *node_aux;
+	struct quark_container	*container;
 
 	metadata	  = GET(json, "metadata");
 	name		  = GET(metadata, "name");
@@ -1332,6 +1354,14 @@ kube_handle_pod(struct quark_queue *qq, cJSON *json)
 		if (kube_handle_container(qq, pod, container_json) == -1)
 			qwarnx("kube_handle_containers failed");
 	}
+
+	/*
+	 * Every container of the pod, not only the ones of this update: the
+	 * name of the pod may be new for a container that a library user
+	 * created before.
+	 */
+	RB_FOREACH(container, pod_containers, &pod->containers)
+		container_notify(qq, container, 0);
 
 	return (0);
 #undef GET
@@ -1971,6 +2001,8 @@ event_type_str(u64 event)
 		return "MPROTECT";
 	case QUARK_EV_BPF:
 		return "BPF";
+	case QUARK_EV_BLOCKED:
+		return "BLOCKED";
 	default:
 		return "?";
 	}
@@ -2366,6 +2398,33 @@ bpf_type_str(const struct quark_bpf *bpf, char *buf, size_t len)
 		P(__VA_ARGS__);					\
 	} while(0)						\
 
+static const char *
+blocked_op_str(u32 op)
+{
+	switch (op) {
+	case QUARK_BLOCKED_FORK:
+		return "fork";
+	case QUARK_BLOCKED_EXEC:
+		return "exec";
+	case QUARK_BLOCKED_CREATE:
+		return "create";
+	case QUARK_BLOCKED_CHMOD:
+		return "chmod";
+	case QUARK_BLOCKED_OPEN:
+		return "open";
+	case QUARK_BLOCKED_TRUNCATE:
+		return "truncate";
+	case QUARK_BLOCKED_RENAME:
+		return "rename";
+	case QUARK_BLOCKED_LINK:
+		return "link";
+	case QUARK_BLOCKED_UNLINK:
+		return "unlink";
+	default:
+		return "?";
+	}
+}
+
 int
 quark_event_dump(const struct quark_event *qev, FILE *f)
 {
@@ -2400,6 +2459,9 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	file = qev->file;
 
 	pid = qp != NULL ? qp->pid : 0;
+	/* We may not know the process of a denied attempt, only its pid */
+	if (qp == NULL && (qev->events & QUARK_EV_BLOCKED))
+		pid = qev->blocked.pid;
 	events_type_str(qev->events, buf, sizeof(buf));
 	P("->%d", pid);
 	if (qev->events)
@@ -2522,6 +2584,18 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 			PF(fl, "path=%s\n", mprotect->path);
 	}
 
+	if (qev->events & QUARK_EV_BLOCKED) {
+		const struct quark_blocked	*blocked = &qev->blocked;
+
+		fl = "BLOCKED";
+		PF(fl, "op=%s block=%u pid=%u tid=%u comm=%s\n",
+		    blocked_op_str(blocked->op),
+		    blocked->block, blocked->pid, blocked->tid, blocked->comm);
+		PF(fl, "path=%s\n", blocked->path);
+		if (blocked->path2[0] != 0)
+			PF(fl, "path2=%s\n", blocked->path2);
+	}
+
 	if (qev->events & QUARK_EV_BPF) {
 		fl = "BPF";
 
@@ -2551,8 +2625,14 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		P("\n");
 	}
 
-	if (qp == NULL)
+	if (qp == NULL) {
+		/* A denied attempt is complete without its process */
+		if (qev->events & QUARK_EV_BLOCKED) {
+			fflush(f);
+			return (0);
+		}
 		return (-1);
+	}
 
 	if (qp->comm[0] != 0) {
 		fl = "COMM";
@@ -2726,7 +2806,8 @@ quark_pod_lookup(struct quark_queue *qq, const char *uid)
  * existing container if already present, otherwise allocates and inserts one.
  * An existing container without a pod is attached to the requested pod;
  * requesting a different pod for an attached container fails with EEXIST.
- * Caller fills in remaining fields (name, image, etc.).
+ * Caller fills in remaining fields (name, image, etc.), and must then call
+ * container_notify(), as kube_handle_pod() does.
  */
 struct quark_container *
 quark_container_get(struct quark_queue *qq, const char *container_id,
@@ -2890,6 +2971,8 @@ quark_container_create(struct quark_queue *qq, const char *container_id,
 		}
 		container->linked_by_pod = 1;
 	}
+
+	container_notify(qq, container, 0);
 
 	return (container);
 fail:
@@ -4706,6 +4789,8 @@ void
 quark_queue_get_stats(struct quark_queue *qq, struct quark_queue_stats *qs)
 {
 	qq->queue_ops->update_stats(qq);
+	if (qq->enforcer != NULL)
+		(void)nova_enforcer_update_stats(qq);
 	*qs = qq->stats;
 }
 
@@ -4793,6 +4878,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 {
 	struct quark_queue_attr	 qa_default;
 	struct quark_process	*qp;
+	struct quark_container	*container;
 	struct timespec		 unused;
 	char			*ver;
 	int			 backends;
@@ -4829,6 +4915,12 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		    !(qa->flags & QQ_EBPF) ||
 		    qa->kubefd != -1)
 			return (errno = EINVAL, -1);
+		/*
+		 * Bypass hands out the events of the ring as they are, it
+		 * has no queue for a denied attempt and no process cache.
+		 */
+		if (qa->ruleset != NULL && qa->ruleset->n_blocks > 0)
+			return (errno = EINVAL, -1);
 
 		/*
 		 * No buffering, we just pop one element from the ring and
@@ -4852,6 +4944,13 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	/* A tag block must be closed, see quark_ruleset_tag_end() */
 	if (qa->ruleset != NULL && qa->ruleset->block_open)
 		return (errno = EINVAL, -1);
+	/*
+	 * A block is enforced by nova, as the backend or next to the EBPF
+	 * backend, see nova_enforcer_open()
+	 */
+	if (qa->ruleset != NULL && qa->ruleset->n_blocks > 0 &&
+	    backends == QQ_KPROBE)
+		return (errno = ENOTSUP, -1);
 
 	if (quark_init() == -1)
 		return (-1);
@@ -4965,6 +5064,16 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		}
 	}
 
+	/*
+	 * The EBPF backend can't deny an operation, the LSM programs of nova
+	 * do it next to it. A ruleset that asks for a denial must not run
+	 * without one, so this is fatal.
+	 */
+	if (backends == QQ_EBPF && nova_enforcer_open(qq) != 0) {
+		qwarnx("can't open the enforcer of the blocks");
+		goto fail;
+	}
+
 	if ((qq->flags & QQ_BYPASS) == 0) {
 		/*
 		 * Now that the rings are opened, we can scrape proc. If we would scrape
@@ -4996,6 +5105,13 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 			link_container_data(qq, qp);
 		}
 	}
+
+	/*
+	 * The containers that the kube talker gave us before the backend was
+	 * open: the backend has not seen them yet.
+	 */
+	RB_FOREACH(container, container_by_id, &qq->container_by_id)
+		container_notify(qq, container, 0);
 
 	/*
 	 * Build username database, really only used for ECS and event dumping.
@@ -5064,6 +5180,7 @@ quark_queue_close(struct quark_queue *qq)
 	/* Clean up backend */
 	if (qq->queue_ops != NULL)
 		qq->queue_ops->close(qq);
+	nova_enforcer_close(qq);
 	/* Clean up all pods (transitively cleans up their containers) */
 	while ((pod = RB_ROOT(&qq->pod_by_uid)) != NULL)
 		pod_delete(qq, pod);
@@ -5283,7 +5400,36 @@ quark_queue_aggregate(struct quark_queue *qq, struct raw_event *min)
 int
 quark_queue_populate(struct quark_queue *qq)
 {
-	return (qq->queue_ops->populate(qq));
+	int	n, m, room;
+
+	if (qq->deny_populate == NULL)
+		return (qq->queue_ops->populate(qq));
+
+	/*
+	 * Two sources, the events of the backend and the denied attempts of
+	 * the blocks, and one queue. The backend takes all the room there
+	 * is. With a backlog on both sides, whoever always reads first
+	 * starves the other: in a full queue each read frees one slot, and
+	 * the first reader takes it. So they take turns to go first. On its
+	 * turn the denial ring takes at most half of the room, rounded up,
+	 * the events need the rest more: a lost event is a process cache
+	 * that is wrong, a lost denial is counted.
+	 */
+	qq->deny_turn = !qq->deny_turn;
+	room = qq->length >= qq->max_length ? 0 : qq->max_length - qq->length;
+	if (qq->deny_turn) {
+		m = qq->deny_populate(qq, (room + 1) / 2);
+		n = qq->queue_ops->populate(qq);
+	} else {
+		n = qq->queue_ops->populate(qq);
+		room = qq->length >= qq->max_length ? 0 :
+		    qq->max_length - qq->length;
+		m = qq->deny_populate(qq, room);
+	}
+	if (m < 0)
+		m = 0;
+
+	return (n < 0 ? n : n + m);
 }
 
 static struct raw_event *
@@ -5467,6 +5613,25 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
+/*
+ * An operation that a block denied. Nothing happened, so the process
+ * cache does not change. The process is the one that tried, when we know
+ * it: with the nova backend alone we may not.
+ */
+static struct quark_event *
+raw_event_blocked(struct quark_queue *qq, struct raw_event *raw)
+{
+	struct quark_event	*qev;
+
+	qev = &qq->event_storage;
+
+	qev->events = QUARK_EV_BLOCKED;
+	qev->process = process_cache_get(qq, raw->pid, 0);
+	qev->blocked = raw->blocked.quark_blocked;
+
+	return (qev);
+}
+
 static struct quark_event *
 raw_event_bpf(struct quark_queue *qq, struct raw_event *raw)
 {
@@ -5623,6 +5788,9 @@ quark_queue_get_event1(struct quark_queue *qq)
 			break;
 		case RAW_BPF:
 			qev = raw_event_bpf(qq, raw);
+			break;
+		case RAW_BLOCKED:
+			qev = raw_event_blocked(qq, raw);
 			break;
 		case RAW_MODULE_LOAD:
 			qev = raw_event_module_load(qq, raw);

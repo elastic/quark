@@ -120,6 +120,14 @@
           <a class="permalink" href="#security_file_mprotect"><code class="Fn" id="security_file_mprotect">security_file_mprotect</code></a>()
           check and does not imply that the protection change was
         committed.</dd>
+      <dt id="QQ_BLOCK_HOST"><a class="permalink" href="#QQ_BLOCK_HOST"><code class="Dv">QQ_BLOCK_HOST</code></a></dt>
+      <dd>The blocks of the ruleset also deny the operations of a process that
+          is not in a container. By default a block denies only in a container.
+          With this flag such a process is evaluated as a container without
+          metadata: a line with a container field does not match it. A block on
+          a path that the system needs can stop the machine from working until
+          the queue is closed. The flag does nothing for a ruleset without a
+          block.</dd>
     </dl>
   </dd>
   <dt id="max_length"><a class="permalink" href="#max_length"><i class="Em">max_length</i></a></dt>
@@ -155,6 +163,12 @@
     set. In the case of an error, the internal state is cleared up and a
     <a class="Xr" href="quark_queue_close.3.html">quark_queue_close(3)</a>
     should NOT be issued.</p>
+<p class="Pp">A ruleset with a <code class="Cm">block</code> fails with
+    <code class="Er">ENOTSUP</code> where blocks can't be enforced: on the
+    kprobe backend, on a kernel before Linux 5.17, or without the BPF LSM, see
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>. It fails with
+    <code class="Er">EINVAL</code> together with
+    <code class="Dv">QQ_BYPASS</code>.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="ENVIRONMENT"><a class="permalink" href="#ENVIRONMENT">ENVIRONMENT</a></h1>
@@ -185,7 +199,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 18, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

@@ -269,6 +269,10 @@ eval_loop(__u32 i, struct nova_rule **match)
 		bpf_printk("rule_pcpu not found, this is a bug");
 		return (LOOP_CONTINUE);
 	}
+	/* The lines of a block are not rules of this loop, see blk_decide() */
+	if (rule->action == QUARK_RA_BLOCK_ON ||
+	    rule->action == QUARK_RA_BLOCK_EXCEPT)
+		return (LOOP_CONTINUE);
 	rule_pcpu->evals++;
 
 	if ((eval->fields & rule->fields) != rule->fields)
@@ -656,6 +660,897 @@ BPF_PROG(sched_exit, struct task_struct *task)
 	probe_epilogue();
 
 	return (r);
+}
+
+/*
+ * Blocks: deny an operation of a process in a container when a block of
+ * the ruleset matches it, and of any process if blk_host is set. The blocks are compiled in userspace, see
+ * block.c: every line of every block is one bit, and each field gives the
+ * set of lines that accept its value. A hook ANDs these sets into M, the
+ * lines that match, and a block denies when (on & M) != 0 and
+ * (except & M) == 0.
+ *
+ * The programs below are separate from the ones above, which they don't
+ * need: a block works with them not loaded. They use nothing newer than
+ * bpf_loop(), Linux 5.17.
+ */
+
+#define EPERM			1
+#define BLK_CLONE_THREAD	0x00010000
+#define BLK_PF_KTHREAD		0x00200000
+
+/* Set before load, 0 blocks makes the hooks return at once */
+const volatile __u32	blk_n_blocks;
+const volatile __u64	blk_dc_exe;		/* lines without process.exe */
+const volatile __u64	blk_dc_file;		/* lines without file.path */
+const volatile __u64	blk_dc_container;	/* lines without a container field */
+const volatile __u32	blk_host;		/* also deny outside of a container */
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, struct nova_block);
+	__uint(max_entries, NOVA_MAX_BLOCKS);
+} blk_blocks SEC(".maps");
+
+/* Lines whose container fields match, by container id */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct nova_block_cid);
+	__type(value, __u64);
+	__uint(max_entries, NOVA_BLOCK_MAX_CONTAINERS);
+} blk_container SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__type(key, struct nova_block_path_key);
+	__type(value, __u64);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__uint(max_entries, NOVA_BLOCK_MAX_PATHS);
+} blk_path_exe SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__type(key, struct nova_block_path_key);
+	__type(value, __u64);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__uint(max_entries, NOVA_BLOCK_MAX_PATHS);
+} blk_path_file SEC(".maps");
+
+/* Denied operations, struct nova_deny_event */
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 256 * 1024);
+} blk_ring SEC(".maps");
+
+/* Denials of each block */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, __u64);
+	__uint(max_entries, NOVA_MAX_BLOCKS);
+} blk_denied SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct nova_block_stats);
+	__uint(max_entries, 1);
+} blk_stats SEC(".maps");
+
+static __always_inline int
+blk_prefix(const char *s, const char *prefix, int len)
+{
+	int	i;
+
+	for (i = 0; i < len; i++) {
+		if (s[i] != prefix[i])
+			return (0);
+	}
+
+	return (1);
+}
+
+/*
+ * The container id in the name of a cgroup, <prefix><id>.scope with a
+ * lowercase hex id, the rule of container_scope_lookup() in quark.c. n is
+ * what the read of name returned, the length with the NUL. Returns 0 and
+ * fills cid for a container, -1 otherwise.
+ */
+static __always_inline int
+blk_parse_cgroup(const char *name, long n, struct nova_block_cid *cid)
+{
+	__u32	len, plen, id_len, i;
+	char	c;
+
+	/* A full buffer may be a cut name */
+	if (n < 8 || n >= NOVA_CGROUP_NAMELEN)
+		return (-1);
+	len = n - 1;
+
+	i = (len - 6) & (NOVA_CGROUP_NAMELEN - 1);
+	if (i > NOVA_CGROUP_NAMELEN - 7)
+		return (-1);
+	if (name[i] != '.' || name[i + 1] != 's' || name[i + 2] != 'c' ||
+	    name[i + 3] != 'o' || name[i + 4] != 'p' || name[i + 5] != 'e')
+		return (-1);
+
+	if (blk_prefix(name, "cri-containerd-", 15))
+		plen = 15;
+	else if (blk_prefix(name, "containerd-", 11))
+		plen = 11;
+	else if (blk_prefix(name, "docker-", 7))
+		plen = 7;
+	else if (blk_prefix(name, "libpod-", 7))
+		plen = 7;
+	else if (blk_prefix(name, "crio-", 5))
+		plen = 5;
+	else
+		return (-1);
+
+	if (len <= plen + 6)
+		return (-1);
+	id_len = len - plen - 6;
+	if (id_len > NOVA_CONTAINER_IDLEN)
+		return (-1);
+	__builtin_memset(cid, 0, sizeof(*cid));
+	for (i = 0; i < NOVA_CONTAINER_IDLEN; i++) {
+		if (i >= id_len)
+			break;
+		c = name[(plen + i) & (NOVA_CGROUP_NAMELEN - 1)];
+		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+			return (-1);
+		cid->id[i] = c;
+	}
+
+	return (0);
+}
+
+/*
+ * The lines that the container fields allow. A container without an entry
+ * has no metadata yet, or is not known to kubernetes: only the lines
+ * without container fields.
+ */
+static __always_inline __u64
+blk_container_lines(struct nova_block_cid *cid)
+{
+	__u64	*v;
+
+	v = bpf_map_lookup_elem(&blk_container, cid);
+
+	return (v != NULL ? *v : blk_dc_container);
+}
+
+/*
+ * The container lines of the current task, from the name of its pids
+ * cgroup, the cgroup that the EBPF backend reports. -1 if the task is not
+ * in a container, then no block applies. The buffers are on the stack of
+ * this function, so it must not be inlined.
+ */
+static __noinline int
+blk_cbits_task(__u64 *bits)
+{
+	char			 name[NOVA_CGROUP_NAMELEN];
+	struct nova_block_cid	 cid;
+	struct task_struct	*task;
+	const char		*kname;
+	long			 n;
+	int			 cgrp_id;
+
+	if (!bpf_core_enum_value_exists(enum cgroup_subsys_id, pids_cgrp_id))
+		return (-1);
+	cgrp_id = bpf_core_enum_value(enum cgroup_subsys_id, pids_cgrp_id);
+	task = (struct task_struct *)bpf_get_current_task();
+	kname = BPF_CORE_READ(task, cgroups, subsys[cgrp_id], cgroup, kn, name);
+	n = bpf_probe_read_kernel_str(name, sizeof(name), kname);
+	if (blk_parse_cgroup(name, n, &cid) != 0)
+		return (-1);
+	*bits = blk_container_lines(&cid);
+
+	return (0);
+}
+
+/*
+ * The lines that the container fields allow for the current task, where
+ * every hook starts. -1 if the task is not evaluated: it is not in a
+ * container, see blk_cbits_task(). With blk_host such a task is evaluated
+ * too, with the lines without container fields, as a container without
+ * metadata. A kernel thread never is.
+ */
+static __always_inline int
+blk_task_lines(__u64 *m)
+{
+	struct task_struct	*task;
+
+	if (blk_cbits_task(m) == 0)
+		return (0);
+	if (!blk_host)
+		return (-1);
+	task = (struct task_struct *)bpf_get_current_task();
+	if (BPF_CORE_READ(task, flags) & BLK_PF_KTHREAD)
+		return (-1);
+	*m = blk_dc_container;
+
+	return (0);
+}
+
+/*
+ * The lines that match an operation: m are the lines of the container,
+ * bits the lines that accept the path. A line with a path field does not
+ * match without a path, and a line about files never matches a process
+ * operation, or the other way around.
+ */
+static __always_inline __u64
+blk_match(__u64 m, int file, int has_path, __u64 bits)
+{
+	if (!has_path)
+		bits = 0;
+	if (file) {
+		m &= bits | blk_dc_file;
+		m &= blk_dc_exe;
+	} else {
+		m &= bits | blk_dc_exe;
+		m &= blk_dc_file;
+	}
+
+	return (m);
+}
+
+struct blk_decide {
+	__u64	m;
+	__s32	block;
+	__u32	pad0;
+};
+
+static long
+blk_decide_cb(__u32 i, struct blk_decide *d)
+{
+	struct nova_block	*blk;
+
+	if ((blk = bpf_map_lookup_elem(&blk_blocks, &i)) == NULL)
+		return (LOOP_STOP);
+	if ((blk->on & d->m) != 0 && (blk->except & d->m) == 0) {
+		d->block = i;
+		return (LOOP_STOP);
+	}
+
+	return (LOOP_CONTINUE);
+}
+
+/* The first block that denies with these lines, or -1 */
+static __always_inline int
+blk_decide(__u64 m)
+{
+	struct blk_decide	d;
+
+	d.m = m;
+	d.block = -1;
+	d.pad0 = 0;
+	if (m != 0)
+		bpf_loop(blk_n_blocks, blk_decide_cb, &d, 0);
+
+	return (d.block);
+}
+
+static __always_inline void
+blk_count_denied(__u32 block)
+{
+	__u64	*v;
+
+	if ((v = bpf_map_lookup_elem(&blk_denied, &block)) != NULL)
+		(*v)++;
+}
+
+static __always_inline void
+blk_count_no_path(void)
+{
+	struct nova_block_stats	*st;
+
+	if ((st = bpf_map_lookup_elem(&blk_stats, &(__u32){0})) != NULL)
+		st->no_path++;
+}
+
+/*
+ * Tell userspace about a denied operation: a record in the ring, for the
+ * caller to add the paths and submit. The operation is denied whatever
+ * happens here: a full ring buffer must not switch a block off, the report
+ * is counted as lost and this returns NULL.
+ */
+static __always_inline struct nova_deny_event *
+blk_report(__u32 op, __u32 block)
+{
+	struct nova_deny_event	*ev;
+	struct nova_block_stats	*st;
+	__u64			 id;
+
+	if ((ev = bpf_ringbuf_reserve(&blk_ring, sizeof(*ev), 0)) == NULL) {
+		if ((st = bpf_map_lookup_elem(&blk_stats, &(__u32){0})) != NULL)
+			st->lost++;
+		return (NULL);
+	}
+	__builtin_memset(ev, 0, sizeof(*ev));
+	ev->ev.kind = NOVA_DENY;
+	ev->ev.ts = bpf_ktime_get_boot_ns();
+	ev->op = op;
+	ev->block = block;
+	id = bpf_get_current_pid_tgid();
+	ev->pid = id >> 32;
+	ev->tid = (__u32)id;
+	bpf_get_current_comm(ev->comm, sizeof(ev->comm));
+
+	return (ev);
+}
+
+/*
+ * The path of an executable or a file, built from the dentries. A file
+ * hook can't use bpf_d_path(): up to Linux 6.6 only file_open may call it,
+ * and path_mknod never.
+ *
+ * The path goes up to the root of the mount namespace, not to the root of
+ * the task, as cloud-defend does it: a process that changes its root with
+ * chroot(2) must not change the path that a block sees. bpf_d_path() stops
+ * at the root of the task, so the process hooks use this walk too. The
+ * EBPF backend gives a path from the root of the task, so the two differ
+ * for a process with a root of its own, and only there.
+ *
+ * The path is built in scratch memory of the CPU. A hook can be preempted
+ * by a task that runs a hook on the same CPU, so there are a few scratch
+ * slots and a hook takes a free one with an atomic exchange. With no slot
+ * free the operation is allowed, and counted: nova_block_stats.no_slot is
+ * not zero when BLK_NSLOTS is too small.
+ */
+
+#define BLK_S_IFMT	00170000
+#define BLK_S_IFREG	0100000
+#define BLK_FMODE_WRITE	0x2
+
+#define BLK_NSLOTS	4
+/*
+ * The verifier takes the worst case of every offset and length on its
+ * own, so the buffer is twice what a path can use.
+ */
+#define BLK_WORKLEN	512
+#define BLK_WORKMASK	255
+/* Components and mount points of a path, more than fit in NOVA_PATHLEN */
+#define BLK_WALK_MAX	256
+
+struct blk_scratch {
+	__u64				busy;
+	struct nova_block_path_key	key[2];	/* the paths of the operation */
+	/*
+	 * A path is built from its end, which is at NOVA_PATHLEN - 1.
+	 * Nothing is written from there on, so that part is always zero.
+	 */
+	char				work[BLK_WORKLEN];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct blk_scratch);
+	__uint(max_entries, BLK_NSLOTS);
+} blk_scratch SEC(".maps");
+
+static __always_inline struct blk_scratch *
+blk_scratch_try(__u32 slot)
+{
+	struct blk_scratch	*s;
+
+	if ((s = bpf_map_lookup_elem(&blk_scratch, &slot)) == NULL)
+		return (NULL);
+
+	return (__sync_lock_test_and_set(&s->busy, 1) == 0 ? s : NULL);
+}
+
+/*
+ * Take a free slot. Not a loop: the slot number must be in the stack for
+ * the lookup, and the verifier of Linux before 6.x then loses its bounds
+ * and sees a loop without an end.
+ */
+static __always_inline struct blk_scratch *
+blk_scratch_get(__u32 *slot)
+{
+	struct blk_scratch	*s;
+
+	_Static_assert(BLK_NSLOTS == 4, "one line for each slot");
+	if ((s = blk_scratch_try(0)) != NULL)
+		*slot = 0;
+	else if ((s = blk_scratch_try(1)) != NULL)
+		*slot = 1;
+	else if ((s = blk_scratch_try(2)) != NULL)
+		*slot = 2;
+	else if ((s = blk_scratch_try(3)) != NULL)
+		*slot = 3;
+
+	return (s);
+}
+
+static __always_inline void
+blk_scratch_put(struct blk_scratch *s)
+{
+	s->busy = 0;
+}
+
+struct blk_walk {
+	struct dentry	*dentry;	/* where we are */
+	struct vfsmount	*vfsmnt;
+	struct mount	*mnt;
+	__u32		 slot;
+	__u32		 pos;		/* start of the path in work */
+	__u32		 done;
+	__u32		 pad0;
+};
+
+/* One step up: put the name of a dentry in front of the path */
+static long
+blk_walk_cb(__u32 i, struct blk_walk *w)
+{
+	struct blk_scratch	*s;
+	struct dentry		*dentry = w->dentry, *parent;
+	struct vfsmount		*vfsmnt = w->vfsmnt;
+	struct mount		*mnt = w->mnt, *parent_mnt;
+	struct qstr		 name;
+	__u32			 len, pos, slot = w->slot;
+
+	parent = BPF_CORE_READ(dentry, d_parent);
+	if (dentry == parent || dentry == BPF_CORE_READ(vfsmnt, mnt_root)) {
+		parent_mnt = BPF_CORE_READ(mnt, mnt_parent);
+		/*
+		 * The root of a mount without a parent: the root of the
+		 * mount namespace, or a mount that was detached. The path
+		 * is complete.
+		 */
+		if (parent_mnt == mnt) {
+			w->done = 1;
+			return (LOOP_STOP);
+		}
+		/* The root of a mount, go on from where it is mounted */
+		w->dentry = BPF_CORE_READ(mnt, mnt_mountpoint);
+		w->mnt = parent_mnt;
+		w->vfsmnt = &parent_mnt->mnt;
+		return (LOOP_CONTINUE);
+	}
+
+	name = BPF_CORE_READ(dentry, d_name);
+	len = name.len;
+	pos = w->pos;
+	/* Too long for a line to match */
+	if (len == 0 || len > BLK_WORKMASK || len + 1 > pos)
+		return (LOOP_STOP);
+	pos = (pos - len - 1) & BLK_WORKMASK;
+	if ((s = bpf_map_lookup_elem(&blk_scratch, &slot)) == NULL)
+		return (LOOP_STOP);
+	s->work[pos] = '/';
+	if (bpf_probe_read_kernel(&s->work[pos + 1], len & BLK_WORKMASK,
+	    name.name) != 0)
+		return (LOOP_STOP);
+	w->pos = pos;
+	w->dentry = parent;
+
+	return (LOOP_CONTINUE);
+}
+
+/*
+ * The path of a file from the root of the mount namespace, in key i of the
+ * scratch slot, ready for a lookup. -1 if the path can't be had, also when
+ * it does not fit in the key.
+ */
+static __noinline int
+blk_path(__u32 slot, __u32 i, struct vfsmount *vfsmnt, struct dentry *dentry)
+{
+	struct blk_scratch		*s;
+	struct nova_block_path_key	*key;
+	const struct dentry_operations	*d_op;
+	struct blk_walk			 w;
+	struct qstr			 name;
+	__u32				 pos;
+	long				 n;
+
+	if (vfsmnt == NULL || dentry == NULL)
+		return (-1);
+	if ((s = bpf_map_lookup_elem(&blk_scratch, &slot)) == NULL)
+		return (-1);
+	key = &s->key[i & 1];
+	__builtin_memset(key, 0, sizeof(*key));
+	key->prefixlen = NOVA_PATHLEN * 8;
+
+	/*
+	 * A file that is in no directory, a memfd: its name alone, as the
+	 * EBPF backend gives it. d_path() gives "/memfd:name (deleted)".
+	 */
+	d_op = BPF_CORE_READ(dentry, d_op);
+	if (dentry == BPF_CORE_READ(dentry, d_parent) && d_op != NULL &&
+	    BPF_CORE_READ(d_op, d_dname) != NULL) {
+		name = BPF_CORE_READ(dentry, d_name);
+		n = bpf_probe_read_kernel_str(key->path, NOVA_PATHLEN,
+		    name.name);
+		/* A full buffer may be a cut name */
+		return (n > 0 && n < NOVA_PATHLEN ? 0 : -1);
+	}
+
+	w.dentry = dentry;
+	w.vfsmnt = vfsmnt;
+	/* container_of(), which the warnings of this file don't take */
+	w.mnt = (struct mount *)((char *)vfsmnt - offsetof(struct mount, mnt));
+	w.slot = slot;
+	w.pos = NOVA_PATHLEN - 1;
+	w.done = 0;
+	w.pad0 = 0;
+	bpf_loop(BLK_WALK_MAX, blk_walk_cb, &w, 0);
+	if (!w.done)
+		return (-1);
+	pos = w.pos;
+	/* The root itself has no name */
+	if (pos >= NOVA_PATHLEN - 1) {
+		pos = NOVA_PATHLEN - 2;
+		s->work[NOVA_PATHLEN - 2] = '/';
+	}
+	pos &= BLK_WORKMASK;
+	/* The path and the zeroes after it */
+	if (bpf_probe_read_kernel(key->path, NOVA_PATHLEN, &s->work[pos]) != 0)
+		return (-1);
+
+	return (0);
+}
+
+/* The lines that accept the path in key i, of a file or an executable */
+static __always_inline __u64
+blk_path_bits(struct blk_scratch *s, __u32 i, int file)
+{
+	__u64	*v;
+
+	if (file)
+		v = bpf_map_lookup_elem(&blk_path_file, &s->key[i & 1]);
+	else
+		v = bpf_map_lookup_elem(&blk_path_exe, &s->key[i & 1]);
+
+	return (v != NULL ? *v : 0);
+}
+
+/*
+ * An operation on one path, or on two for a rename and a link: one denial
+ * is enough. Both paths are resolved first, the report has both. file
+ * says which lines apply: the ones on file.path, or on process.exe. A
+ * NULL dentry is an operation without a path.
+ */
+static __always_inline int
+blk_eval(__u32 op, int file, struct vfsmount *mnt, struct dentry *dentry,
+    struct vfsmount *mnt2, struct dentry *dentry2, int two)
+{
+	struct nova_deny_event	*ev;
+	struct nova_block_stats	*st;
+	struct blk_scratch	*s;
+	__u64			 cm, bits = 0, bits2 = 0;
+	__u32			 slot = 0;
+	int			 has = 0, has2 = 0, block, ret = 0;
+
+	if (blk_task_lines(&cm) != 0)
+		return (0);
+	if ((s = blk_scratch_get(&slot)) == NULL) {
+		if ((st = bpf_map_lookup_elem(&blk_stats, &(__u32){0})) != NULL)
+			st->no_slot++;
+		return (0);
+	}
+	if (blk_path(slot, 0, mnt, dentry) == 0) {
+		has = 1;
+		bits = blk_path_bits(s, 0, file);
+	}
+	if (two && blk_path(slot, 1, mnt2, dentry2) == 0) {
+		has2 = 1;
+		bits2 = blk_path_bits(s, 1, file);
+	}
+	if (!has || (two && !has2))
+		blk_count_no_path();
+
+	block = blk_decide(blk_match(cm, file, has, bits));
+	if (block < 0 && two)
+		block = blk_decide(blk_match(cm, file, has2, bits2));
+	if (block >= 0) {
+		blk_count_denied(block);
+		if ((ev = blk_report(op, block)) != NULL) {
+			if (has)
+				bpf_probe_read_kernel(ev->path,
+				    sizeof(ev->path), s->key[0].path);
+			if (has2)
+				bpf_probe_read_kernel(ev->path2,
+				    sizeof(ev->path2), s->key[1].path);
+			bpf_ringbuf_submit(ev, 0);
+		}
+		ret = -EPERM;
+	}
+	blk_scratch_put(s);
+
+	return (ret);
+}
+
+
+/* A fork or an exec with this executable, NULL if there is none */
+static __always_inline int
+blk_process(__u32 op, struct path *exe)
+{
+	if (exe == NULL)
+		return (blk_eval(op, 0, NULL, NULL, NULL, NULL, 0));
+
+	return (blk_eval(op, 0, BPF_CORE_READ(exe, mnt),
+	    BPF_CORE_READ(exe, dentry), NULL, NULL, 0));
+}
+
+/* An exec, the executable is the new program */
+SEC("lsm/bprm_check_security")
+int
+BPF_PROG(blk_bprm_check, struct linux_binprm *bprm, int ret)
+{
+	struct task_struct	*task = bpf_get_current_task_btf();
+	struct file		*file = bprm->file;
+
+	if (ret != 0)
+		return (ret);
+	if (blk_n_blocks == 0 || (task->flags & BLK_PF_KTHREAD))
+		return (0);
+	if (file == NULL)
+		return (blk_process(NOVA_OP_EXEC, NULL));
+
+	return (blk_process(NOVA_OP_EXEC, &file->f_path));
+}
+
+/*
+ * A fork, the executable is the one of the parent. The child has no pid
+ * yet. A new thread is not a fork.
+ */
+SEC("lsm/task_alloc")
+int
+BPF_PROG(blk_task_alloc, struct task_struct *child, unsigned long clone_flags,
+    int ret)
+{
+	struct task_struct	*task = bpf_get_current_task_btf();
+	struct mm_struct	*mm = child->mm;
+	struct file		*file;
+
+	if (ret != 0)
+		return (ret);
+	if (blk_n_blocks == 0 || (clone_flags & BLK_CLONE_THREAD) ||
+	    (task->flags & BLK_PF_KTHREAD))
+		return (0);
+	if (mm == NULL || (file = mm->exe_file) == NULL)
+		return (blk_process(NOVA_OP_FORK, NULL));
+
+	return (blk_process(NOVA_OP_FORK, &file->f_path));
+}
+
+/* An operation on one file, or on two for a rename and a link */
+static __always_inline int
+blk_file(__u32 op, struct vfsmount *mnt, struct dentry *dentry,
+    struct vfsmount *mnt2, struct dentry *dentry2, int two)
+{
+	return (blk_eval(op, 1, mnt, dentry, mnt2, dentry2, two));
+}
+
+static __always_inline int
+blk_is_reg(umode_t mode)
+{
+	return ((mode & BLK_S_IFMT) == BLK_S_IFREG);
+}
+
+/*
+ * The hooks below are the ones of cloud-defend, with its filters, and
+ * file_truncate. They are loaded only for a ruleset with a block on
+ * file.path.
+ */
+
+/*
+ * A new file, also from an open. mknod(2) without a file type makes a
+ * regular file.
+ */
+SEC("lsm/path_mknod")
+int
+BPF_PROG(blk_path_mknod, const struct path *dir, struct dentry *dentry,
+    umode_t mode, unsigned int dev, int ret)
+{
+	if (ret != 0)
+		return (ret);
+	if (!blk_is_reg(mode) && (mode & BLK_S_IFMT) != 0)
+		return (0);
+
+	return (blk_file(NOVA_OP_CREATE, BPF_CORE_READ(dir, mnt), dentry,
+	    NULL, NULL, 0));
+}
+
+SEC("lsm/path_chmod")
+int
+BPF_PROG(blk_path_chmod, const struct path *path, umode_t mode, int ret)
+{
+	if (ret != 0)
+		return (ret);
+	if (!blk_is_reg(BPF_CORE_READ(path, dentry, d_inode, i_mode)))
+		return (0);
+
+	return (blk_file(NOVA_OP_CHMOD, BPF_CORE_READ(path, mnt),
+	    BPF_CORE_READ(path, dentry), NULL, NULL, 0));
+}
+
+/* An open for writing, a read is not denied */
+SEC("lsm/file_open")
+int
+BPF_PROG(blk_file_open, struct file *file, int ret)
+{
+	if (ret != 0)
+		return (ret);
+	if (!(BPF_CORE_READ(file, f_mode) & BLK_FMODE_WRITE) ||
+	    !blk_is_reg(BPF_CORE_READ(file, f_inode, i_mode)))
+		return (0);
+
+	return (blk_file(NOVA_OP_OPEN, BPF_CORE_READ(file, f_path.mnt),
+	    BPF_CORE_READ(file, f_path.dentry), NULL, NULL, 0));
+}
+
+SEC("lsm/path_truncate")
+int
+BPF_PROG(blk_path_truncate, const struct path *path, int ret)
+{
+	if (ret != 0)
+		return (ret);
+	if (!blk_is_reg(BPF_CORE_READ(path, dentry, d_inode, i_mode)))
+		return (0);
+
+	return (blk_file(NOVA_OP_TRUNCATE, BPF_CORE_READ(path, mnt),
+	    BPF_CORE_READ(path, dentry), NULL, NULL, 0));
+}
+
+/*
+ * Since Linux 6.2 a truncate through an open file is this hook and not
+ * path_truncate: ftruncate(2), and open(2) with O_TRUNC, which also
+ * truncates a file that is opened for reading. Cloud-defend does not have
+ * it. It is loaded where the kernel has the hook.
+ */
+SEC("lsm/file_truncate")
+int
+BPF_PROG(blk_file_truncate, struct file *file, int ret)
+{
+	if (ret != 0)
+		return (ret);
+	if (!blk_is_reg(BPF_CORE_READ(file, f_inode, i_mode)))
+		return (0);
+
+	return (blk_file(NOVA_OP_TRUNCATE, BPF_CORE_READ(file, f_path.mnt),
+	    BPF_CORE_READ(file, f_path.dentry), NULL, NULL, 0));
+}
+
+/*
+ * A rename takes a file away from the old path and makes one at the new
+ * path, so both are tested. The hook got a fifth argument in Linux 5.19,
+ * which moves the result of the hooks before us: there is one program for
+ * each form, and block_programs() in nova_queue.c loads the one of the
+ * running kernel.
+ */
+SEC("lsm/path_rename")
+int
+BPF_PROG(blk_path_rename, const struct path *old_dir,
+    struct dentry *old_dentry, const struct path *new_dir,
+    struct dentry *new_dentry, unsigned int flags, int ret)
+{
+	if (ret != 0)
+		return (ret);
+
+	return (blk_file(NOVA_OP_RENAME, BPF_CORE_READ(old_dir, mnt),
+	    old_dentry, BPF_CORE_READ(new_dir, mnt), new_dentry, 1));
+}
+
+SEC("lsm/path_rename")
+int
+BPF_PROG(blk_path_rename4, const struct path *old_dir,
+    struct dentry *old_dentry, const struct path *new_dir,
+    struct dentry *new_dentry, int ret)
+{
+	if (ret != 0)
+		return (ret);
+
+	return (blk_file(NOVA_OP_RENAME, BPF_CORE_READ(old_dir, mnt),
+	    old_dentry, BPF_CORE_READ(new_dir, mnt), new_dentry, 1));
+}
+
+/*
+ * A hard link is a new name for the file, and a way to change it under
+ * that name: the file and the new path are tested. Both are in the mount
+ * of the new directory.
+ */
+SEC("lsm/path_link")
+int
+BPF_PROG(blk_path_link, struct dentry *old_dentry, const struct path *new_dir,
+    struct dentry *new_dentry, int ret)
+{
+	struct vfsmount	*mnt;
+
+	if (ret != 0)
+		return (ret);
+	mnt = BPF_CORE_READ(new_dir, mnt);
+
+	return (blk_file(NOVA_OP_LINK, mnt, old_dentry, mnt, new_dentry, 1));
+}
+
+SEC("lsm/path_unlink")
+int
+BPF_PROG(blk_path_unlink, const struct path *dir, struct dentry *dentry,
+    int ret)
+{
+	if (ret != 0)
+		return (ret);
+
+	return (blk_file(NOVA_OP_UNLINK, BPF_CORE_READ(dir, mnt), dentry,
+	    NULL, NULL, 0));
+}
+
+/*
+ * The test program, run with BPF_PROG_TEST_RUN: evaluate the blocks for
+ * the operation in the struct nova_block_test that the first argument
+ * points to, in user memory, with the code of the hooks. A raw tracepoint
+ * program, as a syscall program can't use the tries.
+ */
+static __noinline int
+blk_test_cbits(const char *ucgroup, __u64 *bits)
+{
+	char			name[NOVA_CGROUP_NAMELEN];
+	struct nova_block_cid	cid;
+	long			n;
+
+	n = bpf_probe_read_user_str(name, sizeof(name), ucgroup);
+	if (blk_parse_cgroup(name, n, &cid) != 0)
+		return (-1);
+	*bits = blk_container_lines(&cid);
+
+	return (0);
+}
+
+static __noinline int
+blk_test_path_bits(const char *upath, int file, __u64 *bits)
+{
+	struct nova_block_path_key	 key;
+	__u64				*v;
+
+	__builtin_memset(&key, 0, sizeof(key));
+	key.prefixlen = NOVA_PATHLEN * 8;
+	if (bpf_probe_read_user_str(key.path, NOVA_PATHLEN, upath) < 0)
+		return (-1);
+	if (file)
+		v = bpf_map_lookup_elem(&blk_path_file, &key);
+	else
+		v = bpf_map_lookup_elem(&blk_path_exe, &key);
+	*bits = v != NULL ? *v : 0;
+
+	return (0);
+}
+
+SEC("raw_tp")
+int
+BPF_PROG(blk_test, const char *in)
+{
+	struct {
+		__u32	kind;
+		__u32	flags;
+		__u64	cbits;
+	} hdr;
+	__u64		 m, bits = 0;
+	int		 file, has_path, block;
+
+	if (bpf_probe_read_user(&hdr, sizeof(hdr), in) != 0)
+		return (NOVA_BT_FAULT);
+	file = hdr.kind == NOVA_BT_FILE;
+	has_path = (hdr.flags & NOVA_BT_HAS_PATH) != 0;
+
+	if (hdr.flags & NOVA_BT_HAS_CBITS)
+		m = hdr.cbits;
+	else if (blk_test_cbits(in +
+	    __builtin_offsetof(struct nova_block_test, cgroup), &m) != 0) {
+		if (!blk_host)
+			return (NOVA_BT_NOT_CONTAINER);
+		m = blk_dc_container;
+	}
+	if (has_path && blk_test_path_bits(in +
+	    __builtin_offsetof(struct nova_block_test, path), file, &bits) != 0)
+		return (NOVA_BT_FAULT);
+	m = blk_match(m, file, has_path, bits);
+	block = blk_decide(m);
+
+	return (block < 0 ? NOVA_BT_ALLOW : 1 + block);
 }
 
 #pragma GCC diagnostic pop

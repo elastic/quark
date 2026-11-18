@@ -20,11 +20,13 @@
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 
 #include <linux/fs.h>
 
 #include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 #include <cjson/cJSON.h>
 
 #include <netinet/in.h>
@@ -39,6 +41,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <ifaddrs.h>
 #include <limits.h>
 #include <sched.h>
@@ -5038,6 +5041,28 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"tag log {\n\ton any\n}\ntag alert {\n\ton any\n}\n",
 		"tag \"alert\" {\n\ton any\n}\n",
 		"tag log {\n\ton pod.name {\n\t\tx\n\t\ty\n\t}\n}\n",
+		/* blocks */
+		"block {\n\ton process.exe /usr/bin/curl\n}\n",
+		"block {\n\ton process.exe /usr/bin/curl\n}",
+		"block {\n\ton process.exe *\n}\n",
+		"block {\n\ton file.path /etc/* pod.name web-*\n}\n",
+		"block {\n\texcept on pod.name debug-*\n"
+		    "\ton process.exe { /usr/bin/curl /usr/bin/wget }\n}\n",
+		"block {\n\texcept on file.path /usr/bin/internal/*\n"
+		    "\ton file.path /usr/bin/* "
+		    "container.image docker.io/library/nginx:*\n}\n",
+		"block {\n\texcept on process.exe /bin/sh\n"
+		    "\texcept on container.image */debug:1\n"
+		    "\ton process.exe /bin/*\n\ton process.exe /sbin/*\n}\n",
+		"block {\n\n# comment\n\ton file.path /etc/* # comment\n\n}\n",
+		"block {\n\ton file.path {\n\t\t/etc/*\n\t\t/usr/bin/*\n\t}\n}\n",
+		"block {\n\ton process.exe \"/opt/my app/*\"\n}\n",
+		"drop on event.scope { host unknown }\n"
+		    "block {\n\ton process.exe /bin/nc\n}\n"
+		    "tag log {\n\ton any\n}\n"
+		    "block {\n\ton file.path /etc/*\n}\n"
+		    "drop on any\n",
+		"drop on process.exe \"block\"\n",
 		"drop on event.scope { host unknown }\n"
 		    "tag log {\n\ton any\n}\ndrop on any\n",
 		NULL
@@ -5111,6 +5136,45 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"tag log alert {\n\ton any\n}\n",
 		"tag on {\n\ton any\n}\n",
 		"tag al\xe9rt {\n\ton any\n}\n",	/* a Latin-1 byte */
+		/* blocks */
+		"block {\n}\n",
+		"block {\n\texcept on pod.name x\n}\n",
+		"block {\n\ton any\n}\n",
+		"block {\n\ton pod.name x\n}\n",
+		"block {\n\ton container.image x pod.name y\n}\n",
+		"block {\n\ton process.exe /bin/a\n\texcept on pod.name x\n}\n",
+		"block {\n\texcept on any\n\ton process.exe /bin/a\n}\n",
+		"block {\n\ton process.exe */a\n}\n",
+		"block {\n\ton process.exe /usr/*/a\n}\n",
+		"block {\n\ton file.path { /etc/* /usr/*/x }\n}\n",
+		"block {\n\texcept on file.path *.conf\n\ton file.path /etc/*\n}\n",
+		"block {\n\ton process.exe /bin/a process.exe /bin/b\n}\n",
+		"block {\n\ton process.exe /bin/a pod.name x pod.name y\n}\n",
+		"block {\n\ton process.exe /bin/a file.path /etc/*\n}\n",
+		"block {\n\ton process.exe /bin/a\n\ton file.path /etc/*\n}\n",
+		"block {\n\texcept on file.path /etc/*\n\ton process.exe /bin/a\n}\n",
+		"block {\n\ton process.exe /bin/a process.pid 1\n}\n",
+		"block {\n\ton process.exe /bin/a process.ppid 1\n}\n",
+		"block {\n\ton process.exe /bin/a process.uid 0\n}\n",
+		"block {\n\ton process.exe /bin/a process.gid 0\n}\n",
+		"block {\n\ton process.exe /bin/a process.sid 1\n}\n",
+		"block {\n\ton process.exe /bin/a poison 1\n}\n",
+		"block {\n\ton file.path /etc/* file.exec_change\n}\n",
+		"block {\n\ton process.exe /bin/a event.scope container\n}\n",
+		"block {\n\texcept on event.scope { host unknown }\n"
+		    "\ton process.exe /bin/a\n}\n",
+		"block x {\n\ton process.exe /bin/a\n}\n",
+		"block { on process.exe /bin/a }\n",
+		"block {\n\ton process.exe /bin/a }\n",
+		"block\n{\n\ton process.exe /bin/a\n}\n",
+		"block {\n\tpass on any\n}\n",
+		"block {\n\tblock {\n\t\ton process.exe /bin/a\n\t}\n}\n",
+		"block {\n\ttag log {\n\t\ton any\n\t}\n}\n",
+		"tag log {\n\tblock {\n\t\ton process.exe /bin/a\n\t}\n}\n",
+		"block {\n\ton process.exe /bin/a\n",
+		"block {\n\ton process.exe /bin/a\n} drop on any\n",
+		"drop on process.exe block\n",
+		"tag block {\n\ton any\n}\n",
 		"}\n",
 		"on any\n",
 		"except on any\n",
@@ -5605,6 +5669,2448 @@ t_rule_tag_api(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * A "block" block: the parser messages, the rules it builds, the library
+ * calls, and that userspace never evaluates its lines.
+ */
+static int
+t_rule_block(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset	 ruleset;
+	struct quark_queue_attr	 attr;
+	struct quark_queue	 qq;
+	struct quark_rule	*rule, *except, *on;
+	struct quark_rule_field	 rf;
+	struct quark_event	 qev;
+	struct quark_process	 qp;
+	char			 exe[] = "/usr/bin/curl";
+	char			 parser_error[1024];
+	char			 path[NOVA_PATHLEN + 2];
+	size_t			 i;
+	struct {
+		char	*text;
+		char	*message;
+	} *m, messages[] = {
+		{ "block {\n\ton process.exe /bin/a\n\ton pod.name x\n}\n",
+		    "an on line of a block needs process.exe or file.path "
+		    "at line 3 " },
+		{ "block {\n\ton any\n}\n",
+		    "an on line of a block needs process.exe or file.path "
+		    "at line 2 " },
+		{ "block {\n\ton process.exe /usr/*/a\n}\n",
+		    "a path in a block takes * only at the end at line 2 " },
+		{ "block {\n\ton process.exe /bin/a process.uid 0\n}\n",
+		    "a block supports only process.exe, file.path, pod.name "
+		    "and container.image at line 2 " },
+		{ "block {\n\ton file.path /a pod.name x pod.name y\n}\n",
+		    "a field can't be repeated in a line of a block at line 2 " },
+		{ "block {\n\ton process.exe /bin/a file.path /etc/*\n}\n",
+		    "a line of a block takes process.exe or file.path, not "
+		    "both at line 2 " },
+		{ "block {\n\texcept on file.path /etc/*\n\n"
+		    "\ton process.exe /bin/a\n}\n",
+		    "a block uses process.exe or file.path in its lines, not "
+		    "both at line 4 " },
+		{ "block {\n\texcept on pod.name x\n}\n",
+		    "block without an on line" },
+		{ "block {\n\ton process.exe /bin/a\n\texcept on pod.name x\n}\n",
+		    "except on must come before on" },
+		{ "block {\n\ton process.exe /bin/a\n",
+		    "syntax error" },
+		{ NULL, NULL }
+	};
+
+	for (m = messages; m->text != NULL; m++) {
+		parser_error[0] = 0;
+		if (ruleset_from_string1(&ruleset, m->text,
+		    parser_error, sizeof(parser_error)) == 0)
+			errx(1, "should have failed: %s", m->text);
+		if (strstr(parser_error, m->message) == NULL)
+			errx(1, "got \"%s\", wanted \"%s\"",
+			    parser_error, m->message);
+	}
+
+	/*
+	 * The rules of a ruleset with blocks and a tag block. The first block
+	 * takes the first tag bit for blocked.
+	 */
+	ruleset_from_string(&ruleset,
+	    "block {\n"
+	    "	except on pod.name debug-*\n"
+	    "	on process.exe { /usr/bin/curl /usr/bin/wget }\n"
+	    "}\n"
+	    "tag log {\n"
+	    "	on process.exe /usr/bin/*\n"
+	    "}\n"
+	    "block {\n"
+	    "	except on file.path /usr/bin/internal/*\n"
+	    "	on file.path /usr/bin/* container.image nginx:*\n"
+	    "	on file.path /etc/*\n"
+	    "}\n"
+	    "drop on any\n");
+	assert(ruleset.n_rules == 7);
+	assert(ruleset.n_blocks == 2);
+	assert(!ruleset.block_open);
+	assert(ruleset.rules[0].action == QUARK_RA_BLOCK_EXCEPT);
+	assert(ruleset.rules[1].action == QUARK_RA_BLOCK_ON);
+	assert(ruleset.rules[2].action == QUARK_RA_TAG);
+	assert(ruleset.rules[3].action == QUARK_RA_BLOCK_EXCEPT);
+	assert(ruleset.rules[4].action == QUARK_RA_BLOCK_ON);
+	assert(ruleset.rules[5].action == QUARK_RA_BLOCK_ON);
+	assert(ruleset.rules[6].action == QUARK_RA_DROP);
+	assert(ruleset.rules[0].skip_to == 2 && ruleset.rules[1].skip_to == 2);
+	assert(ruleset.rules[3].skip_to == 6 && ruleset.rules[4].skip_to == 6 &&
+	    ruleset.rules[5].skip_to == 6);
+	assert(ruleset.rules[1].n_conds == 1);
+	assert(ruleset.rules[1].conds[0].n_values == 2);
+	assert(ruleset.rules[4].n_conds == 2);
+	assert(ruleset.rules[0].tags == 0 && ruleset.rules[1].tags == 0);
+	assert(ruleset.n_tags == 2 && ruleset.blocked_tag == 1);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 0), "blocked"));
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 1), "log"));
+	assert(ruleset.rules[2].tags == 2);
+	/* Every line is still valid when its block is closed */
+	for (i = 0; i < ruleset.n_rules; i++) {
+		rule = &ruleset.rules[i];
+		if (rule->action == QUARK_RA_BLOCK_ON ||
+		    rule->action == QUARK_RA_BLOCK_EXCEPT)
+			assert(quark_ruleset_block_check_line(&ruleset,
+			    rule) == NULL);
+		else
+			assert(quark_ruleset_block_check_line(&ruleset,
+			    rule) != NULL);
+	}
+
+	/*
+	 * Userspace skips the lines of a block: curl matches the on line of
+	 * the first block, which is not evaluated and sets no tag.
+	 */
+	bzero(&qev, sizeof(qev));
+	bzero(&qp, sizeof(qp));
+	qp.exe = exe;
+	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule == &ruleset.rules[6]);
+	assert(qev.tags == 2);
+	for (i = 0; i < ruleset.n_rules; i++) {
+		rule = &ruleset.rules[i];
+		if (rule->action == QUARK_RA_BLOCK_ON ||
+		    rule->action == QUARK_RA_BLOCK_EXCEPT)
+			assert(rule->evals == 0 && rule->hits == 0);
+		else
+			assert(rule->evals == 1 && rule->hits == 1);
+	}
+
+	/* Nova enforces a block, the kprobe backend can't have it */
+	quark_queue_default_attr(&attr);
+	attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
+	attr.flags |= QQ_KPROBE;
+	attr.ruleset = &ruleset;
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == ENOTSUP);
+	/* And not in bypass mode, which has no queue for a denied attempt */
+	quark_queue_default_attr(&attr);
+	attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
+	attr.flags |= QQ_EBPF | QQ_BYPASS;
+	attr.ruleset = &ruleset;
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EINVAL);
+	quark_ruleset_clear(&ruleset);
+	assert(ruleset.n_blocks == 0 && ruleset.blocked_tag == 0);
+
+	/*
+	 * The library calls. Lines only inside a block of their own kind.
+	 */
+	quark_ruleset_init(&ruleset);
+	errno = 0;
+	assert(quark_ruleset_append_rule(&ruleset,
+	    QUARK_RA_BLOCK_ON, 0) == NULL);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_append_rule(&ruleset,
+	    QUARK_RA_BLOCK_EXCEPT, 0) == NULL);
+	assert(quark_ruleset_block_end(&ruleset) == -1);
+	assert(quark_ruleset_tag_begin(&ruleset, "log") == 0);
+	assert(quark_ruleset_append_rule(&ruleset,
+	    QUARK_RA_BLOCK_ON, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset,
+	    QUARK_RA_BLOCK_EXCEPT, 0) == NULL);
+	assert(quark_ruleset_block_begin(&ruleset) == -1);
+	assert(quark_ruleset_block_end(&ruleset) == -1);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) != NULL);
+	assert(quark_ruleset_tag_end(&ruleset) == 0);
+	assert(ruleset.n_blocks == 0 && ruleset.blocked_tag == 0);
+
+	assert(quark_ruleset_block_begin(&ruleset) == 0);
+	assert(ruleset.block_open && ruleset.block_deny);
+	assert(ruleset.blocked_tag == 2 && ruleset.n_tags == 2);
+	errno = 0;
+	assert(quark_ruleset_block_begin(&ruleset) == -1);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_tag_begin(&ruleset, "alert") == -1);
+	assert(quark_ruleset_tag_end(&ruleset) == -1);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_POISON, 1) == NULL);
+	assert(quark_ruleset_block_end(&ruleset) == -1);	/* no on line */
+
+	/* An open block is refused by the queue */
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EINVAL);
+
+	/* An except line needs a field, an on line needs a path field */
+	except = quark_ruleset_append_rule(&ruleset, QUARK_RA_BLOCK_EXCEPT, 0);
+	assert(except != NULL && except->tags == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, except) != NULL);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_POD_NAME;
+	rf.wild.pre = "debug-*";
+	assert(quark_rule_match_field(except, rf) == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, except) == NULL);
+	assert(quark_ruleset_block_end(&ruleset) == -1);	/* no on line */
+
+	on = quark_ruleset_append_rule(&ruleset, QUARK_RA_BLOCK_ON, 0);
+	/* append_rule() moves the rules, except is stale */
+	except = on - 1;
+	assert(on != NULL);
+	errno = 0;
+	assert(quark_ruleset_append_rule(&ruleset,
+	    QUARK_RA_BLOCK_EXCEPT, 0) == NULL);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_block_check_line(&ruleset, on) != NULL);
+	assert(quark_ruleset_block_end(&ruleset) == -1);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_CONTAINER_IMAGE;
+	rf.wild.pre = "*/nginx:1";
+	assert(quark_rule_match_field(on, rf) == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, on) != NULL);
+
+	/* The longest path has NOVA_PATHLEN - 1 bytes */
+	memset(path, 'a', sizeof(path));
+	path[0] = '/';
+	path[NOVA_PATHLEN - 1] = 0;
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_EXE;
+	rf.wild.pre = path;
+	assert(quark_rule_match_field(on, rf) == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, on) == NULL);
+	assert(quark_ruleset_block_end(&ruleset) == 0);
+	assert(ruleset.n_blocks == 1 && !ruleset.block_open);
+	assert(except->skip_to == 3 && on->skip_to == 3);
+
+	/* The same bytes before a * fit too, one byte more is too long */
+	assert(quark_ruleset_block_begin(&ruleset) == 0);
+	on = quark_ruleset_append_rule(&ruleset, QUARK_RA_BLOCK_ON, 0);
+	assert(on != NULL);
+	path[NOVA_PATHLEN - 1] = '*';
+	path[NOVA_PATHLEN] = 0;
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_FILEPATH;
+	rf.wild.pre = path;
+	assert(quark_rule_match_field(on, rf) == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, on) == NULL);
+	assert(quark_ruleset_block_end(&ruleset) == 0);
+	assert(ruleset.n_blocks == 2);
+
+	assert(quark_ruleset_block_begin(&ruleset) == 0);
+	on = quark_ruleset_append_rule(&ruleset, QUARK_RA_BLOCK_ON, 0);
+	assert(on != NULL);
+	path[NOVA_PATHLEN - 1] = 'a';
+	path[NOVA_PATHLEN] = '*';
+	path[NOVA_PATHLEN + 1] = 0;
+	assert(quark_rule_match_field(on, rf) == 0);
+	assert(quark_ruleset_block_check_line(&ruleset, on) != NULL);
+	errno = 0;
+	assert(quark_ruleset_block_end(&ruleset) == -1);
+	assert(errno == EINVAL);
+	assert(ruleset.n_blocks == 2 && ruleset.block_open);
+
+	/* A direct match on the open block returns, see t_rule_tag_api */
+	alarm(5);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	alarm(0);
+	assert(qev.tags == 1);	/* log, from the tag block above */
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/*
+ * The event of a denied attempt: it has the tag blocked and no other, no
+ * rule is evaluated on it, and no drop removes it.
+ */
+static int
+t_rule_blocked(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct raw_event		*raw;
+	struct quark_blocked		*blocked;
+	const struct quark_event	*qev;
+	char				*dump;
+	size_t				 dump_len;
+	FILE				*f;
+
+	quark_queue_init_bare(&qq);
+	/* The tag block and the drop match every other event */
+	ruleset_from_string(&ruleset,
+	    "tag log {\n\ton any\n}\n"
+	    "block {\n\ton process.exe /usr/bin/curl\n}\n"
+	    "drop on any\n");
+	assert(ruleset.blocked_tag == 2);
+	qq.ruleset = &ruleset;
+
+	raw = raw_event_alloc(RAW_BLOCKED);
+	assert(raw != NULL);
+	raw->pid = 4242;
+	blocked = &raw->blocked.quark_blocked;
+	blocked->op = QUARK_BLOCKED_EXEC;
+	blocked->block = 0;
+	blocked->pid = 4242;
+	blocked->tid = 4243;
+	strlcpy(blocked->comm, "sh", sizeof(blocked->comm));
+	strlcpy(blocked->path, "/usr/bin/curl", sizeof(blocked->path));
+	assert(raw_event_insert(&qq, raw) == 0);
+
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_BLOCKED);
+	assert(qev->tags == 2 && qev->ruleset == &ruleset);
+	assert(qev->process == NULL);
+	assert(qev->blocked.op == QUARK_BLOCKED_EXEC && qev->blocked.block == 0);
+	assert(qev->blocked.pid == 4242 && qev->blocked.tid == 4243);
+	assert(!strcmp(qev->blocked.comm, "sh"));
+	assert(!strcmp(qev->blocked.path, "/usr/bin/curl"));
+	assert(qev->blocked.path2[0] == 0);
+	/* No rule saw it */
+	assert(ruleset.rules[0].evals == 0 && ruleset.rules[2].evals == 0);
+
+	if ((f = open_memstream(&dump, &dump_len)) == NULL)
+		err(1, "open_memstream");
+	assert(quark_event_dump(qev, f) == 0);
+	fclose(f);
+	assert(strstr(dump, "->4242 (BLOCKED)\n") != NULL);
+	assert(strstr(dump, "tags=[ blocked ]\n") != NULL);
+	assert(strstr(dump, "op=exec block=0 pid=4242 tid=4243 comm=sh\n") != NULL);
+	assert(strstr(dump, "path=/usr/bin/curl\n") != NULL);
+	assert(strstr(dump, "path2=") == NULL);
+	free(dump);
+
+	/* The next event has nothing left of it */
+	raw = raw_event_alloc(RAW_GETPID);
+	assert(raw != NULL);
+	raw->pid = 4244;
+	assert(raw_event_insert(&qq, raw) == 0);
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL && !(qev->events & QUARK_EV_BLOCKED));
+	assert(qev->tags == 1);
+	assert(qev->blocked.op == 0 && qev->blocked.path[0] == 0);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/*
+ * The events of the backend and the denied attempts share the queue. Both
+ * sides here always have more to give, as two rings with a backlog. Each
+ * read frees one slot, and neither side may take it every time.
+ */
+static u64	fair_time;
+static int	fair_events, fair_denials, fair_stop;
+
+static void
+fair_insert(struct quark_queue *qq, int type)
+{
+	struct raw_event	*raw;
+
+	raw = raw_event_alloc(type);
+	assert(raw != NULL);
+	raw->time = ++fair_time;
+	raw->pid = 100000 + fair_time;
+	assert(raw_event_insert(qq, raw) == 0);
+}
+
+static int
+fair_backend_populate(struct quark_queue *qq)
+{
+	int	n;
+
+	for (n = 0; !fair_stop && qq->length < qq->max_length; n++) {
+		fair_insert(qq, RAW_GETPID);
+		fair_events++;
+	}
+
+	return (n);
+}
+
+static int
+fair_deny_populate(struct quark_queue *qq, int max)
+{
+	int	n;
+
+	for (n = 0; !fair_stop && n < max && qq->length < qq->max_length;
+	    n++) {
+		fair_insert(qq, RAW_BLOCKED);
+		fair_denials++;
+	}
+
+	return (n);
+}
+
+static int
+fair_nop(struct quark_queue *qq)
+{
+	return (0);
+}
+
+static void
+fair_close(struct quark_queue *qq)
+{
+}
+
+static struct quark_queue_ops fair_ops = {
+	.open		= fair_nop,
+	.populate	= fair_backend_populate,
+	.update_stats	= fair_nop,
+	.close		= fair_close,
+};
+
+static int
+t_block_populate_fair(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	/*
+	 * Below 10: a bare queue has no hold time, and with more room
+	 * raw_event_target_age() divides by it.
+	 */
+	int				 caps[] = { 1, 2, 4, 8 };
+	size_t				 c;
+	int				 i, got_events, got_denials;
+
+	for (c = 0; c < nitems(caps); c++) {
+		quark_queue_init_bare(&qq);
+		qq.max_length = caps[c];
+		qq.queue_ops = &fair_ops;
+		qq.deny_populate = fair_deny_populate;
+		fair_events = fair_denials = fair_stop = 0;
+		got_events = got_denials = 0;
+
+		for (i = 0; i < 1000; i++) {
+			qev = quark_queue_get_event(&qq);
+			assert(qev != NULL);
+			if (qev->events & QUARK_EV_BLOCKED)
+				got_denials++;
+			else
+				got_events++;
+		}
+		/* Neither side is kept out, here each gets about half */
+		if (fair_events < 400 || fair_denials < 400 ||
+		    got_events < 400 || got_denials < 400)
+			errx(1, "queue of %d: %d events and %d denials read, "
+			    "%d and %d delivered", caps[c], fair_events,
+			    fair_denials, got_events, got_denials);
+
+		/* Only one side has something: it gets all the room */
+		qq.deny_populate = NULL;
+		fair_events = 0;
+		for (i = 0; i < 100; i++)
+			assert(quark_queue_get_event(&qq) != NULL);
+		assert(fair_events == 100);
+
+		fair_stop = 1;
+		while (quark_queue_get_event(&qq) != NULL)
+			;
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+/* Find a pattern in a compiled path list by its bytes */
+static const struct quark_block_path *
+block_path_find(const struct quark_block_path *paths, size_t n_paths,
+    const char *bytes, size_t len)
+{
+	size_t	i;
+
+	for (i = 0; i < n_paths; i++) {
+		if (paths[i].len == len && !memcmp(paths[i].path, bytes, len))
+			return (&paths[i]);
+	}
+
+	return (NULL);
+}
+
+/* A ruleset of n blocks with one on line each, or one block of n lines */
+static void
+block_ruleset_n(struct quark_ruleset *ruleset, int n, int one_block,
+    int same_line)
+{
+	char	*text, *line;
+	size_t	 len;
+	FILE	*f;
+	int	 i;
+
+	if ((f = open_memstream(&text, &len)) == NULL)
+		err(1, "open_memstream");
+	if (one_block)
+		fprintf(f, "block {\n");
+	for (i = 0; i < n; i++) {
+		assert(asprintf(&line, "\ton process.exe /bin/x%d\n",
+		    same_line ? 0 : i) != -1);
+		if (one_block)
+			fprintf(f, "%s", line);
+		else
+			fprintf(f, "block {\n%s}\n", line);
+		free(line);
+	}
+	if (one_block)
+		fprintf(f, "}\n");
+	fclose(f);
+	ruleset_from_string(ruleset, text);
+	free(text);
+}
+
+/*
+ * The compiled form of blocks: lines as bits, equal lines shared, the
+ * path patterns with the lines of their prefixes, and the limits.
+ */
+static int
+t_rule_block_compile(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset		 ruleset;
+	struct quark_block_prog		*prog;
+	const struct quark_block_path	*bp;
+	struct quark_container		 container;
+	struct quark_pod		 pod;
+	char				 image[] = "nginx:1.25";
+	char				 name[] = "debug-7";
+
+	/* No blocks: an empty program that denies nothing */
+	ruleset_from_string(&ruleset, "tag log {\n\ton any\n}\ndrop on any\n");
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL);
+	assert(prog->n_blocks == 0 && prog->n_lines == 0);
+	assert(prog->n_exe == 0 && prog->n_file == 0);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+	quark_block_free(NULL);
+
+	/*
+	 * One lookup finds the longest pattern only, so each pattern has
+	 * the lines of the prefix patterns that are a prefix of it. An
+	 * exact pattern has its NUL and is a prefix of nothing.
+	 */
+	ruleset_from_string(&ruleset,
+	    "block {\n\ton file.path /usr/*\n}\n"
+	    "block {\n\ton file.path /usr/bin/*\n}\n"
+	    "block {\n\ton file.path /usr/bin/curl\n}\n"
+	    "block {\n\ton file.path /usr/bin/curl*\n}\n");
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL);
+	assert(prog->n_blocks == 4 && prog->n_lines == 4);
+	assert(prog->blocks[0].on == 1 && prog->blocks[0].except == 0);
+	assert(prog->blocks[1].on == 2 && prog->blocks[2].on == 4);
+	assert(prog->blocks[3].on == 8);
+	assert(prog->dc_file == 0 && prog->dc_exe == 0xf);
+	assert(prog->dc_container == 0xf);
+	assert(prog->n_exe == 0 && prog->n_file == 4);
+	/* Sorted, a prefix before what it is a prefix of */
+	assert(prog->file[0].len == 5 && prog->file[1].len == 9);
+	assert(prog->file[2].len == 13 && prog->file[3].len == 14);
+	bp = block_path_find(prog->file, prog->n_file, "/usr/", 5);
+	assert(bp != NULL && !bp->exact && bp->own == 1 && bp->lines == 1);
+	bp = block_path_find(prog->file, prog->n_file, "/usr/bin/", 9);
+	assert(bp != NULL && !bp->exact && bp->own == 2 && bp->lines == 3);
+	bp = block_path_find(prog->file, prog->n_file, "/usr/bin/curl", 13);
+	assert(bp != NULL && !bp->exact && bp->own == 8 && bp->lines == 0xb);
+	bp = block_path_find(prog->file, prog->n_file, "/usr/bin/curl", 14);
+	assert(bp != NULL && bp->exact && bp->own == 4 && bp->lines == 0xf);
+#define FILE_BITS(_p)	quark_block_path_bits(prog->file, prog->n_file, _p)
+	assert(FILE_BITS("/usr/bin/curl") == 0xf);
+	assert(FILE_BITS("/usr/bin/curly") == 0xb);
+	assert(FILE_BITS("/usr/bin/cur") == 3);
+	assert(FILE_BITS("/usr/bin/") == 3);
+	assert(FILE_BITS("/usr/lib/x") == 1);
+	assert(FILE_BITS("/usr/") == 1);
+	assert(FILE_BITS("/usr") == 0);
+	assert(FILE_BITS("/etc/x") == 0);
+	assert(FILE_BITS("") == 0);
+#undef FILE_BITS
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+
+	/*
+	 * Equal lines share a bit, whatever the order of their fields and
+	 * values. "*" is a pattern like any other: the line uses
+	 * process.exe, so it is not in dc_exe and can't match a file
+	 * operation.
+	 */
+	ruleset_from_string(&ruleset,
+	    "block {\n"
+	    "	except on pod.name debug-*\n"
+	    "	on process.exe { /bin/a /bin/b } container.image nginx:*\n"
+	    "}\n"
+	    "drop on process.pid 1\n"
+	    "block {\n"
+	    "	except on pod.name debug-*\n"
+	    "	on container.image nginx:* process.exe { /bin/b /bin/a /bin/a }\n"
+	    "	on process.exe *\n"
+	    "}\n");
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL);
+	assert(prog->ruleset == &ruleset);
+	assert(prog->n_blocks == 2 && prog->n_lines == 3);
+	assert(prog->line_rule[0] == 0 && prog->line_rule[1] == 1 &&
+	    prog->line_rule[2] == 5);
+	assert(prog->blocks[0].except == 1 && prog->blocks[0].on == 2);
+	assert(prog->blocks[1].except == 1 && prog->blocks[1].on == 6);
+	assert(prog->dc_exe == 1 && prog->dc_file == 7);
+	assert(prog->dc_container == 4);
+	assert(prog->n_exe == 3 && prog->n_file == 0);
+	bp = block_path_find(prog->exe, prog->n_exe, "", 0);
+	assert(bp != NULL && !bp->exact && bp->own == 4 && bp->lines == 4);
+	bp = block_path_find(prog->exe, prog->n_exe, "/bin/a", 7);
+	assert(bp != NULL && bp->exact && bp->own == 2 && bp->lines == 6);
+	bp = block_path_find(prog->exe, prog->n_exe, "/bin/b", 7);
+	assert(bp != NULL && bp->exact && bp->own == 2 && bp->lines == 6);
+	assert(quark_block_path_bits(prog->exe, prog->n_exe, "/bin/a") == 6);
+	assert(quark_block_path_bits(prog->exe, prog->n_exe, "/bin/c") == 4);
+
+	/*
+	 * The lines per container: without metadata only the lines that
+	 * have no container field.
+	 */
+	assert(quark_block_container_bits(prog, NULL) == 4);
+	bzero(&container, sizeof(container));
+	bzero(&pod, sizeof(pod));
+	assert(quark_block_container_bits(prog, &container) == 4);
+	container.image = image;
+	assert(quark_block_container_bits(prog, &container) == 6);
+	container.pod = &pod;
+	assert(quark_block_container_bits(prog, &container) == 6);
+	pod.name = name;
+	assert(quark_block_container_bits(prog, &container) == 7);
+	container.image = NULL;
+	assert(quark_block_container_bits(prog, &container) == 5);
+	name[0] = 'x';
+	assert(quark_block_container_bits(prog, &container) == 4);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+
+	/* A path and the same path with a * are two lines */
+	ruleset_from_string(&ruleset,
+	    "block {\n\ton process.exe /bin/a\n\ton process.exe /bin/a*\n}\n");
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL && prog->n_lines == 2 && prog->n_exe == 2);
+	assert(prog->blocks[0].on == 3);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+
+	/* NOVA_BLOCK_LINES distinct lines, and one more */
+	block_ruleset_n(&ruleset, NOVA_BLOCK_LINES, 1, 0);
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL);
+	assert(prog->n_blocks == 1 && prog->n_lines == NOVA_BLOCK_LINES);
+	assert(prog->blocks[0].on == UINT64_MAX);
+	assert(prog->dc_exe == 0 && prog->dc_file == UINT64_MAX);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+	block_ruleset_n(&ruleset, NOVA_BLOCK_LINES + 1, 1, 0);
+	errno = 0;
+	assert(quark_block_compile(&ruleset) == NULL);
+	assert(errno == E2BIG);
+	quark_ruleset_clear(&ruleset);
+	/* The limit is on distinct lines, not on rules */
+	block_ruleset_n(&ruleset, NOVA_BLOCK_LINES + 1, 1, 1);
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL && prog->n_lines == 1 && prog->blocks[0].on == 1);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+
+	/* NOVA_MAX_BLOCKS blocks, and one more */
+	block_ruleset_n(&ruleset, NOVA_MAX_BLOCKS, 0, 1);
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL);
+	assert(prog->n_blocks == NOVA_MAX_BLOCKS && prog->n_lines == 1);
+	assert(prog->blocks[NOVA_MAX_BLOCKS - 1].on == 1);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+	block_ruleset_n(&ruleset, NOVA_MAX_BLOCKS + 1, 0, 1);
+	errno = 0;
+	assert(quark_block_compile(&ruleset) == NULL);
+	assert(errno == E2BIG);
+	quark_ruleset_clear(&ruleset);
+
+	/* An open block can't be compiled */
+	quark_ruleset_init(&ruleset);
+	assert(quark_ruleset_block_begin(&ruleset) == 0);
+	errno = 0;
+	assert(quark_block_compile(&ruleset) == NULL);
+	assert(errno == EINVAL);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/*
+ * What blocks deny. Each vector is an operation of a process in a
+ * container, as a hook sees it, with the block that must deny it. Three
+ * evaluators must give that answer: quark_block_eval_rules() walks the
+ * rules with the matching code of the tag blocks, quark_block_eval()
+ * applies the compiled form in userspace, and the nova backend applies it
+ * in the kernel, see t_block_eval_nova.
+ */
+enum {
+	BC_NONE,	/* no metadata for the container */
+	BC_WEB,		/* pod web-1, nginx */
+	BC_DEBUG,	/* pod debug-7, nginx */
+	BC_DB,		/* pod db-0, redis */
+	BC_NOPOD,	/* nginx, no pod */
+	BC_NOIMAGE,	/* pod web-1, no image */
+	BC_MAX
+};
+
+struct block_vector {
+	int		 kind;		/* QUARK_BLOCK_* */
+	const char	*path;		/* NULL: not resolved */
+	int		 container;	/* BC_* */
+	int		 want;		/* block that denies, or -1 */
+};
+
+/* The longest path that fits in a key, and one byte more */
+static char	bv_fits[NOVA_PATHLEN];
+static char	bv_toolong[NOVA_PATHLEN + 1];
+
+static struct quark_container		 bv_containers[BC_MAX];
+static struct quark_pod			 bv_pods[BC_MAX];
+static const struct quark_container	*bv_cp[BC_MAX];
+
+/* A rule that is not a block between the blocks, which nova accepts too */
+static char bv_ruleset[] =
+    "block {\n"
+    "	except on pod.name debug-*\n"
+    "	on process.exe { /usr/bin/curl /usr/bin/wget /usr/bin/ncat }\n"
+    "}\n"
+    "block {\n"
+    "	except on file.path /usr/bin/internal/*\n"
+    "	on file.path /usr/bin/* container.image docker.io/library/nginx:*\n"
+    "}\n"
+    "drop on process.pid 4000000000\n"
+    "block {\n"
+    "	on file.path /etc/shadow\n"
+    "}\n"
+    "block {\n"
+    "	on process.exe * container.image */redis:7\n"
+    "}\n"
+    "drop on any\n";
+
+static const struct block_vector bv_vectors[] = {
+	/* Block 0: processes, with an except on the pod */
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_WEB, 0 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/wget", BC_DB, 0 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_NOPOD, 0 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_DEBUG, -1 },
+	/* Unknown does not match: the except can't protect yet */
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_NONE, 0 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curly", BC_WEB, -1 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/cur", BC_WEB, -1 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl/x", BC_WEB, -1 },
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/nginx", BC_WEB, -1 },
+	{ QUARK_BLOCK_PROCESS, NULL, BC_WEB, -1 },
+	/* Block 1: files in nginx containers, with an except path */
+	{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_WEB, 1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/x/y/z", BC_NOPOD, 1 },
+	/* The except of block 0 is local to block 0 */
+	{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_DEBUG, 1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_DB, -1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_NONE, -1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/curl", BC_NOIMAGE, -1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/internal/x", BC_WEB, -1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin/internal", BC_WEB, 1 },
+	{ QUARK_BLOCK_FILE, "/usr/bin", BC_WEB, -1 },
+	{ QUARK_BLOCK_FILE, "/etc/passwd", BC_WEB, -1 },
+	{ QUARK_BLOCK_FILE, NULL, BC_WEB, -1 },
+	/* A path that does not fit in a key is not available */
+	{ QUARK_BLOCK_FILE, bv_fits, BC_WEB, 1 },
+	{ QUARK_BLOCK_FILE, bv_toolong, BC_WEB, -1 },
+	/* Block 2: files, no container field, so also without metadata */
+	{ QUARK_BLOCK_FILE, "/etc/shadow", BC_NONE, 2 },
+	{ QUARK_BLOCK_FILE, "/etc/shadow", BC_DB, 2 },
+	{ QUARK_BLOCK_FILE, "/etc/shadow-", BC_DB, -1 },
+	{ QUARK_BLOCK_PROCESS, "/etc/shadow", BC_WEB, -1 },
+	/* Block 3: every process of a redis container */
+	{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_DB, 3 },
+	{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_WEB, -1 },
+	{ QUARK_BLOCK_PROCESS, "/bin/sh", BC_NONE, -1 },
+	{ QUARK_BLOCK_PROCESS, NULL, BC_DB, -1 },
+	{ QUARK_BLOCK_FILE, "/bin/sh", BC_DB, -1 },
+	/* The first block that denies is reported */
+	{ QUARK_BLOCK_PROCESS, "/usr/bin/curl", BC_DB, 0 },
+};
+
+/* More rulesets, where the evaluators are compared only */
+static char *bv_rulesets[] = {
+	"block {\n\ton process.exe *\n}\n",
+	"block {\n\ton file.path *\n}\n",
+	"block {\n\texcept on process.exe /usr/bin/*\n"
+	    "\ton process.exe /usr/*\n}\n",
+	"block {\n\texcept on file.path /usr/bin/curl\n"
+	    "\ton file.path /usr/bin/curl*\n}\n",
+	"block {\n\texcept on container.image *redis:7\n"
+	    "\texcept on pod.name web-*\n\ton file.path /etc/*\n}\n"
+	    "block {\n\ton file.path { /etc/shadow /usr/bin/* }\n}\n",
+	"block {\n\ton process.exe /usr/bin/curl pod.name web-1\n"
+	    "\ton process.exe /usr/bin/curl pod.name db-0\n}\n"
+	    "block {\n\texcept on pod.name db-0\n"
+	    "\ton process.exe /usr/bin/curl pod.name db-0\n"
+	    "\ton process.exe /bin/*\n}\n",
+	"block {\n\texcept on pod.name *\n\ton process.exe /bin/sh\n}\n"
+	    "block {\n\texcept on container.image *\n"
+	    "\ton file.path /etc/*\n}\n",
+	NULL
+};
+
+static const char *bv_paths[] = {
+	NULL, "", "/", "/bin/sh", "/bin", "/etc/shadow", "/etc/shadow-",
+	"/etc", "/usr", "/usr/", "/usr/bin/curl", "/usr/bin/curly",
+	"/usr/bin/cur", "/usr/bin/internal/x", "/usr/lib/x", bv_fits,
+	bv_toolong,
+};
+
+static void
+block_vectors_init(void)
+{
+	static char	nginx[] = "docker.io/library/nginx:1.25";
+	static char	redis[] = "docker.io/library/redis:7";
+	static char	web[] = "web-1", debug[] = "debug-7", db[] = "db-0";
+	size_t		i;
+
+	bzero(bv_containers, sizeof(bv_containers));
+	bzero(bv_pods, sizeof(bv_pods));
+	bv_cp[BC_NONE] = NULL;
+	for (i = BC_WEB; i < BC_MAX; i++)
+		bv_cp[i] = &bv_containers[i];
+	bv_containers[BC_WEB].image = nginx;
+	bv_containers[BC_WEB].pod = &bv_pods[BC_WEB];
+	bv_pods[BC_WEB].name = web;
+	bv_containers[BC_DEBUG].image = nginx;
+	bv_containers[BC_DEBUG].pod = &bv_pods[BC_DEBUG];
+	bv_pods[BC_DEBUG].name = debug;
+	bv_containers[BC_DB].image = redis;
+	bv_containers[BC_DB].pod = &bv_pods[BC_DB];
+	bv_pods[BC_DB].name = db;
+	bv_containers[BC_NOPOD].image = nginx;
+	bv_containers[BC_NOIMAGE].pod = &bv_pods[BC_NOIMAGE];
+	bv_pods[BC_NOIMAGE].name = web;
+
+	memset(bv_fits, 'a', sizeof(bv_fits));
+	memcpy(bv_fits, "/usr/bin/", 9);
+	bv_fits[sizeof(bv_fits) - 1] = 0;
+	memset(bv_toolong, 'a', sizeof(bv_toolong));
+	memcpy(bv_toolong, "/usr/bin/", 9);
+	bv_toolong[sizeof(bv_toolong) - 1] = 0;
+	assert(strlen(bv_fits) == NOVA_PATHLEN - 1);
+	assert(strlen(bv_toolong) == NOVA_PATHLEN);
+}
+
+/*
+ * One more evaluator for the vectors, NULL for none. It gets the lines of
+ * the container, as the kernel has them, and returns the block or -1.
+ */
+typedef int (*block_eval_fn)(void *, const struct quark_block_input *, u64);
+
+/*
+ * Run one operation through the reference, the compiled form and maybe
+ * one more evaluator. want is the block that must deny, -1 for none, or
+ * -2 to only compare the evaluators.
+ */
+static void
+block_vector_check(const char *what, size_t n, struct quark_ruleset *ruleset,
+    struct quark_block_prog *prog, const struct quark_block_input *in,
+    int want, block_eval_fn fn, void *arg)
+{
+	int	ref, got, extra;
+
+	ref = quark_block_eval_rules(ruleset, in);
+	got = quark_block_eval(prog, in);
+	extra = ref;
+	if (fn != NULL)
+		extra = fn(arg, in,
+		    quark_block_container_bits(prog, in->container));
+	if (want == -2)
+		want = ref;
+	if (ref == want && got == want && extra == want)
+		return;
+	errx(1, "%s %zu: kind %d path %.40s: wanted %d, rules %d, "
+	    "compiled %d, extra %d", what, n, in->kind,
+	    in->path == NULL ? "(null)" : in->path, want, ref, got, extra);
+}
+
+/* All vectors and all rulesets, see block_vector_check() */
+static void
+block_vectors_run(block_eval_fn fn, void *(*open)(struct quark_ruleset *),
+    void (*close)(void *))
+{
+	struct quark_ruleset		 ruleset;
+	struct quark_block_prog		*prog;
+	struct quark_block_input	 in;
+	const struct block_vector	*v;
+	void				*arg;
+	size_t				 i, r, p, c;
+	int				 kind;
+
+	block_vectors_init();
+
+	ruleset_from_string(&ruleset, bv_ruleset);
+	prog = quark_block_compile(&ruleset);
+	assert(prog != NULL && prog->n_blocks == 4);
+	arg = open != NULL ? open(&ruleset) : NULL;
+	for (i = 0; i < nitems(bv_vectors); i++) {
+		v = &bv_vectors[i];
+		in.kind = v->kind;
+		in.path = v->path;
+		in.container = bv_cp[v->container];
+		block_vector_check("vector", i, &ruleset, prog, &in, v->want,
+		    fn, arg);
+	}
+	if (close != NULL)
+		close(arg);
+	quark_block_free(prog);
+	quark_ruleset_clear(&ruleset);
+
+	for (r = 0; bv_rulesets[r] != NULL; r++) {
+		ruleset_from_string(&ruleset, bv_rulesets[r]);
+		prog = quark_block_compile(&ruleset);
+		assert(prog != NULL);
+		arg = open != NULL ? open(&ruleset) : NULL;
+		for (kind = QUARK_BLOCK_PROCESS; kind <= QUARK_BLOCK_FILE;
+		    kind++) {
+			for (p = 0; p < nitems(bv_paths); p++) {
+				for (c = 0; c < BC_MAX; c++) {
+					in.kind = kind;
+					in.path = bv_paths[p];
+					in.container = bv_cp[c];
+					block_vector_check("ruleset",
+					    r * 1000 + p * 10 + c, &ruleset,
+					    prog, &in, -2, fn, arg);
+				}
+			}
+		}
+		if (close != NULL)
+			close(arg);
+		quark_block_free(prog);
+		quark_ruleset_clear(&ruleset);
+	}
+}
+
+static int
+t_rule_block_eval(const struct test *t, struct quark_queue_attr *qa)
+{
+	block_vectors_run(NULL, NULL, NULL);
+
+	return (0);
+}
+
+/*
+ * The nova backend as the third evaluator: the same vectors through the
+ * test program in the kernel, which runs the code of the hooks. No hook
+ * is attached: these rulesets have blocks like "on process.exe *", which
+ * would deny every fork and exec in every container of the machine.
+ */
+static void *
+block_nova_open(struct quark_ruleset *ruleset)
+{
+	void	*bt;
+
+	if ((bt = nova_block_test_open(ruleset, 0)) == NULL)
+		err(1, "nova_block_test_open");
+
+	return (bt);
+}
+
+static void
+block_nova_close(void *bt)
+{
+	nova_block_test_close(bt);
+}
+
+static int
+block_nova_eval(void *vqq, const struct quark_block_input *in, u64 cbits)
+{
+	struct nova_block_test	bt;
+	int			r;
+
+	bzero(&bt, sizeof(bt));
+	bt.kind = in->kind == QUARK_BLOCK_FILE ? NOVA_BT_FILE : NOVA_BT_PROCESS;
+	bt.flags = NOVA_BT_HAS_CBITS;
+	bt.cbits = cbits;
+	/* A hook has no path when it does not fit, see bpf_d_path() */
+	if (in->path != NULL && strlen(in->path) < sizeof(bt.path)) {
+		bt.flags |= NOVA_BT_HAS_PATH;
+		strlcpy(bt.path, in->path, sizeof(bt.path));
+	}
+	if ((r = nova_block_test_run(vqq, &bt)) == -1)
+		err(1, "nova_block_test_run");
+	if (r == NOVA_BT_ALLOW)
+		return (-1);
+	if (r > NOVA_MAX_BLOCKS)
+		errx(1, "nova_block_test_run: unexpected %d", r);
+
+	return (r - 1);
+}
+
+static int
+t_block_eval_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset	ruleset;
+	void			*qq;
+	struct nova_block_test	bt;
+	char			userspace[NAME_MAX], cgroup[PATH_MAX];
+	size_t			i;
+	int			r;
+	const char		*hex64 =
+	    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	char			 name65[128];
+	struct {
+		const char	*name;
+		int		 container;
+	} names[] = {
+		{ "docker-0123456789abcdef0123456789abcdef"
+		    "0123456789abcdef0123456789abcdef.scope", 1 },
+		{ "cri-containerd-0123456789abcdef0123456789abcdef"
+		    "0123456789abcdef0123456789abcdef.scope", 1 },
+		{ "crio-0123456789abcdef0123456789abcdef"
+		    "0123456789abcdef0123456789abcdef.scope", 1 },
+		{ "containerd-0123abcd.scope", 1 },
+		{ "libpod-abc123.scope", 1 },
+		{ "docker-a.scope", 1 },
+		{ "docker-.scope", 0 },
+		{ "docker-abc123.scopeX", 0 },
+		{ "docker-abc123.scop", 0 },
+		{ "docker-abc123", 0 },
+		{ "docker-abcdefabcdef", 0 },	/* hex where .scope would be */
+		{ "docker-ABC123.scope", 0 },
+		{ "docker-abc.def.scope", 0 },
+		{ "docker-xyz.scope", 0 },
+		{ "Docker-abc123.scope", 0 },
+		{ "xdocker-abc123.scope", 0 },
+		{ "crio-conmon-0123abcd.scope", 0 },
+		{ "libpod-conmon-0123abcd.scope", 0 },
+		{ "docker-cleanup.service", 0 },
+		{ "crio-wipe.service", 0 },
+		{ "sshd.service", 0 },
+		{ "init.scope", 0 },
+		{ "session-2.scope", 0 },
+		{ "kubepods-burstable.slice", 0 },
+		{ "0123456789abcdef0123456789abcdef"
+		    "0123456789abcdef0123456789abcdef", 0 },
+		{ ".scope", 0 },
+		{ "x", 0 },
+		{ "", 0 },
+	};
+
+	/* The vectors and the rulesets of t_rule_block_eval */
+	block_vectors_run(block_nova_eval, block_nova_open, block_nova_close);
+
+	/*
+	 * The cgroup name parser of the hooks must agree with
+	 * parse_container_cgroup(). The first block has no container field,
+	 * so it denies in any container, and a name that is not a container
+	 * gets no evaluation. The second block has a container field, and
+	 * these containers have no metadata, so it never matches.
+	 */
+	ruleset_from_string(&ruleset,
+	    "block {\n\ton process.exe /bin/blocked\n}\n"
+	    "block {\n\ton process.exe /bin/other pod.name web-*\n}\n");
+	if ((qq = nova_block_test_open(&ruleset, 0)) == NULL)
+		err(1, "%s: nova_block_test_open", t->name);
+	bzero(&bt, sizeof(bt));
+	bt.kind = NOVA_BT_PROCESS;
+	bt.flags = NOVA_BT_HAS_PATH;
+	strlcpy(bt.path, "/bin/blocked", sizeof(bt.path));
+	for (i = 0; i < nitems(names); i++) {
+		snprintf(cgroup, sizeof(cgroup), "/system.slice/%s",
+		    names[i].name);
+		r = parse_container_cgroup(cgroup, userspace, sizeof(userspace));
+		if ((r == 0) != names[i].container)
+			errx(1, "userspace: %s", names[i].name);
+		strlcpy(bt.cgroup, names[i].name, sizeof(bt.cgroup));
+		r = nova_block_test_run(qq, &bt);
+		if (r != (names[i].container ? 1 : NOVA_BT_NOT_CONTAINER))
+			errx(1, "kernel: %s: got %d", names[i].name, r);
+	}
+	/* An id longer than the key of the kernel is not a container there */
+	snprintf(name65, sizeof(name65), "docker-%sa.scope", hex64);
+	strlcpy(bt.cgroup, name65, sizeof(bt.cgroup));
+	assert(nova_block_test_run(qq, &bt) == NOVA_BT_NOT_CONTAINER);
+	/* Not the blocked program, and no path at all */
+	strlcpy(bt.cgroup, names[0].name, sizeof(bt.cgroup));
+	assert(nova_block_test_run(qq, &bt) == 1);
+	strlcpy(bt.path, "/bin/other", sizeof(bt.path));
+	assert(nova_block_test_run(qq, &bt) == NOVA_BT_ALLOW);
+	bt.flags = 0;
+	assert(nova_block_test_run(qq, &bt) == NOVA_BT_ALLOW);
+	nova_block_test_close(qq);
+
+	/*
+	 * With QQ_BLOCK_HOST a name that is not a container is evaluated
+	 * too, as a container without metadata: the first block denies, the
+	 * second, with its container field, never.
+	 */
+	if ((qq = nova_block_test_open(&ruleset, 1)) == NULL)
+		err(1, "%s: nova_block_test_open", t->name);
+	bt.flags = NOVA_BT_HAS_PATH;
+	for (i = 0; i < nitems(names); i++) {
+		strlcpy(bt.cgroup, names[i].name, sizeof(bt.cgroup));
+		strlcpy(bt.path, "/bin/blocked", sizeof(bt.path));
+		if ((r = nova_block_test_run(qq, &bt)) != 1)
+			errx(1, "kernel, host: %s: got %d", names[i].name, r);
+		strlcpy(bt.path, "/bin/other", sizeof(bt.path));
+		assert(nova_block_test_run(qq, &bt) == NOVA_BT_ALLOW);
+	}
+	nova_block_test_close(qq);
+	quark_ruleset_clear(&ruleset);
+
+	/* Nothing to test without a block */
+	ruleset_from_string(&ruleset, "drop on any\n");
+	errno = 0;
+	assert(nova_block_test_open(&ruleset, 0) == NULL && errno == EINVAL);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/*
+ * A cgroup named like a container scope, for a child to join. The pids
+ * controller must reach it: the hooks read the name of the pids cgroup of
+ * a task, as the EBPF backend does, and without the controller that is an
+ * ancestor.
+ */
+#define BLOCK_CG_ROOT	"/sys/fs/cgroup"
+#define BLOCK_CG_SLICE	BLOCK_CG_ROOT "/quark-test.slice"
+#define BLOCK_CG_ID	\
+	"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+#define BLOCK_CG_SCOPE	BLOCK_CG_SLICE "/docker-" BLOCK_CG_ID ".scope"
+/* The container of a process in that cgroup, as kubernetes names it */
+#define BLOCK_CONTAINER	"docker://" BLOCK_CG_ID
+
+static int
+block_write(const char *path, const char *s)
+{
+	int	fd, r;
+
+	if ((fd = open(path, O_WRONLY)) == -1)
+		return (-1);
+	r = write(fd, s, strlen(s)) == (ssize_t)strlen(s) ? 0 : -1;
+	close(fd);
+
+	return (r);
+}
+
+static void
+block_cgroup_setup(void)
+{
+	/* Fails when it is on already, or when the root has processes */
+	(void)block_write(BLOCK_CG_ROOT "/cgroup.subtree_control", "+pids");
+	if (mkdir(BLOCK_CG_SLICE, 0755) == -1 && errno != EEXIST)
+		err(1, "mkdir %s", BLOCK_CG_SLICE);
+	if (block_write(BLOCK_CG_SLICE "/cgroup.subtree_control",
+	    "+pids") == -1)
+		err(1, "pids controller in %s", BLOCK_CG_SLICE);
+	if (mkdir(BLOCK_CG_SCOPE, 0755) == -1 && errno != EEXIST)
+		err(1, "mkdir %s", BLOCK_CG_SCOPE);
+}
+
+static void
+block_cgroup_cleanup(void)
+{
+	(void)rmdir(BLOCK_CG_SCOPE);
+	(void)rmdir(BLOCK_CG_SLICE);
+}
+
+#define BLOCK_EXIT_EXEC_EPERM	77
+#define BLOCK_EXIT_FORK_EPERM	78
+#define BLOCK_EXIT_OTHER	79
+
+/*
+ * A child that may join the test cgroup, then forks or execs. Returns
+ * its exit status: BLOCK_EXIT_EXEC_EPERM or BLOCK_EXIT_FORK_EPERM when
+ * the operation was denied, the status of the program otherwise.
+ */
+static int
+block_try_pid(int in_container, const char *exec_path, const char *exec_arg,
+    pid_t *pidp)
+{
+	char	pidbuf[32];
+	pid_t	pid, gc;
+	int	status;
+
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+	if (pidp != NULL)
+		*pidp = pid;
+	if (pid == 0) {
+		if (in_container) {
+			snprintf(pidbuf, sizeof(pidbuf), "%d", getpid());
+			if (block_write(BLOCK_CG_SCOPE "/cgroup.procs",
+			    pidbuf) == -1)
+				_exit(BLOCK_EXIT_OTHER);
+		}
+		if (exec_path == NULL) {
+			if ((gc = fork()) == 0)
+				_exit(0);
+			if (gc == -1)
+				_exit(errno == EPERM ? BLOCK_EXIT_FORK_EPERM :
+				    BLOCK_EXIT_OTHER);
+			waitpid(gc, &status, 0);
+			_exit(0);
+		}
+		/* Keep the output of the program out of the test output */
+		if (exec_arg != NULL) {
+			int	fd;
+
+			if ((fd = open("/dev/null", O_RDWR)) != -1) {
+				dup2(fd, STDIN_FILENO);
+				dup2(fd, STDOUT_FILENO);
+				dup2(fd, STDERR_FILENO);
+			}
+		}
+		execl(exec_path, exec_path, exec_arg, (char *)NULL);
+		_exit(errno == EPERM ? BLOCK_EXIT_EXEC_EPERM :
+		    BLOCK_EXIT_OTHER);
+	}
+	if (waitpid(pid, &status, 0) == -1)
+		err(1, "waitpid");
+
+	return (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+}
+
+/*
+ * A child in the test cgroup that changes its root to the directory of
+ * path, then executes path by its name in that root. Returns its exit
+ * status, as block_try_pid().
+ */
+static int
+block_try_chroot(const char *path, pid_t *pidp)
+{
+	char		 pidbuf[32], dir[PATH_MAX], *slash;
+	const char	*name;
+	pid_t		 pid;
+	int		 status;
+
+	if (strlcpy(dir, path, sizeof(dir)) >= sizeof(dir) ||
+	    (slash = strrchr(dir, '/')) == NULL || slash == dir)
+		errx(1, "bad path %s", path);
+	/* "/name", the path in the new root */
+	name = path + (slash - dir);
+	*slash = 0;
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+	if (pidp != NULL)
+		*pidp = pid;
+	if (pid == 0) {
+		snprintf(pidbuf, sizeof(pidbuf), "%d", getpid());
+		if (block_write(BLOCK_CG_SCOPE "/cgroup.procs", pidbuf) == -1)
+			_exit(BLOCK_EXIT_OTHER);
+		if (chroot(dir) == -1 || chdir("/") == -1)
+			_exit(BLOCK_EXIT_OTHER);
+		/* A dynamic program then fails for its loader, not with EPERM */
+		execl(name, name, (char *)NULL);
+		_exit(errno == EPERM ? BLOCK_EXIT_EXEC_EPERM :
+		    BLOCK_EXIT_OTHER);
+	}
+	if (waitpid(pid, &status, 0) == -1)
+		err(1, "waitpid");
+
+	return (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+}
+
+static int
+block_try(int in_container, const char *exec_path, const char *exec_arg)
+{
+	return (block_try_pid(in_container, exec_path, exec_arg, NULL));
+}
+
+/*
+ * A copy of true(1) under a name of our own, so that a block on it
+ * denies nothing else on the machine, and nobody else runs it. We are
+ * root and /tmp is for everybody: mkstemp() makes a new file under a name
+ * that can't be guessed, and never follows a link that is already there.
+ */
+static void
+block_copy_true(char *dst, size_t dst_len)
+{
+	char	 tmp[] = "/tmp/quark-test-true.XXXXXX", buf[65536];
+	ssize_t	 n;
+	int	 in, out;
+
+	if ((in = open("/bin/true", O_RDONLY)) == -1 &&
+	    (in = open("/usr/bin/true", O_RDONLY)) == -1)
+		err(1, "open true");
+	if ((out = mkstemp(tmp)) == -1)
+		err(1, "mkstemp %s", tmp);
+	while ((n = read(in, buf, sizeof(buf))) > 0) {
+		if (write(out, buf, n) != n)
+			err(1, "write %s", tmp);
+	}
+	if (n == -1)
+		err(1, "read true");
+	if (fchmod(out, 0755) == -1)
+		err(1, "fchmod %s", tmp);
+	close(in);
+	/* An exec fails with ETXTBSY while the file is open for writing */
+	close(out);
+	if (realpath(tmp, dst) == NULL || strlen(dst) >= dst_len)
+		err(1, "realpath %s", tmp);
+}
+
+/*
+ * The process hooks deny a fork and an exec, in a container only. The
+ * blocks name this program and a copy of true(1), so that nothing else on
+ * the machine is denied while the test runs.
+ */
+static int
+t_block_process_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct quark_queue_stats	 stats;
+	char				 self[PATH_MAX], true_path[PATH_MAX];
+	char				*text;
+
+	void				*bt;
+
+	if (realpath("/proc/self/exe", self) == NULL)
+		err(1, "realpath self");
+	block_copy_true(true_path, sizeof(true_path));
+	block_cgroup_setup();
+
+	/*
+	 * The handle of the vector tests attaches no hook: with a block on
+	 * every process loaded, a fork and an exec in the container work.
+	 */
+	ruleset_from_string(&ruleset, "block {\n\ton process.exe *\n}\n");
+	if ((bt = nova_block_test_open(&ruleset, 0)) == NULL)
+		err(1, "%s: nova_block_test_open", t->name);
+	assert(block_try(1, NULL, NULL) == 0);
+	assert(block_try(1, true_path, NULL) == 0);
+	nova_block_test_close(bt);
+	quark_ruleset_clear(&ruleset);
+
+	/*
+	 * An exec of true is denied in the container, nothing else. The pass
+	 * rule counts the execs of true that the program that sends events
+	 * sees, in its hits.
+	 */
+	assert(asprintf(&text,
+	    "block {\n\ton process.exe %s\n}\n"
+	    "pass on process.exe %s\n", true_path, true_path) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	/*
+	 * A denied exec is not an exec: the hook of the block must run
+	 * before the one that sends the exec event, and end the chain.
+	 */
+	quark_queue_get_stats(&qq, &stats);
+	if (ruleset.rules[1].hits != 0)
+		errx(1, "a denied exec was seen as an exec, %llu times",
+		    ruleset.rules[1].hits);
+	assert(block_try(0, true_path, NULL) == 0);
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[1].hits == 1);
+	assert(block_try(1, NULL, NULL) == 0);
+	assert(block_try(0, NULL, NULL) == 0);
+	/* Another program in the container, -h prints the usage */
+	assert(block_try(1, self, "-h") != BLOCK_EXIT_EXEC_EPERM);
+	/* The denials of a block are the hits of its first line */
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 1 && ruleset.rules[0].evals == 0);
+	assert(stats.block_no_path == 0);
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 2);
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	/*
+	 * An except line, a value list, and a fork: the executable of a
+	 * fork is the one of the parent, this program.
+	 */
+	assert(asprintf(&text,
+	    "block {\n"
+	    "	except on process.exe %s\n"
+	    "	on process.exe { %s %s }\n"
+	    "}\n"
+	    "block {\n"
+	    "	on process.exe /nonexistent/*\n"
+	    "}\n", true_path, true_path, self) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	assert(block_try(1, true_path, NULL) == 0);
+	assert(block_try(1, self, "-h") == BLOCK_EXIT_EXEC_EPERM);
+	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+	assert(block_try(0, NULL, NULL) == 0);
+	assert(block_try(0, self, "-h") != BLOCK_EXIT_EXEC_EPERM);
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 2);
+	assert(ruleset.rules[1].hits == 0);
+	assert(ruleset.rules[2].hits == 0);	/* the second block */
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	block_cgroup_cleanup();
+	(void)unlink(true_path);
+
+	return (0);
+}
+
+/* One message of quark-kube-talker: a length and a JSON object */
+static void
+block_kube_write(int fd, const char *json)
+{
+	u32	len = strlen(json);
+
+	if (write(fd, &len, sizeof(len)) != sizeof(len) ||
+	    write(fd, json, len) != (ssize_t)len)
+		err(1, "write kube message");
+}
+
+#define BLOCK_POD_JSON(_name, _uid)					\
+	"{\"kind\":\"Pod\","						\
+	"\"metadata\":{\"name\":\"" _name "\",\"namespace\":\"default\","	\
+	"\"uid\":\"" _uid "\"},"					\
+	"\"spec\":{\"containers\":[{\"name\":\"c\"}]},"			\
+	"\"status\":{\"phase\":\"Running\","				\
+	"\"containerStatuses\":[{\"name\":\"c\","			\
+	"\"image\":\"registry.k8s.io/nginx:1.25\","			\
+	"\"imageID\":\"docker-pullable://registry.k8s.io/nginx@sha256:abc\"," \
+	"\"containerID\":\"" BLOCK_CONTAINER "\","			\
+	"\"state\":{\"running\":{}}}]}}"
+
+/*
+ * The container fields of a block follow the metadata of the container
+ * of the test cgroup. Two blocks, told apart by the operation: the first
+ * denies an exec of true in a pod named web-*, the second a fork of this
+ * program unless the pod is named debug-*. Without metadata a container
+ * field does not match, on an on line and on an except line.
+ */
+static int
+t_block_container_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct quark_queue_stats	 stats;
+	const struct quark_event	*qev;
+	char				 self[PATH_MAX], true_path[PATH_MAX];
+	char				*text;
+	cJSON				*json;
+	pid_t				 pid;
+	int				 pfd[2], i;
+
+	if (realpath("/proc/self/exe", self) == NULL)
+		err(1, "realpath self");
+	block_copy_true(true_path, sizeof(true_path));
+	block_cgroup_setup();
+	/* drop on any keeps the events of nova out of the test output */
+	assert(asprintf(&text,
+	    "block {\n"
+	    "	on process.exe %s pod.name web-*\n"
+	    "}\n"
+	    "block {\n"
+	    "	except on pod.name debug-*\n"
+	    "	on process.exe %s\n"
+	    "}\n"
+	    "drop on any\n", true_path, self) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+
+	/*
+	 * A container that is known before the backend is open, from the
+	 * kube talker, gets its lines when the queue opens. The talker is a
+	 * pipe that ends after a node and a pod.
+	 */
+	if (pipe(pfd) == -1)
+		err(1, "pipe");
+	block_kube_write(pfd[1], "{\"kind\":\"Node\","
+	    "\"metadata\":{\"name\":\"node-1\",\"uid\":\"node-uid\"}}");
+	block_kube_write(pfd[1], BLOCK_POD_JSON("web-1", "pod-a"));
+	close(pfd[1]);
+	qa->kubefd = pfd[0];
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open with kubefd", t->name);
+	qa->kubefd = -1;
+	assert(quark_container_lookup(&qq, BLOCK_CONTAINER) != NULL);
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+	assert(block_try(0, true_path, NULL) == 0);
+	quark_queue_close(&qq);
+	/* The pipe of the talker is ours to close */
+	close(pfd[0]);
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	/* A removed container goes away at once */
+	qq.cache_grace_time = 0;
+
+	/*
+	 * No metadata: pod.name is not known. The on line of the first block
+	 * does not match, and the except line of the second does not
+	 * protect.
+	 */
+	assert(block_try(1, true_path, NULL) == 0);
+	assert(block_try_pid(1, NULL, NULL, &pid) == BLOCK_EXIT_FORK_EPERM);
+	/*
+	 * The denied attempt is an event here too. Nova alone does not know
+	 * the process, the event has its pid.
+	 */
+	for (i = 0, qev = NULL; i < 200 && qev == NULL; i++) {
+		if ((qev = quark_queue_get_event(&qq)) == NULL)
+			msleep(10);
+	}
+	assert(qev != NULL && qev->events == QUARK_EV_BLOCKED);
+	assert(qev->blocked.op == QUARK_BLOCKED_FORK);
+	assert(qev->blocked.block == 1);
+	assert(qev->blocked.pid == (u32)pid);
+	assert(!strcmp(qev->blocked.path, self));
+	assert(qev->tags == ruleset.blocked_tag);
+
+	/* The container is in the pod web-1 */
+	assert(quark_pod_create(&qq, "pod-b", "web-1", "default", NULL) != NULL);
+	assert(quark_container_create(&qq, BLOCK_CONTAINER, "pod-b", "c",
+	    "registry.k8s.io/nginx:1.25") != NULL);
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+	assert(block_try(0, true_path, NULL) == 0);
+
+	/* The container is gone, and with it what we knew */
+	assert(quark_container_remove(&qq, BLOCK_CONTAINER) == 0);
+	(void)quark_queue_get_event(&qq);
+	assert(quark_container_lookup(&qq, BLOCK_CONTAINER) == NULL);
+	assert(block_try(1, true_path, NULL) == 0);
+	assert(block_try(1, NULL, NULL) == BLOCK_EXIT_FORK_EPERM);
+
+	/*
+	 * The container comes back in the pod debug-1, from the kube talker:
+	 * the first block does not match, the except line of the second
+	 * does.
+	 */
+	json = cJSON_Parse(BLOCK_POD_JSON("debug-1", "pod-c"));
+	assert(json != NULL);
+	assert(kube_handle_pod(&qq, json) == 0);
+	cJSON_Delete(json);
+	assert(block_try(1, true_path, NULL) == 0);
+	assert(block_try(1, NULL, NULL) == 0);
+
+	/* Containers that a hook can never find are ignored */
+	assert(quark_container_create(&qq, "docker://not-hex", NULL, "c",
+	    "x") != NULL);
+	assert(quark_container_create(&qq, "docker://" BLOCK_CG_ID "0", NULL,
+	    "c", "x") != NULL);
+
+	/* One exec was denied by the first block, three forks by the second */
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 1);
+	assert(ruleset.rules[1].hits == 3);
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	block_cgroup_cleanup();
+	(void)unlink(true_path);
+
+	return (0);
+}
+
+/*
+ * Blocks need Linux 5.17 on x86_64 with the BPF LSM active. Where they
+ * can't work, a ruleset with a block must fail to open with ENOTSUP.
+ */
+static int
+block_supported(void)
+{
+	struct utsname	 un;
+	char		 buf[1024], *tok, *next;
+	ssize_t		 n;
+	int		 fd, major, minor;
+
+	if (uname(&un) == -1)
+		err(1, "uname");
+	if (strcmp(un.machine, "x86_64"))
+		return (0);
+	if (sscanf(un.release, "%d.%d", &major, &minor) != 2)
+		errx(1, "can't parse kernel release %s", un.release);
+	if (major < 5 || (major == 5 && minor < 17))
+		return (0);
+	if ((fd = open("/sys/kernel/security/lsm", O_RDONLY)) == -1)
+		return (0);
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return (0);
+	buf[n] = 0;
+	buf[strcspn(buf, "\n")] = 0;
+	for (next = buf; (tok = strsep(&next, ",")) != NULL; ) {
+		if (!strcmp(tok, "bpf"))
+			return (1);
+	}
+
+	return (0);
+}
+
+/*
+ * The enforcer: with the EBPF backend, the blocks of the ruleset are
+ * enforced by the LSM programs of nova, and the EBPF backend delivers the
+ * events, which userspace tags. One operation gives one result: an exec
+ * that is allowed is an event, an exec that is denied is not.
+ */
+static int
+t_block_enforcer(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct quark_queue_stats	 stats;
+	const struct quark_event	*qev;
+	char				 self[PATH_MAX], true_path[PATH_MAX];
+	char				*text;
+	pid_t				 pid;
+	int				 i;
+
+	if (realpath("/proc/self/exe", self) == NULL)
+		err(1, "realpath self");
+	block_copy_true(true_path, sizeof(true_path));
+
+	/* No block: nothing of nova is loaded */
+	assert(asprintf(&text,
+	    "tag log {\n\ton process.exe %s\n}\ndrop on any\n",
+	    true_path) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	assert(qq.enforcer == NULL);
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+
+	/*
+	 * The first block denies an exec of true, the second a fork of this
+	 * program in a pod named web-*. The tag block tags an exec of true,
+	 * and nothing else is delivered. The first block registered blocked
+	 * as tag bit 0, so log is bit 1.
+	 */
+	assert(asprintf(&text,
+	    "block {\n"
+	    "	on process.exe %s\n"
+	    "}\n"
+	    "block {\n"
+	    "	on process.exe %s pod.name web-*\n"
+	    "}\n"
+	    "tag log {\n"
+	    "	on process.exe %s\n"
+	    "}\n"
+	    "drop on any\n", true_path, self, true_path) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0) {
+		/* Where blocks can't work, the queue must not open */
+		if (errno != ENOTSUP || block_supported())
+			err(1, "%s: quark_queue_open", t->name);
+		quark_ruleset_clear(&ruleset);
+		(void)unlink(true_path);
+		return (0);
+	}
+	assert(qq.enforcer != NULL);
+	block_cgroup_setup();
+
+	/*
+	 * A denied exec fails, and is one event: the denied attempt, of the
+	 * process that tried. It is not an exec event, no exec happened.
+	 * The fork of that process has no tag and is dropped.
+	 */
+	assert(block_try_pid(1, true_path, NULL, &pid) == BLOCK_EXIT_EXEC_EPERM);
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events == QUARK_EV_BLOCKED);
+	assert(qev->tags == 1);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 0), "blocked"));
+	assert(qev->blocked.op == QUARK_BLOCKED_EXEC);
+	assert(qev->blocked.block == 0);
+	assert(qev->blocked.pid == (u32)pid);
+	assert(!strcmp(qev->blocked.path, true_path));
+	assert(qev->blocked.path2[0] == 0);
+	assert(!strncmp(qev->blocked.comm, "quark-test", 10));
+	/* The process is the one that tried, before the exec */
+	assert(qev->process->exe != NULL && !strcmp(qev->process->exe, self));
+	for (i = 0; i < 50; i++) {
+		if ((qev = quark_queue_get_event(&qq)) != NULL)
+			errx(1, "a second event for a denied exec, events "
+			    "0x%llx", qev->events);
+		msleep(10);
+	}
+
+	/*
+	 * A process with another root gets no way around the block: the
+	 * executable is named from the root of the mount namespace. The
+	 * copy of true is dynamic, so without the denial the exec would fail
+	 * for its loader, with another error.
+	 */
+	assert(block_try_chroot(true_path, &pid) == BLOCK_EXIT_EXEC_EPERM);
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events == QUARK_EV_BLOCKED);
+	assert(qev->blocked.op == QUARK_BLOCKED_EXEC);
+	assert(!strcmp(qev->blocked.path, true_path));
+
+	/* An allowed exec is one event, with its tag */
+	assert(block_try_pid(0, true_path, NULL, &pid) == 0);
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events & QUARK_EV_EXEC);
+	assert(qev->process != NULL && qev->process->exe != NULL);
+	assert(!strcmp(qev->process->exe, true_path));
+	assert(qev->tags == 2);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 1), "log"));
+
+	/* The counters of the blocks come from the enforcer */
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 2);
+	assert(ruleset.rules[1].hits == 0);
+
+	/* The metadata of a container reaches the enforcer */
+	assert(block_try(1, NULL, NULL) == 0);
+	assert(quark_pod_create(&qq, "pod-e", "web-1", "default", NULL) != NULL);
+	assert(quark_container_create(&qq, BLOCK_CONTAINER, "pod-e", "c",
+	    "registry.k8s.io/nginx:1.25") != NULL);
+	assert(block_try_pid(1, NULL, NULL, &pid) == BLOCK_EXIT_FORK_EPERM);
+	/* A denied fork: there is no child, the event is of the parent */
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events == QUARK_EV_BLOCKED && qev->tags == 1);
+	assert(qev->blocked.op == QUARK_BLOCKED_FORK);
+	assert(qev->blocked.block == 1);
+	assert(qev->blocked.pid == (u32)pid);
+	assert(!strcmp(qev->blocked.path, self));
+	assert(block_try(0, NULL, NULL) == 0);
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[1].hits == 1);
+	assert(stats.block_lost == 0);
+
+	quark_queue_close(&qq);
+	assert(qq.enforcer == NULL);
+	quark_ruleset_clear(&ruleset);
+	block_cgroup_cleanup();
+	(void)unlink(true_path);
+
+	return (0);
+}
+
+/*
+ * A denied attempt must reach the client when the event backend has a
+ * backlog. The queue is small, and a storm of forks waits in the ring of
+ * the backend when we start to read: the denial must not wait behind it.
+ */
+static int
+t_block_enforcer_backlog(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	const struct quark_event	*qev;
+	char				 true_path[PATH_MAX];
+	char				*text;
+	pid_t				 pid;
+	int				 i, status, found;
+
+	block_copy_true(true_path, sizeof(true_path));
+	assert(asprintf(&text,
+	    "block {\n\ton process.exe %s\n}\ndrop on any\n", true_path) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	qa->max_length = 4;
+	qa->hold_time = 50;
+	if (quark_queue_open(&qq, qa) != 0) {
+		if (errno != ENOTSUP || block_supported())
+			err(1, "%s: quark_queue_open", t->name);
+		quark_ruleset_clear(&ruleset);
+		(void)unlink(true_path);
+		return (0);
+	}
+	block_cgroup_setup();
+
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+	for (i = 0; i < 600; i++) {
+		if ((pid = fork()) == -1)
+			err(1, "fork");
+		if (pid == 0)
+			_exit(0);
+		if (waitpid(pid, &status, 0) == -1)
+			err(1, "waitpid");
+	}
+
+	/*
+	 * Each call takes at most 4 events in, and the storm has more than
+	 * a thousand. One second is many hold times for the denial, and far
+	 * too short to get through the storm.
+	 */
+	for (i = 0, found = 0; i < 100 && !found; i++) {
+		qev = quark_queue_get_event(&qq);
+		if (qev != NULL && qev->events == QUARK_EV_BLOCKED)
+			found = 1;
+		else if (qev == NULL)
+			msleep(10);
+	}
+	if (!found)
+		errx(1, "the denied attempt waits behind the backlog");
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+	block_cgroup_cleanup();
+	(void)unlink(true_path);
+
+	return (0);
+}
+
+/* What a child does to a file, see block_file_try() */
+enum block_fop {
+	BLOCK_F_CREATE,		/* open(2) with O_CREAT */
+	BLOCK_F_MKNOD,		/* mknod(2) without a file type */
+	BLOCK_F_MKFIFO,
+	BLOCK_F_READ,
+	BLOCK_F_WRITE,
+	BLOCK_F_CHMOD,
+	BLOCK_F_TRUNCATE,
+	BLOCK_F_OPEN_TRUNC,	/* open(2) for reading with O_TRUNC */
+	BLOCK_F_FTRUNCATE,	/* fd is a file that is open for writing */
+	BLOCK_F_RENAME,
+	BLOCK_F_LINK,
+	BLOCK_F_UNLINK,
+};
+
+static int
+block_fop(enum block_fop op, const char *path, const char *path2, int fd)
+{
+	switch (op) {
+	case BLOCK_F_CREATE:
+		if ((fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
+			return (-1);
+		close(fd);
+		return (0);
+	case BLOCK_F_MKNOD:
+		return (mknod(path, 0644, 0));
+	case BLOCK_F_MKFIFO:
+		return (mknod(path, S_IFIFO | 0644, 0));
+	case BLOCK_F_READ:
+		if ((fd = open(path, O_RDONLY)) == -1)
+			return (-1);
+		close(fd);
+		return (0);
+	case BLOCK_F_WRITE:
+		if ((fd = open(path, O_WRONLY)) == -1)
+			return (-1);
+		close(fd);
+		return (0);
+	case BLOCK_F_CHMOD:
+		return (chmod(path, 0600));
+	case BLOCK_F_TRUNCATE:
+		return (truncate(path, 0));
+	case BLOCK_F_OPEN_TRUNC:
+		if ((fd = open(path, O_RDONLY | O_TRUNC)) == -1)
+			return (-1);
+		close(fd);
+		return (0);
+	case BLOCK_F_FTRUNCATE:
+		return (ftruncate(fd, 0));
+	case BLOCK_F_RENAME:
+		return (rename(path, path2));
+	case BLOCK_F_LINK:
+		return (link(path, path2));
+	case BLOCK_F_UNLINK:
+		return (unlink(path));
+	}
+
+	return (errno = EINVAL, -1);
+}
+
+#define BLOCK_EXIT_EPERM	BLOCK_EXIT_EXEC_EPERM
+
+/*
+ * A child that may join the test cgroup and may change its root, then
+ * does one file operation. For BLOCK_F_FTRUNCATE it opens the file before
+ * all that, as a file that a container got from outside. Returns 0 if it
+ * worked, BLOCK_EXIT_EPERM if it was denied.
+ */
+static int
+block_file_try(int in_container, const char *root, enum block_fop op,
+    const char *path, const char *path2, pid_t *pidp)
+{
+	char	pidbuf[32];
+	pid_t	pid;
+	int	status;
+
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+	if (pidp != NULL)
+		*pidp = pid;
+	if (pid == 0) {
+		int	fd = -1;
+
+		if (op == BLOCK_F_FTRUNCATE &&
+		    (fd = open(path, O_WRONLY)) == -1)
+			_exit(BLOCK_EXIT_OTHER);
+		if (in_container) {
+			snprintf(pidbuf, sizeof(pidbuf), "%d", getpid());
+			if (block_write(BLOCK_CG_SCOPE "/cgroup.procs",
+			    pidbuf) == -1)
+				_exit(BLOCK_EXIT_OTHER);
+		}
+		if (root != NULL && (chroot(root) == -1 || chdir("/") == -1))
+			_exit(BLOCK_EXIT_OTHER);
+		if (block_fop(op, path, path2, fd) == -1)
+			_exit(errno == EPERM ? BLOCK_EXIT_EPERM :
+			    BLOCK_EXIT_OTHER);
+		_exit(0);
+	}
+	if (waitpid(pid, &status, 0) == -1)
+		err(1, "waitpid");
+
+	return (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+}
+
+/* A path below dir, good until four more were asked for */
+static const char *
+block_p(const char *dir, const char *rel)
+{
+	static char	bufs[4][PATH_MAX];
+	static int	next;
+	char		*buf;
+
+	buf = bufs[next++ % 4];
+	if (snprintf(buf, PATH_MAX, "%s/%s", dir, rel) >= PATH_MAX)
+		errx(1, "path too long");
+
+	return (buf);
+}
+
+static void
+block_touch(const char *path)
+{
+	int	fd;
+
+	if ((fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
+		err(1, "open %s", path);
+	close(fd);
+}
+
+static int
+block_rm_cb(const char *path, const struct stat *st, int flag, struct FTW *ftw)
+{
+	return (remove(path));
+}
+
+/*
+ * The scratch slots of the file hooks, the map blk_scratch of nova.bpf.c.
+ * It is found by name, the newest one is ours. A slot is the same memory
+ * on each CPU, and its first u64 says that it is taken.
+ */
+static int
+block_scratch_fd(struct bpf_map_info *info)
+{
+	__u32	id = 0, len;
+	int	fd, found = -1;
+
+	while (bpf_map_get_next_id(id, &id) == 0) {
+		if ((fd = bpf_map_get_fd_by_id(id)) == -1)
+			continue;
+		bzero(info, sizeof(*info));
+		len = sizeof(*info);
+		if (bpf_obj_get_info_by_fd(fd, info, &len) == 0 &&
+		    !strcmp(info->name, "blk_scratch")) {
+			if (found != -1)
+				close(found);
+			found = fd;
+		} else
+			close(fd);
+	}
+	if (found == -1)
+		errx(1, "no blk_scratch map");
+	len = sizeof(*info);
+	if (bpf_obj_get_info_by_fd(found, info, &len) != 0)
+		err(1, "bpf_obj_get_info_by_fd");
+
+	return (found);
+}
+
+/*
+ * Take slot on every CPU, or give it back. Returns how many CPUs had it
+ * taken before.
+ */
+static int
+block_scratch_set(int fd, const struct bpf_map_info *info, __u32 slot,
+    u64 busy)
+{
+	size_t	 vsize;
+	char	*values;
+	int	 i, ncpus, was_busy = 0;
+
+	if ((ncpus = libbpf_num_possible_cpus()) <= 0)
+		errx(1, "libbpf_num_possible_cpus");
+	vsize = (info->value_size + 7) & ~7ULL;
+	if ((values = calloc(ncpus, vsize)) == NULL)
+		err(1, "calloc");
+	if (bpf_map_lookup_elem(fd, &slot, values) != 0)
+		err(1, "bpf_map_lookup_elem");
+	for (i = 0; i < ncpus; i++) {
+		was_busy += *(u64 *)(values + i * vsize) != 0;
+		*(u64 *)(values + i * vsize) = busy;
+	}
+	if (bpf_map_update_elem(fd, &slot, values, BPF_ANY) != 0)
+		err(1, "bpf_map_update_elem");
+	free(values);
+
+	return (was_busy);
+}
+
+/*
+ * A denied file operation is one event, the denied attempt. It did not
+ * happen, so the EBPF backend has no file event for it.
+ */
+static void
+block_file_denied(struct quark_queue *qq, pid_t pid, u32 op, u32 block,
+    const char *path, const char *path2)
+{
+	const struct quark_event	*qev;
+	int				 i;
+
+	qev = drain_for_pid(qq, pid);
+	if (qev->events != QUARK_EV_BLOCKED)
+		errx(1, "%s: events 0x%llx is not a denied attempt", path,
+		    (unsigned long long)qev->events);
+	assert(qev->tags == 1);
+	if (qev->blocked.op != op || qev->blocked.block != block)
+		errx(1, "%s: op %u block %u, expected op %u block %u", path,
+		    qev->blocked.op, qev->blocked.block, op, block);
+	assert(qev->blocked.pid == (u32)pid);
+	if (strcmp(qev->blocked.path, path))
+		errx(1, "denied path %s, expected %s", qev->blocked.path, path);
+	if (strcmp(qev->blocked.path2, path2 != NULL ? path2 : ""))
+		errx(1, "denied path2 %s, expected %s", qev->blocked.path2,
+		    path2 != NULL ? path2 : "");
+	for (i = 0; i < 10; i++) {
+		if ((qev = quark_queue_get_event(qq)) == NULL) {
+			msleep(10);
+			continue;
+		}
+		if (qev->process != NULL && qev->process->pid == (u32)pid)
+			errx(1, "%s: a second event for a denied operation, "
+			    "events 0x%llx", path,
+			    (unsigned long long)qev->events);
+	}
+}
+
+/*
+ * The file hooks: a block on file.path denies the operations that make,
+ * change or remove a file, in a container only, and each denied operation
+ * is one event. The paths are in a directory of this test, so nothing else
+ * on the machine is denied.
+ */
+static int
+t_block_file(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	struct quark_queue_stats	 stats;
+	const struct quark_event	*qev;
+	char				 tmp[] = "/tmp/quark-test-block.XXXXXX";
+	char				 dir[PATH_MAX], longname[256];
+	char				*text, *longpath;
+	struct bpf_map_info		 info;
+	struct stat			 st;
+	u64				 no_path, no_slot;
+	pid_t				 pid;
+	__u32				 slot;
+	int				 scratch;
+
+#define P(_rel)	block_p(dir, _rel)
+#define DENIED(_fop, _p, _p2, _op, _block) do {				\
+	assert(block_file_try(1, NULL, _fop, _p, _p2, &pid) ==		\
+	    BLOCK_EXIT_EPERM);						\
+	block_file_denied(&qq, pid, _op, _block, _p, _p2);		\
+} while (0)
+#define ALLOWED(_container, _fop, _p, _p2)				\
+	assert(block_file_try(_container, NULL, _fop, _p, _p2, NULL) == 0)
+
+	/* We are root and /tmp is for everybody, see block_copy_true() */
+	if (mkdtemp(tmp) == NULL)
+		err(1, "mkdtemp %s", tmp);
+	if (realpath(tmp, dir) == NULL)
+		err(1, "realpath %s", tmp);
+	if (mkdir(P("deny"), 0755) == -1 || mkdir(P("deny/d"), 0755) == -1 ||
+	    mkdir(P("deny/mnt"), 0755) == -1 || mkdir(P("free"), 0755) == -1 ||
+	    mkdir(P("quark-test-jail"), 0755) == -1)
+		err(1, "mkdir");
+	block_touch(P("deny/f"));
+	block_touch(P("free/g"));
+
+	/*
+	 * Block 0 denies below deny, but not a name that starts with ok.
+	 * Block 1 denies one path. Block 2 names a path as a process with dir
+	 * as its root would see it, and must never deny. The tag is for the
+	 * file events of what is allowed. The first
+	 * block registered blocked as tag bit 0, so log is bit 1.
+	 */
+	assert(asprintf(&text,
+	    "block {\n"
+	    "	except on file.path %s/deny/ok*\n"
+	    "	on file.path %s/deny/*\n"
+	    "}\n"
+	    "block {\n"
+	    "	on file.path %s/fixed\n"
+	    "}\n"
+	    "block {\n"
+	    "	on file.path /quark-test-jail/*\n"
+	    "}\n"
+	    "tag log {\n"
+	    "	on file.path %s/*\n"
+	    "}\n"
+	    "drop on any\n", dir, dir, dir, dir) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->flags |= QQ_FILE;
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0) {
+		/* Where blocks can't work, the queue must not open */
+		if (errno != ENOTSUP || block_supported())
+			err(1, "%s: quark_queue_open", t->name);
+		quark_ruleset_clear(&ruleset);
+		(void)nftw(dir, block_rm_cb, 16, FTW_DEPTH | FTW_PHYS);
+		return (0);
+	}
+	assert(qq.enforcer != NULL);
+	block_cgroup_setup();
+
+	/* path_mknod: a new file, from open(2) and from mknod(2) */
+	DENIED(BLOCK_F_CREATE, P("deny/a"), NULL, QUARK_BLOCKED_CREATE, 0);
+	assert(access(P("deny/a"), F_OK) == -1);
+	DENIED(BLOCK_F_MKNOD, P("deny/m"), NULL, QUARK_BLOCKED_CREATE, 0);
+	assert(access(P("deny/m"), F_OK) == -1);
+	/* Not a regular file */
+	ALLOWED(1, BLOCK_F_MKFIFO, P("deny/fifo"), NULL);
+
+	/* file_open: for writing only */
+	ALLOWED(1, BLOCK_F_READ, P("deny/f"), NULL);
+	DENIED(BLOCK_F_WRITE, P("deny/f"), NULL, QUARK_BLOCKED_OPEN, 0);
+
+	/* path_chmod: a directory is not a regular file */
+	DENIED(BLOCK_F_CHMOD, P("deny/f"), NULL, QUARK_BLOCKED_CHMOD, 0);
+	ALLOWED(1, BLOCK_F_CHMOD, P("deny/d"), NULL);
+
+	/*
+	 * path_truncate, and file_truncate since Linux 6.2: by path, by an
+	 * open for reading, and through a file that was open before.
+	 */
+	assert(truncate(P("deny/f"), 100) == 0);
+	DENIED(BLOCK_F_TRUNCATE, P("deny/f"), NULL, QUARK_BLOCKED_TRUNCATE, 0);
+	DENIED(BLOCK_F_OPEN_TRUNC, P("deny/f"), NULL,
+	    QUARK_BLOCKED_TRUNCATE, 0);
+	DENIED(BLOCK_F_FTRUNCATE, P("deny/f"), NULL,
+	    QUARK_BLOCKED_TRUNCATE, 0);
+	if (stat(P("deny/f"), &st) == -1 || st.st_size != 100)
+		errx(1, "a denied truncate changed the file");
+
+	/* path_unlink */
+	DENIED(BLOCK_F_UNLINK, P("deny/f"), NULL, QUARK_BLOCKED_UNLINK, 0);
+	assert(access(P("deny/f"), F_OK) == 0);
+
+	/* path_rename: the old path and the new path */
+	DENIED(BLOCK_F_RENAME, P("deny/f"), P("free/f"),
+	    QUARK_BLOCKED_RENAME, 0);
+	DENIED(BLOCK_F_RENAME, P("free/g"), P("deny/g"),
+	    QUARK_BLOCKED_RENAME, 0);
+	assert(access(P("deny/f"), F_OK) == 0 && access(P("free/g"), F_OK) == 0);
+
+	/* path_link: the file and the new path */
+	DENIED(BLOCK_F_LINK, P("deny/f"), P("free/l"), QUARK_BLOCKED_LINK, 0);
+	DENIED(BLOCK_F_LINK, P("free/g"), P("deny/l"), QUARK_BLOCKED_LINK, 0);
+	assert(access(P("free/l"), F_OK) == -1 && access(P("deny/l"), F_OK) == -1);
+
+	/* A path below a mount point */
+	if (mount("none", P("deny/mnt"), "tmpfs", 0, NULL) == -1)
+		err(1, "mount tmpfs on %s", P("deny/mnt"));
+	DENIED(BLOCK_F_CREATE, P("deny/mnt/x"), NULL, QUARK_BLOCKED_CREATE, 0);
+	if (umount(P("deny/mnt")) == -1)
+		err(1, "umount %s", P("deny/mnt"));
+
+	/*
+	 * An except path is allowed, and what is allowed is an event of the
+	 * EBPF backend with the same path, here with its tag.
+	 */
+	assert(block_file_try(1, NULL, BLOCK_F_CREATE, P("deny/ok1"), NULL,
+	    &pid) == 0);
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events & QUARK_EV_FILE);
+	assert(qev->tags == 2);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 1), "log"));
+	assert(qev->file != NULL && !strcmp(qev->file->path, P("deny/ok1")));
+
+	/* A path without a star is that path only */
+	DENIED(BLOCK_F_CREATE, P("fixed"), NULL, QUARK_BLOCKED_CREATE, 1);
+	ALLOWED(1, BLOCK_F_CREATE, P("fixedx"), NULL);
+
+	/* Outside of a container nothing is denied */
+	ALLOWED(0, BLOCK_F_CREATE, P("deny/h"), NULL);
+	ALLOWED(0, BLOCK_F_UNLINK, P("deny/h"), NULL);
+
+	/*
+	 * The path is from the root of the mount namespace, also for a
+	 * process that changed its root with chroot(2): the root of a process
+	 * must not change what a block sees. With dir as the root, /deny/c is
+	 * dir/deny/c, and with dir/deny as the root, /c is dir/deny/c. The
+	 * path that the process sees matches nothing.
+	 */
+	assert(block_file_try(1, dir, BLOCK_F_CREATE, "/deny/c", NULL,
+	    &pid) == BLOCK_EXIT_EPERM);
+	block_file_denied(&qq, pid, QUARK_BLOCKED_CREATE, 0, P("deny/c"), NULL);
+	assert(block_file_try(1, P("deny"), BLOCK_F_CREATE, "/c", NULL,
+	    &pid) == BLOCK_EXIT_EPERM);
+	block_file_denied(&qq, pid, QUARK_BLOCKED_CREATE, 0, P("deny/c"), NULL);
+	assert(access(P("deny/c"), F_OK) == -1);
+	assert(block_file_try(1, dir, BLOCK_F_CREATE, "/quark-test-jail/x",
+	    NULL, NULL) == 0);
+
+	/*
+	 * A path that does not fit in a line matches no line: it is allowed
+	 * and counted.
+	 */
+	quark_queue_get_stats(&qq, &stats);
+	no_path = stats.block_no_path;
+	no_slot = stats.block_no_slot;
+	memset(longname, 'a', sizeof(longname) - 1);
+	longname[sizeof(longname) - 1] = 0;
+	assert(asprintf(&longpath, "%s/deny/%s", dir, longname) != -1);
+	ALLOWED(1, BLOCK_F_CREATE, longpath, NULL);
+	free(longpath);
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.block_no_path > no_path);
+	assert(stats.block_no_slot == no_slot);
+
+	/*
+	 * With two paths one of them is enough to deny: a rename to a path
+	 * that does not fit is counted, and denied for the old path. The
+	 * event has only the path that was resolved.
+	 */
+	no_path = stats.block_no_path;
+	assert(asprintf(&longpath, "%s/free/%s", dir, longname) != -1);
+	assert(block_file_try(1, NULL, BLOCK_F_RENAME, P("deny/f"), longpath,
+	    &pid) == BLOCK_EXIT_EPERM);
+	block_file_denied(&qq, pid, QUARK_BLOCKED_RENAME, 0, P("deny/f"), NULL);
+	free(longpath);
+	assert(access(P("deny/f"), F_OK) == 0);
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.block_no_path > no_path);
+
+	/*
+	 * The scratch slots. Every hook gave its slot back. A hook that
+	 * finds a slot taken, by a hook that was preempted on its CPU, uses
+	 * the next one. With no slot free the operation is allowed and
+	 * counted, on its own: that count says that there are too few slots.
+	 */
+	scratch = block_scratch_fd(&info);
+	assert(info.max_entries == 4);
+	for (slot = 0; slot < info.max_entries; slot++)
+		assert(block_scratch_set(scratch, &info, slot, 0) == 0);
+	for (slot = 0; slot < info.max_entries - 1; slot++) {
+		(void)block_scratch_set(scratch, &info, slot, 1);
+		DENIED(BLOCK_F_CREATE, P("deny/s"), NULL,
+		    QUARK_BLOCKED_CREATE, 0);
+	}
+	(void)block_scratch_set(scratch, &info, slot, 1);
+	ALLOWED(1, BLOCK_F_CREATE, P("deny/s"), NULL);
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.block_no_slot > no_slot);
+	for (slot = 0; slot < info.max_entries; slot++)
+		(void)block_scratch_set(scratch, &info, slot, 0);
+	DENIED(BLOCK_F_UNLINK, P("deny/s"), NULL, QUARK_BLOCKED_UNLINK, 0);
+	for (slot = 0; slot < info.max_entries; slot++)
+		assert(block_scratch_set(scratch, &info, slot, 0) == 0);
+	close(scratch);
+
+	/* The denials of a block are the hits of its first line */
+	quark_queue_get_stats(&qq, &stats);
+	assert(ruleset.rules[0].hits == 20);
+	assert(ruleset.rules[2].hits == 1);
+	assert(ruleset.rules[3].hits == 0);
+	assert(stats.block_lost == 0);
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+	block_cgroup_cleanup();
+	if (nftw(dir, block_rm_cb, 16, FTW_DEPTH | FTW_PHYS) == -1)
+		err(1, "can't remove %s", dir);
+#undef P
+#undef DENIED
+#undef ALLOWED
+
+	return (0);
+}
+
+/*
+ * QQ_BLOCK_HOST: the blocks also deny outside of a container. Such a
+ * process is evaluated as a container without metadata, so a line with a
+ * container field does not match it. The blocks name a copy of true(1) and
+ * a directory of this test, nothing else on the machine is denied.
+ */
+static int
+t_block_host(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	const struct quark_event	*qev;
+	char				 tmp[] = "/tmp/quark-test-block.XXXXXX";
+	char				 dir[PATH_MAX], self[PATH_MAX];
+	char				 true_path[PATH_MAX];
+	char				*text;
+	pid_t				 pid;
+
+	if (realpath("/proc/self/exe", self) == NULL)
+		err(1, "realpath self");
+	block_copy_true(true_path, sizeof(true_path));
+	if (mkdtemp(tmp) == NULL)
+		err(1, "mkdtemp %s", tmp);
+	if (realpath(tmp, dir) == NULL)
+		err(1, "realpath %s", tmp);
+
+	assert(asprintf(&text,
+	    "block {\n"
+	    "	on process.exe %s\n"
+	    "}\n"
+	    "block {\n"
+	    "	on process.exe %s pod.name web-*\n"
+	    "}\n"
+	    "block {\n"
+	    "	on file.path %s/*\n"
+	    "}\n"
+	    "drop on any\n", true_path, self, dir) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->flags |= QQ_BLOCK_HOST;
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0) {
+		if (errno != ENOTSUP || block_supported())
+			err(1, "%s: quark_queue_open", t->name);
+		quark_ruleset_clear(&ruleset);
+		(void)unlink(true_path);
+		(void)rmdir(dir);
+		return (0);
+	}
+	block_cgroup_setup();
+
+	/* An exec outside of a container is denied, and is an event */
+	assert(block_try_pid(0, true_path, NULL, &pid) == BLOCK_EXIT_EXEC_EPERM);
+	qev = drain_for_pid(&qq, pid);
+	assert(qev->events == QUARK_EV_BLOCKED && qev->tags == 1);
+	assert(qev->blocked.op == QUARK_BLOCKED_EXEC);
+	assert(qev->blocked.block == 0);
+	assert(!strcmp(qev->blocked.path, true_path));
+	/* And still in a container */
+	assert(block_try(1, true_path, NULL) == BLOCK_EXIT_EXEC_EPERM);
+
+	/*
+	 * The second block has a container field: no fork of this program
+	 * is denied outside of a container, here or in the helpers above.
+	 */
+	assert(block_try(0, NULL, NULL) == 0);
+
+	/* A file operation outside of a container */
+	assert(block_file_try(0, NULL, BLOCK_F_CREATE, block_p(dir, "a"), NULL,
+	    &pid) == BLOCK_EXIT_EPERM);
+	block_file_denied(&qq, pid, QUARK_BLOCKED_CREATE, 2, block_p(dir, "a"),
+	    NULL);
+	assert(access(block_p(dir, "a"), F_OK) == -1);
+
+	/* We are outside of a container too: close before the clean up */
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+	block_cgroup_cleanup();
+	(void)unlink(true_path);
+	if (rmdir(dir) == -1)
+		err(1, "rmdir %s", dir);
+
+	return (0);
+}
+
+/*
+ * The file hooks with nova alone, which has no file events: an operation
+ * is denied, and the denied attempt is an event. Nova knows only the
+ * processes that were there when the queue opened, so the event of a new
+ * child has no process.
+ */
+static int
+t_block_file_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	const struct quark_event	*qev;
+	char				 tmp[] = "/tmp/quark-test-block.XXXXXX";
+	char				 dir[PATH_MAX];
+	char				*text;
+	pid_t				 pid;
+	int				 i, found;
+
+	if (mkdtemp(tmp) == NULL)
+		err(1, "mkdtemp %s", tmp);
+	if (realpath(tmp, dir) == NULL)
+		err(1, "realpath %s", tmp);
+	block_touch(block_p(dir, "f"));
+	assert(asprintf(&text,
+	    "block {\n\ton file.path %s/*\n}\ndrop on any\n", dir) != -1);
+	ruleset_from_string(&ruleset, text);
+	free(text);
+	qa->ruleset = &ruleset;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "%s: quark_queue_open", t->name);
+	block_cgroup_setup();
+
+	assert(block_file_try(0, NULL, BLOCK_F_WRITE, block_p(dir, "f"), NULL,
+	    NULL) == 0);
+	assert(block_file_try(1, NULL, BLOCK_F_WRITE, block_p(dir, "f"), NULL,
+	    &pid) == BLOCK_EXIT_EPERM);
+	for (i = 0, found = 0; i < 100 && !found; i++) {
+		if ((qev = quark_queue_get_event(&qq)) == NULL) {
+			msleep(10);
+			continue;
+		}
+		if (qev->events != QUARK_EV_BLOCKED ||
+		    qev->blocked.pid != (u32)pid)
+			continue;
+		assert(qev->tags == 1);
+		assert(qev->blocked.op == QUARK_BLOCKED_OPEN);
+		assert(!strcmp(qev->blocked.path, block_p(dir, "f")));
+		found = 1;
+	}
+	if (!found)
+		errx(1, "no event for the denied open");
+
+	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
+	block_cgroup_cleanup();
+	if (nftw(dir, block_rm_cb, 16, FTW_DEPTH | FTW_PHYS) == -1)
+		err(1, "can't remove %s", dir);
+
+	return (0);
+}
+
 static int
 t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -5856,6 +8362,7 @@ t_rule_container_kprobe(const struct test *t, struct quark_queue_attr *qa)
 		"pass on event.scope container\ndrop on any\n",
 		"drop on pod.name nginx-*\n",
 		"drop on container.image docker.io/library/nginx:1.25\n",
+		"block {\n\ton process.exe /usr/bin/curl\n}\n",
 		NULL
 	};
 
@@ -5865,6 +8372,51 @@ t_rule_container_kprobe(const struct test *t, struct quark_queue_attr *qa)
 		errno = 0;
 		assert(quark_queue_open(&qq, qa) == -1);
 		assert(errno == ENOTSUP);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	return (0);
+}
+
+/*
+ * Nova has one slot per field in a rule, so it can't AND two conditions on
+ * the same field as userspace does, and must refuse the rule. The same
+ * field in two rules is fine.
+ */
+static int
+t_rule_repeated_nova(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	  qq;
+	struct quark_ruleset	  ruleset;
+	char			**r, *bad[] = {
+		"pass on process.uid 1 process.uid 2\n",
+		"pass on process.uid 1 process.uid 1\n",
+		"pass on process.pid 1 process.uid 2 process.pid 3\n",
+		"drop on process.exe /bin/a process.exe /bin/b\n",
+		"pass on process.uid 1\npass on process.gid 1 process.gid 2\n",
+		NULL
+	}, *good[] = {
+		"pass on process.uid 1\n",
+		"pass on process.uid 1\npass on process.uid 2\n",
+		"pass on process.uid 1 process.gid 1\n",
+		"drop on process.exe /bin/a\ndrop on process.exe /bin/b\n",
+		NULL
+	};
+
+	for (r = bad; *r != NULL; r++) {
+		ruleset_from_string(&ruleset, *r);
+		qa->ruleset = &ruleset;
+		errno = 0;
+		assert(quark_queue_open(&qq, qa) == -1);
+		assert(errno == ENOTSUP);
+		quark_ruleset_clear(&ruleset);
+	}
+	for (r = good; *r != NULL; r++) {
+		ruleset_from_string(&ruleset, *r);
+		qa->ruleset = &ruleset;
+		if (quark_queue_open(&qq, qa) != 0)
+			err(1, "%s: quark_queue_open: %s", t->name, *r);
+		quark_queue_close(&qq);
 		quark_ruleset_clear(&ruleset);
 	}
 
@@ -7493,8 +10045,22 @@ struct test all_tests[] = {
 	T(t_rule_tag),
 	T(t_rule_tag_delivery),
 	T(t_rule_tag_api),
+	T(t_rule_block),
+	T(t_rule_blocked),
+	T(t_block_populate_fair),
+	T(t_rule_block_compile),
+	T(t_rule_block_eval),
 	T(t_rule_scope),
 	T_KPROBE(t_rule_container_kprobe),
+	T_NOVA(t_rule_repeated_nova),
+	T_NOVA(t_block_eval_nova),
+	T_NOVA(t_block_process_nova),
+	T_NOVA(t_block_container_nova),
+	T_NOVA(t_block_file_nova),
+	T_EBPF(t_block_enforcer),
+	T_EBPF(t_block_enforcer_backlog),
+	T_EBPF(t_block_file),
+	T_EBPF(t_block_host),
 	T(t_rule_pod_name),
 	T(t_rule_container_image),
 	T_EBPF(t_trusted_pid),

@@ -42,7 +42,14 @@
 	u64	non_aggregations;
 	u64	lost;
 	u64	garbage_collections;
+	u64	bpf_state_lost;
+	u64	bpf_metadata_lost;
+	u64	bpf_retprobe_missed;
 	u64	stalls;
+	u64	block_no_path;
+	u64	block_lost;
+	u64	block_no_slot;
+	int	bpf_retprobe_stats_valid;
 	int	backend;
 };</pre>
 </div>
@@ -74,11 +81,50 @@
   <dd>A counter of cached objects (processes, sockets, pods and containers) that
       were deleted after expiring their grace time. Containers freed together
       with their pod are counted individually.</dd>
+  <dt id="bpf_state_lost"><a class="permalink" href="#bpf_state_lost"><i class="Em">bpf_state_lost</i></a></dt>
+  <dd>Discarded or rejected BPF invocation frames: bounded-depth or map
+      exhaustion, missed-return recovery, task exit with pending state, or
+      ambiguous metadata. Includes ignored commands used to track nesting, so it
+      is not an exact count of lost emitted events.</dd>
+  <dt id="bpf_metadata_lost"><a class="permalink" href="#bpf_metadata_lost"><i class="Em">bpf_metadata_lost</i></a></dt>
+  <dd>Operations with a failed copied-attribute read or a successful load
+      without captured program identity. The operation event can still be
+      delivered with the corresponding validity bit clear.</dd>
+  <dt id="bpf_retprobe_missed"><a class="permalink" href="#bpf_retprobe_missed"><i class="Em">bpf_retprobe_missed</i></a></dt>
+  <dd>Tracefs return-probe misses, separate from ring-buffer loss. May overlap
+      recovered frames in <i class="Em">bpf_state_lost</i>; do not sum these as
+      a count of distinct missing events. Older kernels omit
+      return-instance-pool exhaustion from tracefs profiles. These counters can
+      undercount losses and are not proof of complete capture.</dd>
+  <dt id="bpf_retprobe_stats_valid"><a class="permalink" href="#bpf_retprobe_stats_valid"><i class="Em">bpf_retprobe_stats_valid</i></a></dt>
+  <dd>Nonzero if the last tracefs miss-count refresh succeeded with BPF
+      telemetry enabled; otherwise the miss count is unavailable or stale.</dd>
   <dt id="stalls"><a class="permalink" href="#stalls"><i class="Em">stalls</i></a></dt>
   <dd>A counter of perf rings that are stalled due to corrupt records. A stalled
       ring is abandoned and no further events are read from it. Only meaningful
       on the <code class="Dv">QQ_KPROBE</code> backend, zero on
       <code class="Dv">QQ_EBPF</code>.</dd>
+  <dt id="block_no_path"><a class="permalink" href="#block_no_path"><i class="Em">block_no_path</i></a></dt>
+  <dd>Operations that the blocks of the ruleset evaluated with a path missing:
+      the path could not be resolved, or it was too long for a line to match. No
+      line matches a path that is missing. An operation with one path is then
+      not denied. A rename and a hard link have two paths, and are counted when
+      at least one of them is missing: the other path can still match a line,
+      and the operation is then denied. So this counter does not say that an
+      operation was allowed. A long path is nothing special, this counter is not
+      zero on a busy system.</dd>
+  <dt id="block_lost"><a class="permalink" href="#block_lost"><i class="Em">block_lost</i></a></dt>
+  <dd>Denied operations without an event, because the ring buffer of the denials
+      was full. The operation was denied all the same.</dd>
+  <dt id="block_no_slot"><a class="permalink" href="#block_no_slot"><i class="Em">block_no_slot</i></a></dt>
+  <dd>File operations that were not evaluated, and so not denied, because the
+      kernel programs of the blocks had no scratch memory left on the CPU. This
+      should stay zero.
+    <p class="Pp" id="hits">The three counters are zero for a ruleset without a
+        <code class="Cm">block</code>. The denials of a block are counted in the
+        <a class="permalink" href="#hits"><i class="Em">hits</i></a> of its
+        first line.</p>
+  </dd>
   <dt id="backend"><a class="permalink" href="#backend"><i class="Em">backend</i></a></dt>
   <dd>Active queue backend, either <code class="Dv">QQ_EBPF</code> or
       <code class="Dv">QQ_KPROBE</code>.</dd>
@@ -101,7 +147,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 18, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

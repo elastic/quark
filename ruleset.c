@@ -78,7 +78,7 @@ quark_ruleset_parse(struct quark_ruleset *ruleset, FILE *in,
 	quark_parse(&ctx);
 	/* The grammar closes every block, this guards the parser */
 	if (!ctx.error && ruleset->block_open)
-		quark_error(&ctx, "unterminated tag block");
+		quark_error(&ctx, "unterminated block");
 
 	/* Free up parser arena */
 	for (i = 0; i < ctx.n_allocs; i++)
@@ -98,9 +98,9 @@ quark_ruleset_parse(struct quark_ruleset *ruleset, FILE *in,
 }
 
 static int
-path_match(struct quark_rule_field *field, const char *a)
+path_match(const struct quark_rule_field *field, const char *a)
 {
-	struct quark_wild	*w = &field->wild;
+	const struct quark_wild	*w = &field->wild;
 	size_t			 alen;
 
 	/*
@@ -149,9 +149,57 @@ event_scope(struct quark_event *qev)
 	return (QUARK_RULE_SCOPE_UNKNOWN);
 }
 
+/*
+ * Match one value of a field that depends only on the container, pod.name
+ * or container.image. 1 for match, 0 for non match, also when the container
+ * or the data of the field is missing.
+ */
+static int
+container_field_match(const struct quark_rule_field *field,
+    const struct quark_container *container)
+{
+	if (container == NULL)
+		return (0);
+
+	switch (field->code) {
+	case QUARK_RF_POD_NAME:
+		if (container->pod != NULL && container->pod->name != NULL)
+			return (path_match(field, container->pod->name));
+		break;
+	case QUARK_RF_CONTAINER_IMAGE:
+		if (container->image != NULL)
+			return (path_match(field, container->image));
+		break;
+	default:
+		break;
+	}
+
+	return (0);
+}
+
+/*
+ * Match a pod.name or container.image condition on a container, without
+ * an event: the values are ORed. This is what a rule sees for an event of
+ * a process in that container. 1 for match, 0 for non match, which
+ * includes a NULL container and any other field.
+ */
+int
+quark_rule_cond_match_container(const struct quark_rule_cond *cond,
+    const struct quark_container *container)
+{
+	size_t	i;
+
+	for (i = 0; i < cond->n_values; i++) {
+		if (container_field_match(cond->values + i, container))
+			return (1);
+	}
+
+	return (0);
+}
+
 /* 1 for match, 0 for non match */
 static int
-quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
+quark_rule_field_match(const struct quark_rule_field *field,
     struct quark_event *qev)
 {
 	const struct quark_process	*qp;
@@ -193,16 +241,10 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 			    (qev->file->change_mask & QUARK_FILE_CH_PERMS)) &&
 			    (qev->file->mode & (S_IXUSR | S_IXGRP | S_IXOTH)));
 		break;
-	case QUARK_RF_POD_NAME:
-		if (qp != NULL && qp->container != NULL &&
-		    qp->container->pod != NULL &&
-		    qp->container->pod->name != NULL)
-			return (path_match(field, qp->container->pod->name));
-		break;
+	case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
 	case QUARK_RF_CONTAINER_IMAGE:
-		if (qp != NULL && qp->container != NULL &&
-		    qp->container->image != NULL)
-			return (path_match(field, qp->container->image));
+		if (qp != NULL)
+			return (container_field_match(field, qp->container));
 		break;
 	/* QUARK_RF_EVENT_SCOPE is matched in cond_match(), once per list */
 	case QUARK_RF_POISON:
@@ -220,8 +262,7 @@ quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
 
 /* 1 when one of the values matches, the values of a field are ORed */
 static int
-cond_match(struct quark_rule *rule, struct quark_rule_cond *cond,
-    struct quark_event *qev)
+cond_match(const struct quark_rule_cond *cond, struct quark_event *qev)
 {
 	size_t	i;
 	int	scope;
@@ -240,21 +281,24 @@ cond_match(struct quark_rule *rule, struct quark_rule_cond *cond,
 	}
 
 	for (i = 0; i < cond->n_values; i++) {
-		if (quark_rule_field_match(rule, cond->values + i, qev))
+		if (quark_rule_field_match(cond->values + i, qev))
 			return (1);
 	}
 
 	return (0);
 }
 
-/* 1 when every condition matches, the conditions of a rule are ANDed */
-static int
-rule_match(struct quark_rule *rule, struct quark_event *qev)
+/*
+ * 1 when every condition of the rule matches the event, the conditions of
+ * a rule are ANDed. The action and the counters of the rule play no part.
+ */
+int
+quark_rule_match(const struct quark_rule *rule, struct quark_event *qev)
 {
 	size_t	i;
 
 	for (i = 0; i < rule->n_conds; i++) {
-		if (!cond_match(rule, rule->conds + i, qev))
+		if (!cond_match(rule->conds + i, qev))
 			return (0);
 	}
 
@@ -274,6 +318,8 @@ rule_match(struct quark_rule *rule, struct quark_event *qev)
  * never removes a tag.
  *
  * The caller decides delivery: a drop removes only an event without tags.
+ *
+ * The lines of a "block" block are skipped, see quark_ruleset_block_begin().
  */
 struct quark_rule *
 quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
@@ -285,8 +331,23 @@ quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 	qev->tags = 0;
 	qev->ruleset = ruleset;
 
+	/*
+	 * A denied attempt is not a fork, an exec or a file event, no rule
+	 * is about it. It has the tag blocked, so it is always delivered.
+	 */
+	if (qev->events & QUARK_EV_BLOCKED) {
+		qev->tags = ruleset->blocked_tag;
+		return (NULL);
+	}
+
 	for (i = 0; i < ruleset->n_rules; i++) {
 		rule = ruleset->rules + i;
+		/* A block is enforced in the kernel, never evaluated here */
+		if (rule->action == QUARK_RA_BLOCK_ON ||
+		    rule->action == QUARK_RA_BLOCK_EXCEPT) {
+			i = rule->skip_to - 1;
+			continue;
+		}
 		if ((rule->action == QUARK_RA_TAG ||
 		    rule->action == QUARK_RA_EXCEPT) &&
 		    (qev->tags & rule->tags) == rule->tags) {
@@ -294,7 +355,7 @@ quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 			continue;
 		}
 		rule->evals++;
-		if (!rule_match(rule, qev))
+		if (!quark_rule_match(rule, qev))
 			continue;
 		rule->hits++;
 		switch (rule->action) {
@@ -322,9 +383,11 @@ quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
 
 /*
  * Append a rule. QUARK_RA_TAG and QUARK_RA_EXCEPT are the "on" and
- * "except on" lines of the open tag block, see quark_ruleset_tag_begin(),
- * the except lines come first. The other actions are outside of a block.
- * Returns NULL with errno set.
+ * "except on" lines of the open tag block, see quark_ruleset_tag_begin().
+ * QUARK_RA_BLOCK_ON and QUARK_RA_BLOCK_EXCEPT are the lines of the open
+ * "block" block, see quark_ruleset_block_begin(). The except lines come
+ * first. The other actions are outside of a block. Returns NULL with errno
+ * set.
  */
 struct quark_rule *
 quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_tag)
@@ -340,11 +403,21 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 			return (errno = EINVAL, NULL);
 		break;
 	case QUARK_RA_EXCEPT:
-		if (!ruleset->block_open || ruleset->block_has_on)
+		if (!ruleset->block_open || ruleset->block_deny ||
+		    ruleset->block_has_on)
 			return (errno = EINVAL, NULL);
 		break;
 	case QUARK_RA_TAG:
-		if (!ruleset->block_open)
+		if (!ruleset->block_open || ruleset->block_deny)
+			return (errno = EINVAL, NULL);
+		break;
+	case QUARK_RA_BLOCK_EXCEPT:
+		if (!ruleset->block_open || !ruleset->block_deny ||
+		    ruleset->block_has_on)
+			return (errno = EINVAL, NULL);
+		break;
+	case QUARK_RA_BLOCK_ON:
+		if (!ruleset->block_open || !ruleset->block_deny)
 			return (errno = EINVAL, NULL);
 		break;
 	default:
@@ -378,7 +451,7 @@ quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_
 		rule->poison_tag = 0;
 	if (action == QUARK_RA_TAG || action == QUARK_RA_EXCEPT)
 		rule->tags = ruleset->block_tag;
-	if (action == QUARK_RA_TAG)
+	if (action == QUARK_RA_TAG || action == QUARK_RA_BLOCK_ON)
 		ruleset->block_has_on = 1;
 
 	return (rule);
@@ -431,6 +504,7 @@ quark_ruleset_tag_begin(struct quark_ruleset *ruleset, const char *name)
 		ruleset->n_tags++;
 	}
 	ruleset->block_open = 1;
+	ruleset->block_deny = 0;
 	ruleset->block_has_on = 0;
 	ruleset->block_start = ruleset->n_rules;
 	ruleset->block_tag = 1ULL << bit;
@@ -448,7 +522,8 @@ quark_ruleset_tag_end(struct quark_ruleset *ruleset)
 {
 	size_t	i;
 
-	if (!ruleset->block_open || !ruleset->block_has_on)
+	if (!ruleset->block_open || ruleset->block_deny ||
+	    !ruleset->block_has_on)
 		return (errno = EINVAL, -1);
 	for (i = ruleset->block_start; i < ruleset->n_rules; i++) {
 		if (ruleset->rules[i].action == QUARK_RA_EXCEPT &&
@@ -472,6 +547,180 @@ quark_ruleset_tag_name(const struct quark_ruleset *ruleset, u_int bit)
 		return (NULL);
 
 	return (ruleset->tag_names[bit]);
+}
+
+/* The tag of a denied attempt, a tag block can't set it */
+#define QUARK_TAG_BLOCKED	"blocked"
+
+/*
+ * Open a "block" block, the rules appended until quark_ruleset_block_end()
+ * are its lines, QUARK_RA_BLOCK_EXCEPT then QUARK_RA_BLOCK_ON. A block
+ * denies an operation in the kernel when no except line and one on line
+ * match. Userspace never evaluates its lines, quark_ruleset_match() skips
+ * them. The first block registers the tag name blocked. Returns -1 with
+ * errno set: EINVAL for a block already open, E2BIG past QUARK_MAX_TAGS
+ * names.
+ */
+int
+quark_ruleset_block_begin(struct quark_ruleset *ruleset)
+{
+	u_int	bit;
+
+	if (ruleset->block_open)
+		return (errno = EINVAL, -1);
+	if (ruleset->blocked_tag == 0) {
+		bit = ruleset->n_tags;
+		if (bit == QUARK_MAX_TAGS)
+			return (errno = E2BIG, -1);
+		ruleset->tag_names[bit] = strdup(QUARK_TAG_BLOCKED);
+		if (ruleset->tag_names[bit] == NULL)
+			return (-1);
+		ruleset->n_tags++;
+		ruleset->blocked_tag = 1ULL << bit;
+	}
+	ruleset->block_open = 1;
+	ruleset->block_deny = 1;
+	ruleset->block_has_on = 0;
+	ruleset->block_start = ruleset->n_rules;
+	ruleset->block_tag = 0;
+
+	return (0);
+}
+
+/* The path fields of a line of a block, process.exe and file.path */
+static u64
+block_line_paths(const struct quark_rule *rule)
+{
+	u64	paths;
+	size_t	i;
+
+	for (paths = 0, i = 0; i < rule->n_conds; i++)
+		paths |= rule->conds[i].code &
+		    (QUARK_RF_EXE | QUARK_RF_FILEPATH);
+
+	return (paths);
+}
+
+/*
+ * Check a line of a "block" block, with all its fields added. Returns NULL
+ * when the line is valid, or why it is not. quark_ruleset_block_end()
+ * checks every line, the parser calls this for the message.
+ *
+ * A block is evaluated in an LSM hook with a fixed number of lookups, and
+ * it must mean what a D4C response means, so a line is narrower than a
+ * line of a tag block:
+ *  - The fields are process.exe, file.path, pod.name and container.image.
+ *  - A path is fixed or ends in *, and fits in NOVA_PATHLEN.
+ *  - A field appears once.
+ *  - An on line has process.exe or file.path, which says what it denies:
+ *    fork and exec, or the file operations. With container fields only
+ *    it would deny everything in the container.
+ *  - A block is about processes or about files: all its lines that have
+ *    a path field have the same one.
+ */
+const char *
+quark_ruleset_block_check_line(const struct quark_ruleset *ruleset,
+    const struct quark_rule *rule)
+{
+	const struct quark_rule_cond	*cond;
+	const struct quark_wild		*w;
+	const struct quark_rule		*other;
+	u64				 seen, paths, other_paths;
+	size_t				 i, j, start;
+
+	if (rule->action != QUARK_RA_BLOCK_ON &&
+	    rule->action != QUARK_RA_BLOCK_EXCEPT)
+		return ("not a line of a block");
+
+	for (seen = 0, i = 0; i < rule->n_conds; i++) {
+		cond = rule->conds + i;
+		switch (cond->code) {
+		case QUARK_RF_EXE:		/* FALLTHROUGH */
+		case QUARK_RF_FILEPATH:
+			for (j = 0; j < cond->n_values; j++) {
+				w = &cond->values[j].wild;
+				if (w->post_len != 0)
+					return ("a path in a block takes * "
+					    "only at the end");
+				if (strlen(w->pre) >= NOVA_PATHLEN)
+					return ("path too long in a block");
+			}
+			break;
+		case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
+		case QUARK_RF_CONTAINER_IMAGE:
+			break;
+		default:
+			return ("a block supports only process.exe, file.path, "
+			    "pod.name and container.image");
+		}
+		if (seen & cond->code)
+			return ("a field can't be repeated in a line of a "
+			    "block");
+		seen |= cond->code;
+	}
+
+	paths = seen & (QUARK_RF_EXE | QUARK_RF_FILEPATH);
+	if (rule->action == QUARK_RA_BLOCK_EXCEPT && rule->n_conds == 0)
+		return ("an except line needs a field");
+	if (rule->action == QUARK_RA_BLOCK_ON && paths == 0)
+		return ("an on line of a block needs process.exe or "
+		    "file.path");
+	if (paths == (QUARK_RF_EXE | QUARK_RF_FILEPATH))
+		return ("a line of a block takes process.exe or file.path, "
+		    "not both");
+
+	/*
+	 * The lines of this block before this one. A closed block shares
+	 * one skip_to, an open block starts at block_start.
+	 */
+	if (ruleset->block_open && ruleset->block_deny &&
+	    rule->number >= ruleset->block_start)
+		start = ruleset->block_start;
+	else {
+		for (start = rule->number; start > 0; start--) {
+			other = ruleset->rules + start - 1;
+			if ((other->action != QUARK_RA_BLOCK_ON &&
+			    other->action != QUARK_RA_BLOCK_EXCEPT) ||
+			    other->skip_to != rule->skip_to)
+				break;
+		}
+	}
+	for (i = start; paths != 0 && i < rule->number; i++) {
+		other_paths = block_line_paths(ruleset->rules + i);
+		if (other_paths != 0 && other_paths != paths)
+			return ("a block uses process.exe or file.path in its "
+			    "lines, not both");
+	}
+
+	return (NULL);
+}
+
+/*
+ * Close the open "block" block. It needs an "on" line, and every line
+ * must pass quark_ruleset_block_check_line(). Returns -1 with errno set
+ * to EINVAL.
+ */
+int
+quark_ruleset_block_end(struct quark_ruleset *ruleset)
+{
+	size_t	i;
+
+	if (!ruleset->block_open || !ruleset->block_deny ||
+	    !ruleset->block_has_on)
+		return (errno = EINVAL, -1);
+	for (i = ruleset->block_start; i < ruleset->n_rules; i++) {
+		if (quark_ruleset_block_check_line(ruleset,
+		    ruleset->rules + i) != NULL)
+			return (errno = EINVAL, -1);
+	}
+	for (i = ruleset->block_start; i < ruleset->n_rules; i++)
+		ruleset->rules[i].skip_to = ruleset->n_rules;
+	ruleset->block_open = 0;
+	ruleset->block_deny = 0;
+	ruleset->block_has_on = 0;
+	ruleset->n_blocks++;
+
+	return (0);
 }
 
 /*

@@ -145,6 +145,69 @@ A failed operation has no valid object identity, including failure to install
 the fd after verification.
 A successful event without valid identity indicates capture loss; consult
 .Xr quark_queue_get_stats 3 .
+.It Dv QUARK_EV_BLOCKED
+An operation that a
+.Cm block
+of the ruleset denied, see
+.Xr quark-mon 8 .
+The operation did not happen: a denied fork has no child, a denied exec left
+the process as it was, and a denied file operation left the file as it was.
+The event is not aggregated with other events, it has the tag
+.Sy blocked
+in
+.Em tags ,
+and it is always delivered, no rule is evaluated on it.
+The
+.Em blocked
+member describes it:
+.Bd -literal
+struct quark_blocked {
+	u32	op;
+	u32	block;
+	u32	pid;
+	u32	tid;
+	char	comm[16];
+	char	path[NOVA_PATHLEN];
+	char	path2[NOVA_PATHLEN];
+};
+.Ed
+.Pp
+.Em op
+is one of
+.Dv QUARK_BLOCKED_FORK ,
+.Dv QUARK_BLOCKED_EXEC ,
+.Dv QUARK_BLOCKED_CREATE ,
+.Dv QUARK_BLOCKED_CHMOD ,
+.Dv QUARK_BLOCKED_OPEN ,
+.Dv QUARK_BLOCKED_TRUNCATE ,
+.Dv QUARK_BLOCKED_RENAME ,
+.Dv QUARK_BLOCKED_LINK
+and
+.Dv QUARK_BLOCKED_UNLINK .
+It is what the kernel was asked to do, not the system call: an open that
+would make a file is
+.Dv QUARK_BLOCKED_CREATE ,
+and
+.Dv QUARK_BLOCKED_OPEN
+is an open for writing of a file that exists.
+.Em block
+is the number of the block in the ruleset, from 0.
+.Em pid ,
+.Em tid
+and
+.Em comm
+are of the thread that tried.
+.Em path
+is the executable for a fork and an exec, of the parent for a fork, and the
+file otherwise, from the root of the mount namespace of the process, also when
+the process changed its root directory.
+.Em path2
+is the new path of a rename or a link, and empty otherwise.
+.Pp
+.Em process
+is the process that tried, if it is in the cache.
+With the NOVA backend alone it can be
+.Dv NULL .
 .El
 .Pp
 It's important to note that

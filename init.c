@@ -145,6 +145,13 @@ main(int argc, char *argv[])
 				err(1, "mount /sys/fs/cgroup");
 		}
 
+		/*
+		 * The list of active LSMs, which a block needs, is in
+		 * securityfs. A kernel may not have it.
+		 */
+		(void)mount("securityfs", "/sys/kernel/security", "securityfs",
+		    0, NULL);
+
 		net_up();
 
 		display_banner(argv);

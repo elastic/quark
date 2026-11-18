@@ -203,6 +203,20 @@ type Ptrace struct {
 	Data     uint64
 }
 
+// Blocked describes an operation that a block of the ruleset denied. It did
+// not happen: a denied fork has no child, a denied exec left the process as
+// it was, a denied file operation left the file as it was. The event has
+// the tag "blocked" and is always delivered.
+type Blocked struct {
+	Op    uint32 // QUARK_BLOCKED_*, what was tried
+	Block uint32 // The block of the ruleset that denied it, from 0
+	Pid   uint32 // Who tried, also in Process when it is known
+	Tid   uint32
+	Comm  string
+	Path  string // The executable: of the parent for a fork, the new program for an exec. Or the file
+	Path2 string // The new path of a rename or a link, or empty
+}
+
 // Mprotect describes an executable protection attempt observed for one VMA.
 // The LSM check happens before the kernel commits the protection change.
 type Mprotect struct {
@@ -264,6 +278,7 @@ type Event struct {
 	File       *File
 	Ptrace     *Ptrace
 	Mprotect   *Mprotect
+	Blocked    *Blocked // Set for QUARK_EV_BLOCKED, Process may then be empty
 	ModuleLoad *ModuleLoad
 	Shm        *any // ShmGet, MemFd or ShmOpen
 	Tty        *Tty
@@ -300,6 +315,7 @@ const (
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
 	QQ_MPROTECT      = int(C.QQ_MPROTECT)
+	QQ_BLOCK_HOST    = int(C.QQ_BLOCK_HOST)
 
 	// Event.events
 	QUARK_EV_FORK                  = uint64(C.QUARK_EV_FORK)
@@ -316,6 +332,18 @@ const (
 	QUARK_EV_SHM                   = uint64(C.QUARK_EV_SHM)
 	QUARK_EV_TTY                   = uint64(C.QUARK_EV_TTY)
 	QUARK_EV_MPROTECT              = uint64(C.QUARK_EV_MPROTECT)
+	QUARK_EV_BLOCKED               = uint64(C.QUARK_EV_BLOCKED)
+
+	// What a block denied, Blocked.Op
+	QUARK_BLOCKED_FORK     = uint32(C.QUARK_BLOCKED_FORK)
+	QUARK_BLOCKED_EXEC     = uint32(C.QUARK_BLOCKED_EXEC)
+	QUARK_BLOCKED_CREATE   = uint32(C.QUARK_BLOCKED_CREATE)
+	QUARK_BLOCKED_CHMOD    = uint32(C.QUARK_BLOCKED_CHMOD)
+	QUARK_BLOCKED_OPEN     = uint32(C.QUARK_BLOCKED_OPEN)
+	QUARK_BLOCKED_TRUNCATE = uint32(C.QUARK_BLOCKED_TRUNCATE)
+	QUARK_BLOCKED_RENAME   = uint32(C.QUARK_BLOCKED_RENAME)
+	QUARK_BLOCKED_LINK     = uint32(C.QUARK_BLOCKED_LINK)
+	QUARK_BLOCKED_UNLINK   = uint32(C.QUARK_BLOCKED_UNLINK)
 
 	// EntryLeaderType
 	QUARK_ELT_UNKNOWN   = int(C.QUARK_ELT_UNKNOWN)
@@ -532,7 +560,12 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	var event Event
 
 	cev := C.quark_queue_get_event(queue.quarkQueue)
-	if cev == nil || cev.process == nil {
+	if cev == nil {
+		return event, false
+	}
+	// An event has a process. The exception is a denied attempt, whose
+	// process may not be in the cache: Blocked.Pid says who tried.
+	if cev.process == nil && uint64(cev.events)&QUARK_EV_BLOCKED == 0 {
 		return event, false
 	}
 
@@ -540,7 +573,9 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	if cev.tags != 0 {
 		event.Tags = queue.tagsFromBits(uint64(cev.tags))
 	}
-	event.Process = processFromC(cev.process)
+	if cev.process != nil {
+		event.Process = processFromC(cev.process)
+	}
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)
 		event.Socket = &socket
@@ -556,6 +591,10 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	if event.Events&QUARK_EV_MPROTECT != 0 {
 		mprotect := mprotectFromC(&cev.mprotect)
 		event.Mprotect = &mprotect
+	}
+	if event.Events&QUARK_EV_BLOCKED != 0 {
+		blocked := blockedFromC(&cev.blocked)
+		event.Blocked = &blocked
 	}
 	if cev.module_load != nil {
 		ml := moduleLoadFromC(cev.module_load)
@@ -1002,6 +1041,20 @@ func ptraceFromC(cPtrace *C.struct_quark_ptrace) Ptrace {
 	ptrace.Data = uint64(cPtrace.data)
 
 	return ptrace
+}
+
+func blockedFromC(cBlocked *C.struct_quark_blocked) Blocked {
+	var blocked Blocked
+
+	blocked.Op = uint32(cBlocked.op)
+	blocked.Block = uint32(cBlocked.block)
+	blocked.Pid = uint32(cBlocked.pid)
+	blocked.Tid = uint32(cBlocked.tid)
+	blocked.Comm = C.GoString(&cBlocked.comm[0])
+	blocked.Path = C.GoString(&cBlocked.path[0])
+	blocked.Path2 = C.GoString(&cBlocked.path2[0])
+
+	return blocked
 }
 
 func mprotectFromC(cMprotect *C.struct_quark_mprotect) Mprotect {

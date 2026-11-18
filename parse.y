@@ -37,6 +37,8 @@ void	quark_error(struct quark_parser_ctx *, const char *fmt, ...);
 int	quark_lex(YYSTYPE *, struct quark_parser_ctx *);
 static int	push_value(struct quark_parser_ctx *, const char *);
 static int	add_values(struct quark_parser_ctx *, u64);
+static int	line_begin(struct quark_parser_ctx *, int);
+static int	line_end(struct quark_parser_ctx *);
 
 #define ABORT(_fmt, ...) do {			\
 	yyerror(ctx, _fmt, ##__VA_ARGS__);	\
@@ -55,7 +57,7 @@ static int	add_values(struct quark_parser_ctx *, u64);
 	bzero(&$$, sizeof($$));
 }
 
-%token PASS DROP POISON ON ANY STRING TAG EXCEPT
+%token PASS DROP POISON ON ANY STRING TAG EXCEPT BLOCK
 %token PROCESS_PID PROCESS_PPID PROCESS_UID PROCESS_GID PROCESS_SID
 %token PROCESS_EXE FILE_PATH FILE_EXEC_CHANGE EVENT_SCOPE
 %token POD_NAME CONTAINER_IMAGE
@@ -64,7 +66,8 @@ static int	add_values(struct quark_parser_ctx *, u64);
 grammar:	/* empty  */
 		| grammar '\n'
 		| grammar rule '\n'
-		| grammar block '\n'
+		| grammar tagblock '\n'
+		| grammar denyblock '\n'
 		| error { YYABORT; }
 		;
 
@@ -84,7 +87,7 @@ rule:		action {
  * }
  * One line each, the except lines first, see quark_ruleset_match().
  */
-block:		TAG STRING '{' {
+tagblock:	TAG STRING '{' {
 			if (quark_ruleset_tag_begin(ctx->ruleset, $2.str) == -1) {
 				if (errno == E2BIG)
 					ABORT("too many tags, max %d",
@@ -97,25 +100,40 @@ block:		TAG STRING '{' {
 				ABORT("tag block without an on line");
 		} ;
 
+/*
+ * block {
+ *	except on <fields>
+ *	on <fields>
+ * }
+ * The lines of a tag block, with the fields that a block can enforce, see
+ * quark_ruleset_block_check_line().
+ */
+denyblock:	BLOCK '{' {
+			if (quark_ruleset_block_begin(ctx->ruleset) == -1)
+				ABORT("can't open block: %s", strerror(errno));
+		} blocklines '}' {
+			if (quark_ruleset_block_end(ctx->ruleset) == -1)
+				ABORT("block without an on line");
+		} ;
+
+/* The lines of a tag block or of a block */
 blocklines:	/* empty */
 		| blocklines '\n'
 		| blocklines blockline '\n'
 		;
 
 blockline:	EXCEPT ON {
-			ctx->cur_rule = quark_ruleset_append_rule(ctx->ruleset,
-			    QUARK_RA_EXCEPT, 0);
-			if (ctx->cur_rule == NULL)
+			if (line_begin(ctx, 1) == -1)
 				ABORT("except on must come before on");
 		} matchlist {
-			ctx->cur_rule = NULL;
+			if (line_end(ctx) == -1)
+				YYABORT;
 		} | ON {
-			ctx->cur_rule = quark_ruleset_append_rule(ctx->ruleset,
-			    QUARK_RA_TAG, 0);
-			if (ctx->cur_rule == NULL)
+			if (line_begin(ctx, 0) == -1)
 				ABORT("can't add rule: %s", strerror(errno));
 		} matchbody {
-			ctx->cur_rule = NULL;
+			if (line_end(ctx) == -1)
+				YYABORT;
 		} ;
 
 action:		PASS {
@@ -221,6 +239,50 @@ quark_error(struct quark_parser_ctx *ctx, const char *fmt, ...)
 	    ctx->lineno + 1, ctx->colno + 1);
 	vsnprintf(ctx->errorbuf, sizeof(ctx->errorbuf), fmtbuf, va);
 	va_end(va);
+}
+
+/*
+ * Start a line of the open block, an except line or an on line. The block
+ * says which kind of rule it is.
+ */
+static int
+line_begin(struct quark_parser_ctx *ctx, int except)
+{
+	int	action;
+
+	if (ctx->ruleset->block_deny)
+		action = except ? QUARK_RA_BLOCK_EXCEPT : QUARK_RA_BLOCK_ON;
+	else
+		action = except ? QUARK_RA_EXCEPT : QUARK_RA_TAG;
+	ctx->cur_rule = quark_ruleset_append_rule(ctx->ruleset, action, 0);
+	ctx->rule_lineno = ctx->lineno;
+
+	return (ctx->cur_rule == NULL ? -1 : 0);
+}
+
+/*
+ * The line has all its fields. A line of a block must be one that the
+ * kernel can enforce, say why it is not.
+ */
+static int
+line_end(struct quark_parser_ctx *ctx)
+{
+	struct quark_rule	*rule;
+	const char		*why;
+
+	rule = ctx->cur_rule;
+	ctx->cur_rule = NULL;
+	if (rule == NULL || !ctx->ruleset->block_deny)
+		return (0);
+	why = quark_ruleset_block_check_line(ctx->ruleset, rule);
+	if (why == NULL)
+		return (0);
+	/* The lexer is past the newline, point at the line itself */
+	ctx->lineno = ctx->rule_lineno;
+	ctx->colno = 0;
+	yyerror(ctx, "%s", why);
+
+	return (-1);
 }
 
 /* Collect one value of the current field, the string is in the arena */
@@ -354,6 +416,7 @@ static struct keyword {
 	{ "any",		ANY },
 	{ "tag",		TAG },
 	{ "except",		EXCEPT },
+	{ "block",		BLOCK },
 	{ "process.pid",	PROCESS_PID },
 	{ "process.ppid",	PROCESS_PPID },
 	{ "process.uid",	PROCESS_UID },

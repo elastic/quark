@@ -88,6 +88,48 @@
     tags that the tag blocks of the ruleset set on this event, see
     <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>. An event without a
     tag has no <b class="Sy">TAGS</b> line.</p>
+<p class="Pp" id="BLOC"><a class="permalink" href="#BLOC"><b class="Sy">BLOC</b></a>
+    is not a flag either. It is printed for an operation that a
+    <code class="Cm">block</code> of the ruleset denied, a
+    <a class="permalink" href="#(BLOCKED)"><b class="Sy" id="(BLOCKED)">(BLOCKED)</b></a>
+    event:</p>
+<div class="Bd Pp Li">
+<pre>-&gt;238271 (BLOCKED)
+  TAGS  tags=[ blocked ]
+  BLOC  op=rename block=1 pid=238271 tid=238271 comm=mv
+  BLOC  path=/etc/passwd
+  BLOC  path2=/tmp/p
+  COMM  comm=mv
+  ...</pre>
+</div>
+<p class="Pp" id="op"><a class="permalink" href="#op"><b class="Sy">op</b></a>
+    is what was denied:
+    <a class="permalink" href="#fork"><b class="Sy" id="fork">fork</b></a>,
+    <a class="permalink" href="#exec"><b class="Sy" id="exec">exec</b></a>,
+    <b class="Sy">create</b>,
+    <a class="permalink" href="#chmod"><b class="Sy" id="chmod">chmod</b></a>,
+    <b class="Sy">open</b>,
+    <a class="permalink" href="#truncate"><b class="Sy" id="truncate">truncate</b></a>,
+    <a class="permalink" href="#rename"><b class="Sy" id="rename">rename</b></a>,
+    <a class="permalink" href="#link"><b class="Sy" id="link">link</b></a> or
+    <a class="permalink" href="#unlink"><b class="Sy" id="unlink">unlink</b></a>.
+    It is what the kernel was asked to do, not the system call: an open that
+    would make a file is <b class="Sy">create</b>, and a program that opens a
+    file for writing before it truncates it is denied at the
+    <b class="Sy">open</b>.
+    <a class="permalink" href="#block"><b class="Sy" id="block">block</b></a> is
+    the number of the block in the ruleset, from 0.
+    <a class="permalink" href="#pid"><b class="Sy" id="pid">pid</b></a>,
+    <a class="permalink" href="#tid"><b class="Sy" id="tid">tid</b></a> and
+    <a class="permalink" href="#comm"><b class="Sy" id="comm">comm</b></a> are
+    of the thread that tried.
+    <a class="permalink" href="#path"><b class="Sy" id="path">path</b></a> is
+    the executable for a fork and an exec, of the parent for a fork, and the
+    file otherwise.
+    <a class="permalink" href="#path2"><b class="Sy" id="path2">path2</b></a> is
+    the new path of a rename or a link. The lines after these describe the
+    process that tried, as it is in the cache. With the NOVA backend alone that
+    process may not be known, and only the lines above are printed.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
@@ -113,7 +155,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 16, 2026</td>
+    <td class="foot-date">November 18, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

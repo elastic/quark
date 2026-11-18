@@ -24,6 +24,24 @@
 #define NOVA_PATH_FIELDS	2
 #define NOVA_MAX_PATHS		(NOVA_MAX_RULES * NOVA_PATH_FIELDS * 2)
 #define NOVA_PATHLEN		250	/* including NUL */
+/*
+ * The "on" and "except on" lines of all blocks get one bit each in a
+ * __u64, equal lines share a bit.
+ */
+#define NOVA_BLOCK_LINES	64
+#define NOVA_MAX_BLOCKS		64
+/* Distinct process.exe patterns of all blocks, and file.path ones */
+#define NOVA_BLOCK_MAX_PATHS	4096
+/* Containers with metadata that a block can tell apart */
+#define NOVA_BLOCK_MAX_CONTAINERS 16384
+/*
+ * A hook finds the container of a task in the name of its cgroup,
+ * <prefix><id>.scope, as container_scope_lookup() in quark.c does. The id
+ * is up to NOVA_CONTAINER_IDLEN lowercase hex characters, a longer one is
+ * not a container for a block.
+ */
+#define NOVA_CONTAINER_IDLEN	64
+#define NOVA_CGROUP_NAMELEN	128	/* including NUL */
 
 #define QUARK_RF_PID		(1ULL << 0)
 #define QUARK_RF_PPID		(1ULL << 1)
@@ -56,6 +74,8 @@ enum quark_rule_action {
 	QUARK_RA_POISON,
 	QUARK_RA_TAG,		/* "on" line of a tag block, userspace only */
 	QUARK_RA_EXCEPT,	/* "except on" line of a tag block, userspace only */
+	QUARK_RA_BLOCK_ON,	/* "on" line of a block, never in userspace */
+	QUARK_RA_BLOCK_EXCEPT,	/* "except on" line of a block, never in userspace */
 };
 
 /*
@@ -95,6 +115,76 @@ struct nova_rule {
 	char	comm[16];		/* QUARK_RF_COMM */
 };
 
+/*
+ * A block as two sets of line bits. With M the lines that match an
+ * operation, the block denies it when (on & M) != 0 && (except & M) == 0.
+ */
+struct nova_block {
+	__u64	on;
+	__u64	except;
+};
+
+/*
+ * Key of the process.exe and file.path tries. A pattern that ends in * is
+ * its bytes before the *, a fixed path is its bytes and the NUL, so a
+ * lookup with the path of an operation finds the longest pattern that
+ * matches. The value is a __u64 of line bits.
+ */
+struct nova_block_path_key {
+	__u32	prefixlen;		/* in bits, of path */
+	char	path[NOVA_PATHLEN];
+	__u16	pad0;
+};
+
+/* Key of the container map: the id, padded with NUL */
+struct nova_block_cid {
+	char	id[NOVA_CONTAINER_IDLEN];
+};
+
+/* Counters of the block hooks, per CPU */
+struct nova_block_stats {
+	__u64	no_path;		/* a path was not resolved or too long */
+	__u64	lost;			/* a denial that could not be reported */
+	__u64	no_slot;		/* a file hook without a scratch slot */
+};
+
+/*
+ * What a block denied, nova_deny_event.op. The file operations are the
+ * hooks, not system calls: an open that creates a file is NOVA_OP_CREATE.
+ */
+#define NOVA_OP_FORK		1
+#define NOVA_OP_EXEC		2
+#define NOVA_OP_CREATE		3	/* a new regular file */
+#define NOVA_OP_CHMOD		4	/* the mode of a regular file */
+#define NOVA_OP_OPEN		5	/* a regular file, for writing */
+#define NOVA_OP_TRUNCATE	6	/* a regular file */
+#define NOVA_OP_RENAME		7	/* path to path2 */
+#define NOVA_OP_LINK		8	/* a hard link to path, named path2 */
+#define NOVA_OP_UNLINK		9
+
+/*
+ * Input of the test program blk_test, which evaluates the blocks for a
+ * made up operation as a hook does, see nova_block_test_run().
+ */
+#define NOVA_BT_PROCESS		0	/* kind: fork or exec, path is the executable */
+#define NOVA_BT_FILE		1	/* kind: file operation, path is the file */
+#define NOVA_BT_HAS_PATH	(1 << 0)	/* flags: path was resolved */
+#define NOVA_BT_HAS_CBITS	(1 << 1)	/* flags: use cbits, not cgroup */
+
+struct nova_block_test {
+	__u32	kind;
+	__u32	flags;
+	__u64	cbits;				/* lines of the container */
+	char	cgroup[NOVA_CGROUP_NAMELEN];	/* name of the cgroup */
+	char	path[NOVA_PATHLEN];
+	char	pad0[6];
+};
+
+/* Results of blk_test: 0 is allowed, 1 + n is denied by block n */
+#define NOVA_BT_ALLOW		0
+#define NOVA_BT_NOT_CONTAINER	1000
+#define NOVA_BT_FAULT		1001
+
 struct nova_rule_pcpu {
 	__u64	hits;			/* counter */
 	__u64	evals;			/* counter */
@@ -105,6 +195,7 @@ enum nova_kind {
 	NOVA_FORK,
 	NOVA_EXEC,
 	NOVA_EXIT,
+	NOVA_DENY,	/* struct nova_deny_event */
 	NOVA_MAX,
 };
 
@@ -154,6 +245,23 @@ struct nova_event {
 struct nova_task_event {
 	struct nova_event	ev;
 	struct nova_task	nt;
+} __aligned(8);
+
+/*
+ * An operation that a block denied. The size is fixed: a path that is
+ * denied always fits in NOVA_PATHLEN, a longer one matches no line. So
+ * the hooks need only the plain ring buffer calls.
+ */
+struct nova_deny_event {
+	struct nova_event	ev;
+	__u32			op;		/* NOVA_OP_* */
+	__u32			block;		/* number of the block, from 0 */
+	__u32			pid;		/* of the process that tried */
+	__u32			tid;
+	char			comm[16];
+	char			path[NOVA_PATHLEN];	/* the executable or the file */
+	char			path2[NOVA_PATHLEN];	/* a second path, or empty */
+	char			pad0[4];
 } __aligned(8);
 
 #if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 10))

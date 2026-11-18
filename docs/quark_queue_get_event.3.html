@@ -78,9 +78,8 @@
           <a class="permalink" href="#mprotect"><i class="Em" id="mprotect">mprotect</i></a>
           member contains the VMA bounds, normalized previous protection,
           userspace-requested and kernel-adjusted protection, and backing-file
-          identity. For file-backed mappings,
-          <a class="permalink" href="#path"><i class="Em" id="path">path</i></a>
-          is the mount-namespace relative path of the backing file; it is
+          identity. For file-backed mappings, <i class="Em">path</i> is the
+          mount-namespace relative path of the backing file; it is
           <code class="Dv">NULL</code> for anonymous mappings. Anonymous
           attempts are reported once per protection transition per program
           image. File-backed attempts are reported once per protection
@@ -140,6 +139,56 @@
             the fd after verification. A successful event without valid identity
             indicates capture loss; consult
             <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>.</p>
+      </dd>
+      <dt id="QUARK_EV_BLOCKED"><a class="permalink" href="#QUARK_EV_BLOCKED"><code class="Dv">QUARK_EV_BLOCKED</code></a></dt>
+      <dd>An operation that a <code class="Cm">block</code> of the ruleset
+          denied, see <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>.
+          The operation did not happen: a denied fork has no child, a denied
+          exec left the process as it was, and a denied file operation left the
+          file as it was. The event is not aggregated with other events, it has
+          the tag <b class="Sy">blocked</b> in
+          <a class="permalink" href="#tags"><i class="Em" id="tags">tags</i></a>,
+          and it is always delivered, no rule is evaluated on it. The
+          <i class="Em">blocked</i> member describes it:
+        <div class="Bd Pp Li">
+        <pre>struct quark_blocked {
+	u32	op;
+	u32	block;
+	u32	pid;
+	u32	tid;
+	char	comm[16];
+	char	path[NOVA_PATHLEN];
+	char	path2[NOVA_PATHLEN];
+};</pre>
+        </div>
+        <p class="Pp" id="op"><a class="permalink" href="#op"><i class="Em">op</i></a>
+            is one of <code class="Dv">QUARK_BLOCKED_FORK</code>,
+            <code class="Dv">QUARK_BLOCKED_EXEC</code>,
+            <code class="Dv">QUARK_BLOCKED_CREATE</code>,
+            <code class="Dv">QUARK_BLOCKED_CHMOD</code>,
+            <code class="Dv">QUARK_BLOCKED_OPEN</code>,
+            <code class="Dv">QUARK_BLOCKED_TRUNCATE</code>,
+            <code class="Dv">QUARK_BLOCKED_RENAME</code>,
+            <code class="Dv">QUARK_BLOCKED_LINK</code> and
+            <code class="Dv">QUARK_BLOCKED_UNLINK</code>. It is what the kernel
+            was asked to do, not the system call: an open that would make a file
+            is <code class="Dv">QUARK_BLOCKED_CREATE</code>, and
+            <code class="Dv">QUARK_BLOCKED_OPEN</code> is an open for writing of
+            a file that exists.
+            <a class="permalink" href="#block"><i class="Em" id="block">block</i></a>
+            is the number of the block in the ruleset, from 0.
+            <a class="permalink" href="#pid"><i class="Em" id="pid">pid</i></a>,
+            <a class="permalink" href="#tid"><i class="Em" id="tid">tid</i></a>
+            and <i class="Em">comm</i> are of the thread that tried.
+            <i class="Em">path</i> is the executable for a fork and an exec, of
+            the parent for a fork, and the file otherwise, from the root of the
+            mount namespace of the process, also when the process changed its
+            root directory.
+            <a class="permalink" href="#path2"><i class="Em" id="path2">path2</i></a>
+            is the new path of a rename or a link, and empty otherwise.</p>
+        <p class="Pp"><i class="Em">process</i> is the process that tried, if it
+            is in the cache. With the NOVA backend alone it can be
+            <code class="Dv">NULL</code>.</p>
       </dd>
     </dl>
     <p class="Pp">It's important to note that <i class="Em">events</i> is what
@@ -271,7 +320,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 6, 2026</td>
+    <td class="foot-date">November 18, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

@@ -68,6 +68,57 @@ ruleset set on this event, see
 An event without a tag has no
 .Sy TAGS
 line.
+.Pp
+.Sy BLOC
+is not a flag either.
+It is printed for an operation that a
+.Cm block
+of the ruleset denied, a
+.Sy (BLOCKED)
+event:
+.Bd -literal
+->238271 (BLOCKED)
+  TAGS  tags=[ blocked ]
+  BLOC  op=rename block=1 pid=238271 tid=238271 comm=mv
+  BLOC  path=/etc/passwd
+  BLOC  path2=/tmp/p
+  COMM  comm=mv
+  ...
+.Ed
+.Pp
+.Sy op
+is what was denied:
+.Sy fork ,
+.Sy exec ,
+.Sy create ,
+.Sy chmod ,
+.Sy open ,
+.Sy truncate ,
+.Sy rename ,
+.Sy link
+or
+.Sy unlink .
+It is what the kernel was asked to do, not the system call: an open that
+would make a file is
+.Sy create ,
+and a program that opens a file for writing before it truncates it is denied
+at the
+.Sy open .
+.Sy block
+is the number of the block in the ruleset, from 0.
+.Sy pid ,
+.Sy tid
+and
+.Sy comm
+are of the thread that tried.
+.Sy path
+is the executable for a fork and an exec, of the parent for a fork, and the
+file otherwise.
+.Sy path2
+is the new path of a rename or a link.
+The lines after these describe the process that tried, as it is in the cache.
+With the NOVA backend alone that process may not be known, and only the
+lines above are printed.
 .Sh RETURN VALUES
 Zero on success, -1 in error from
 .Xr fwrite 3 .
