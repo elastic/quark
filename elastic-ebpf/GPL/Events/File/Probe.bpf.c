@@ -1127,6 +1127,13 @@ static void vfs_write__exit(struct path *path, ssize_t ret)
     if (ret <= 0)
         goto out;
 
+    // Only writes to regular files are reported. This runs for every
+    // successful write, so reject pipes, sockets, ttys and devices here,
+    // before file_modify_event__emit() builds a whole event to find out.
+    umode_t mode = BPF_CORE_READ(path, dentry, d_inode, i_mode);
+    if (!S_ISREG(mode))
+        goto out;
+
     if (ebpf_events_is_trusted_pid())
         goto out;
 
