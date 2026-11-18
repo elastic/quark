@@ -1228,6 +1228,72 @@ t_ringbuf_max(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * Mark in map every descriptor of ours that an exec would hand down, the
+ * ones without close-on-exec.
+ */
+static void
+inheritable_fds(u8 *map, size_t len)
+{
+	DIR		*dir;
+	struct dirent	*d;
+	int		 fd, fl;
+
+	bzero(map, len);
+	if ((dir = opendir("/proc/self/fd")) == NULL)
+		err(1, "opendir /proc/self/fd");
+	while ((d = readdir(dir)) != NULL) {
+		if (!isnumber(d->d_name))
+			continue;
+		fd = atoi(d->d_name);
+		if ((size_t)fd >= len)
+			errx(1, "descriptor %d is beyond the map", fd);
+		if ((fl = fcntl(fd, F_GETFD)) == -1)
+			err(1, "fcntl descriptor %d", fd);
+		if (!(fl & FD_CLOEXEC))
+			map[fd] = 1;
+	}
+	closedir(dir);
+}
+
+/*
+ * A queue must not add descriptors that survive an exec. An inherited
+ * perf descriptor of the KPROBE backend keeps its event alive in the
+ * child, quark_queue_close() can then no longer uninstall the kprobes and
+ * leaves them behind for good.
+ */
+static int
+t_cloexec(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	static u8		 before[65536], after[65536];
+	char			 path[64], target[256];
+	ssize_t			 n;
+	int			 fd, leaked;
+
+	inheritable_fds(before, sizeof(before));
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	inheritable_fds(after, sizeof(after));
+
+	leaked = 0;
+	for (fd = 0; fd < (int)sizeof(after); fd++) {
+		if (!after[fd] || before[fd])
+			continue;
+		snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+		if ((n = readlink(path, target, sizeof(target) - 1)) == -1)
+			n = 0;
+		target[n] = 0;
+		warnx("descriptor %d (%s) lacks close-on-exec", fd, target);
+		leaked++;
+	}
+	quark_queue_close(&qq);
+	if (leaked != 0)
+		errx(1, "%d descriptors would be inherited", leaked);
+
+	return (0);
+}
+
+/*
  * Return 1 if perf can stamp samples with a selectable clock,
  * kernels >= 4.1 and RHEL >= 7.4.
  */
@@ -6845,6 +6911,8 @@ struct test all_tests[] = {
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
 	T_KPROBE(t_kprobe_clockid),
+	T_EBPF(t_cloexec),
+	T_KPROBE(t_cloexec),
 	T_EBPF(t_os_release),
 	T_KPROBE(t_os_release),
 	T_EBPF(t_fork_exec_exit),

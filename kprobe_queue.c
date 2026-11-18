@@ -28,6 +28,11 @@
 
 #include "quark.h"
 
+/* Linux 3.14, kernel headers of centos7 may predate it */
+#ifndef PERF_FLAG_FD_CLOEXEC
+#define PERF_FLAG_FD_CLOEXEC	(1UL << 3)
+#endif
+
 #define PERF_MMAP_PAGES		16			/* Must be power of 2 */
 #define PERF_RECORD_MAX_SIZE	(UINT16_MAX + 1)	/* header.size is u16 */
 /*
@@ -783,7 +788,13 @@ again:
 	if (attr->use_clockid) {
 		attr->use_clockid = 0;
 		attr->clockid = 0;
-		r = perf_event_open(attr, pid, cpu, group_fd, flags);
+		/*
+		 * Without PERF_FLAG_FD_CLOEXEC: a kernel that lacks perf
+		 * clockid, RHEL before 7.4, lacks the flag too and would
+		 * refuse this open over it, hiding what is missing.
+		 */
+		r = perf_event_open(attr, pid, cpu, group_fd,
+		    flags & ~PERF_FLAG_FD_CLOEXEC);
 		attr->use_clockid = 1;
 		attr->clockid = CLOCK_MONOTONIC;
 		if (r >= 0) {
@@ -1410,7 +1421,13 @@ perf_open_group_leader(struct kprobe_queue *kqq, int cpu)
 	pgl->attr.watermark = 1;
 	pgl->attr.wakeup_watermark = (PERF_MMAP_PAGES * getpagesize()) / 10;;
 
-	pgl->fd = perf_event_open_degradable(&pgl->attr, -1, cpu, -1, 0);
+	/*
+	 * Close-on-exec: a child that inherits a perf descriptor keeps its
+	 * event alive, and the kprobe under it can't be uninstalled until
+	 * that child is gone, see kprobe_queue_close().
+	 */
+	pgl->fd = perf_event_open_degradable(&pgl->attr, -1, cpu, -1,
+	    PERF_FLAG_FD_CLOEXEC);
 	if (pgl->fd == -1) {
 		qwarn("perf_event_open_degradable");
 		free(pgl);
@@ -1466,7 +1483,8 @@ perf_open_kprobe(struct kprobe_queue *kqq, struct kprobe *k,
 	if (ks == NULL)
 		return (NULL);
 	perf_attr_init(&ks->attr, id);
-	ks->fd = perf_event_open_degradable(&ks->attr, -1, cpu, group_fd, 0);
+	ks->fd = perf_event_open_degradable(&ks->attr, -1, cpu, group_fd,
+	    PERF_FLAG_FD_CLOEXEC);
 	if (ks->fd == -1) {
 		qwarn("perf_event_open_degradable");
 		free(ks);
