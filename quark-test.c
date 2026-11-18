@@ -4512,6 +4512,61 @@ t_hanson_escape(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * The digits after the dot of an ECS date are a decimal fraction of a
+ * second, so milliseconds always take three of them: 5ms is .005 and
+ * not .5 which parses as 'half a second'.
+ */
+static int
+t_ecs_date(const struct test *t, struct quark_queue_attr *qa)
+{
+	/* 2016-05-23T08:05:34Z */
+	const u64	base = 1463990734ULL * NS_PER_S;
+	const struct {
+		u64		 ns;
+		const char	*expected;
+	} cases[] = {
+		{ 0,			"2016-05-23T08:05:34.000Z" },
+		{ MS_TO_NS(5),		"2016-05-23T08:05:34.005Z" },
+		{ MS_TO_NS(50),		"2016-05-23T08:05:34.050Z" },
+		{ MS_TO_NS(99),		"2016-05-23T08:05:34.099Z" },
+		{ MS_TO_NS(100),	"2016-05-23T08:05:34.100Z" },
+		{ MS_TO_NS(853),	"2016-05-23T08:05:34.853Z" },
+		/* Truncated, never rounded into the next second */
+		{ NS_PER_S - 1,		"2016-05-23T08:05:34.999Z" },
+	};
+	const char	*keys[] = { "ctime", "mtime", "atime" };
+	size_t		 i, j;
+
+	for (i = 0; i < nitems(cases); i++) {
+		struct quark_queue	 qq;
+		struct quark_file	 file;
+		struct quark_event	 event = {
+			.events = QUARK_EV_FILE,
+			.file = &file
+		};
+		char			 want[64], *ecs = NULL;
+		size_t			 ecs_len = 0;
+
+		quark_queue_init_bare(&qq);
+		bzero(&file, sizeof(file));
+		file.path = "/tmp/file";
+		file.op_mask = QUARK_FILE_OP_MODIFY;
+		file.ctime = file.mtime = file.atime = base + cases[i].ns;
+		assert(quark_event_to_ecs(&qq, &event, &ecs, &ecs_len) == 0);
+		for (j = 0; j < nitems(keys); j++) {
+			snprintf(want, sizeof(want), "\"%s\":\"%s\"",
+			    keys[j], cases[i].expected);
+			if (strstr(ecs, want) == NULL)
+				errx(1, "no %s in:\n%s", want, ecs);
+		}
+		free(ecs);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
 static int
 t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -6913,6 +6968,7 @@ struct test all_tests[] = {
 	T(t_container_remove),
 	T(t_hanson),
 	T(t_hanson_escape),
+	T(t_ecs_date),
 	T_EBPF(t_rule_path),
 	T_EBPF(t_rule_exec_change),
 	T_EBPF(t_rule_path2),
