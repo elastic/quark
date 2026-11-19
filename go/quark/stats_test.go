@@ -28,6 +28,7 @@ func TestStatsConversion(t *testing.T) {
 	cStats.bpf_metadata_lost = 8<<32 + 23
 	cStats.bpf_retprobe_missed = 9<<32 + 29
 	cStats.stalls = 10<<32 + 31
+	cStats.udp_flow_lost = 11<<32 + 37
 	cStats.bpf_retprobe_stats_valid = -1
 	cStats.backend = 4 // QQ_EBPF
 	want := Stats{
@@ -41,6 +42,7 @@ func TestStatsConversion(t *testing.T) {
 		BPFMetadataLost:       8<<32 + 23,
 		BPFRetprobeMissed:     9<<32 + 29,
 		Stalls:                10<<32 + 31,
+		UdpFlowLost:           11<<32 + 37,
 		BPFRetprobeStatsValid: true,
 		Backend:               QQ_EBPF,
 	}
