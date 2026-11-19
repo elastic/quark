@@ -276,10 +276,12 @@ int BPF_PROG(sched_process_exec,
     size  = ebpf_argv__fill(field->data, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
-    // env
-    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_ENV);
-    size  = ebpf_env__fill(field->data, task);
-    ebpf_vl_field__set_size(&event->vl_fields, field, size);
+    // env, unless userspace keeps none of it
+    if (env_max != 0) {
+        field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_ENV);
+        size  = ebpf_env__fill(field->data, task);
+        ebpf_vl_field__set_size(&event->vl_fields, field, size);
+    }
 
     // cwd
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_CWD);
