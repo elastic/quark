@@ -13,12 +13,15 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <bpf/bpf.h>
 #include <bpf/btf.h>
 
 #include "quark.h"
+#include "quark_internal.h"
 #include "bpf_telemetry_retprobe.h"
 #include "bpf_probes_skel.h"
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
@@ -36,11 +39,55 @@ struct bpf_queue {
 	struct ring_buffer	*ringbuf;
 	size_t bpf_boundary_count;
 	struct bpf_telemetry_retprobe *bpf_return[2];
+
+	/*
+	 * UDP flow aggregation, see udp_flow_poll(). Programs write the map
+	 * selected by the low bit of udp_flow_gen (active map), we bump it
+	 * once per period and drain the other map (inactive map) after the map
+	 * flip has settled (double buffer).
+	 */
+	u32			 udp_flow_gen;
+
+	/*
+	 * When the current aggregation period began, CLOCK_BOOTTIME ns. Set
+	 * at queue open and at every udp_flow_gen bump, read twice: a bump is
+	 * due once udp_agg_time has passed, and the drain of the inactive map
+	 * waits until UDP_FLOW_FLIP_GRACE has elapsed. The BPF side reads the
+	 * generation and then updates a map in two unsynchronized steps, so a
+	 * program that read the old generation an instant before the bump may
+	 * still be adding to the inactive map. The grace lets those programs
+	 * finish before userspace starts deleting entries.
+	 */
+	u64			 udp_flow_period_start;
+
+	/*
+	 * Set at flip, cleared when the inactive map reads empty. While set,
+	 * no new flip is considered, so when the queue is full and the drain
+	 * takes several populate calls the period stretches instead of
+	 * flipping onto a map that still has data.
+	 */
+	bool			 udp_flow_draining;
+
+	/*
+	 * Where a drain that ran out of queue space resumes: the first key
+	 * of the inactive map not drained yet. See udp_flow_drain().
+	 */
+	struct ebpf_udp_flow_key udp_flow_cursor;
+	bool			 udp_flow_has_cursor;
 };
+
+/*
+ * Flows per generation map, per period. A flow is a (socket, 5-tuple).
+ * With a 48 byte key and a 56 byte value plus hash overhead this is on
+ * the order of 10MB of kernel memory per map at full capacity, allocated
+ * lazily on demand (BPF_F_NO_PREALLOC).
+ */
+#define UDP_FLOWS_MAX_ENTRIES	65536
 
 static int	bpf_queue_populate(struct quark_queue *);
 static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
+static int	udp_flow_poll(struct quark_queue *, int);
 static u32	bpf_ringbuf_size(int);
 static void	bump_memlock(void);
 
@@ -456,6 +503,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 
 		conn->local.port = htons(net->net.sport);
 		conn->remote.port = htons(net->net.dport);
+		conn->transport = QUARK_TRANSPORT_TCP;
 
 		switch (ev->type) {
 		case EBPF_EVENT_NETWORK_CONNECTION_ACCEPTED:
@@ -1240,10 +1288,11 @@ bpf_map_harden_supported(void)
 }
 
 /*
- * Everything but the trusted map and the ring buffer is written only by the
- * probes: state, scratch space, dedup and attribution tables. Freeze them so
- * no process can plant or erase our state through bpf(2); a stranger could
- * otherwise pre-mark its own mprotect transitions as seen, or poison socket
+ * Everything but the trusted map, the ring buffer and the UDP flow maps is
+ * written only by the probes: state, scratch space, dedup and attribution
+ * tables. Freeze them so no process can plant or erase our state through
+ * bpf(2); a stranger could otherwise pre-mark its own mprotect transitions as
+ * seen, or poison socket
  * attribution. libbpf freezes its own .rodata already, skip the internal
  * maps. Maps that were not created (autocreate off) still have a placeholder
  * fd from libbpf, so skip them by autocreate, not by fd.
@@ -1263,6 +1312,13 @@ bpf_maps_freeze(struct bpf_probes *p)
 		if (m == p->maps.elastic_ebpf_events_trusted_pids ||
 		    m == p->maps.ringbuf || bpf_map__is_internal(m) ||
 		    !bpf_map__autocreate(m))
+			continue;
+		/*
+		 * Flipped and drained from userspace every aggregation period,
+		 * the generation is already read-only for programs.
+		 */
+		if (m == p->maps.udp_flows0 || m == p->maps.udp_flows1 ||
+		    m == p->maps.udp_flow_gen)
 			continue;
 		if ((fd = bpf_map__fd(m)) < 0)
 			continue;
@@ -1481,12 +1537,18 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			goto fail;
 	}
 
-	if (qq->flags & QQ_DNS) {
+	/*
+	 * DNS capture and UDP flow accounting share the cgroup_skb programs
+	 * and the socket to tgid tracking, each is switched on in rodata.
+	 */
+	if (qq->flags & (QQ_DNS | QQ_UDP_FLOW)) {
 		cgroup_fd = cgroup2_open_fd(&cgroup_umount);
 		if (cgroup_fd == -1) {
 			qwarn("open cgroup");
 			goto fail;
 		}
+		p->rodata->dns_enabled = !!(qq->flags & QQ_DNS);
+		p->rodata->udp_flow_enabled = !!(qq->flags & QQ_UDP_FLOW);
 		bpf_program__set_autoload(p->progs.skb_egress, 1);
 		bpf_program__set_autoload(p->progs.skb_ingress, 1);
 		bpf_program__set_autoload(p->progs.sock_create, 1);
@@ -1502,6 +1564,21 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.sendmsg6, 1);
 			bpf_program__set_autoload(p->progs.connect6, 1);
 			bpf_program__set_autoload(p->progs.recvmsg6, 1);
+		}
+	}
+
+	/*
+	 * The flow maps are referenced by the cgroup_skb programs whether or
+	 * not flows are on, so they can't be skipped. Only grow their size
+	 * if UDP flows are enabled.
+	 */
+	if (qq->flags & QQ_UDP_FLOW) {
+		if (bpf_map__set_max_entries(p->maps.udp_flows0,
+		    UDP_FLOWS_MAX_ENTRIES) != 0 ||
+		    bpf_map__set_max_entries(p->maps.udp_flows1,
+		    UDP_FLOWS_MAX_ENTRIES) != 0) {
+			qwarn("bpf_map__set_max_entries udp_flows");
+			goto fail;
 		}
 	}
 
@@ -1611,6 +1688,11 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			qwarn("bpf_map__set_map_flags init_buffer");
 			goto fail;
 		}
+		if (bpf_map__set_map_flags(p->maps.udp_flow_gen,
+		    BPF_F_RDONLY_PROG) != 0) {
+			qwarn("bpf_map__set_map_flags udp_flow_gen");
+			goto fail;
+		}
 	} else
 		qdebugx("kernel lacks BPF_F_RDONLY_PROG, "
 		    "trusted map stays writable by BPF programs");
@@ -1703,6 +1785,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	qq->queue_ops = &queue_ops_bpf;
 	qq->stats.backend = QQ_EBPF;
+	bqq->udp_flow_period_start = now64();
 
 	btf__free(btf);
 
@@ -1759,8 +1842,200 @@ bpf_queue_populate(struct quark_queue *qq)
 		return (0);
 
 	npop = ring_buffer__consume_n(bqq->ringbuf, space_left);
+	if (npop < 0)
+		return (-1);
 
-	return (npop < 0 ? -1 : npop);
+	if (qq->flags & QQ_UDP_FLOW) {
+		int	ndrained;
+
+		ndrained = udp_flow_poll(qq, space_left - npop);
+		if (ndrained > 0)
+			npop += ndrained;
+	}
+
+	return (npop);
+}
+
+static void
+udp_flow_addr(struct quark_sockaddr *qsa, u16 family, const uint8_t *addr,
+    u16 port)
+{
+	if (family == EBPF_NETWORK_EVENT_AF_INET) {
+		qsa->af = AF_INET;
+		memcpy(&qsa->u, addr, 4);
+	} else {
+		qsa->af = AF_INET6;
+		memcpy(&qsa->u, addr, 16);
+	}
+	qsa->port = port;
+}
+
+/*
+ * Create a SOCK_CONN_FLOW raw event from a drained flow map entry.
+ * The event is stamped with the time of its last datagram so it sorts
+ * with what else happened then.
+ */
+static struct raw_event *
+udp_flow_to_raw(struct ebpf_udp_flow_key *key, struct ebpf_udp_flow_val *val)
+{
+	struct raw_event	*raw;
+	struct raw_sock_conn	*conn;
+
+	if ((raw = raw_event_alloc(RAW_SOCK_CONN)) == NULL)
+		return (NULL);
+	raw->pid = val->tgid;
+	raw->time = val->last_ns;
+
+	conn = &raw->sock_conn;
+	udp_flow_addr(&conn->local, key->family, key->laddr, key->lport);
+	udp_flow_addr(&conn->remote, key->family, key->raddr, key->rport);
+	conn->transport = QUARK_TRANSPORT_UDP;
+	conn->conn = SOCK_CONN_FLOW;
+	conn->cookie = key->cookie;
+	conn->bytes_received = val->bytes_received;
+	conn->bytes_sent = val->bytes_sent;
+	conn->packets_received = val->packets_received;
+	conn->packets_sent = val->packets_sent;
+	conn->first_time = val->first_ns;
+	conn->last_time = val->last_ns;
+
+	return (raw);
+}
+
+/*
+ * Drain up to space_left entries of the inactive map into raw events. Nothing
+ * writes to it anymore, so the key chain can't be disturbed and deleting
+ * behind the iteration is safe.
+ *
+ * When the queue has no room for the whole map, the drain spans several calls
+ * and each one resumes from udp_flow_cursor. Asking the kernel for the first
+ * key instead makes it walk the hash buckets from the start, over everything
+ * already emptied, and a saturated queue drains one entry per call.
+ *
+ * Returns the number drained, sets *empty to 1 when the map has nothing left.
+ * Only a pass that began at the first key declares the map empty. A resumed
+ * pass that reaches the end leaves that to the next call, which starts over
+ * and picks up anything a late program added behind the cursor. Any error
+ * drops the cursor, so the next call starts over as well.
+ */
+static int
+udp_flow_drain(struct quark_queue *qq, struct bpf_map *m, int space_left,
+    int *empty)
+{
+	struct bpf_queue		*bqq = qq->queue_be;
+	struct ebpf_udp_flow_key	 key, next;
+	struct ebpf_udp_flow_val	 val;
+	struct raw_event		*raw;
+	int				 n, have_next;
+	bool				 resumed;
+
+	*empty = 0;
+	resumed = bqq->udp_flow_has_cursor;
+	bqq->udp_flow_has_cursor = false;
+	if (resumed)
+		key = bqq->udp_flow_cursor;
+	else if (bpf_map__get_next_key(m, NULL, &key, sizeof(key)) != 0) {
+		if (errno == ENOENT)
+			*empty = 1;
+		else
+			qwarn("bpf_map__get_next_key udp_flows");
+		return (0);
+	}
+	for (n = 0; n < space_left; n++) {
+		have_next = bpf_map__get_next_key(m, &key, &next,
+		    sizeof(next)) == 0;
+		if (!have_next && errno != ENOENT) {
+			qwarn("bpf_map__get_next_key udp_flows");
+			return (n);
+		}
+		if (bpf_map__lookup_elem(m, &key, sizeof(key), &val,
+		    sizeof(val), 0) != 0) {
+			qwarn("bpf_map__lookup_elem udp_flows");
+			return (n);
+		}
+		/*
+		 * Allocate before deleting so a failed allocation leaves the
+		 * entry for the next pass instead of losing the period.
+		 */
+		if ((raw = udp_flow_to_raw(&key, &val)) == NULL) {
+			qwarn("udp_flow_to_raw");
+			return (n);
+		}
+		if (bpf_map__delete_elem(m, &key, sizeof(key), 0) != 0) {
+			qwarn("bpf_map__delete_elem udp_flows");
+			raw_event_free(raw);
+			return (n);
+		}
+		if (raw_event_insert(qq, raw) == -1)
+			raw_event_free(raw);
+		if (!have_next) {
+			if (!resumed)
+				*empty = 1;
+			return (n + 1);
+		}
+		key = next;
+	}
+
+	/* Out of room, key is the first entry we didn't get to */
+	bqq->udp_flow_cursor = key;
+	bqq->udp_flow_has_cursor = true;
+
+	return (n);
+}
+
+/*
+ * Runs on every populate. Once per aggregation period the generation is
+ * bumped so the programs move to the other map, the inactive one is drained
+ * after UDP_FLOW_FLIP_GRACE, as many entries as the queue has room for,
+ * across as many calls as it takes. The next flip waits for the drain to
+ * finish, so a period stretches rather than losing data when the queue is
+ * saturated. Returns the number of raw events inserted.
+ */
+static int
+udp_flow_poll(struct quark_queue *qq, int space_left)
+{
+	struct bpf_queue	*bqq = qq->queue_be;
+	struct bpf_probes	*p = bqq->probes;
+	struct bpf_map		*inactive;
+	u32			 zero, gen;
+	u64			 now;
+	int			 n, empty;
+
+	now = now64();
+
+	if (bqq->udp_flow_draining) {
+		if (now - bqq->udp_flow_period_start < UDP_FLOW_FLIP_GRACE)
+			return (0);
+		if (space_left <= 0)
+			return (0);
+		inactive = (bqq->udp_flow_gen & 1) ?
+		    p->maps.udp_flows0 : p->maps.udp_flows1;
+		n = udp_flow_drain(qq, inactive, space_left, &empty);
+		if (empty)
+			bqq->udp_flow_draining = false;
+
+		return (n);
+	}
+
+	if (now - bqq->udp_flow_period_start < qq->udp_agg_time)
+		return (0);
+
+	zero = 0;
+	gen = bqq->udp_flow_gen + 1;
+	/*
+	 * Advance the period even on failure, so a persistent error is
+	 * retried and warned about once a period rather than on every call.
+	 */
+	bqq->udp_flow_period_start = now;
+	if (bpf_map__update_elem(p->maps.udp_flow_gen, &zero, sizeof(zero),
+	    &gen, sizeof(gen), 0) != 0) {
+		qwarn("bpf_map__update_elem udp_flow_gen");
+		return (-1);
+	}
+	bqq->udp_flow_gen = gen;
+	bqq->udp_flow_draining = true;
+
+	return (0);
 }
 
 static int
@@ -1770,6 +2045,7 @@ bpf_queue_update_stats(struct quark_queue *qq)
 	struct ebpf_event_stats	*pcpu_ees;
 	u32			 zero = 0;
 	u64			 lost, state_lost, metadata_lost, total_missed;
+	u64			 udp_flow_lost;
 	uint64_t		 missed;
 	int			 i, num_cpus;
 
@@ -1794,15 +2070,17 @@ bpf_queue_update_stats(struct quark_queue *qq)
 		goto fail;
 	}
 
-	state_lost = metadata_lost = lost = total_missed = 0;
+	state_lost = metadata_lost = lost = total_missed = udp_flow_lost = 0;
 	for (i = 0; i < num_cpus; i++) {
 		lost += pcpu_ees[i].lost;
 		state_lost += pcpu_ees[i].bpf_state_lost;
 		metadata_lost += pcpu_ees[i].bpf_metadata_lost;
+		udp_flow_lost += pcpu_ees[i].udp_flow_lost;
 	}
 	qq->stats.lost = lost;
 	qq->stats.bpf_state_lost = state_lost;
 	qq->stats.bpf_metadata_lost = metadata_lost;
+	qq->stats.udp_flow_lost = udp_flow_lost;
 	for (i = 0; (size_t)i < bqq->bpf_boundary_count; i++) {
 		if (bpf_telemetry_retprobe_missed(bqq->bpf_return[i], &missed) == -1) {
 			qwarn("BPF telemetry return-probe statistics unavailable");

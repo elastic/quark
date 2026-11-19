@@ -162,16 +162,36 @@ type Group struct {
 	Gid  uint32
 }
 
-// Socket represents a connection between two endpoints
+// Socket represents a connection between two endpoints, a TCP connection
+// or a UDP socket talking to one peer. Byte counts are payload totals since
+// EstablishedTime, packet counts exist for UDP only.
+// Cookie is the kernel's socket cookie, unique for the boot and shared by
+// every flow of an unconnected UDP socket; zero for TCP.
 type Socket struct {
 	Local           netip.AddrPort
 	Remote          netip.AddrPort
+	Transport       int
+	Cookie          uint64
 	PidOrigin       uint32
 	PidLastUse      uint32
 	EstablishedTime uint64
 	CloseTime       uint64
+	LastTime        uint64
 	BytesSent       uint64
 	BytesReceived   uint64
+	PacketsSent     uint64
+	PacketsReceived uint64
+}
+
+// Flow is one aggregation period of a UDP flow, the deltas behind a
+// QUARK_EV_SOCK_FLOW; the totals live in the Socket.
+type Flow struct {
+	FirstTime       uint64
+	LastTime        uint64
+	BytesSent       uint64
+	BytesReceived   uint64
+	PacketsSent     uint64
+	PacketsReceived uint64
 }
 
 type Packet struct {
@@ -254,11 +274,15 @@ type Tty struct {
 }
 
 // Events is a bitmask of QUARK_EV_* and expresses what triggered this
-// event, Process is the context of the Event.
+// event, Process is the context of the Event. Process is zero-valued, with
+// Pid 0, when quark has no process for it, which happens for UDP flows of
+// an unknown owner and for socket or packet events whose process aged out
+// of the cache.
 type Event struct {
 	Events     uint64
 	Process    Process
 	Socket     *Socket
+	Flow       *Flow
 	Packet     *Packet
 	File       *File
 	Ptrace     *Ptrace
@@ -298,6 +322,7 @@ const (
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
 	QQ_MPROTECT      = int(C.QQ_MPROTECT)
+	QQ_UDP_FLOW      = int(C.QQ_UDP_FLOW)
 
 	// Event.events
 	QUARK_EV_FORK                  = uint64(C.QUARK_EV_FORK)
@@ -314,6 +339,12 @@ const (
 	QUARK_EV_SHM                   = uint64(C.QUARK_EV_SHM)
 	QUARK_EV_TTY                   = uint64(C.QUARK_EV_TTY)
 	QUARK_EV_MPROTECT              = uint64(C.QUARK_EV_MPROTECT)
+	QUARK_EV_SOCK_FLOW             = uint64(C.QUARK_EV_SOCK_FLOW)
+
+	// Socket.Transport
+	QUARK_TRANSPORT_INVALID = int(C.QUARK_TRANSPORT_INVALID)
+	QUARK_TRANSPORT_TCP     = int(C.QUARK_TRANSPORT_TCP)
+	QUARK_TRANSPORT_UDP     = int(C.QUARK_TRANSPORT_UDP)
 
 	// EntryLeaderType
 	QUARK_ELT_UNKNOWN   = int(C.QUARK_ELT_UNKNOWN)
@@ -357,6 +388,8 @@ type QueueAttr struct {
 	MaxLength      int
 	CacheGraceTime int
 	HoldTime       int
+	UdpAggTime     int
+	UdpIdleTime    int
 	// RuleText is a ruleset in the rule DSL, parsed and installed on
 	// the queue by OpenQueue. Empty means no rules. Processes matched
 	// by poison rules carry the tag in Process.PoisonTag.
@@ -375,6 +408,7 @@ type Stats struct {
 	BPFMetadataLost       uint64
 	BPFRetprobeMissed     uint64
 	Stalls                uint64
+	UdpFlowLost           uint64
 	BPFRetprobeStatsValid bool // Whether the last return-probe miss refresh succeeded.
 	Backend               int
 }
@@ -406,6 +440,8 @@ func DefaultQueueAttr() QueueAttr {
 		MaxLength:      int(attr.max_length),
 		CacheGraceTime: int(attr.cache_grace_time),
 		HoldTime:       int(attr.hold_time),
+		UdpAggTime:     int(attr.udp_agg_time),
+		UdpIdleTime:    int(attr.udp_idle_time),
 	}
 }
 
@@ -470,6 +506,8 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	cattr.max_length = C.int(attr.MaxLength)
 	cattr.cache_grace_time = C.int(attr.CacheGraceTime)
 	cattr.hold_time = C.int(attr.HoldTime)
+	cattr.udp_agg_time = C.int(attr.UdpAggTime)
+	cattr.udp_idle_time = C.int(attr.UdpIdleTime)
 	ok, err := C.quark_queue_open(queue.quarkQueue, &cattr)
 	if ok == -1 {
 		C.free(unsafe.Pointer(queue.quarkQueue))
@@ -504,15 +542,25 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	var event Event
 
 	cev := C.quark_queue_get_event(queue.quarkQueue)
-	if cev == nil || cev.process == nil {
+	if cev == nil {
 		return event, false
 	}
 
 	event.Events = uint64(cev.events)
-	event.Process = processFromC(cev.process)
+	// Process stays zero-valued, Pid 0, when quark has no process for
+	// the event: a UDP flow whose owner was never seen, or a socket or
+	// packet event whose process already aged out of the cache. The
+	// event is still delivered, the socket and flow stand on their own.
+	if cev.process != nil {
+		event.Process = processFromC(cev.process)
+	}
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)
 		event.Socket = &socket
+	}
+	if event.Events&QUARK_EV_SOCK_FLOW != 0 {
+		flow := flowFromC(&cev.flow)
+		event.Flow = &flow
 	}
 	if cev.file != nil {
 		file := fileFromC(cev.file)
@@ -584,13 +632,16 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 	return processFromC(process), true
 }
 
-// SocketLookup looks up the socket identified by the local and remote
-// endpoints in quark's internal socket cache, mirroring
-// quark_socket_lookup(3). Sockets are only tracked when the queue was
-// opened with QQ_SOCK_CONN, which requires the EBPF backend. A closed
-// socket remains visible with a non-zero CloseTime until it ages out
-// after the queue's CacheGraceTime. The boolean is false if no such
-// socket is known.
+// SocketLookup looks up the socket of transport, QUARK_TRANSPORT_TCP or
+// QUARK_TRANSPORT_UDP, identified by the local and remote endpoints in
+// quark's internal socket cache, mirroring quark_socket_lookup(3). TCP
+// sockets are tracked when the queue was opened with QQ_SOCK_CONN, UDP
+// sockets with QQ_UDP_FLOW and both require the EBPF backend.
+// A closed socket remains visible with a non-zero CloseTime until it
+// ages out after the queue's CacheGraceTime. The boolean is false if
+// no such socket is known. Several UDP sockets can share endpoints,
+// as with SO_REUSEPORT; quark keeps them apart by Cookie, and cookie
+// picks one of them, zero returns the first.
 //
 // quark caches sockets under the address family the kernel reports,
 // so IPv4 traffic on a dual-stack AF_INET6 socket is cached with
@@ -598,12 +649,12 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 // given in either form: the AF_INET key is tried first and the
 // IPv4-mapped AF_INET6 key second. A socket found through the mapped
 // key reports Local and Remote in mapped form, as quark stores them.
-func (queue *Queue) SocketLookup(local, remote netip.AddrPort) (Socket, bool) {
-	if socket, ok := queue.socketLookup(local, remote, false); ok {
+func (queue *Queue) SocketLookup(transport int, local, remote netip.AddrPort, cookie uint64) (Socket, bool) {
+	if socket, ok := queue.socketLookup(transport, local, remote, cookie, false); ok {
 		return socket, true
 	}
 	if local.Addr().Unmap().Is4() && remote.Addr().Unmap().Is4() {
-		return queue.socketLookup(local, remote, true)
+		return queue.socketLookup(transport, local, remote, cookie, true)
 	}
 
 	return Socket{}, false
@@ -612,7 +663,7 @@ func (queue *Queue) SocketLookup(local, remote netip.AddrPort) (Socket, bool) {
 // socketLookup performs a single quark_socket_lookup(3) call. When
 // mapped is set, IPv4 endpoints are converted to their IPv4-mapped
 // AF_INET6 form before the lookup.
-func (queue *Queue) socketLookup(local, remote netip.AddrPort, mapped bool) (Socket, bool) {
+func (queue *Queue) socketLookup(transport int, local, remote netip.AddrPort, cookie uint64, mapped bool) (Socket, bool) {
 	clocal, ok := sockaddrToC(local, mapped)
 	if !ok {
 		return Socket{}, false
@@ -622,7 +673,9 @@ func (queue *Queue) socketLookup(local, remote netip.AddrPort, mapped bool) (Soc
 		return Socket{}, false
 	}
 
-	socket, _ := C.quark_socket_lookup(queue.quarkQueue, &clocal, &cremote)
+	socket, _ := C.quark_socket_lookup(queue.quarkQueue,
+		C.enum_quark_transport(transport), &clocal, &cremote,
+		C.u64(cookie))
 	if socket == nil {
 		return Socket{}, false
 	}
@@ -632,8 +685,8 @@ func (queue *Queue) socketLookup(local, remote netip.AddrPort, mapped bool) (Soc
 
 // SocketSnapshot returns a snapshot of all sockets in the cache,
 // including recently closed sockets that still wait out the queue's
-// CacheGraceTime. Sockets are only tracked when the queue was opened
-// with QQ_SOCK_CONN.
+// CacheGraceTime. TCP sockets are tracked when the queue was opened with
+// QQ_SOCK_CONN, UDP sockets with QQ_UDP_FLOW.
 func (queue *Queue) SocketSnapshot() []Socket {
 	var sockets []Socket
 	var iter C.struct_quark_socket_iter
@@ -720,6 +773,7 @@ func (queue *Queue) Stats() Stats {
 	stats.BPFMetadataLost = uint64(cStats.bpf_metadata_lost)
 	stats.BPFRetprobeMissed = uint64(cStats.bpf_retprobe_missed)
 	stats.Stalls = uint64(cStats.stalls)
+	stats.UdpFlowLost = uint64(cStats.udp_flow_lost)
 	stats.BPFRetprobeStatsValid = cStats.bpf_retprobe_stats_valid != 0
 	stats.Backend = int(cStats.backend)
 
@@ -922,14 +976,32 @@ func socketFromC(cSocket *C.struct_quark_socket) Socket {
 
 	socket.Local = addrPortFromQuarkSockaddr(&cSocket.local)
 	socket.Remote = addrPortFromQuarkSockaddr(&cSocket.remote)
+	socket.Transport = int(cSocket.transport)
+	socket.Cookie = uint64(cSocket.cookie)
 	socket.PidOrigin = uint32(cSocket.pid_origin)
 	socket.PidLastUse = uint32(cSocket.pid_last_use)
 	socket.EstablishedTime = uint64(cSocket.established_time)
 	socket.CloseTime = uint64(cSocket.close_time)
+	socket.LastTime = uint64(cSocket.last_time)
 	socket.BytesSent = uint64(cSocket.bytes_sent)
 	socket.BytesReceived = uint64(cSocket.bytes_received)
+	socket.PacketsSent = uint64(cSocket.packets_sent)
+	socket.PacketsReceived = uint64(cSocket.packets_received)
 
 	return socket
+}
+
+func flowFromC(cFlow *C.struct_quark_flow) Flow {
+	var flow Flow
+
+	flow.FirstTime = uint64(cFlow.first_time)
+	flow.LastTime = uint64(cFlow.last_time)
+	flow.BytesSent = uint64(cFlow.bytes_sent)
+	flow.BytesReceived = uint64(cFlow.bytes_received)
+	flow.PacketsSent = uint64(cFlow.packets_sent)
+	flow.PacketsReceived = uint64(cFlow.packets_received)
+
+	return flow
 }
 
 func packetFromC(cPacket *C.struct_quark_packet) Packet {

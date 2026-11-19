@@ -51,6 +51,7 @@
 #endif
 
 #include "quark.h"
+#include "quark_internal.h"
 
 #define AGE(_ts, _now) 		((_ts) > (_now) ? 0 : (_now) - (_ts))
 
@@ -333,17 +334,6 @@ raw_event_by_pidtime_cmp(struct raw_event *a, struct raw_event *b)
 }
 
 static inline u64
-now64(void)
-{
-	struct timespec ts;
-
-	if (clock_gettime(CLOCK_BOOTTIME, &ts) == -1)
-		return (0);
-
-	return (TS_TO_NS(ts));
-}
-
-static inline u64
 raw_event_age(struct raw_event *raw, u64 now)
 {
 	return AGE(raw->time, now);
@@ -475,6 +465,7 @@ event_storage_clear(struct quark_queue *qq)
 	qq->event_storage.time = 0;
 	qq->event_storage.process = NULL;
 	qq->event_storage.socket = NULL;
+	bzero(&qq->event_storage.flow, sizeof(qq->event_storage.flow));
 	free(qq->event_storage.packet);
 	qq->event_storage.packet = NULL;
 	free(qq->event_storage.file);
@@ -700,39 +691,89 @@ process_entity_id(struct quark_process *qp)
  * Socket stuff
  */
 
+static int	socket_tuple_cmp(struct quark_socket *, struct quark_socket *);
+
+/*
+ * The cookie is part of a UDP socket's identity, the kernel keys flows on
+ * it and several sockets can share one tuple, SO_REUSEPORT siblings or a
+ * new socket on a tuple whose previous owner has yet to idle out. A cookie
+ * of zero asks for the first socket with the tuple, which is what TCP
+ * sockets have and what the public lookup by endpoints gets.
+ */
 static struct quark_socket *
-socket_cache_lookup(struct quark_queue *qq,
-    struct quark_sockaddr *local, struct quark_sockaddr *remote)
+socket_cache_lookup(struct quark_queue *qq, enum quark_transport transport,
+    struct quark_sockaddr *local, struct quark_sockaddr *remote, u64 cookie)
 {
 	struct quark_socket	 key;
 	struct quark_socket	*qsk;
 
-	if ((local->af != AF_INET && local->af != AF_INET6) ||
+	if ((transport != QUARK_TRANSPORT_TCP &&
+	    transport != QUARK_TRANSPORT_UDP) ||
+	    (local->af != AF_INET && local->af != AF_INET6) ||
 	    (remote->af != AF_INET && remote->af != AF_INET6) ||
 	    (local->af != remote->af))
 		return (errno = EINVAL, NULL);
 
+	key.transport = transport;
 	key.local = *local;
 	key.remote = *remote;
-	qsk = RB_FIND(socket_by_src_dst, &qq->socket_by_src_dst, &key);
+	key.cookie = cookie;
+	if (cookie != 0)
+		qsk = RB_FIND(socket_by_src_dst, &qq->socket_by_src_dst, &key);
+	else {
+		qsk = RB_NFIND(socket_by_src_dst, &qq->socket_by_src_dst, &key);
+		if (qsk != NULL && socket_tuple_cmp(qsk, &key) != 0)
+			qsk = NULL;
+	}
 	if (qsk == NULL)
 		errno = ESRCH;
 
 	return (qsk);
 }
 
+/*
+ * UDP sockets have no close and they expire after udp_idle_time without
+ * traffic. A socket moves to the tail of qq->udp_idle on every flow,
+ * stamped with the time the flow was processed, so the list is ordered by
+ * last activity with longest idle at the head.
+ */
+static void
+udp_idle_unlink(struct quark_queue *qq, struct quark_socket *qsk)
+{
+	if (qsk->idle_linked) {
+		TAILQ_REMOVE(&qq->udp_idle, qsk, idle_entry);
+		qsk->idle_linked = 0;
+	}
+}
+
+/*
+ * A flow was delivered for qsk, restart its idle clock. Moving it to the
+ * tail with a fresh stamp is what keeps qq->udp_idle ordered by last
+ * activity with longest idle at the head.
+ */
+static void
+udp_idle_touch(struct quark_queue *qq, struct quark_socket *qsk)
+{
+	udp_idle_unlink(qq, qsk);
+	qsk->idle_since = now64();
+	TAILQ_INSERT_TAIL(&qq->udp_idle, qsk, idle_entry);
+	qsk->idle_linked = 1;
+}
+
 static struct quark_socket *
-socket_alloc_and_insert(struct quark_queue *qq, struct quark_sockaddr *local,
-    struct quark_sockaddr *remote, enum sock_conn conn, u64 received, u64 sent,
-    u32 pid_origin, u64 est_time)
+socket_alloc_and_insert(struct quark_queue *qq, enum quark_transport transport,
+    struct quark_sockaddr *local, struct quark_sockaddr *remote, u64 cookie,
+    enum sock_conn conn, u64 received, u64 sent, u32 pid_origin, u64 est_time)
 {
 	struct quark_socket *qsk, *col;
 
 	qsk = calloc(1, sizeof(*qsk));
 	if (qsk == NULL)
 		return (NULL);
+	qsk->transport = transport;
 	qsk->local = *local;
 	qsk->remote = *remote;
+	qsk->cookie = cookie;
 	qsk->pid_origin = qsk->pid_last_use = pid_origin;
 	qsk->established_time = est_time;
 	qsk->conn_origin = conn;
@@ -753,15 +794,25 @@ static void
 socket_cache_delete(struct quark_queue *qq, struct quark_socket *qsk)
 {
 	RB_REMOVE(socket_by_src_dst, &qq->socket_by_src_dst, qsk);
+	udp_idle_unlink(qq, qsk);
 	gc_unlink(qq, &qsk->gc);
 	free(qsk);
 }
 
+/*
+ * Everything but the cookie, so a lookup with a zero cookie can tell
+ * whether the first socket at or after its key has the tuple it asked for.
+ */
 static int
-socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
+socket_tuple_cmp(struct quark_socket *a, struct quark_socket *b)
 {
 	size_t	cmplen;
 	int	r;
+
+	if (a->transport < b->transport)
+		return (-1);
+	else if (a->transport > b->transport)
+		return (1);
 
 	if (a->remote.port < b->remote.port)
 		return (-1);
@@ -794,11 +845,30 @@ socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
 	return (r);
 }
 
-const struct quark_socket *
-quark_socket_lookup(struct quark_queue *qq,
-    struct quark_sockaddr *local, struct quark_sockaddr *remote)
+static int
+socket_by_src_dst_cmp(struct quark_socket *a, struct quark_socket *b)
 {
-	return (socket_cache_lookup(qq, local, remote));
+	int	r;
+
+	if ((r = socket_tuple_cmp(a, b)) != 0)
+		return (r);
+	if (a->cookie < b->cookie)
+		return (-1);
+	else if (a->cookie > b->cookie)
+		return (1);
+
+	return (0);
+}
+
+/*
+ * cookie selects one of several UDP sockets sharing the endpoints, zero
+ * returns the first.
+ */
+const struct quark_socket *
+quark_socket_lookup(struct quark_queue *qq, enum quark_transport transport,
+    struct quark_sockaddr *local, struct quark_sockaddr *remote, u64 cookie)
+{
+	return (socket_cache_lookup(qq, transport, local, remote, cookie));
 }
 
 void
@@ -1889,6 +1959,21 @@ event_type_str(u64 event)
 		return "MPROTECT";
 	case QUARK_EV_BPF:
 		return "BPF";
+	case QUARK_EV_SOCK_FLOW:
+		return "SOCK_FLOW";
+	default:
+		return "?";
+	}
+}
+
+const char *
+quark_transport_str(enum quark_transport transport)
+{
+	switch (transport) {
+	case QUARK_TRANSPORT_TCP:
+		return "tcp";
+	case QUARK_TRANSPORT_UDP:
+		return "udp";
 	default:
 		return "?";
 	}
@@ -2324,7 +2409,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		P(" (%s)", buf);
 	P("\n");
 
-	if (qev->events & (QUARK_EV_SOCK_CONN_ESTABLISHED|QUARK_EV_SOCK_CONN_CLOSED)) {
+	if (qev->events & (QUARK_EV_SOCK_CONN_ESTABLISHED|
+	    QUARK_EV_SOCK_CONN_CLOSED|QUARK_EV_SOCK_FLOW)) {
 		char local[INET6_ADDRSTRLEN], remote[INET6_ADDRSTRLEN];
 		fl = "SOCK";
 
@@ -2339,10 +2425,25 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 		    remote, sizeof(remote)) == NULL)
 			strlcpy(remote, "bad address", sizeof(remote));
 
-		PF(fl, "local=%s:%d remote=%s:%d received=%llu sent=%llu\n",
+		PF(fl, "%s local=%s:%d remote=%s:%d received=%llu sent=%llu\n",
+		    quark_transport_str(qsk->transport),
 		    local, ntohs(qsk->local.port),
 		    remote, ntohs(qsk->remote.port),
 		    qsk->bytes_received, qsk->bytes_sent);
+		if (qsk->transport == QUARK_TRANSPORT_UDP)
+			PF(fl, "packets_received=%llu packets_sent=%llu "
+			    "cookie=%llu\n", qsk->packets_received,
+			    qsk->packets_sent, qsk->cookie);
+	}
+
+	if (qev->events & QUARK_EV_SOCK_FLOW) {
+		const struct quark_flow	*flow = &qev->flow;
+		fl = "FLOW";
+
+		PF(fl, "first=%llu last=%llu received=%llu/%llu sent=%llu/%llu\n",
+		    flow->first_time, flow->last_time,
+		    flow->bytes_received, flow->packets_received,
+		    flow->bytes_sent, flow->packets_sent);
 	}
 
 	if (qev->events & QUARK_EV_PACKET) {
@@ -3483,12 +3584,14 @@ sproc_pid_sockets(struct quark_queue *qq,
 		 * Another process already references the same socket. Maybe it
 		 * accept(2)ed and forked.
 		 */
-		qsk = socket_cache_lookup(qq, &ss->socket.local, &ss->socket.remote);
+		qsk = socket_cache_lookup(qq, QUARK_TRANSPORT_TCP,
+		    &ss->socket.local, &ss->socket.remote, 0);
 		if (qsk != NULL)
 			continue;
 
-		qsk = socket_alloc_and_insert(qq, &ss->socket.local,
-		    &ss->socket.remote, SOCK_CONN_SCRAPE, 0, 0, pid, now64());
+		qsk = socket_alloc_and_insert(qq, QUARK_TRANSPORT_TCP,
+		    &ss->socket.local, &ss->socket.remote, 0, SOCK_CONN_SCRAPE,
+		    0, 0, pid, now64());
 		if (qsk == NULL) {
 			qwarn("socket_alloc");
 			continue;
@@ -4637,6 +4740,8 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->max_length = 10000;
 	qa->cache_grace_time = 4000;	/* four seconds */
 	qa->hold_time = 1000;		/* one second */
+	qa->udp_agg_time = 3000;	/* three seconds, under cache_grace_time */
+	qa->udp_idle_time = 30000;	/* thirty seconds */
 	qa->max_env = 4096;		/* one page per process */
 	qa->kubefd = -1;		/* disabled */
 	qa->ruleset = NULL;		/* no rules */
@@ -4654,6 +4759,7 @@ quark_queue_init_trees(struct quark_queue *qq)
 	RB_INIT(&qq->container_by_id);
 	RB_INIT(&qq->pod_by_uid);
 	TAILQ_INIT(&qq->event_gc);
+	TAILQ_INIT(&qq->udp_idle);
 }
 
 static int
@@ -4722,12 +4828,13 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	}
 
 	/*
-	 * QQ_BYPASS is EBPF only
+	 * QQ_BYPASS is EBPF only. UDP flows are drained from maps into the
+	 * raw event tree, which bypass never reads, so they're excluded too.
 	 */
 	if (qa->flags & QQ_BYPASS) {
 		if ((qa->flags &
 		    (QQ_KPROBE|QQ_NOVA|QQ_ENTRY_LEADER|
-		    QQ_MIN_AGG|QQ_THREAD_EVENTS)) ||
+		    QQ_MIN_AGG|QQ_THREAD_EVENTS|QQ_UDP_FLOW)) ||
 		    !(qa->flags & QQ_EBPF) ||
 		    qa->kubefd != -1)
 			return (errno = EINVAL, -1);
@@ -4751,6 +4858,15 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	    qa->hold_time < 10)
 		return (errno = EINVAL, -1);
 
+	/*
+	 * A flow reaches us up to an aggregation period plus the flip grace
+	 * after its last datagram. An idle time under a period would expire
+	 * live sockets.
+	 */
+	if ((qa->flags & QQ_UDP_FLOW) &&
+	    (qa->udp_agg_time <= 0 || qa->udp_idle_time < qa->udp_agg_time))
+		return (errno = EINVAL, -1);
+
 	if (quark_init() == -1)
 		return (-1);
 
@@ -4760,6 +4876,8 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->max_length = qa->max_length;
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
 	qq->hold_time = qa->hold_time;
+	qq->udp_agg_time = MS_TO_NS(qa->udp_agg_time);
+	qq->udp_idle_time = MS_TO_NS(qa->udp_idle_time);
 	qq->max_env = qa->max_env;
 	qq->ruleset = qa->ruleset;
 	qq->length = 0;
@@ -5214,7 +5332,8 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 	conn = &raw->sock_conn;
 	qev = &qq->event_storage;
 
-	qsk = socket_cache_lookup(qq, &conn->local, &conn->remote);
+	qsk = socket_cache_lookup(qq, conn->transport, &conn->local,
+	    &conn->remote, conn->cookie);
 
 	switch (conn->conn) {
 	case SOCK_CONN_ACCEPT:	/* FALLTHROUGH */
@@ -5243,13 +5362,50 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 			qsk = NULL;
 		}
 
-		qsk = socket_alloc_and_insert(qq, &conn->local, &conn->remote,
-		    conn->conn, 0, 0, raw->pid, raw->time);
+		qsk = socket_alloc_and_insert(qq, conn->transport, &conn->local,
+		    &conn->remote, conn->cookie, conn->conn, 0, 0, raw->pid,
+		    raw->time);
 		if (qsk == NULL) {
 			qwarn("socket_alloc");
 			return (NULL);
 		}
 		qev->events = QUARK_EV_SOCK_CONN_ESTABLISHED;
+		break;
+	case SOCK_CONN_FLOW:
+		/*
+		 * One aggregation period of a UDP flow. The first period we
+		 * see of a socket, or the first after it was expired for being
+		 * idle, doubles as its ESTABLISHED. Totals accumulate in the
+		 * socket, the period's own numbers are in qev->flow.
+		 */
+		if (qsk != NULL && qsk->close_time != 0) {
+			socket_cache_delete(qq, qsk);
+			qsk = NULL;
+		}
+		if (qsk == NULL) {
+			qsk = socket_alloc_and_insert(qq, conn->transport,
+			    &conn->local, &conn->remote, conn->cookie,
+			    conn->conn, 0, 0, raw->pid, conn->first_time);
+			if (qsk == NULL) {
+				qwarn("socket_alloc");
+				return (NULL);
+			}
+			qev->events = QUARK_EV_SOCK_CONN_ESTABLISHED;
+		}
+		qsk->bytes_received += conn->bytes_received;
+		qsk->bytes_sent += conn->bytes_sent;
+		qsk->packets_received += conn->packets_received;
+		qsk->packets_sent += conn->packets_sent;
+		qsk->last_time = conn->last_time;
+		udp_idle_touch(qq, qsk);
+
+		qev->flow.first_time = conn->first_time;
+		qev->flow.last_time = conn->last_time;
+		qev->flow.bytes_received = conn->bytes_received;
+		qev->flow.bytes_sent = conn->bytes_sent;
+		qev->flow.packets_received = conn->packets_received;
+		qev->flow.packets_sent = conn->packets_sent;
+		qev->events |= QUARK_EV_SOCK_FLOW;
 		break;
 	case SOCK_CONN_CLOSE:
 		/*
@@ -5258,7 +5414,8 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 		 * deleted anyway.
 		 */
 		if (qsk == NULL) {
-			qsk = socket_alloc_and_insert(qq, &conn->local, &conn->remote,
+			qsk = socket_alloc_and_insert(qq, conn->transport,
+			    &conn->local, &conn->remote, conn->cookie,
 			    conn->conn, conn->bytes_received, conn->bytes_sent,
 			    raw->pid, raw->time);
 			if (qsk == NULL) {
@@ -5281,10 +5438,93 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 		return (NULL);
 	}
 
-	qsk->pid_last_use = raw->pid;
+	/*
+	 * A UDP flow carries no pid when none of its datagrams came from a
+	 * known socket. An unknown user never replaces a known one, and the
+	 * first known one becomes the origin of a socket that had none.
+	 */
+	if (raw->pid != 0) {
+		qsk->pid_last_use = raw->pid;
+		if (qsk->pid_origin == 0)
+			qsk->pid_origin = raw->pid;
+	}
 
 	qev->socket = qsk;
 	qev->process = process_cache_get(qq, qsk->pid_origin, 0);
+
+	return (qev);
+}
+
+/*
+ * The UDP socket that went longest without a flow, if it went long enough
+ * to be closed, and by how much it overshot. The list is ordered by last
+ * activity, longest idle at the head, so only the head can be due.
+ *
+ * idle_since is stamped when a flow is processed, not when its datagrams
+ * were sent, and a flow reaches us up to udp_agg_time plus
+ * UDP_FLOW_FLIP_GRACE after its last datagram. A datagram sent just inside
+ * udp_idle_time can therefore still be in the kernel when the idle time is
+ * up, so expiry waits that much longer; otherwise the socket would be
+ * closed and re-established around a flow that was already on its way.
+ */
+static struct quark_socket *
+udp_idle_due(struct quark_queue *qq, u64 *overdue)
+{
+	struct quark_socket	*qsk;
+	struct raw_event	*min;
+	u64			 now, due;
+
+	if ((qsk = TAILQ_FIRST(&qq->udp_idle)) == NULL)
+		return (NULL);
+	now = now64();
+	due = qsk->idle_since + qq->udp_idle_time + qq->udp_agg_time +
+	    UDP_FLOW_FLIP_GRACE;
+	if (now < due)
+		return (NULL);
+
+	/*
+	 * A flow for this socket may still be in the raw event tree,
+	 * waiting out its hold or queued behind older events. So as long
+	 * as the tree holds anything stamped before the due time, don't
+	 * close: processing that flow after a close would report a socket
+	 * that never went quiet as closed and then re-established, with
+	 * its totals split across the two.
+	 */
+	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
+	if (min != NULL && min->time <= due)
+		return (NULL);
+	*overdue = now - due;
+
+	return (qsk);
+}
+
+/*
+ * Close an idle UDP socket. There is no kernel close for UDP, so the CLOSED
+ * event is made here and returned as this call's event, with the totals
+ * the socket accumulated.
+ *
+ * The event is not routed through the raw event tree. It carries no kernel
+ * timestamp to sort by, and holding it there would open a race window
+ * in which a flow for the same socket could be processed before its close.
+ * Expiring and closing in one step leaves no such window: a flow that
+ * arrives later finds close_time set and re-establishes the socket.
+ */
+static struct quark_event *
+udp_idle_close(struct quark_queue *qq, struct quark_socket *qsk)
+{
+	struct quark_event	*qev;
+
+	udp_idle_unlink(qq, qsk);
+	qsk->close_time = now64();
+	gc_mark(qq, &qsk->gc, GC_SOCKET);
+
+	event_storage_clear(qq);
+	qev = &qq->event_storage;
+	qev->events = QUARK_EV_SOCK_CONN_CLOSED;
+	qev->time = qsk->close_time;
+	qev->socket = qsk;
+	qev->process = process_cache_get(qq, qsk->pid_origin, 0);
+	link_container_data(qq, (struct quark_process *)qev->process);
 
 	return (qev);
 }
@@ -5892,6 +6132,8 @@ quark_queue_get_event(struct quark_queue *qq)
 {
 	struct quark_event	*qev;
 	struct quark_rule	*rule;
+	struct quark_socket	*qsk;
+	u64			 overdue;
 
 	/* GC all processes and sockets that exited after some grace time */
 	gc_collect(qq);
@@ -5910,8 +6152,23 @@ quark_queue_get_event(struct quark_queue *qq)
 	 */
 	(void)quark_queue_populate(qq);
 
+	/*
+	 * Prioritize raw events. An idle UDP socket is closed on a
+	 * get_event call that has nothing else ready, and is prioritized
+	 * only once it has been due for longer than hold_time, so a host
+	 * that never goes quiet can't starve the closes.
+	 */
 next:
+	qsk = udp_idle_due(qq, &overdue);
+	if (qsk != NULL && overdue > (u64)MS_TO_NS(qq->hold_time)) {
+		qev = udp_idle_close(qq, qsk);
+		goto ruleset;
+	}
+
 	qev = quark_queue_get_event1(qq);
+	if (qev == NULL && qsk != NULL)
+		qev = udp_idle_close(qq, qsk);
+ruleset:
 	/* Run ruleset, if we drop, get the next event */
 	if (qev != NULL && qq->ruleset != NULL) {
 		rule = quark_ruleset_match(qq->ruleset, qev);

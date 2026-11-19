@@ -17,6 +17,7 @@
 #include <bpf/libbpf.h>
 
 #include "quark.h"
+#include "quark_internal.h"
 
 ssize_t
 qread(int fd, void *buf, size_t count)

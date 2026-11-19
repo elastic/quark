@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "quark.h"
+#include "quark_internal.h"
 
 /* Linux 3.14, kernel headers of centos7 may predate it */
 #ifndef PERF_FLAG_FD_CLOEXEC

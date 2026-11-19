@@ -216,7 +216,7 @@ func TestQuark(t *testing.T) {
 		var socket Socket
 		found := drainUntil(queue, 5*time.Second, func() bool {
 			var ok bool
-			socket, ok = queue.SocketLookup(local, remote)
+			socket, ok = queue.SocketLookup(QUARK_TRANSPORT_TCP, local, remote, 0)
 			return ok
 		})
 		require.True(t, found)
@@ -227,7 +227,7 @@ func TestQuark(t *testing.T) {
 		// IPv4-mapped IPv6 form finds the same socket.
 		mappedLocal := netip.AddrPortFrom(
 			netip.AddrFrom16(local.Addr().As16()), local.Port())
-		_, ok := queue.SocketLookup(mappedLocal, remote)
+		_, ok := queue.SocketLookup(QUARK_TRANSPORT_TCP, mappedLocal, remote, 0)
 		require.True(t, ok)
 
 		// The snapshot contains it too.
@@ -244,7 +244,7 @@ func TestQuark(t *testing.T) {
 		// non-zero CloseTime until CacheGraceTime expires.
 		conn.Close()
 		found = drainUntil(queue, 5*time.Second, func() bool {
-			socket, ok = queue.SocketLookup(local, remote)
+			socket, ok = queue.SocketLookup(QUARK_TRANSPORT_TCP, local, remote, 0)
 			return ok && socket.CloseTime != 0
 		})
 		require.True(t, found)
@@ -299,7 +299,7 @@ func TestQuark(t *testing.T) {
 		var socket Socket
 		found := drainUntil(queue, 5*time.Second, func() bool {
 			var ok bool
-			socket, ok = queue.SocketLookup(local, remote)
+			socket, ok = queue.SocketLookup(QUARK_TRANSPORT_TCP, local, remote, 0)
 			return ok
 		})
 		require.True(t, found)
@@ -311,14 +311,83 @@ func TestQuark(t *testing.T) {
 		// The IPv4-mapped form finds it as well.
 		mappedLocal := netip.AddrPortFrom(netip.AddrFrom16(local.Addr().As16()), local.Port())
 		mappedRemote := netip.AddrPortFrom(netip.AddrFrom16(remote.Addr().As16()), remote.Port())
-		_, ok := queue.SocketLookup(mappedLocal, mappedRemote)
+		_, ok := queue.SocketLookup(QUARK_TRANSPORT_TCP, mappedLocal, mappedRemote, 0)
 		require.True(t, ok)
 
 		// The client side is a plain AF_INET socket and is found
 		// through the AF_INET key.
-		clientSocket, ok := queue.SocketLookup(remote, local)
+		clientSocket, ok := queue.SocketLookup(QUARK_TRANSPORT_TCP, remote, local, 0)
 		require.True(t, ok)
 		require.True(t, clientSocket.Local.Addr().Is4())
+	})
+
+	t.Run("FlowWithoutProcess", func(t *testing.T) {
+		// Sockets that predate the queue are unknown to the probes
+		// until used through a call that carries an address. A
+		// connected socket written with send(2) never is, so its
+		// flows have no process. GetEvent must deliver them anyway,
+		// with a zero-valued Process and the socket and flow intact.
+		listener, err := net.ListenUDP("udp4",
+			&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		require.NoError(t, err)
+		defer listener.Close()
+
+		conn, err := net.DialUDP("udp4", nil,
+			listener.LocalAddr().(*net.UDPAddr))
+		require.NoError(t, err)
+		defer conn.Close()
+
+		attr := DefaultQueueAttr()
+		attr.HoldTime = 25
+		attr.Flags |= QQ_UDP_FLOW
+		attr.UdpAggTime = 200
+		attr.UdpIdleTime = 400
+
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		payload := []byte("hello")
+		_, err = conn.Write(payload)
+		require.NoError(t, err)
+
+		local := conn.LocalAddr().(*net.UDPAddr).AddrPort()
+		remote := conn.RemoteAddr().(*net.UDPAddr).AddrPort()
+
+		var event Event
+		found := false
+		deadline := time.Now().Add(5 * time.Second)
+		for !found && time.Now().Before(deadline) {
+			qev, ok := queue.GetEvent()
+			if !ok {
+				queue.Block()
+				continue
+			}
+			if qev.Events&QUARK_EV_SOCK_FLOW == 0 || qev.Socket == nil {
+				continue
+			}
+			if qev.Socket.Local == local && qev.Socket.Remote == remote {
+				event = qev
+				found = true
+			}
+		}
+		require.True(t, found)
+
+		// Delivered without a process, on both the event and the socket.
+		require.Zero(t, event.Process)
+		require.Zero(t, event.Socket.PidOrigin)
+		require.Zero(t, event.Socket.PidLastUse)
+
+		// The payload survived.
+		require.Equal(t, QUARK_TRANSPORT_UDP, event.Socket.Transport)
+		require.NotZero(t, event.Socket.Cookie)
+		require.NotNil(t, event.Flow)
+		require.Equal(t, uint64(len(payload)), event.Flow.BytesSent)
+		require.Equal(t, uint64(1), event.Flow.PacketsSent)
+		require.Zero(t, event.Flow.BytesReceived)
+		require.NotZero(t, event.Flow.FirstTime)
+		require.Equal(t, event.Flow.FirstTime, event.Flow.LastTime)
 	})
 
 	t.Run("PasswdGroupLookup", func(t *testing.T) {

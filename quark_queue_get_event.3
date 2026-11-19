@@ -47,6 +47,9 @@ is defined as:
 struct quark_event {
 	u64				 events;
 	const struct quark_process	*process;
+	const struct quark_socket	*socket;
+	struct quark_flow		 flow;
+	...
 };
 .Ed
 .Bl -tag -width "events"
@@ -146,6 +149,26 @@ A failed operation has no valid object identity, including failure to install
 the fd after verification.
 A successful event without valid identity indicates capture loss; consult
 .Xr quark_queue_get_stats 3 .
+.It Dv QUARK_EV_SOCK_CONN_ESTABLISHED
+A TCP connection was accepted or connected, or a UDP flow was seen for the
+first time.
+.Em socket
+is valid.
+.It Dv QUARK_EV_SOCK_CONN_CLOSED
+A TCP connection was closed, or a UDP socket went
+.Em udp_idle_time
+without traffic.
+.Em socket
+is valid and carries the totals.
+.It Dv QUARK_EV_SOCK_FLOW
+One aggregation period of a UDP flow, see
+.Dv QQ_UDP_FLOW
+in
+.Xr quark_queue_open 3 .
+.Em socket
+is valid with the running totals,
+.Em flow
+holds this period's traffic.
 .El
 .Pp
 It's important to note that
@@ -238,6 +261,81 @@ is valid.
 .Em cgroup
 is valid.
 .El
+.It Em socket
+The socket behind a
+.Dv QUARK_EV_SOCK_CONN_ESTABLISHED ,
+.Dv QUARK_EV_SOCK_CONN_CLOSED
+or
+.Dv QUARK_EV_SOCK_FLOW ,
+.Dv NULL
+otherwise.
+.Vt struct quark_socket
+is defined as:
+.Bd -literal
+struct quark_socket {
+	struct quark_sockaddr	local;
+	struct quark_sockaddr	remote;
+	enum quark_transport	transport;	/* QUARK_TRANSPORT_{TCP,UDP} */
+	u64			cookie;			/* kernel socket cookie, UDP only */
+	u32			pid_origin;
+	u32			pid_last_use;
+	u64			established_time;
+	u64			close_time;
+	u64			last_time;		/* last datagram, UDP only */
+	enum sock_conn		conn_origin;
+	u64			bytes_received;
+	u64			bytes_sent;
+	u64			packets_received;	/* UDP only */
+	u64			packets_sent;		/* UDP only */
+	...
+};
+.Ed
+.Pp
+The byte counts are payload, without IP and UDP headers, and are the totals
+since
+.Em established_time .
+Addresses and ports are in network byte order.
+.Pp
+.Em pid_origin
+is the process the socket is attributed to, the one that connected or
+accepted a TCP connection, or that sent or received a UDP socket's first
+flow.
+It is zero when that flow had no known process, and is filled in by the
+first one that does.
+.Em pid_last_use
+is the last process seen acting on the socket, which differs from the origin
+when the descriptor is inherited or shared.
+The event's
+.Em process
+is resolved from the origin.
+.Pp
+.Em cookie
+is the kernel's socket cookie, unique for the lifetime of the boot, filled in
+by the first
+.Dv QUARK_EV_SOCK_FLOW
+of the socket and zero for TCP.
+Every peer of an unconnected UDP socket is a socket of its own to quark, but
+all such sockets share the same cookie.
+The cookie is part of a UDP socket's identity: several sockets with the same
+endpoints, as with
+.Dv SO_REUSEPORT ,
+are kept apart, and
+.Fn quark_socket_lookup
+takes it to pick one of them, or zero for the first.
+.It Em flow
+Valid with
+.Dv QUARK_EV_SOCK_FLOW ,
+the traffic of one aggregation period:
+.Bd -literal
+struct quark_flow {
+	u64	first_time;
+	u64	last_time;
+	u64	bytes_received;
+	u64	bytes_sent;
+	u64	packets_received;
+	u64	packets_sent;
+};
+.Ed
 .El
 .Sh MEMORY PROTOCOL
 The returned

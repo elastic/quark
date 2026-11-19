@@ -484,6 +484,33 @@ struct ebpf_dns_event {
     char packet[]; // must be last
 } __attribute__((packed));
 
+// UDP flow accounting. cgroup_skb/{ingress,egress} aggregate every UDP
+// datagram into one of two identical hash maps keyed by socket and 5-tuple.
+// Userspace toggles the active map and drains the inactive one every
+// aggregation period (double buffering).
+// Addresses and ports are in network byte order, IPv4 addresses occupy the
+// first four bytes. The key is hashed bytewise, so pad must stay zero.
+struct ebpf_udp_flow_key {
+    uint64_t cookie; // socket cookie, unique for this boot
+    uint8_t laddr[16];
+    uint8_t raddr[16];
+    uint16_t lport;
+    uint16_t rport;
+    uint16_t family; // enum ebpf_net_info_af, the socket's when connected, the wire's otherwise
+    uint16_t pad; // explicit pad (rather than implicit by compiler)
+};
+
+struct ebpf_udp_flow_val {
+    uint64_t first_ns; // CLOCK_BOOTTIME of the first datagram
+    uint64_t last_ns;  // CLOCK_BOOTTIME of the last datagram
+    uint64_t packets_received;
+    uint64_t packets_sent;
+    uint64_t bytes_received; // UDP payload, no headers
+    uint64_t bytes_sent;
+    uint32_t tgid;           // last known owner, 0 if never seen
+    uint32_t pad; // explicit pad (rather than implicit by compiler)
+};
+
 // Basic event statistics
 struct ebpf_event_stats {
     uint64_t lost;          // lost events due to a full ringbuffer
@@ -491,6 +518,7 @@ struct ebpf_event_stats {
     uint64_t bpf_state_lost; // discarded/rejected invocation frames
     uint64_t bpf_metadata_lost; // operations with failed attrs/identity capture
     uint64_t dns_zero_body; // indicates that the dns body of a sk_buff was unavailable
+    uint64_t udp_flow_lost; // datagrams dropped, flow map full
 } __attribute__((aligned(8)));
 
 #endif // EBPF_EVENTPROBE_EBPFEVENTPROTO_H

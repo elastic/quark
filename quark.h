@@ -22,15 +22,15 @@
 /* Shared quark_rule definitions are in nova.h */
 #include "nova.h"
 
-/* Misc */
-#ifndef ALIGN_UP
-#define ALIGN_UP(_p, _b) (((u64)(_p) + ((_b) - 1)) & ~((_b) - 1))
-#endif
-
 /* Temporary until we have proper env debugging */
 extern int	quark_verbose;
 
 /* quark.c */
+enum quark_transport {
+	QUARK_TRANSPORT_INVALID,
+	QUARK_TRANSPORT_TCP,
+	QUARK_TRANSPORT_UDP,
+};
 struct raw_event;
 struct quark_event;
 struct quark_process;
@@ -68,6 +68,7 @@ int			 quark_dump_process_cache_graph(struct quark_queue *,
 int			 quark_dump_raw_event_graph(struct quark_queue *,
 			     FILE *, FILE *);
 int			 quark_event_dump(const struct quark_event *, FILE *);
+const char		*quark_transport_str(enum quark_transport);
 void			 quark_process_iter_init(struct quark_process_iter *,
 			     struct quark_queue *);
 const struct quark_process *quark_process_iter_next(struct quark_process_iter *);
@@ -79,7 +80,8 @@ void			 quark_socket_iter_init(struct quark_socket_iter *,
 			     struct quark_queue *);
 const struct quark_socket *quark_socket_iter_next(struct quark_socket_iter *);
 const struct quark_socket *quark_socket_lookup(struct quark_queue *,
-			     struct quark_sockaddr *, struct quark_sockaddr *);
+			     enum quark_transport, struct quark_sockaddr *,
+			     struct quark_sockaddr *, u64);
 struct quark_passwd	*quark_passwd_lookup(struct quark_queue *, uid_t);
 struct quark_group	*quark_group_lookup(struct quark_queue *, gid_t);
 const struct quark_pod	*quark_pod_lookup(struct quark_queue *, const char *);
@@ -231,29 +233,6 @@ int	quark_event_to_ecs(struct quark_queue *qq,
 	    const struct quark_event *qev, char **, size_t *);
 
 /*
- * Time helpers
- */
-#ifndef NS_PER_S
-#define NS_PER_S	1000000000ULL
-#endif /* NS_PER_S */
-
-#ifndef NS_PER_MS
-#define NS_PER_MS	1000000ULL
-#endif /* NS_PER_MS */
-
-#ifndef MS_TO_NS
-#define MS_TO_NS(_x)	((u64)(_x) * NS_PER_MS)
-#endif /* MS_TO_NS */
-
-#ifndef TS_TO_NS
-#define TS_TO_NS(_ts) ((u64)(_ts).tv_sec * NS_PER_S + (u64)(_ts).tv_nsec)
-#endif /* TS_TO_NS */
-
-#ifndef NS_TO_S
-#define NS_TO_S(_x)	((u64)(_x) / NS_PER_S)
-#endif /* NS_TO_S */
-
-/*
  * Generic exported constants
  */
 #define QUARK_MAX_PACKET	2048
@@ -355,14 +334,38 @@ enum sock_conn {
 	SOCK_CONN_ACCEPT,
 	SOCK_CONN_CONNECT,
 	SOCK_CONN_SCRAPE,
+	SOCK_CONN_FLOW,		/* one aggregation period of a UDP flow */
 };
 
 struct raw_sock_conn {
 	struct quark_sockaddr	local;
 	struct quark_sockaddr	remote;
+	enum quark_transport	transport;
 	enum sock_conn		conn;
 	u64	bytes_received;
 	u64	bytes_sent;
+	/*
+	 * SOCK_CONN_FLOW only, the period's traffic in both directions
+	 * and its CLOCK_BOOTTIME bounds.
+	 */
+	u64	cookie;
+	u64	packets_received;
+	u64	packets_sent;
+	u64	first_time;
+	u64	last_time;
+};
+
+/*
+ * One aggregation period of a UDP flow, the deltas behind a
+ * QUARK_EV_SOCK_FLOW; the totals live in the socket.
+ */
+struct quark_flow {
+	u64	first_time;
+	u64	last_time;
+	u64	bytes_received;
+	u64	bytes_sent;
+	u64	packets_received;
+	u64	packets_sent;
 };
 
 enum quark_packet_direction {
@@ -594,10 +597,12 @@ struct quark_event {
 #define QUARK_EV_GETPID			(1 << 14)
 #define QUARK_EV_MPROTECT		(1 << 15)
 #define QUARK_EV_BPF			(1 << 16)
+#define QUARK_EV_SOCK_FLOW		(1 << 17)
 	u64				 events;
 	u64				 time;
 	const struct quark_process	*process;
 	const struct quark_socket	*socket;
+	struct quark_flow		 flow;		/* QUARK_EV_SOCK_FLOW */
 	struct quark_packet		*packet;
 	const void			*bypass;
 	struct quark_file		*file;
@@ -740,15 +745,24 @@ struct quark_cmdline_iter {
 struct quark_socket {
 	struct gc_link		gc;			/* must be first */
 	RB_ENTRY(quark_socket)	entry_by_src_dst;
+	TAILQ_ENTRY(quark_socket) idle_entry;		/* UDP, on qq->udp_idle, longest idle first */
 	struct quark_sockaddr	local;
 	struct quark_sockaddr	remote;
+	enum quark_transport	transport;
+	u64			cookie;			/* kernel socket cookie, UDP only */
 	u32			pid_origin;
 	u32			pid_last_use;
 	u64			established_time;
 	u64			close_time;
+	u64			last_time;		/* last datagram, UDP only */
 	enum sock_conn		conn_origin;
 	u64			bytes_received;
 	u64			bytes_sent;
+	u64			packets_received;	/* UDP only */
+	u64			packets_sent;		/* UDP only */
+	/* Internal */
+	u64			idle_since;		/* Userspace time, UDP only */
+	int			idle_linked;		/* Set while on qq->udp_idle, see udp_idle_unlink() */
 };
 
 struct quark_socket_iter {
@@ -958,6 +972,7 @@ struct quark_queue_stats {
 	u64	bpf_metadata_lost; /* metadata capture failed for an operation */
 	u64	bpf_retprobe_missed; /* tracefs misses; may overlap state_lost */
 	u64	stalls;     /* stalled perf rings due to corruption, only for QQ_KPROBE */
+	u64	udp_flow_lost;	/* datagrams dropped by a full flow map, only for QQ_UDP_FLOW */
 	int	bpf_retprobe_stats_valid; /* last miss-count refresh succeeded */
 	int	backend;    /* active backend, QQ_EBPF or QQ_KPROBE */
 	/* TODO u64    peak_nodes; */
@@ -987,10 +1002,13 @@ struct quark_queue_attr {
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
 #define QQ_MPROTECT		(1 << 15)
+#define QQ_UDP_FLOW		(1 << 16)
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */
 	int			 hold_time;		/* in ms */
+	int			 udp_agg_time;		/* in ms, QQ_UDP_FLOW period */
+	int			 udp_idle_time;		/* in ms, UDP socket closes after */
 	size_t			 max_env;		/* max process environment in bytes */
 	int			 kubefd;		/* quark-kube-talker pipe, -1 disables */
 	struct quark_ruleset	*ruleset;		/* active ruleset */
@@ -1020,6 +1038,9 @@ struct quark_queue {
 	int				 max_length;
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
+	u64				 udp_agg_time;		/* in ns */
+	u64				 udp_idle_time;		/* in ns */
+	TAILQ_HEAD(udp_idle_queue, quark_socket) udp_idle;	/* UDP sockets, longest idle first */
 	size_t				 max_env;		/* max process environment in bytes */
 	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;

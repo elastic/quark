@@ -51,7 +51,9 @@
 #include <unistd.h>
 
 #include "quark.h"
+#include "quark_internal.h"
 #include "quark-test.h"
+#include "bpf_probes_skel.h"
 
 /* For bypass tests */
 #include "elastic-ebpf/GPL/Events/EbpfEventProto.h"
@@ -2299,6 +2301,12 @@ t_bypass(const struct test *t, struct quark_queue_attr *qa)
 	qa->flags &= ~QQ_ENTRY_LEADER;
 	qa->flags |= QQ_BYPASS;
 
+	/* Flows go through the raw event tree, bypass must refuse them */
+	qa->flags |= QQ_UDP_FLOW;
+	if (quark_queue_open(&qq, qa) == 0 || errno != EINVAL)
+		errx(1, "quark_queue_open accepted QQ_BYPASS|QQ_UDP_FLOW");
+	qa->flags &= ~QQ_UDP_FLOW;
+
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
@@ -3358,6 +3366,7 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert(qev->process != NULL);
 	assert((pid_t)qev->process->pid == child);
 	assert(qev->socket != NULL);
+	assert(qev->socket->transport == QUARK_TRANSPORT_TCP);
 	assert(qev->socket->established_time > 0);
 	assert(qev->socket->conn_origin == SOCK_CONN_CONNECT);
 	assert((pid_t)qev->socket->pid_origin == child);
@@ -3947,6 +3956,845 @@ static int
 t_dns6_existing_connect(const struct test *t, struct quark_queue_attr *qa)
 {
 	return (t_dns_existing_af(t, qa, AF_INET6, 1));
+}
+
+/*
+ * Kernel side of UDP flow accounting, read straight out of the active map
+ * before any drain: one datagram over loopback shows up twice, on the
+ * sender's socket as sent and on the listener's as received, both owned by
+ * the child. Anything else on the host is ignored.
+ *
+ * The two entries get their key differently: the sender is connected, its
+ * key is the socket's tuple, the listener is not, its key is read from the
+ * datagram's headers.
+ */
+static int
+t_udp_flow_map_af(const struct test *t, struct quark_queue_attr *qa, int af)
+{
+	struct quark_queue		 qq;
+	struct bpf_probes		*p;
+	struct ebpf_udp_flow_key	 key, *prev;
+	struct ebpf_udp_flow_val	 val;
+	pid_t				 child;
+	u16				 bound_port, family;
+	u8				 loopback[sizeof(key.laddr)];
+	u32				 loopback4;
+	u64				 sent_cookie, recv_cookie;
+	int				 nsent, nrecv;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", t->name);
+		return (0);
+	}
+	if (af == AF_INET6 && !have_ipv6()) {
+		warnx("%s: no IPv6, skipping", t->name);
+		return (0);
+	}
+
+	assert_localhost();
+
+	qa->flags |= QQ_UDP_FLOW;
+	/* keep the drain out of the way */
+	qa->udp_agg_time = 600000;
+	qa->udp_idle_time = 600000;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	child = fork_sock_write_af(af, af, 12345, SOCK_DGRAM, 0, &bound_port);
+
+	p = quark_get_bpf_probes(&qq);
+	assert(p != NULL);
+
+	/* an IPv4 address is the first four bytes, the rest stays zero */
+	bzero(loopback, sizeof(loopback));
+	if (af == AF_INET6) {
+		family = EBPF_NETWORK_EVENT_AF_INET6;
+		memcpy(loopback, &in6addr_loopback, sizeof(in6addr_loopback));
+	} else {
+		family = EBPF_NETWORK_EVENT_AF_INET;
+		loopback4 = htonl(INADDR_LOOPBACK);
+		memcpy(loopback, &loopback4, sizeof(loopback4));
+	}
+	nsent = nrecv = 0;
+	sent_cookie = recv_cookie = 0;
+	prev = NULL;
+	while (bpf_map__get_next_key(p->maps.udp_flows0, prev, &key,
+	    sizeof(key)) == 0) {
+		prev = &key;
+		if (key.family != family)
+			continue;
+		if (memcmp(key.laddr, loopback, sizeof(key.laddr)) ||
+		    memcmp(key.raddr, loopback, sizeof(key.raddr)))
+			continue;
+		/* the child's two entries only, the host has other loopback flows */
+		if (!(key.lport == bound_port && key.rport == htons(12345)) &&
+		    !(key.lport == htons(12345) && key.rport == bound_port))
+			continue;
+		assert(bpf_map__lookup_elem(p->maps.udp_flows0, &key,
+		    sizeof(key), &val, sizeof(val), 0) == 0);
+		assert(key.pad == 0);
+		assert(key.cookie != 0);
+		assert(val.tgid == (u32)child);
+		assert(val.first_ns != 0);
+		assert(val.first_ns == val.last_ns);
+
+		if (key.lport == bound_port && key.rport == htons(12345)) {
+			/* sender socket */
+			assert(val.packets_sent == 1);
+			assert(val.bytes_sent == strlen(PATTERN));
+			assert(val.packets_received == 0);
+			assert(val.bytes_received == 0);
+			sent_cookie = key.cookie;
+			nsent++;
+		} else if (key.lport == htons(12345) &&
+		    key.rport == bound_port) {
+			/* listener socket */
+			assert(val.packets_received == 1);
+			assert(val.bytes_received == strlen(PATTERN));
+			assert(val.packets_sent == 0);
+			assert(val.bytes_sent == 0);
+			recv_cookie = key.cookie;
+			nrecv++;
+		}
+	}
+	assert(errno == ENOENT);
+	assert(nsent == 1);
+	assert(nrecv == 1);
+	/* two sockets, two flows */
+	assert(sent_cookie != recv_cookie);
+
+	/* generation zero, the other map is untouched */
+	assert(bpf_map__get_next_key(p->maps.udp_flows1, NULL, &key,
+	    sizeof(key)) == -ENOENT);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static int
+t_udp_flow_map(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_udp_flow_map_af(t, qa, AF_INET));
+}
+
+/*
+ * The listener's key is the only place the IPv6 addresses of a datagram
+ * are read from its headers, and they are only read with flows on.
+ */
+static int
+t_udp_flow_map6(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_udp_flow_map_af(t, qa, AF_INET6));
+}
+
+static void
+assert_udp_socket(const struct quark_socket *qsk, pid_t child, u16 lport,
+    u16 rport)
+{
+	assert(qsk != NULL);
+	assert(qsk->transport == QUARK_TRANSPORT_UDP);
+	assert(qsk->cookie != 0);
+	assert(qsk->conn_origin == SOCK_CONN_FLOW);
+	assert((pid_t)qsk->pid_origin == child);
+	assert((pid_t)qsk->pid_last_use == child);
+	assert(qsk->established_time > 0);
+	assert(qsk->last_time >= qsk->established_time);
+	assert(qsk->local.af == AF_INET);
+	assert(qsk->local.u.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qsk->local.port == lport);
+	assert(qsk->remote.af == AF_INET);
+	assert(qsk->remote.u.addr4 == htonl(INADDR_LOOPBACK));
+	assert(qsk->remote.port == rport);
+}
+
+/*
+ * The sender wrote PATTERN once, the listener received it once, nothing
+ * else moved on either socket.
+ */
+static void
+assert_udp_totals(const struct quark_socket *qsk, u16 bound_port)
+{
+	if (qsk->local.port == bound_port) {
+		assert(qsk->packets_sent == 1);
+		assert(qsk->bytes_sent == strlen(PATTERN));
+		assert(qsk->packets_received == 0);
+		assert(qsk->bytes_received == 0);
+	} else {
+		assert(qsk->packets_received == 1);
+		assert(qsk->bytes_received == strlen(PATTERN));
+		assert(qsk->packets_sent == 0);
+		assert(qsk->bytes_sent == 0);
+	}
+}
+
+/*
+ * UDP flows end to end, sharing the cgroup_skb pass with DNS: one datagram
+ * to port 53 over loopback yields two DNS packets, one flow per socket that
+ * doubles as its ESTABLISHED, and once the sockets sit idle, a CLOSED for
+ * each with the totals.
+ */
+static int
+t_udp_flow(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_socket	*qsk;
+	pid_t				 child;
+	u16				 bound_port;
+	u64				 sender_cookie, listener_cookie;
+	int				 npackets, nflow_sender, nflow_listener;
+	int				 nclosed;
+
+	/* the flow drain walks the map with bpf_map_get_next_key */
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	assert_localhost();
+
+	qa->flags |= QQ_DNS | QQ_UDP_FLOW;
+	qa->udp_agg_time = 200;
+	qa->udp_idle_time = 400;
+	/* the child is long gone by the time its sockets are retired */
+	qa->cache_grace_time = 10000;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	child = fork_sock_write(53, SOCK_DGRAM, &bound_port);
+
+	npackets = nflow_sender = nflow_listener = nclosed = 0;
+	while (nclosed < 2) {
+		qev = drain_for_pid(&qq, child);
+
+		if (qev->events & QUARK_EV_PACKET) {
+			assert(qev->packet->origin == QUARK_PACKET_ORIGIN_DNS);
+			npackets++;
+			continue;
+		}
+
+		if (qev->events & QUARK_EV_SOCK_FLOW) {
+			/* the first period of a socket is its ESTABLISHED */
+			assert(qev->events ==
+			    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+			qsk = qev->socket;
+			if (qsk->local.port == bound_port) {
+				assert_udp_socket(qsk, child, bound_port,
+				    htons(53));
+				assert(qev->flow.packets_sent == 1);
+				assert(qev->flow.bytes_sent == strlen(PATTERN));
+				assert(qev->flow.packets_received == 0);
+				assert(qev->flow.bytes_received == 0);
+				sender_cookie = qsk->cookie;
+				nflow_sender++;
+			} else {
+				assert_udp_socket(qsk, child, htons(53),
+				    bound_port);
+				assert(qev->flow.packets_received == 1);
+				assert(qev->flow.bytes_received == strlen(PATTERN));
+				assert(qev->flow.packets_sent == 0);
+				assert(qev->flow.bytes_sent == 0);
+				listener_cookie = qsk->cookie;
+				nflow_listener++;
+			}
+			/* one datagram, one period */
+			assert(qev->flow.first_time > 0);
+			assert(qev->flow.first_time == qev->flow.last_time);
+			assert(qsk->established_time == qev->flow.first_time);
+			assert(qsk->last_time == qev->flow.last_time);
+			assert(qsk->close_time == 0);
+			assert_udp_totals(qsk, bound_port);
+			continue;
+		}
+
+		if (qev->events & QUARK_EV_SOCK_CONN_CLOSED) {
+			assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+			qsk = qev->socket;
+			if (qsk->local.port == bound_port)
+				assert_udp_socket(qsk, child, bound_port,
+				    htons(53));
+			else
+				assert_udp_socket(qsk, child, htons(53),
+				    bound_port);
+			assert(qsk->close_time > 0);
+			assert_udp_totals(qsk, bound_port);
+			/* still there for a grace period, by tuple and by cookie */
+			assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP,
+			    (struct quark_sockaddr *)&qsk->local,
+			    (struct quark_sockaddr *)&qsk->remote, 0) == qsk);
+			assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP,
+			    (struct quark_sockaddr *)&qsk->local,
+			    (struct quark_sockaddr *)&qsk->remote,
+			    qsk->cookie) == qsk);
+			nclosed++;
+			continue;
+		}
+
+		/* the child's own fork and exit */
+		assert(qev->socket == NULL);
+	}
+
+	assert(npackets == 2);
+	assert(nflow_sender == 1);
+	assert(nflow_listener == 1);
+	/* two sockets, two cookies */
+	assert(sender_cookie != listener_cookie);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Helpers for t_udp_flow_periods(). The sender's flows are told apart from
+ * the listener's by the peer port.
+ */
+#define UDP_PERIODS_PORT	12346
+
+/*
+ * The queue and the flow maps see every UDP datagram on the host, so the
+ * test's sender is identified exactly: the child's pid and its socket's
+ * four-tuple on the loopback, the bound port learned from the child.
+ */
+struct udp_periods {
+	pid_t				 child;
+	u16				 bound_port;	/* the sender's, network order */
+	const struct quark_socket	*qsk;		/* the sender's socket */
+	int				 nflow;		/* its flows so far */
+};
+
+static int
+udp_periods_is_sender(const struct udp_periods *st,
+    const struct quark_socket *qsk)
+{
+	return (qsk->transport == QUARK_TRANSPORT_UDP &&
+	    qsk->local.af == AF_INET &&
+	    qsk->local.u.addr4 == htonl(INADDR_LOOPBACK) &&
+	    qsk->local.port == st->bound_port &&
+	    qsk->remote.af == AF_INET &&
+	    qsk->remote.u.addr4 == htonl(INADDR_LOOPBACK) &&
+	    qsk->remote.port == htons(UDP_PERIODS_PORT) &&
+	    (pid_t)qsk->pid_origin == st->child);
+}
+
+/*
+ * Process one event, or wait for one. Only the sender's flows are checked,
+ * everything else on the host goes by.
+ */
+static void
+udp_periods_consume(struct quark_queue *qq, struct udp_periods *st)
+{
+	const struct quark_event	*qev;
+
+	if ((qev = quark_queue_get_event(qq)) == NULL) {
+		if (quark_queue_block(qq) == -1)
+			err(1, "quark_queue_block");
+		return;
+	}
+	if ((qev->events & QUARK_EV_SOCK_FLOW) == 0)
+		return;
+	if (qev->process == NULL || (pid_t)qev->process->pid != st->child)
+		return;
+	if (!udp_periods_is_sender(st, qev->socket))
+		return;
+	if (st->nflow == 0) {
+		assert(qev->events ==
+		    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+		st->qsk = qev->socket;
+	} else {
+		assert(qev->events == QUARK_EV_SOCK_FLOW);
+		assert(qev->socket == st->qsk);
+	}
+	/* one datagram per period, and the socket carries the totals */
+	assert(qev->flow.packets_sent == 1);
+	assert(qev->flow.bytes_sent == strlen(PATTERN));
+	assert(qev->flow.packets_received == 0);
+	st->nflow++;
+	assert(st->qsk->packets_sent == (u64)st->nflow);
+	assert(st->qsk->bytes_sent == st->nflow * strlen(PATTERN));
+}
+
+static u32
+udp_periods_gen(struct bpf_probes *p)
+{
+	u32	zero, gen;
+
+	zero = 0;
+	assert(bpf_map__lookup_elem(p->maps.udp_flow_gen, &zero, sizeof(zero),
+	    &gen, sizeof(gen), 0) == 0);
+
+	return (gen);
+}
+
+/*
+ * Drive the queue until the sender has nflow flows, or until the generation
+ * has the parity asked for; -1 disables either condition.
+ */
+static void
+udp_periods_wait(struct quark_queue *qq, struct bpf_probes *p,
+    struct udp_periods *st, int nflow, int parity)
+{
+	struct timespec	start, now;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	for (;;) {
+		if (nflow != -1 && st->nflow >= nflow)
+			return;
+		if (parity != -1 && (int)(udp_periods_gen(p) & 1) == parity)
+			return;
+		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
+			err(1, "clock_gettime");
+		if (now.tv_sec - start.tv_sec >= 5)
+			errx(1, "udp_periods_wait: timeout (nflow %d parity %d)",
+			    nflow, parity);
+		udp_periods_consume(qq, st);
+	}
+}
+
+/*
+ * The child's entries in a flow map, straight from the kernel, picked by
+ * the exact four-tuple and the child's tgid; whatever else the host put
+ * there is ignored. With sent set, the sender's entry must be there with
+ * the one datagram just sent; otherwise none of the child's entries may
+ * remain, in either direction.
+ */
+static void
+udp_periods_in_map(struct bpf_map *m, const struct udp_periods *st, int sent)
+{
+	struct ebpf_udp_flow_key	 key, *prev;
+	struct ebpf_udp_flow_val	 val;
+	u32				 loopback;
+	int				 nsender, nlistener;
+
+	loopback = htonl(INADDR_LOOPBACK);
+	nsender = nlistener = 0;
+	prev = NULL;
+	while (bpf_map__get_next_key(m, prev, &key, sizeof(key)) == 0) {
+		prev = &key;
+		if (key.family != EBPF_NETWORK_EVENT_AF_INET ||
+		    memcmp(key.laddr, &loopback, 4) ||
+		    memcmp(key.raddr, &loopback, 4))
+			continue;
+		if (key.lport == st->bound_port &&
+		    key.rport == htons(UDP_PERIODS_PORT)) {
+			assert(bpf_map__lookup_elem(m, &key, sizeof(key),
+			    &val, sizeof(val), 0) == 0);
+			if ((pid_t)val.tgid != st->child)
+				continue;
+			assert(val.packets_sent == 1);
+			assert(val.bytes_sent == strlen(PATTERN));
+			nsender++;
+		} else if (key.lport == htons(UDP_PERIODS_PORT) &&
+		    key.rport == st->bound_port) {
+			assert(bpf_map__lookup_elem(m, &key, sizeof(key),
+			    &val, sizeof(val), 0) == 0);
+			if ((pid_t)val.tgid != st->child)
+				continue;
+			nlistener++;
+		}
+	}
+	assert(errno == ENOENT);
+	assert(nsender == sent);
+	if (!sent)
+		assert(nlistener == 0);
+}
+
+/*
+ * Tell the child to send one datagram and wait until it has. The child's
+ * socket accounts the datagram on the way out, before send(2) returns, so
+ * once the child acknowledges, the sender's entry is in the active map. No
+ * get_event runs while we wait, so no generation flips either.
+ */
+static void
+udp_periods_send(int cmd_fd, int ack_fd)
+{
+	char	c;
+
+	if (qwrite(cmd_fd, "x", 1) == -1)
+		err(1, "qwrite cmd");
+	if (qread(ack_fd, &c, 1) != 1)
+		errx(1, "child went away before acknowledging a send");
+}
+
+/*
+ * Test the double buffer over several periods. A child sends a datagram on
+ * one connected socket each time it is told to over a pipe, acknowledging
+ * each send over another; the parent paces the sends by the generation
+ * counter so one lands in each map in turn, udp_flows0, then udp_flows1,
+ * then udp_flows0 again after its drain, and looks into the kernel map to
+ * see it there. Every period reaches the sender's socket as its own flow
+ * with the totals adding up, and nothing of the child's is left in either
+ * map once it is gone.
+ */
+static int
+t_udp_flow_periods(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct bpf_probes		*p;
+	struct udp_periods		 st;
+	int				 i, status, cmd[2], ack[2];
+	int				 listen_fd, conn_fd, noise_fd;
+	u16				 bound_port;
+	char				 c;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	assert_localhost();
+
+	qa->flags |= QQ_UDP_FLOW;
+	qa->udp_agg_time = 1000;		/* room to look into the maps */
+	qa->udp_idle_time = 10000;		/* no closes during the test */
+	qa->cache_grace_time = 10000;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	p = quark_get_bpf_probes(&qq);
+	assert(p != NULL);
+
+	if (pipe(cmd) == -1 || pipe(ack) == -1)
+		err(1, "pipe");
+	bzero(&st, sizeof(st));
+	if ((st.child = fork()) == -1) {
+		err(1, "fork");
+	} else if (st.child == 0) {
+		close(cmd[1]);
+		close(ack[0]);
+		listen_fd = local_listen(AF_INET, UDP_PERIODS_PORT, SOCK_DGRAM,
+		    0);
+		conn_fd = local_connect(AF_INET, UDP_PERIODS_PORT, SOCK_DGRAM,
+		    0, 0, &bound_port);
+		/* sockets are up, tell the parent which port we got */
+		if (qwrite(ack[1], &bound_port, sizeof(bound_port)) == -1)
+			err(1, "qwrite port");
+		/* one datagram per byte, acknowledged, until the parent hangs up */
+		while (qread(cmd[0], &c, 1) == 1) {
+			if (qwrite(conn_fd, PATTERN, strlen(PATTERN)) == -1)
+				err(1, "qwrite");
+			if (qwrite(ack[1], "x", 1) == -1)
+				err(1, "qwrite ack");
+		}
+		close(listen_fd);
+		close(conn_fd);
+		exit(0);
+	}
+	close(cmd[0]);
+	close(ack[1]);
+	if (qread(ack[0], &st.bound_port, sizeof(st.bound_port)) !=
+	    sizeof(st.bound_port))
+		errx(1, "child went away before reporting its port");
+
+	/*
+	 * Stand in for the rest of the host: our own datagrams to the same
+	 * listener, from another pid and another port, sent before every
+	 * look into the maps. They share the maps and the queue with the
+	 * child's and must be ignored by every filter.
+	 */
+	noise_fd = local_connect(AF_INET, UDP_PERIODS_PORT, SOCK_DGRAM, 0, 0,
+	    NULL);
+
+	/* Generation 0 writes udp_flows0. */
+	assert(udp_periods_gen(p) == 0);
+	udp_periods_send(cmd[1], ack[0]);
+	assert(qwrite(noise_fd, PATTERN, strlen(PATTERN)) == 0);
+	udp_periods_in_map(p->maps.udp_flows0, &st, 1);
+	udp_periods_wait(&qq, p, &st, 1, -1);
+
+	/* An odd generation writes udp_flows1. */
+	udp_periods_wait(&qq, p, &st, -1, 1);
+	udp_periods_send(cmd[1], ack[0]);
+	assert(qwrite(noise_fd, PATTERN, strlen(PATTERN)) == 0);
+	udp_periods_in_map(p->maps.udp_flows1, &st, 1);
+	udp_periods_wait(&qq, p, &st, 2, -1);
+
+	/* Even again: udp_flows0, drained once, takes entries again. */
+	udp_periods_wait(&qq, p, &st, -1, 0);
+	udp_periods_send(cmd[1], ack[0]);
+	assert(qwrite(noise_fd, PATTERN, strlen(PATTERN)) == 0);
+	udp_periods_in_map(p->maps.udp_flows0, &st, 1);
+	udp_periods_wait(&qq, p, &st, 3, -1);
+
+	assert(st.nflow == 3);
+	assert(st.qsk->packets_sent == 3);
+	assert(st.qsk->bytes_sent == 3 * strlen(PATTERN));
+	assert(udp_periods_gen(p) >= 2);
+
+	close(cmd[1]);
+	close(ack[0]);
+	if (waitpid(st.child, &status, 0) == -1)
+		err(1, "waitpid");
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+	/*
+	 * Everything of the child's was drained from both maps. Other UDP
+	 * traffic on the host may be in the active map, that is its job;
+	 * one more of ours makes sure of it.
+	 */
+	for (i = 0; i < 10; i++) {
+		(void)quark_queue_get_event(&qq);
+		msleep(50);
+	}
+	assert(qwrite(noise_fd, PATTERN, strlen(PATTERN)) == 0);
+	udp_periods_in_map(p->maps.udp_flows0, &st, 0);
+	udp_periods_in_map(p->maps.udp_flows1, &st, 0);
+	close(noise_fd);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * One aggregation period of a UDP flow as the drain would hand it over,
+ * on the loopback with the ports and cookie given. Nothing is held when
+ * the time is ancient, so the raw event pops on the next get_event.
+ */
+static void
+insert_udp_flow(struct quark_queue *qq, u64 time, u64 cookie, u16 lport,
+    u16 rport)
+{
+	struct raw_event	*raw;
+	struct raw_sock_conn	*conn;
+
+	raw = raw_event_alloc(RAW_SOCK_CONN);
+	assert(raw != NULL);
+	raw->pid = 1234;
+	raw->time = time;
+	conn = &raw->sock_conn;
+	conn->local.af = AF_INET;
+	conn->local.u.addr4 = htonl(INADDR_LOOPBACK);
+	conn->local.port = lport;
+	conn->remote.af = AF_INET;
+	conn->remote.u.addr4 = htonl(INADDR_LOOPBACK);
+	conn->remote.port = rport;
+	conn->transport = QUARK_TRANSPORT_UDP;
+	conn->conn = SOCK_CONN_FLOW;
+	conn->cookie = cookie;
+	conn->packets_sent = 1;
+	conn->bytes_sent = strlen(PATTERN);
+	conn->first_time = time;
+	conn->last_time = time;
+	assert(raw_event_insert(qq, raw) == 0);
+}
+
+/*
+ * UDP sockets have no close, quark closes them after udp_idle_time without
+ * a flow. The close is this call's event, with the totals, one socket per
+ * call so a burst of expirations trickles out. Raw events come first, a
+ * close only fills a call with nothing else ready, unless it has been due
+ * for longer than hold_time. A flow that arrives after the close
+ * re-establishes the socket. Backend-free: flows are injected, only the
+ * idle and hold timers are real.
+ */
+static int
+t_udp_idle_close(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_socket	*qsk1, *qsk2;
+	u64				 before;
+	int				 i, nclosed;
+
+	quark_queue_init_bare(&qq);
+	qq.max_length = 16;
+	qq.hold_time = 300;			/* ms */
+	qq.cache_grace_time = MS_TO_NS(60000);	/* keep closed sockets */
+	qq.udp_agg_time = MS_TO_NS(1);
+	qq.udp_idle_time = MS_TO_NS(1);		/* window is the flip grace */
+
+	/* Two sockets, each established by its first flow. */
+	insert_udp_flow(&qq, 1, 42, htons(5353), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	qsk1 = qev->socket;
+	assert(qsk1 != NULL && qsk1->close_time == 0);
+
+	insert_udp_flow(&qq, 2, 43, htons(5354), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	qsk2 = qev->socket;
+	assert(qsk2 != NULL && qsk2 != qsk1);
+
+	/* Nothing to report while they are alive. */
+	assert(quark_queue_get_event(&qq) == NULL);
+
+	/*
+	 * Let both idle out, then offer a raw event alongside: the live
+	 * stream goes first, the closes fill the calls after it.
+	 */
+	before = now64();
+	msleep(150);
+	insert_udp_flow(&qq, 3, 44, htons(5355), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	assert(qev->socket->cookie == 44);
+
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+	assert(qev->socket == qsk1);
+	assert(qsk1->close_time > before);
+	assert(qsk1->bytes_sent == strlen(PATTERN));
+	assert(qsk1->packets_sent == 1);
+
+	/*
+	 * Overdue for longer than hold_time, a close jumps ahead of raw
+	 * events that are newer than the socket's due time: here a fresh
+	 * flow for another socket, stamped now and still held.
+	 */
+	msleep(350);
+	insert_udp_flow(&qq, now64(), 45, htons(5356), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+	assert(qev->socket == qsk2);
+	assert(qsk2->close_time > before);
+
+	/* Cookie 44 is due by now and nothing is ready: closed next. */
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+	assert(qev->socket->cookie == 44);
+
+	/* The held flow is not ready yet, then it is. */
+	assert(quark_queue_get_event(&qq) == NULL);
+	msleep(350);
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	assert(qev->socket->cookie == 45);
+
+	/*
+	 * A flow stamped before a socket's due time holds its close back,
+	 * however overdue the socket is, since it may be the socket's own:
+	 * the flow is processed first and keeps the socket open. 500 ms
+	 * puts cookie 45 past the 102 ms window by more than hold_time.
+	 */
+	msleep(500);	/* cookie is overdue */
+	insert_udp_flow(&qq, 9, 45, htons(5356), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_SOCK_FLOW);
+	assert(qev->socket->cookie == 45);
+	assert(qev->socket->close_time == 0);
+	assert(qev->socket->packets_sent == 2);
+
+	/*
+	 * It idles out in turn. The earlier sockets are not closed again,
+	 * and stay visible for the grace period.
+	 */
+	for (i = 0, nclosed = 0; i < 50; i++) {
+		qev = quark_queue_get_event(&qq);
+		if (qev == NULL) {
+			msleep(10);
+			continue;
+		}
+		assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+		assert(qev->socket != qsk1 && qev->socket != qsk2);
+		assert(qev->socket->cookie == 45);
+		nclosed++;
+	}
+	assert(nclosed == 1);
+	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP,
+	    (struct quark_sockaddr *)&qsk1->local,
+	    (struct quark_sockaddr *)&qsk1->remote, 42) == qsk1);
+
+	/* A flow after the close is a new socket on the same tuple. */
+	insert_udp_flow(&qq, 3, 42, htons(5353), htons(53));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	assert(qev->socket->close_time == 0);
+	assert(qev->socket->bytes_sent == strlen(PATTERN));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Several UDP sockets can share one tuple (e.g. SO_REUSEPORT sockets bound
+ * to the same port talking to the same peer), and the kernel keys their flows
+ * by cookie. The socket table must keep them apart by cookie too: separate
+ * sockets, separate totals, exact lookups by cookie, and the zero cookie
+ * returning the first socket. This is a synthetic test that doesn't nee
+ * a backend as flows are injected.
+ */
+static int
+t_udp_reuseport(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_socket	*a, *b;
+	struct quark_sockaddr		 local, remote;
+
+	quark_queue_init_bare(&qq);
+	qq.max_length = 16;
+	qq.hold_time = 300;			/* ms */
+	qq.cache_grace_time = MS_TO_NS(60000);
+	qq.udp_agg_time = MS_TO_NS(60000);	/* nothing idles out */
+	qq.udp_idle_time = MS_TO_NS(60000);
+
+	/* Same tuple, two cookies: two sockets. */
+	insert_udp_flow(&qq, 1, 42, htons(53), htons(40000));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	a = qev->socket;
+	assert(a != NULL && a->cookie == 42);
+
+	insert_udp_flow(&qq, 2, 43, htons(53), htons(40000));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events ==
+	    (QUARK_EV_SOCK_CONN_ESTABLISHED | QUARK_EV_SOCK_FLOW));
+	b = qev->socket;
+	assert(b != NULL && b != a && b->cookie == 43);
+
+	/* A flow lands on its own socket only. */
+	insert_udp_flow(&qq, 3, 43, htons(53), htons(40000));
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_SOCK_FLOW);
+	assert(qev->socket == b);
+	assert(b->packets_sent == 2);
+	assert(b->bytes_sent == 2 * strlen(PATTERN));
+	assert(a->packets_sent == 1);
+	assert(a->bytes_sent == strlen(PATTERN));
+
+	/* Lookups: exact by cookie, first by zero, none for a stranger. */
+	local = a->local;
+	remote = a->remote;
+	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP, &local, &remote,
+	    42) == a);
+	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP, &local, &remote,
+	    43) == b);
+	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP, &local, &remote,
+	    0) == a);
+	assert(quark_socket_lookup(&qq, QUARK_TRANSPORT_UDP, &local, &remote,
+	    44) == NULL);
+
+	quark_queue_close(&qq);
+
+	return (0);
 }
 
 static int
@@ -7099,6 +7947,12 @@ struct test all_tests[] = {
 	T_EBPF(t_dns6_existing),
 	T_EBPF(t_dns_existing_connect),
 	T_EBPF(t_dns6_existing_connect),
+	T_EBPF(t_udp_flow_map),
+	T_EBPF(t_udp_flow_map6),
+	T_EBPF(t_udp_flow),
+	T_EBPF(t_udp_flow_periods),
+	T(t_udp_idle_close),
+	T(t_udp_reuseport),
 	T_EBPF(t_cgroup_parse),
 	T(t_process_container_cache),
 	T(t_link_container_data),

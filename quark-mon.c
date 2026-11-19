@@ -36,6 +36,7 @@ dump_stats(struct quark_queue *qq)
 	    "%14s"
 	    "%14s"
 	    "%14s"
+	    "%14s"
 	    "%14s",
 	    "insertions",
 	    "removals",
@@ -43,7 +44,8 @@ dump_stats(struct quark_queue *qq)
 	    "non-aggs",
 	    "lost",
 	    "gc-cols",
-	    "stalls"
+	    "stalls",
+	    "udp-lost"
 	);
 	fputc('\n', stderr);
 	fprintf(stderr,
@@ -53,9 +55,11 @@ dump_stats(struct quark_queue *qq)
 	    "%14llu"
 	    "%14llu"
 	    "%14llu"
+	    "%14llu"
 	    "%14llu",
 	    s.insertions, s.removals, s.aggregations,
-	    s.non_aggregations, s.lost, s.garbage_collections, s.stalls);
+	    s.non_aggregations, s.lost, s.garbage_collections, s.stalls,
+	    s.udp_flow_lost);
 	fputc('\n', stderr);
 }
 
@@ -120,11 +124,11 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDEeFGgHhkLMNnSsTtuv]\n",
+	fprintf(stderr, "usage: %s [-BbDEeFGgHhkLMNnSsTtUuv]\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
-	    "[-l maxlength] [-m maxnodes]\n", ' ');
-	fprintf(stderr, "%16c [-P ppid] "
+	fprintf(stderr, "%16c [-A udp_agg_ms] [-C filename ] [-I udp_idle_ms] "
+	    "[-K kubeconfig]\n", ' ');
+	fprintf(stderr, "%16c [-l maxlength] [-m maxnodes] [-P ppid] "
 	    "[-r rulefile ]\n", ' ');
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
 
@@ -188,7 +192,7 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
+	while ((ch = getopt(argc, argv, "A:BbC:DEeFGgHhI:K:kLl:Mm:NnP:Ttr:SsUuvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -238,6 +242,22 @@ main(int argc, char *argv[])
 		case 'k':
 			qa.flags |= QQ_KPROBE;
 			break;
+		case 'A':
+			if (optarg == NULL)
+				usage();
+			qa.udp_agg_time = strtonum(optarg, 1, INT_MAX, &errstr);
+			if (errstr != NULL)
+				errx(1, "invalid udp aggregation time: %s", errstr);
+			qa.flags |= QQ_UDP_FLOW;
+			break;
+		case 'I':
+			if (optarg == NULL)
+				usage();
+			qa.udp_idle_time = strtonum(optarg, 1, INT_MAX, &errstr);
+			if (errstr != NULL)
+				errx(1, "invalid udp idle time: %s", errstr);
+			qa.flags |= QQ_UDP_FLOW;
+			break;
 		case 'L':
 			qa.flags |= QQ_MODULE_LOAD;
 			break;
@@ -286,6 +306,9 @@ main(int argc, char *argv[])
 			break;
 		case 'S':
 			qa.flags |= QQ_SOCK_CONN;
+			break;
+		case 'U':
+			qa.flags |= QQ_UDP_FLOW;
 			break;
 		case 'r': {
 			FILE	*rule_in;
@@ -337,15 +360,21 @@ main(int argc, char *argv[])
 
 	if (qa.flags & QQ_BYPASS) {
 		if (qa.flags &
-		    (QQ_KPROBE|QQ_ENTRY_LEADER|QQ_MIN_AGG|QQ_THREAD_EVENTS) ||
+		    (QQ_KPROBE|QQ_ENTRY_LEADER|QQ_MIN_AGG|QQ_THREAD_EVENTS|
+		    QQ_UDP_FLOW) ||
 		    graph_cache != NULL ||
 		    maxnodes != -1 ||
 		    lflag ||
 		    filter_ppid ||
 		    !do_snap)
-			errx(1, "bypass(B) cannot be used with options: CegklmPst");
+			errx(1, "bypass(B) cannot be used with options: ACegIklmPstU");
 		qa.flags |= QQ_EBPF;
 	}
+
+	if ((qa.flags & QQ_UDP_FLOW) && qa.udp_idle_time < qa.udp_agg_time)
+		errx(1, "udp idle time (%d ms) must be at least the "
+		    "aggregation period (%d ms), see -A and -I",
+		    qa.udp_idle_time, qa.udp_agg_time);
 
 	if ((qa.flags & (QQ_EBPF | QQ_KPROBE | QQ_NOVA)) == 0)
 		qa.flags |= QQ_EBPF;
