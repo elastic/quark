@@ -42,6 +42,7 @@
 #define EBPF_EVENTPROBE_HELPERS_H
 
 #include "EbpfEventProto.h"
+#include "vmlinux_extra.h"
 
 const volatile int consumer_pid = 0;
 
@@ -226,6 +227,10 @@ static long read_kernel_str_or_empty_str(void *dst, int size, const void *unsafe
 #define ARGV_MAX 20480u
 #define ENV_MAX 40960u
 
+// How much of an environment userspace keeps, quark_queue_attr.max_env, zero
+// for none.
+const volatile u32 env_max = ENV_MAX;
+
 static long ebpf_argv__fill(char *buf, const struct task_struct *task)
 {
     unsigned long start, end;
@@ -278,9 +283,14 @@ static long ebpf_env__fill(char *buf, const struct task_struct *task)
      * computation, which makes the verifier lose track of bounds.
      */
     size = (u32)(end - start);
+    /*
+     * Clamp to what userspace keeps first and to the constant last: env_max
+     * is not a known value to every verifier, ENV_MAX is the bound it needs.
+     */
+    size = size > env_max ? env_max : size;
+    size = size > ENV_MAX ? ENV_MAX : size;
     if (size == 0)
             return 1;
-    size = size > ENV_MAX ? ENV_MAX : size;
 
     bpf_probe_read_user(buf, size, (void *)start);
 
@@ -317,6 +327,21 @@ static void ebpf_ctty__fill(struct ebpf_tty_dev *ctty, const struct task_struct 
     ebpf_tty_dev__fill(ctty, tty);
 }
 
+// Start time of the thread group, in CLOCK_BOOTTIME like the event
+// timestamps (bpf_ktime_get_boot_ns()) and /proc/<pid>/stat starttime.
+// task_struct.start_time is CLOCK_MONOTONIC, which stops during suspend: a
+// process started after the host slept would read as started earlier by
+// the total time asleep since boot. The field was real_start_time before 5.5.
+static u64 ebpf_task_start_boottime(const struct task_struct *task)
+{
+    const struct task_struct *leader = BPF_CORE_READ(task, group_leader);
+
+    if (bpf_core_field_exists(leader->start_boottime))
+        return BPF_CORE_READ(leader, start_boottime);
+
+    return BPF_CORE_READ((const struct task_struct___pre_5_5 *)leader, real_start_time);
+}
+
 static void ebpf_pid_info__fill(struct ebpf_pid_info *pi, const struct task_struct *task)
 {
     int e_pgid, e_sid;
@@ -334,7 +359,7 @@ static void ebpf_pid_info__fill(struct ebpf_pid_info *pi, const struct task_stru
     pi->ppid          = BPF_CORE_READ(task, group_leader, real_parent, tgid);
     pi->pgid          = BPF_CORE_READ(task, group_leader, signal, pids[e_pgid], numbers[0].nr);
     pi->sid           = BPF_CORE_READ(task, group_leader, signal, pids[e_sid], numbers[0].nr);
-    pi->start_time_ns = BPF_CORE_READ(task, group_leader, start_time);
+    pi->start_time_ns = ebpf_task_start_boottime(task);
 }
 
 static void ebpf_cred_info__fill(struct ebpf_cred_info *ci, const struct task_struct *task)

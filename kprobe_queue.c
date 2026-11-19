@@ -15,6 +15,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -27,6 +28,11 @@
 
 #include "quark.h"
 #include "quark_internal.h"
+
+/* Linux 3.14, kernel headers of centos7 may predate it */
+#ifndef PERF_FLAG_FD_CLOEXEC
+#define PERF_FLAG_FD_CLOEXEC	(1UL << 3)
+#endif
 
 #define PERF_MMAP_PAGES		16			/* Must be power of 2 */
 #define PERF_RECORD_MAX_SIZE	(UINT16_MAX + 1)	/* header.size is u16 */
@@ -147,6 +153,9 @@ struct exec_sample {
 };
 
 #define MAX_PWD		7
+
+/* Nested dereferences that Linux 7.3 takes in one kprobe argument */
+#define KPROBE_MAX_NEST_7_3	8
 
 /* Sorted by alignment restriction, 64->32->16->8 */
 struct task_sample {
@@ -780,7 +789,13 @@ again:
 	if (attr->use_clockid) {
 		attr->use_clockid = 0;
 		attr->clockid = 0;
-		r = perf_event_open(attr, pid, cpu, group_fd, flags);
+		/*
+		 * Without PERF_FLAG_FD_CLOEXEC: a kernel that lacks perf
+		 * clockid, RHEL before 7.4, lacks the flag too and would
+		 * refuse this open over it, hiding what is missing.
+		 */
+		r = perf_event_open(attr, pid, cpu, group_fd,
+		    flags & ~PERF_FLAG_FD_CLOEXEC);
 		attr->use_clockid = 1;
 		attr->clockid = CLOCK_MONOTONIC;
 		if (r >= 0) {
@@ -1105,11 +1120,24 @@ kprobe_kludge_arg(struct kprobe *k, struct kprobe_arg *karg,
 	return (karg);
 }
 
+/*
+ * Each token of the argument is one dereference nested in the previous one.
+ * If there are more tokens than max_nest, the last ones are written as a
+ * struct cast followed by field names, as in
+ * (dentry)(...)->d_parent->d_name.name. The kernel finds those fields in its
+ * own BTF and they don't nest, but only struct.field tokens can be written
+ * like this. See kprobe_install().
+ * Only the struct name of the first cast token is used. For the tokens after
+ * it the kernel takes the type that the previous field points to, and
+ * kprobe_exp() and the alternatives of quark_btf are not consulted. Each of
+ * those tokens must thus name a field of that type, as is the case for the
+ * dentry.d_parent and dentry.d_name.name of pwd_s5 and pwd_s6.
+ */
 static char *
 kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
-    struct quark_btf *qbtf)
+    struct quark_btf *qbtf, int max_nest)
 {
-	int	 i;
+	int	 i, r, ntokens;
 	ssize_t	 off;
 	char	*p, **pp, *last, *kstr, *tokens[128], *arg_dsl;
 
@@ -1131,11 +1159,15 @@ kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
 		tokens[i++] = p;
 	}
 	tokens[i] = NULL;
+	/* The cast is one more nested level */
+	ntokens = i;
+	if (ntokens > max_nest)
+		ntokens = max_nest - 1;
 	if (asprintf(&kstr, "%%%s", karg->reg) == -1) {
 		free(arg_dsl);
 		return (NULL);
 	}
-	for (pp = tokens; *pp != NULL; pp++) {
+	for (pp = tokens; pp < tokens + ntokens; pp++) {
 		p = *pp;
 		last = kstr;
 		if (kprobe_exp(p, &off, qbtf) == -1 ||
@@ -1145,6 +1177,31 @@ kprobe_make_arg(struct kprobe *k, struct kprobe_arg *karg,
 			return (NULL);
 		}
 		free(last);
+	}
+	for (; *pp != NULL; pp++) {
+		/* A string is read from where the last field points to */
+		if (!strcmp(*pp, "+0") && *(pp + 1) == NULL &&
+		    !strcmp(karg->typ, "string"))
+			break;
+		p = strchr(*pp, '.');
+		if ((!isalpha((unsigned char)**pp) && **pp != '_') ||
+		    p == NULL) {
+			qwarnx("can't cast %s", *pp);
+			free(arg_dsl);
+			free(kstr);
+			return (NULL);
+		}
+		last = kstr;
+		if (pp == tokens + ntokens)
+			r = asprintf(&kstr, "(%.*s)(%s)->%s", (int)(p - *pp),
+			    *pp, last, p + 1);
+		else
+			r = asprintf(&kstr, "%s->%s", last, p + 1);
+		free(last);
+		if (r == -1) {
+			free(arg_dsl);
+			return (NULL);
+		}
 	}
 	last = kstr;
 	if (asprintf(&kstr, "%s=%s:%s", karg->name, last, karg->typ) == -1) {
@@ -1165,7 +1222,8 @@ kprobe_tracefs_name(struct kprobe *k, u64 qid, char *buf, size_t len)
 }
 
 static char *
-kprobe_build_string(struct kprobe *k, char *name, struct quark_btf *qbtf)
+kprobe_build_string(struct kprobe *k, char *name, struct quark_btf *qbtf,
+    int max_nest)
 {
 	struct kprobe_arg	*karg;
 	char			*p, *o, *a;
@@ -1176,7 +1234,7 @@ kprobe_build_string(struct kprobe *k, char *name, struct quark_btf *qbtf)
 	if (r == -1)
 		return (NULL);
 	for (karg = k->args; karg->name != NULL; karg++) {
-		a = kprobe_make_arg(k, karg, qbtf);
+		a = kprobe_make_arg(k, karg, qbtf, max_nest);
 		if (a == NULL) {
 			free(p);
 			return (NULL);
@@ -1217,6 +1275,32 @@ kprobe_uninstall(struct kprobe *k, u64 qid)
 	return (0);
 }
 
+static int
+kprobe_install1(struct kprobe *k, char *fsname, struct quark_btf *qbtf,
+    int max_nest)
+{
+	int	 fd, saved_errno;
+	ssize_t	 n;
+	char	*kstr;
+
+	if ((kstr = kprobe_build_string(k, fsname, qbtf, max_nest)) == NULL)
+		return (-1);
+	if ((fd = open_tracing(O_WRONLY, "kprobe_events")) == -1) {
+		free(kstr);
+		return (-1);
+	}
+	n = qwrite(fd, kstr, strlen(kstr));
+	/* The caller looks at errno */
+	saved_errno = errno;
+	close(fd);
+	free(kstr);
+	errno = saved_errno;
+	if (n == -1)
+		return (-1);
+
+	return (0);
+}
+
 /*
  * Builds the kprobe string and "installs" in tracefs, mapping to a perf ring is
  * later and belongs to kprobe_state. This separation makes library cleanup
@@ -1225,28 +1309,24 @@ kprobe_uninstall(struct kprobe *k, u64 qid)
 static int
 kprobe_install(struct kprobe *k, u64 qid, struct quark_btf *qbtf)
 {
-	int	 fd;
-	ssize_t	 n;
-	char	*kstr;
 	char	 fsname[MAXPATHLEN];
 
 	kprobe_tracefs_name(k, qid, fsname, sizeof(fsname));
 
 	if (kprobe_uninstall(k, qid) == -1 && errno != ENOENT)
 		qwarn("kprobe_uninstall");
-	if ((kstr = kprobe_build_string(k, fsname, qbtf)) == NULL)
-		return (-1);
-	if ((fd = open_tracing(O_WRONLY, "kprobe_events")) == -1) {
-		free(kstr);
-		return (-1);
-	}
-	n = qwrite(fd, kstr, strlen(kstr));
-	close(fd);
-	free(kstr);
-	if (n == -1)
+	if (kprobe_install1(k, fsname, qbtf, INT_MAX) == 0)
+		return (0);
+	/*
+	 * The deepest names of the working directory need 10 nested
+	 * dereferences. Linux 7.3 takes 8 and refuses more with E2BIG, older
+	 * kernels take 10. Linux 7.3 also takes a struct cast, which doesn't
+	 * nest, so try again with the deep arguments written like that.
+	 */
+	if (errno != E2BIG)
 		return (-1);
 
-	return (0);
+	return (kprobe_install1(k, fsname, qbtf, KPROBE_MAX_NEST_7_3));
 }
 
 static int
@@ -1342,7 +1422,13 @@ perf_open_group_leader(struct kprobe_queue *kqq, int cpu)
 	pgl->attr.watermark = 1;
 	pgl->attr.wakeup_watermark = (PERF_MMAP_PAGES * getpagesize()) / 10;;
 
-	pgl->fd = perf_event_open_degradable(&pgl->attr, -1, cpu, -1, 0);
+	/*
+	 * Close-on-exec: a child that inherits a perf descriptor keeps its
+	 * event alive, and the kprobe under it can't be uninstalled until
+	 * that child is gone, see kprobe_queue_close().
+	 */
+	pgl->fd = perf_event_open_degradable(&pgl->attr, -1, cpu, -1,
+	    PERF_FLAG_FD_CLOEXEC);
 	if (pgl->fd == -1) {
 		qwarn("perf_event_open_degradable");
 		free(pgl);
@@ -1398,7 +1484,8 @@ perf_open_kprobe(struct kprobe_queue *kqq, struct kprobe *k,
 	if (ks == NULL)
 		return (NULL);
 	perf_attr_init(&ks->attr, id);
-	ks->fd = perf_event_open_degradable(&ks->attr, -1, cpu, group_fd, 0);
+	ks->fd = perf_event_open_degradable(&ks->attr, -1, cpu, group_fd,
+	    PERF_FLAG_FD_CLOEXEC);
 	if (ks->fd == -1) {
 		qwarn("perf_event_open_degradable");
 		free(ks);

@@ -440,12 +440,18 @@ static int skb_parse_udp(struct __sk_buff *skb, struct udp_hdrs *h)
     } else if (skb->protocol == bpf_htons(ETH_P_IPV6)) {
         if ((l4off = skb_ipv6_udp_offset(skb)) < 0)
             return (-1);
-        if (bpf_skb_load_bytes(skb, offsetof(struct ipv6hdr, saddr),
-            h->saddr, sizeof(h->saddr)))
-            return (-1);
-        if (bpf_skb_load_bytes(skb, offsetof(struct ipv6hdr, daddr),
-            h->daddr, sizeof(h->daddr)))
-            return (-1);
+        /*
+         * Only the flow key reads the addresses, with DNS alone spare
+         * every IPv6 datagram the two helper calls.
+         */
+        if (udp_flow_enabled) {
+            if (bpf_skb_load_bytes(skb, offsetof(struct ipv6hdr, saddr),
+                h->saddr, sizeof(h->saddr)))
+                return (-1);
+            if (bpf_skb_load_bytes(skb, offsetof(struct ipv6hdr, daddr),
+                h->daddr, sizeof(h->daddr)))
+                return (-1);
+        }
         h->family = EBPF_NETWORK_EVENT_AF_INET6;
     } else
         return (-1);
@@ -662,31 +668,40 @@ static void udp_flow_account(struct __sk_buff *skb, struct bpf_sock *sk,
 /*
  * See cgroub_skb/egress, pretty please.
  */
-static int skb_in_or_egress(struct __sk_buff *skb, int direction,
-    struct dns_ctx *ctx)
+static int skb_in_or_egress(struct __sk_buff *skb, int direction)
 {
     struct udp_hdrs h;
     struct bpf_sock *sk;
+    struct dns_ctx *ctx;
     u32 *tgid, cap_len;
     int is_dns;
     struct ebpf_dns_event *event;
 
+    /*
+     * This function runs for every packet of the machine, TCP included,
+     * and nearly all calls exit through one of the checks below. Keep
+     * these checks fast and free of anything that costs.
+     */
     if (skb->family != AF_INET && skb->family != AF_INET6)
-        goto ignore;
+        return (1);
     if ((sk = skb->sk) == NULL)
-        goto ignore;
+        return (1);
     if ((sk = bpf_sk_fullsock(sk)) == NULL)
-        goto ignore;
+        return (1);
     if (sk->protocol != IPPROTO_UDP)
-        goto ignore;
+        return (1);
 
     if (skb_parse_udp(skb, &h))
-        goto ignore;
+        return (1);
 
     is_dns = dns_enabled &&
         (bpf_ntohs(h.udp.dest) == 53 || bpf_ntohs(h.udp.source) == 53);
     if (!udp_flow_enabled && !is_dns)
-        goto ignore;
+        return (1);
+
+    preempt_disable();
+    if ((ctx = get_dns_ctx()) == NULL)
+        goto out;
 
     /*
      * Needed for kernels prior to cd17d38f8b28f808c368121041c0a4fa91757e0d
@@ -766,6 +781,10 @@ static int skb_in_or_egress(struct __sk_buff *skb, int direction,
     }
 
 ignore:
+    put_dns_ctx();
+out:
+    preempt_enable();
+
     return (1);
 }
 
@@ -781,16 +800,7 @@ ignore:
 SEC("cgroup_skb/egress")
 int skb_egress(struct __sk_buff *skb)
 {
-    struct dns_ctx *ctx;
-
-    preempt_disable();
-    if ((ctx = get_dns_ctx()) != NULL) {
-        skb_in_or_egress(skb, EBPF_NETWORK_DIR_EGRESS, ctx);
-        put_dns_ctx();
-    }
-    preempt_enable();
-
-    return 1;
+    return (skb_in_or_egress(skb, EBPF_NETWORK_DIR_EGRESS));
 }
 
 /*
@@ -799,27 +809,15 @@ int skb_egress(struct __sk_buff *skb)
 SEC("cgroup_skb/ingress")
 int skb_ingress(struct __sk_buff *skb)
 {
-    struct dns_ctx *ctx;
-
-    preempt_disable();
-    if ((ctx = get_dns_ctx()) != NULL) {
-        skb_in_or_egress(skb, EBPF_NETWORK_DIR_INGRESS, ctx);
-        put_dns_ctx();
-    }
-    preempt_enable();
-
-    return 1;
+    return (skb_in_or_egress(skb, EBPF_NETWORK_DIR_INGRESS));
 }
 
 static int sk_maybe_save_tgid(struct bpf_sock *sk)
 {
-    u32 tgid;
+    u32 tgid, *old;
     struct dns_ctx *ctx;
 
     if (sk->protocol != IPPROTO_UDP)
-        return (1);
-
-    if (ebpf_events_is_trusted_pid())
         return (1);
 
     tgid = bpf_get_current_pid_tgid() >> 32;
@@ -832,7 +830,17 @@ static int sk_maybe_save_tgid(struct bpf_sock *sk)
     if (ctx == NULL)
         return (1);
     ctx->scratch64 = (u64)sk;
-    bpf_map_update_elem(&sk_to_tgid, &ctx->scratch64, &tgid, BPF_ANY);
+    /*
+     * Only write if the owner changed. We get here on every sendto() and
+     * recvfrom(), from every thread sharing the socket, and an update takes
+     * a lock to swap in a new element, while a lookup is lockless.
+     *
+     * Checking for a trusted PID costs another lookup, so we only do so
+     * when there is something to write.
+     */
+    old = bpf_map_lookup_elem(&sk_to_tgid, &ctx->scratch64);
+    if ((old == NULL || *old != tgid) && !ebpf_events_is_trusted_pid())
+        bpf_map_update_elem(&sk_to_tgid, &ctx->scratch64, &tgid, BPF_ANY);
     put_dns_ctx();
 
     return (1);

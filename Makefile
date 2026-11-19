@@ -538,7 +538,9 @@ quark-btf: quark-btf.c manpages.h $(LIBQUARK_TARGET)
 
 QUARK_TEST_SRCS= quark-test.c bpf-call-stack-test.c
 QUARK_TEST_SRCS+= bpf-telemetry-test.c bpf-telemetry-retprobe-test.c
+QUARK_TEST_SRCS+= bpf-queue-test.c
 QUARK_TEST_DEPS= quark-test.h elastic-ebpf/GPL/Events/BpfCallStack.h
+QUARK_TEST_DEPS+= bpf_queue.c bpf_probes_skel.h
 
 quark-test: $(QUARK_TEST_SRCS) $(QUARK_TEST_DEPS) manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
@@ -620,6 +622,7 @@ docs/%.html: %
 		-Otoc,style=mandoc.css,man=%N.%S.html $< > $@
 	$(Q)sed -i 's/fork\.2\.html/https:\/\/linux.die.net\/man\/2\/fork/g' $@
 	$(Q)sed -i 's/exec\.3\.html/https:\/\/linux.die.net\/man\/3\/exec/g' $@
+	$(Q)sed -i 's/execve\.2\.html/https:\/\/linux.die.net\/man\/2\/execve/g' $@
 	$(Q)sed -i 's/exit\.3\.html/https:\/\/linux.die.net\/man\/3\/exit/g' $@
 
 README.md: docs/quark.7.html

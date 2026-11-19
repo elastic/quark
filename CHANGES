@@ -267,6 +267,12 @@ Changes from 0.10 to 0.11
 
 Changes from 0.11 to 0.12
 ~~~~~~~~~~~~~~~~~~~~~~~~~
+  o File-backed executable mprotect() transitions use the inode generation
+    on ext2, ext3, ext4, XFS and tmpfs when it is nonzero. A new file that
+    reuses an inode number with a different generation is reported again.
+    Without a usable generation, mprotect keeps device-and-inode deduplication.
+    Repeats are suppressed, but a new file with a reused inode number can
+    still have its first event suppressed. Unreadable identities are not cached.
   o BREAKING: DNS events now cover IPv6. The packet in quark_packet{}
     starts at the IPv4 or IPv6 header as it was on the wire, extension
     headers included, regardless of the socket family: an IPv4 datagram
@@ -284,6 +290,12 @@ Changes from 0.11 to 0.12
     traffic is captured however it is used; only the attribution can
     lag: after fork(2) or SCM_RIGHTS passing it stays with the creating
     process until the new owner makes one of the calls above.
+  o The EBPF backend now reports process start times, proc_time_boot
+    and bpf.start_time_ns, in CLOCK_BOOTTIME like event times and the
+    kprobe backend. They were CLOCK_MONOTONIC, which stops during
+    suspend, so a process started after the host had slept read as
+    started earlier by the total time asleep since boot. For those
+    processes, proc_entity_id, which hashes proc_time_boot, changes too.
   o UDP flow events were added via QQ_UDP_FLOW, EBPF only. Every UDP
     datagram is accounted in the kernel to a flow, one socket talking
     to one peer, and reported once per aggregation period as

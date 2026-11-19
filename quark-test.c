@@ -223,8 +223,9 @@ test_fs_close(struct test_fs *fs)
 {
 	if (umount(fs->dir) == -1)
 		err(1, "umount test filesystem");
-	if (ioctl(fs->loop_fd, LOOP_CLR_FD, 0) == -1 ||
-	    close(fs->loop_fd) == -1 || rmdir(fs->dir) == -1)
+	if ((fs->loop_fd != -1 &&
+	    (ioctl(fs->loop_fd, LOOP_CLR_FD, 0) == -1 ||
+	    close(fs->loop_fd) == -1)) || rmdir(fs->dir) == -1)
 		err(1, "close test filesystem");
 }
 
@@ -705,6 +706,47 @@ static pid_t
 fork_exec_nop(void)
 {
 	return (fork_exec_nop1(0, 0));
+}
+
+/*
+ * Fork and exec true with an environment of len bytes, a single variable
+ * that starts with PAD=, and wait for it.
+ */
+static pid_t
+fork_exec_env(size_t len)
+{
+	pid_t		 child;
+	int		 status;
+	char		*pad, *envp[2];
+	char *const	 argv[] = { "true", NULL };
+
+	if (len < 5)
+		errx(1, "%s: environment too short", __func__);
+	if ((pad = malloc(len)) == NULL)
+		err(1, "malloc");
+	memset(pad, 'e', len);
+	memcpy(pad, "PAD=", 4);
+	pad[len - 1] = 0;
+	envp[0] = pad;
+	envp[1] = NULL;
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	/* child */
+	else if (child == 0) {
+		execve("/usr/bin/true", argv, envp);
+		execve("/bin/true", argv, envp);
+		err(1, "execve true");
+	}
+
+	/* parent */
+	free(pad);
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child didn't exit cleanly");
+
+	return (child);
 }
 
 static void
@@ -1229,6 +1271,100 @@ t_ringbuf_max(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * List the descriptors of this process that would be inherited on exec.
+ * The caller frees the list.
+ */
+static int *
+inheritable_fds(size_t *nfds)
+{
+	DIR		*dir;
+	struct dirent	*d;
+	struct rlimit	 rl;
+	int		*fds, *tmp, fd, fl;
+	size_t		 n;
+
+	if (getrlimit(RLIMIT_NOFILE, &rl) == -1)
+		err(1, "getrlimit");
+	if ((dir = opendir("/proc/self/fd")) == NULL)
+		err(1, "opendir /proc/self/fd");
+	fds = NULL;
+	n = 0;
+	while ((d = readdir(dir)) != NULL) {
+		if (!isnumber(d->d_name))
+			continue;
+		fd = atoi(d->d_name);
+		if ((rlim_t)fd >= rl.rlim_cur)
+			/*
+			 * A descriptor at or above the soft limit is not ours
+			 * (e.g. it is where valgrind keeps its own fds).
+			 */
+			continue;
+		if ((fl = fcntl(fd, F_GETFD)) == -1)
+			err(1, "fcntl descriptor %d", fd);
+		if (fl & FD_CLOEXEC)
+			continue;
+		if ((tmp = realloc(fds, (n + 1) * sizeof(*fds))) == NULL)
+			err(1, "realloc");
+		fds = tmp;
+		fds[n++] = fd;
+	}
+	closedir(dir);
+	*nfds = n;
+
+	return (fds);
+}
+
+/*
+ * A queue must not add descriptors that survive an exec. An inherited
+ * perf descriptor of the KPROBE backend keeps its event alive in the
+ * child, quark_queue_close() can then no longer uninstall the kprobes and
+ * leaves them behind for good.
+ */
+static int
+t_cloexec(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	int			*before, *after;
+	size_t			 nbefore, nafter, i, j;
+	char			 path[64], target[256];
+	ssize_t			 n;
+	int			 leaked;
+
+	before = inheritable_fds(&nbefore);
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	after = inheritable_fds(&nafter);
+
+	leaked = 0;
+	/*
+	 * Report each descriptor that is inheritable now and wasn't before the
+	 * open (so it must have been added by the queue). The inner loop
+	 * only scans and it stops short of nbefore when after[i] was in the old
+	 * list.
+	 */
+	for (i = 0; i < nafter; i++) {
+		for (j = 0; j < nbefore && before[j] != after[i]; j++)
+			;	/* Nothing */
+		if (j < nbefore)
+			continue;
+		snprintf(path, sizeof(path), "/proc/self/fd/%d", after[i]);
+		if ((n = readlink(path, target, sizeof(target) - 1)) == -1)
+			n = 0;
+		target[n] = 0;
+		warnx("descriptor %d (%s) lacks close-on-exec", after[i],
+		    target);
+		leaked++;
+	}
+	quark_queue_close(&qq);
+	free(before);
+	free(after);
+	if (leaked != 0)
+		errx(1, "%d descriptors would be inherited", leaked);
+
+	return (0);
+}
+
+/*
  * Return 1 if perf can stamp samples with a selectable clock,
  * kernels >= 4.1 and RHEL >= 7.4.
  */
@@ -1306,6 +1442,29 @@ t_os_release(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * proc_time_boot of a process forked between the before and after clock
+ * reads. Before 3.17 task_struct.real_start_time is a struct timespec and
+ * the kprobe backend reads only its tv_sec, so expect seconds there; this
+ * fails once that is fixed.
+ */
+static void
+assert_start_time(struct quark_queue *qq, struct quark_queue_attr *qa,
+    const struct quark_process *qp, u64 before, u64 after)
+{
+	const char	*rel = qq->sysinfo.uts_release;
+	unsigned int	 major, minor;
+
+	if ((qa->flags & QQ_KPROBE) && rel != NULL &&
+	    sscanf(rel, "%u.%u", &major, &minor) == 2 &&
+	    (major < 3 || (major == 3 && minor < 17))) {
+		before /= NS_PER_S;
+		after /= NS_PER_S;
+	}
+	assert(qp->proc_time_boot >= before);
+	assert(qp->proc_time_boot <= after);
+}
+
 static int
 fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 {
@@ -1346,7 +1505,8 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 		assert(qp->cgroup != NULL);
 	assert((pid_t)qp->pid == child);
 	assert((pid_t)qp->proc_ppid == getpid());
-	assert(qp->proc_time_boot > 0); /* XXX: improve */
+	/* Same clock as qev->time, see t_suspend */
+	assert_start_time(&qq, qa, qp, before, after);
 	assert(qp->proc_uid == getuid());
 	assert(qp->proc_gid == getgid());
 	assert(qp->proc_suid == geteuid());
@@ -1463,6 +1623,103 @@ static int
 t_fork_exec_exit_rel(const struct test *t, struct quark_queue_attr *qa)
 {
 	return (fork_exec_exit(t, qa, 1));
+}
+
+static int
+sysfs_write(const char *path, const char *val)
+{
+	ssize_t	n;
+	int	fd;
+
+	if ((fd = open(path, O_WRONLY)) == -1)
+		return (-1);
+	n = write(fd, val, strlen(val));
+	close(fd);
+
+	return (n == (ssize_t)strlen(val) ? 0 : -1);
+}
+
+/*
+ * Put the whole machine to sleep (S3) for secs seconds, an RTC alarm wakes
+ * it up. Only for the test initramfs, never a real host. Not s2idle: the
+ * RTC alarm doesn't wake a qemu guest out of it, the VM would hang.
+ */
+static int
+suspend_vm(int secs)
+{
+	char	alarm[16];
+
+	/* S3 only, s2idle would never return */
+	if (sysfs_write("/sys/power/mem_sleep", "deep") == -1)
+		return (-1);
+	/* Without an RTC that can wake us we would sleep forever */
+	if (sysfs_write("/sys/class/rtc/rtc0/device/power/wakeup",
+	    "enabled") == -1)
+		return (-1);
+	if (sysfs_write("/sys/class/rtc/rtc0/wakealarm", "0") == -1)
+		return (-1);
+	(void)snprintf(alarm, sizeof(alarm), "+%d", secs);
+	if (sysfs_write("/sys/class/rtc/rtc0/wakealarm", alarm) == -1)
+		return (-1);
+	/* Returns once resumed */
+	if (sysfs_write("/sys/power/state", "mem") == -1) {
+		(void)sysfs_write("/sys/class/rtc/rtc0/wakealarm", "0");
+		return (-1);
+	}
+
+	return (0);
+}
+
+/*
+ * Process start times are CLOCK_BOOTTIME like event times. The kernel also
+ * keeps a CLOCK_MONOTONIC start (task_struct.start_time) and only a host
+ * that has slept tells the two apart: a monotonic start of a process
+ * forked after a suspend is behind by the total time asleep. In the test
+ * initramfs, sleep a few seconds first if the VM never did. Elsewhere only
+ * test if the host already slept.
+ */
+#define SUSPEND_SECS	3
+#define SUSPEND_MIN_NS	(1000ULL * 1000ULL * 1000ULL)
+
+static int
+t_suspend(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+	u64				 asleep, before, after;
+
+	asleep = clock_diff(CLOCK_BOOTTIME, CLOCK_MONOTONIC);
+	if (asleep < SUSPEND_MIN_NS && getenv("QUARK_INITRAMFS") != NULL) {
+		if (suspend_vm(SUSPEND_SECS) == -1)
+			warn("%s: can't suspend", t->name);
+		asleep = clock_diff(CLOCK_BOOTTIME, CLOCK_MONOTONIC);
+	}
+	if (asleep < SUSPEND_MIN_NS) {
+		warnx("%s: host never slept, skipping", t->name);
+		return (0);
+	}
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	before = ns_clock();
+	child = fork_exec_nop1(0, 0);
+	qev = drain_for_pid(&qq, child);
+	after = ns_clock();
+
+	assert(qev->time >= before);
+	assert(qev->time <= after);
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->flags & QUARK_F_PROC);
+	/* A monotonic start would be behind before by asleep */
+	assert_start_time(&qq, qa, qp, before, after);
+
+	quark_queue_close(&qq);
+
+	return (0);
 }
 
 /*
@@ -1600,6 +1857,80 @@ t_exec_long_path(const struct test *t, struct quark_queue_attr *qa)
 		warnx("kernel dropped the oversized exec record "
 		    "(PERF_MAX_TRACE_SIZE), skipping");
 		return (0);
+	}
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * The kprobe backend fetches the working directory as up to seven names. The
+ * last names need the most nested dereferences, and Linux 7.3 takes fewer of
+ * those than older kernels. Fork in a directory that needs all the names.
+ */
+static int
+t_cwd_deep(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	pid_t				 child;
+	int				 i, depth, old_cwd;
+	char				 path[PATH_MAX], real[PATH_MAX];
+	char				 name[16], *dirs[7];
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/*
+	 * In the initramfs / is not a mountpoint and all seven names are
+	 * directories. Elsewhere /tmp may be a mountpoint.
+	 */
+	if (getenv("QUARK_INITRAMFS") != NULL) {
+		strlcpy(path, "/quark-test-deep-cwd", sizeof(path));
+		depth = 1;
+	} else {
+		if (mkdir("/tmp", 0755) == -1 && errno != EEXIST)
+			err(1, "mkdir /tmp");
+		strlcpy(path, "/tmp/quark-test-deep-cwd", sizeof(path));
+		depth = 2;
+	}
+	for (i = 0; depth <= (int)nitems(dirs); depth++, i++) {
+		/* A different name each time, to catch a wrong order */
+		if (i != 0) {
+			snprintf(name, sizeof(name), "/d%d", i);
+			strlcat(path, name, sizeof(path));
+		}
+		if (mkdir(path, 0755) == -1 && errno != EEXIST)
+			err(1, "mkdir %s", path);
+		if ((dirs[i] = strdup(path)) == NULL)
+			err(1, "strdup");
+	}
+	if (realpath(path, real) == NULL)
+		err(1, "realpath");
+
+	/* The child gets the working directory of the parent on fork */
+	if ((old_cwd = open(".", O_RDONLY | O_DIRECTORY)) == -1)
+		err(1, "open");
+	if (chdir(path) == -1)
+		err(1, "chdir");
+	child = fork_exec_nop();
+	if (fchdir(old_cwd) == -1)
+		err(1, "fchdir");
+	close(old_cwd);
+
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_FORK);
+	qp = qev->process;
+	assert(qp != NULL);
+	assert(qp->cwd != NULL);
+	assert(!strcmp(qp->cwd, real));
+
+	while (--i >= 0) {
+		if (rmdir(dirs[i]) == -1)
+			warn("rmdir %s", dirs[i]);
+		free(dirs[i]);
 	}
 
 	quark_queue_close(&qq);
@@ -2348,10 +2679,37 @@ t_shmget(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/* Ordinary dedup tests do not need an ext4 image or inode-number reuse. */
+static void
+test_fs_tmpfs(struct test_fs *fs)
+{
+	bzero(fs, sizeof(*fs));
+	fs->loop_fd = -1;
+	strlcpy(fs->dir, "/tmp/quark-test-fs.XXXXXX", sizeof(fs->dir));
+	if (unshare(CLONE_NEWNS) == -1 ||
+	    mount(NULL, "/", "", MS_REC | MS_PRIVATE, NULL) == -1 ||
+	    mkdtemp(fs->dir) == NULL ||
+	    mount("tmpfs", fs->dir, "tmpfs", MS_NODEV | MS_NOSUID, NULL) == -1)
+		err(1, "tmpfs test filesystem");
+}
+
+static int
+test_fs_create(const char *path)
+{
+	int fd;
+
+	if ((fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600)) == -1 ||
+	    ftruncate(fd, 4096) == -1)
+		err(1, "create test file");
+	return (fd);
+}
+
 static int
 t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
+	struct test_fs			 fs;
+	char				 path[128], path2[128];
 	const struct quark_event	*qev;
 	const struct quark_mprotect	*qmprotect;
 	void				*addr[4];
@@ -2360,7 +2718,6 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	void				*suppressed_addr;
 	const size_t			 len = 4096;
 	struct stat			 st, st2;
-	const char			*true_path;
 	int				 fd2;
 	const int			 expected[] = {
 		PROT_EXEC,
@@ -2379,6 +2736,7 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	size_t				 i, j;
 	int				 seen = 0;
 
+	test_fs_tmpfs(&fs);
 	qa->flags |= QQ_MPROTECT;
 
 	if (quark_queue_open(&qq, qa) != 0)
@@ -2449,8 +2807,8 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "mprotect");
 
 	/* File-backed attempts carry identity and a mount-ns relative path. */
-	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
-		err(1, "open");
+	snprintf(path, sizeof(path), "%s/first", fs.dir);
+	fd = test_fs_create(path);
 	if (fstat(fd, &st) == -1)
 		err(1, "fstat");
 	file_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -2471,17 +2829,8 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	assert(qmprotect->inode == (u64)st.st_ino);
 	assert(qmprotect->dev_major == (u32)major(st.st_dev));
 	assert(qmprotect->dev_minor == (u32)minor(st.st_dev));
-	{
-		char	self[PATH_MAX];
-		ssize_t	n;
-
-		n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-		if (n == -1)
-			err(1, "readlink");
-		self[n] = '\0';
-		assert(qmprotect->path != NULL);
-		assert(strcmp(qmprotect->path, self) == 0);
-	}
+	assert(qmprotect->path != NULL);
+	assert(strcmp(qmprotect->path, path) == 0);
 
 	/*
 	 * File-backed transitions are deduplicated per file. Redo the same
@@ -2494,15 +2843,11 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "mprotect");
 	if (mprotect(file_addr, len, PROT_READ | PROT_EXEC) == -1)
 		err(1, "mprotect");
-	if (stat("/usr/bin/true", &st2) == 0)
-		true_path = "/usr/bin/true";
-	else if (stat("/bin/true", &st2) == 0)
-		true_path = "/bin/true";
-	else
-		err(1, "no true binary");
+	snprintf(path2, sizeof(path2), "%s/second", fs.dir);
+	fd2 = test_fs_create(path2);
+	if (fstat(fd2, &st2) == -1)
+		err(1, "fstat");
 	assert(st2.st_ino != st.st_ino || st2.st_dev != st.st_dev);
-	if ((fd2 = open(true_path, O_RDONLY)) == -1)
-		err(1, "open");
 	file2_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd2, 0);
 	if (file2_addr == MAP_FAILED)
 		err(1, "mmap");
@@ -2521,7 +2866,7 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 	assert(qmprotect->dev_major == (u32)major(st2.st_dev));
 	assert(qmprotect->dev_minor == (u32)minor(st2.st_dev));
 	assert(qmprotect->path != NULL);
-	assert(strcmp(qmprotect->path, true_path) == 0);
+	assert(strcmp(qmprotect->path, path2) == 0);
 
 #ifdef SYS_pkey_mprotect
 	/* The common LSM hook also observes pkey_mprotect without another probe. */
@@ -2573,6 +2918,9 @@ t_mprotect(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "close");
 
 	quark_queue_close(&qq);
+	if (unlink(path) == -1 || unlink(path2) == -1)
+		err(1, "unlink");
+	test_fs_close(&fs);
 
 	return (0);
 }
@@ -2581,6 +2929,8 @@ static int
 t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
+	struct test_fs			 fs;
+	char				 path[128];
 	struct quark_queue_stats		 stats;
 	const struct quark_event	*qev;
 	struct timespec			 start, now;
@@ -2601,6 +2951,7 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 		return (0);
 	}
 
+	test_fs_tmpfs(&fs);
 	qa->flags |= QQ_MPROTECT | QQ_GETPID;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
@@ -2608,8 +2959,8 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 	    -1, 0);
 	if (addr == MAP_FAILED)
 		err(1, "mmap");
-	if ((fd = open("/proc/self/exe", O_RDONLY)) == -1)
-		err(1, "open");
+	snprintf(path, sizeof(path), "%s/retry", fs.dir);
+	fd = test_fs_create(path);
 	if (fstat(fd, &st) == -1)
 		err(1, "fstat");
 	file_addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -2739,6 +3090,120 @@ t_mprotect_retry(const struct test *t, struct quark_queue_attr *qa)
 	if (close(fd) == -1)
 		err(1, "close");
 	quark_queue_close(&qq);
+	if (unlink(path) == -1)
+		err(1, "unlink");
+	test_fs_close(&fs);
+	return (0);
+}
+
+/* GETPID is an ordered sentinel for both the positive and negative case. */
+static void
+mprotect_file_transition(struct quark_queue *qq, pid_t pid, int fd,
+    const char *path, int report)
+{
+	const struct quark_event	*qev;
+	struct stat		 st;
+	void			*addr;
+	u64			 sentinel_time;
+	int			 seen = 0;
+
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	if ((addr = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED ||
+	    mprotect(addr, 4096, PROT_READ | PROT_EXEC) == -1)
+		err(1, "mprotect test file");
+	/* Valgrind diagnostics can leave earlier GETPID events in the queue. */
+	sentinel_time = ns_clock();
+	(void)syscall(SYS_getpid);
+	for (;;) {
+		qev = drain_for_pid(qq, pid);
+		if (qev->events & QUARK_EV_MPROTECT) {
+			assert(++seen <= report);
+			assert(qev->mprotect.file_backed);
+			assert(qev->mprotect.inode == (u64)st.st_ino);
+			assert(qev->mprotect.path != NULL);
+			assert(!strcmp(qev->mprotect.path, path));
+		}
+		if ((qev->events & QUARK_EV_GETPID) &&
+		    qev->time >= sentinel_time)
+			break;
+	}
+	assert(seen == report);
+	if (munmap(addr, 4096) == -1)
+		err(1, "munmap");
+}
+
+static int
+t_mprotect_file_identity(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct test_fs		fs;
+	struct quark_queue	qq;
+	struct stat		old, st;
+	char			path[128], ramdir[128], rampath[160];
+	const pid_t		pid = getpid();
+	int			fd, generation, old_generation, i;
+
+	if (test_fs_open(&fs) == -1)
+		return (0);
+	qa->flags |= QQ_MPROTECT | QQ_GETPID;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	snprintf(path, sizeof(path), "%s/reused", fs.dir);
+	fd = test_fs_create(path);
+	if (fstat(fd, &old) == -1 ||
+	    ioctl(fd, FS_IOC_GETVERSION, &old_generation) == -1)
+		err(1, "old inode identity");
+	mprotect_file_transition(&qq, pid, fd, path, 1);
+	mprotect_file_transition(&qq, pid, fd, path, 0);
+	if (close(fd) == -1 || unlink(path) == -1)
+		err(1, "remove old file");
+
+	/* Same path and same number: only the generation can distinguish it. */
+	for (i = 0; i < 4096; i++) {
+		fd = test_fs_create(path);
+		if (fstat(fd, &st) == -1 ||
+		    ioctl(fd, FS_IOC_GETVERSION, &generation) == -1)
+			err(1, "new inode identity");
+		if (st.st_ino == old.st_ino && st.st_dev == old.st_dev)
+			break;
+		if (close(fd) == -1 || unlink(path) == -1)
+			err(1, "remove candidate");
+	}
+	if (i == 4096)
+		errx(1, "ext4 fixture did not reuse the inode number");
+	assert(generation != old_generation);
+	mprotect_file_transition(&qq, pid, fd, path, 1);
+	mprotect_file_transition(&qq, pid, fd, path, 0);
+	if (close(fd) == -1 || unlink(path) == -1)
+		err(1, "remove replacement");
+
+	/* A zero generation on a supported filesystem uses the legacy key. */
+	snprintf(path, sizeof(path), "%s/zero-generation", fs.dir);
+	fd = test_fs_create(path);
+	generation = 0;
+	if (ioctl(fd, FS_IOC_SETVERSION, &generation) == -1 ||
+	    ioctl(fd, FS_IOC_GETVERSION, &generation) == -1)
+		err(1, "zero inode generation");
+	assert(generation == 0);
+	mprotect_file_transition(&qq, pid, fd, path, 1);
+	mprotect_file_transition(&qq, pid, fd, path, 0);
+	if (close(fd) == -1 || unlink(path) == -1)
+		err(1, "remove zero-generation file");
+
+	/* ramfs has no lifetime generation: retain legacy repeat suppression. */
+	snprintf(ramdir, sizeof(ramdir), "%s/ramfs", fs.dir);
+	if (mkdir(ramdir, 0700) == -1 ||
+	    mount("ramfs", ramdir, "ramfs", MS_NODEV | MS_NOSUID, NULL) == -1)
+		err(1, "ramfs");
+	snprintf(rampath, sizeof(rampath), "%s/file", ramdir);
+	fd = test_fs_create(rampath);
+	mprotect_file_transition(&qq, pid, fd, rampath, 1);
+	mprotect_file_transition(&qq, pid, fd, rampath, 0);
+	if (close(fd) == -1 || unlink(rampath) == -1 ||
+	    umount(ramdir) == -1 || rmdir(ramdir) == -1)
+		err(1, "remove ramfs");
+	quark_queue_close(&qq);
+	test_fs_close(&fs);
 	return (0);
 }
 
@@ -4356,6 +4821,78 @@ test_process_event(struct quark_queue *qq, u32 pid, const char *cgroup)
 	assert(qev->process != NULL);
 
 	return ((struct quark_process *)qev->process);
+}
+
+/* Raw BPF events retain actor identity without a process-cache entry. */
+static int
+t_bpf_event(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue qq;
+	struct quark_bpf expected, empty = {0};
+	const struct quark_event *event;
+	struct quark_process *process;
+	struct raw_event *raw;
+	char *text;
+	size_t length;
+	FILE *stream;
+	int i;
+
+	for (i = 0; i < 4; i++) {
+		quark_queue_init_bare(&qq);
+		process = i == 0 ? NULL : test_process_event(&qq, 12345, "/");
+		bzero(&expected, sizeof(expected));
+		expected.start_time_ns = 987654321;
+		expected.tgid = 12345;
+		expected.tid = 12346;
+		expected.cmd = BPF_PROG_LOAD;
+		expected.ret = i == 0 || i == 3 ? 0 : -EINVAL;
+		/* Nonzero fields without ATTR must not appear in the dump. */
+		expected.type = i == 0 ? BPF_PROG_TYPE_SOCKET_FILTER : UINT32_MAX;
+		expected.insn_cnt = 2;
+		expected.attach_type = UINT32_MAX;
+		expected.flags = 0x80;
+		strlcpy(expected.name, "test_load", sizeof(expected.name));
+		if (i < 2)
+			expected.valid = QUARK_BPF_VALID_ATTR;
+		if (i == 0 || i == 3) {
+			expected.valid |= QUARK_BPF_VALID_OBJECT;
+			expected.kind = QUARK_BPF_PROG;
+			expected.id = 71;
+		}
+		raw = raw_event_alloc(RAW_BPF);
+		assert(raw != NULL);
+		raw->pid = expected.tgid;
+		raw->time = 123;
+		raw->bpf.quark_bpf = expected;
+		assert(raw_event_insert(&qq, raw) == 0);
+		event = quark_queue_get_event(&qq);
+		assert(event != NULL && event->events == QUARK_EV_BPF);
+		assert(event->process == process && event->time == 123);
+		assert(!memcmp(&event->bpf, &expected, sizeof(expected)));
+		text = NULL;
+		length = 0;
+		stream = open_memstream(&text, &length);
+		assert(stream != NULL);
+		assert(quark_event_dump(event, stream) == (process == NULL ? -1 : 0));
+		assert(fclose(stream) == 0);
+		assert(strstr(text, "cmd=PROG_LOAD(5)") != NULL);
+		assert(strstr(text, "tgid=12345 tid=12346") != NULL);
+		assert((strstr(text, "prog=71") != NULL) == (i == 0 || i == 3));
+		assert((strstr(text, "name=test_load") != NULL) == (i < 2));
+		assert((strstr(text, "insns=2") != NULL) == (i < 2));
+		assert((strstr(text, "attach_type=4294967295") != NULL) == (i < 2));
+		assert((strstr(text, "flags=0x80") != NULL) == (i < 2));
+		assert((strstr(text, " type=") != NULL) == (i != 2));
+		if (i == 1) {
+			assert(strstr(text, "ret=-22") != NULL);
+			assert(strstr(text, "type=4294967295") != NULL);
+		}
+		free(text);
+		assert(quark_queue_get_event(&qq) == NULL);
+		assert(!memcmp(&qq.event_storage.bpf, &empty, sizeof(empty)));
+		quark_queue_close(&qq);
+	}
+	return (0);
 }
 
 static struct quark_process *
@@ -6207,6 +6744,85 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * How many bytes the probes have written to the ring so far.
+ */
+static u64
+ringbuf_produced(void)
+{
+	struct bpf_map_info	 info;
+	unsigned long		*pos;
+	long			 pgsz;
+	u64			 produced;
+	int			 fd;
+
+	if ((pgsz = sysconf(_SC_PAGESIZE)) == -1)
+		err(1, "sysconf");
+	fd = find_map(&info, BPF_MAP_TYPE_RINGBUF, 0, 0, 0, "ringbuf");
+	/* The consumer page comes first, the producer page follows it */
+	pos = mmap(NULL, pgsz, PROT_READ, MAP_SHARED, fd, pgsz);
+	if (pos == MAP_FAILED)
+		err(1, "mmap ringbuf");
+	produced = *pos;
+	if (munmap(pos, pgsz) == -1)
+		err(1, "munmap");
+	close(fd);
+
+	return (produced);
+}
+
+/*
+ * max_env is how much of an environment is kept for a process, NUL
+ * include. A max_env=0 keeps none.
+ */
+static int
+t_env_max(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	const size_t			 env_len = 39000;
+	u64				 before, cost, min_cost;
+	pid_t				 child;
+	int				 i;
+
+	/* No env */
+	qa->max_env = 0;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	child = fork_exec_env(env_len);
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_EXEC);
+	qp = qev->process;
+	assert(qp->env == NULL);
+	assert(qp->env_len == 0);
+	quark_queue_close(&qq);
+
+	 /* 4096 bytes of env */
+	qa->max_env = 4096;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	for (i = 0, child = -1, min_cost = UINT64_MAX; i < 3; i++) {
+		before = ringbuf_produced();
+		child = fork_exec_env(env_len);
+		cost = ringbuf_produced() - before;
+		if (cost < min_cost)
+			min_cost = cost;
+	}
+	if (min_cost >= env_len)
+		errx(1, "a child took %llu bytes of the ring", min_cost);
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_EXEC);
+	qp = qev->process;
+	assert(qp->env != NULL);
+	assert(qp->env_len == 4096);
+	assert(!strncmp(qp->env, "PAD=eeee", 8));
+	assert(qp->env[qp->env_len - 1] == 0);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /* Fixed uapi bit, absent from older system headers in SYSLIB builds. */
 #define TB_LOAD_COMMON_ATTRS (1U << 16)
 #define TB_LOAD_SYSCALL 31
@@ -7257,12 +7873,16 @@ struct test all_tests[] = {
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
 	T_KPROBE(t_kprobe_clockid),
+	T_EBPF(t_cloexec),
+	T_KPROBE(t_cloexec),
 	T_EBPF(t_os_release),
 	T_KPROBE(t_os_release),
 	T_EBPF(t_fork_exec_exit),
 	T_KPROBE(t_fork_exec_exit),
 	T_EBPF(t_fork_exec_exit_rel),
+	T_EBPF(t_env_max),
 	T_KPROBE(t_exec_long_path),
+	T_KPROBE(t_cwd_deep),
 	T_EBPF(t_id_change),
 	T_EBPF(t_exit_tgid),
 	T_KPROBE(t_exit_tgid),
@@ -7279,6 +7899,7 @@ struct test all_tests[] = {
 	T_EBPF(t_shmget),
 	T_EBPF(t_mprotect),
 	T_EBPF(t_mprotect_retry),
+	T_EBPF(t_mprotect_file_identity),
 	T_EBPF(t_shm_open),
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),
@@ -7316,6 +7937,8 @@ struct test all_tests[] = {
 	T(t_bpf_call_stack),
 	T(t_bpf_telemetry),
 	T(t_bpf_telemetry_retprobe),
+	T(t_bpf_queue),
+	T(t_bpf_event),
 	T(t_pod_get),
 	T(t_pod_create),
 	T(t_pod_dump),
@@ -7344,6 +7967,9 @@ struct test all_tests[] = {
 	T_EBPF(t_map_freeze),
 	T_EBPF(t_bpf_load_fixture),
 	T_NOVA(t_nova),		/* XXX temporary XXX */
+	/* Last: after a suspend BOOTTIME stays ahead of MONOTONIC */
+	T_EBPF(t_suspend),
+	T_KPROBE(t_suspend),
 	{ NULL,	NULL, 0, 0 }
 };
 #undef S
