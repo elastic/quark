@@ -3963,23 +3963,32 @@ t_dns6_existing_connect(const struct test *t, struct quark_queue_attr *qa)
  * before any drain: one datagram over loopback shows up twice, on the
  * sender's socket as sent and on the listener's as received, both owned by
  * the child. Anything else on the host is ignored.
+ *
+ * The two entries get their key differently: the sender is connected, its
+ * key is the socket's tuple, the listener is not, its key is read from the
+ * datagram's headers.
  */
 static int
-t_udp_flow_map(const struct test *t, struct quark_queue_attr *qa)
+t_udp_flow_map_af(const struct test *t, struct quark_queue_attr *qa, int af)
 {
 	struct quark_queue		 qq;
 	struct bpf_probes		*p;
 	struct ebpf_udp_flow_key	 key, *prev;
 	struct ebpf_udp_flow_val	 val;
 	pid_t				 child;
-	u16				 bound_port;
-	u32				 loopback;
+	u16				 bound_port, family;
+	u8				 loopback[sizeof(key.laddr)];
+	u32				 loopback4;
 	u64				 sent_cookie, recv_cookie;
 	int				 nsent, nrecv;
 
 	if (in_valgrind) {
 		warnx("%s: skipping due to valgrind false positive: "
-		    "short memset before sys_bpf", __func__);
+		    "short memset before sys_bpf", t->name);
+		return (0);
+	}
+	if (af == AF_INET6 && !have_ipv6()) {
+		warnx("%s: no IPv6, skipping", t->name);
 		return (0);
 	}
 
@@ -3993,22 +4002,31 @@ t_udp_flow_map(const struct test *t, struct quark_queue_attr *qa)
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	child = fork_sock_write(12345, SOCK_DGRAM, &bound_port);
+	child = fork_sock_write_af(af, af, 12345, SOCK_DGRAM, 0, &bound_port);
 
 	p = quark_get_bpf_probes(&qq);
 	assert(p != NULL);
 
-	loopback = htonl(INADDR_LOOPBACK);
+	/* an IPv4 address is the first four bytes, the rest stays zero */
+	bzero(loopback, sizeof(loopback));
+	if (af == AF_INET6) {
+		family = EBPF_NETWORK_EVENT_AF_INET6;
+		memcpy(loopback, &in6addr_loopback, sizeof(in6addr_loopback));
+	} else {
+		family = EBPF_NETWORK_EVENT_AF_INET;
+		loopback4 = htonl(INADDR_LOOPBACK);
+		memcpy(loopback, &loopback4, sizeof(loopback4));
+	}
 	nsent = nrecv = 0;
 	sent_cookie = recv_cookie = 0;
 	prev = NULL;
 	while (bpf_map__get_next_key(p->maps.udp_flows0, prev, &key,
 	    sizeof(key)) == 0) {
 		prev = &key;
-		if (key.family != EBPF_NETWORK_EVENT_AF_INET)
+		if (key.family != family)
 			continue;
-		if (memcmp(key.laddr, &loopback, 4) ||
-		    memcmp(key.raddr, &loopback, 4))
+		if (memcmp(key.laddr, loopback, sizeof(key.laddr)) ||
+		    memcmp(key.raddr, loopback, sizeof(key.raddr)))
 			continue;
 		/* the child's two entries only, the host has other loopback flows */
 		if (!(key.lport == bound_port && key.rport == htons(12345)) &&
@@ -4054,6 +4072,22 @@ t_udp_flow_map(const struct test *t, struct quark_queue_attr *qa)
 	quark_queue_close(&qq);
 
 	return (0);
+}
+
+static int
+t_udp_flow_map(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_udp_flow_map_af(t, qa, AF_INET));
+}
+
+/*
+ * The listener's key is the only place the IPv6 addresses of a datagram
+ * are read from its headers, and they are only read with flows on.
+ */
+static int
+t_udp_flow_map6(const struct test *t, struct quark_queue_attr *qa)
+{
+	return (t_udp_flow_map_af(t, qa, AF_INET6));
 }
 
 static void
@@ -7914,6 +7948,7 @@ struct test all_tests[] = {
 	T_EBPF(t_dns_existing_connect),
 	T_EBPF(t_dns6_existing_connect),
 	T_EBPF(t_udp_flow_map),
+	T_EBPF(t_udp_flow_map6),
 	T_EBPF(t_udp_flow),
 	T_EBPF(t_udp_flow_periods),
 	T(t_udp_idle_close),

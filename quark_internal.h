@@ -45,7 +45,7 @@
  * How long after flipping the UDP flow generation before the inactive map is
  * drained. A cgroup_skb program reads the generation and updates the map
  * within one run, a handful of microseconds, this is a wide margin over
- * that. Also the tail of a flow's delivery latency, see udp_idle_expire().
+ * that. Also the tail of a flow's delivery latency, see udp_idle_due().
  */
 #define UDP_FLOW_FLIP_GRACE	MS_TO_NS(100)
 
