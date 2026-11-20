@@ -2671,6 +2671,129 @@ t_shmget(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+#ifndef NO_MEMFD
+/*
+ * The kernel registers hugetlbfs only when it supports at least one huge
+ * page size, failing to read the list is an error, not a lack of support.
+ */
+static int
+hugetlbfs_registered(void)
+{
+	FILE	*f;
+	char	*line, *fs;
+	size_t	 linecap;
+	int	 found;
+
+	if ((f = fopen("/proc/filesystems", "r")) == NULL)
+		err(1, "fopen /proc/filesystems");
+	line = NULL;
+	linecap = 0;
+	found = 0;
+	while (getline(&line, &linecap, f) != -1) {
+		line[strcspn(line, "\n")] = 0;
+		fs = strrchr(line, '\t');
+		fs = fs != NULL ? fs + 1 : line;
+		if (!strcmp(fs, "hugetlbfs")) {
+			found = 1;
+			break;
+		}
+	}
+	if (ferror(f))
+		err(1, "getline /proc/filesystems");
+	free(line);
+	fclose(f);
+
+	return (found);
+}
+#endif	/* NO_MEMFD */
+
+/*
+ * memfd_create(2) events are emitted from {shmem,hugetlb}_file_setup() using
+ * state saved at syscall entry, that state must not outlive the syscall. A
+ * SHM_HUGETLB shmget(2) also goes through hugetlb_file_setup(), so after a
+ * memfd_create(2) it must yield SHMGET only, not a bogus MEMFD_CREATE.
+ */
+static int
+t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
+{
+#ifdef NO_MEMFD
+	warnx("%s: compiled with NO_MEMFD, skipping", __func__);
+	return (0);
+#else
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_shm		*qshm;
+	int				 fd, id;
+
+	/* Without hugetlb there is nothing to test */
+	if (!hugetlbfs_registered()) {
+		warnx("%s: no hugetlb support, skipping", __func__);
+		return (0);
+	}
+
+	qa->flags |= QQ_SHM;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* Leaves memfd_create state behind for this thread */
+	if ((fd = memfd_create("t_memfd_stale_state-first", MFD_CLOEXEC)) == -1) {
+		if (errno == ENOTSUP || errno == ENOSYS) {
+			warn("old kernel, skipping memfd_create");
+			quark_queue_close(&qq);
+
+			return (0);
+		}
+		err(1, "memfd_create");
+	}
+	close(fd);
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_SHM);
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
+	assert(qshm->memfd_create_flags == MFD_CLOEXEC);
+	assert(!strcmp(qshm->path, "memfd:t_memfd_stale_state-first"));
+
+	/*
+	 * Only a successful shmget(2) proves hugetlb_file_setup() was called,
+	 * it can fail before it (shmall, LSM) and SHMGET is still emitted at
+	 * syscall entry, so a failure must not let the test pass with the bug
+	 * present. SHM_NORESERVE lets it succeed without reserved huge pages.
+	 */
+	id = shmget(IPC_PRIVATE, 2 * 1024 * 1024,
+	    IPC_CREAT | SHM_HUGETLB | SHM_NORESERVE | 0600);
+	if (id == -1)
+		err(1, "shmget(SHM_HUGETLB)");
+	if (shmctl(id, IPC_RMID, NULL) == -1)
+		err(1, "shmctl");
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_SHM);
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_SHMGET);
+	assert(qshm->shmget_key == IPC_PRIVATE);
+	assert(qshm->shmget_shmflg ==
+	    (IPC_CREAT | SHM_HUGETLB | SHM_NORESERVE | 0600));
+
+	/*
+	 * Sentinel, with stale state the next event is a MEMFD_CREATE for the
+	 * shmget above, named SYSV00000000 and carrying MFD_CLOEXEC.
+	 */
+	if ((fd = memfd_create("t_memfd_stale_state-sentinel", 0)) == -1)
+		err(1, "memfd_create");
+	close(fd);
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_SHM);
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
+	assert(!strcmp(qshm->path, "memfd:t_memfd_stale_state-sentinel"));
+	assert(qshm->memfd_create_flags == 0);
+
+	quark_queue_close(&qq);
+
+	return (0);
+#endif	/* NO_MEMFD */
+}
+
 /* Ordinary dedup tests do not need an ext4 image or inode-number reuse. */
 static void
 test_fs_tmpfs(struct test_fs *fs)
@@ -7083,6 +7206,7 @@ struct test all_tests[] = {
 	T_EBPF(t_detached_mount_exec),
 	T_EBPF(t_chroot_escape_exec),
 	T_EBPF(t_shmget),
+	T_EBPF(t_memfd_stale_state),
 	T_EBPF(t_mprotect),
 	T_EBPF(t_mprotect_retry),
 	T_EBPF(t_mprotect_file_identity),
