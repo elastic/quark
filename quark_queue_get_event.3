@@ -35,7 +35,9 @@ The storage for the returned
 .Vt quark_event
 is static and must not be modified.
 .It
-Evaluates the ruleset on the event, if a ruleset is active.
+Evaluates the ruleset on the event if a ruleset is active and
+.Dv QQ_BYPASS
+is clear.
 A matching
 .Cm drop
 rule stops evaluation and drops the event only if it has no tags.
@@ -256,6 +258,10 @@ A borrowed pointer to the ruleset that evaluated the event, or
 .Dv NULL
 if no ruleset evaluated it.
 The caller owns the ruleset and must keep it valid until the queue closes.
+.Pp
+Rule evaluation updates the ruleset counters.
+Use a separate ruleset for each concurrently driven queue, or serialize
+all access to the shared ruleset across queues.
 .El
 .Sh MEMORY PROTOCOL
 The returned

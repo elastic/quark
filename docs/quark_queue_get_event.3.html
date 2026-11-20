@@ -46,7 +46,8 @@
       <var class="Vt">quark_event</var>. This involves consulting its internal
       cache and enriching said event. The storage for the returned
       <var class="Vt">quark_event</var> is static and must not be modified.</li>
-  <li>Evaluates the ruleset on the event, if a ruleset is active. A matching
+  <li>Evaluates the ruleset on the event if a ruleset is active and
+      <code class="Dv">QQ_BYPASS</code> is clear. A matching
       <code class="Cm">drop</code> rule stops evaluation and drops the event
       only if it has no tags.</li>
   <li>Garbage collects cached events that are marked for deletion and are old
@@ -248,7 +249,11 @@
   <dt id="ruleset"><a class="permalink" href="#ruleset"><i class="Em">ruleset</i></a></dt>
   <dd>A borrowed pointer to the ruleset that evaluated the event, or
       <code class="Dv">NULL</code> if no ruleset evaluated it. The caller owns
-      the ruleset and must keep it valid until the queue closes.</dd>
+      the ruleset and must keep it valid until the queue closes.
+    <p class="Pp">Rule evaluation updates the ruleset counters. Use a separate
+        ruleset for each concurrently driven queue, or serialize all access to
+        the shared ruleset across queues.</p>
+  </dd>
 </dl>
 <section class="Sh">
 <h1 class="Sh" id="MEMORY_PROTOCOL"><a class="permalink" href="#MEMORY_PROTOCOL">MEMORY

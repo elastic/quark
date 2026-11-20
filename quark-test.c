@@ -4586,6 +4586,55 @@ t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
 	return (0);
 }
 
+/* A failed diagnostic write must preserve the nova validation error. */
+static void
+check_nova_ruleset_errno(struct quark_queue_attr *attr)
+{
+	struct quark_queue	 qq;
+	char			*verbose_env;
+	int			 full_fd, stderr_fd, saved_verbose;
+	int			 r, saved_errno, stderr_error;
+
+	verbose_env = getenv("QUARK_VERBOSE");
+	if (verbose_env != NULL) {
+		if ((verbose_env = strdup(verbose_env)) == NULL)
+			err(1, "copy QUARK_VERBOSE");
+		if (unsetenv("QUARK_VERBOSE") == -1)
+			err(1, "unset QUARK_VERBOSE");
+	}
+	saved_verbose = quark_verbose;
+	quark_verbose = QUARK_VL_WARN;
+
+	if ((stderr_fd = dup(STDERR_FILENO)) == -1)
+		err(1, "dup stderr");
+	if ((full_fd = open("/dev/full", O_WRONLY | O_CLOEXEC)) == -1)
+		err(1, "open /dev/full");
+	if (dup2(full_fd, STDERR_FILENO) == -1)
+		err(1, "redirect stderr");
+	close(full_fd);
+	clearerr(stderr);
+
+	errno = 0;
+	r = quark_queue_open(&qq, attr);
+	saved_errno = errno;
+	stderr_error = ferror(stderr);
+
+	if (dup2(stderr_fd, STDERR_FILENO) == -1)
+		err(1, "restore stderr");
+	close(stderr_fd);
+	clearerr(stderr);
+	quark_verbose = saved_verbose;
+	if (verbose_env != NULL) {
+		if (setenv("QUARK_VERBOSE", verbose_env, 1) == -1)
+			err(1, "restore QUARK_VERBOSE");
+		free(verbose_env);
+	}
+
+	assert(stderr_error);
+	assert(r == -1);
+	assert(saved_errno == ENOTSUP);
+}
+
 static int
 t_nova_ruleset_validation(const struct test *t, struct quark_queue_attr *unused)
 {
@@ -4612,6 +4661,10 @@ t_nova_ruleset_validation(const struct test *t, struct quark_queue_attr *unused)
 		assert(errno == ENOTSUP);
 		quark_ruleset_clear(&ruleset);
 	}
+
+	ruleset_from_string(&ruleset, policies[0]);
+	check_nova_ruleset_errno(&attr);
+	quark_ruleset_clear(&ruleset);
 
 	quark_ruleset_init(&ruleset);
 	for (i = 0; i < NOVA_MAX_RULES + 1; i++)
