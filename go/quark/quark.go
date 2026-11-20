@@ -390,6 +390,7 @@ type QueueAttr struct {
 	HoldTime       int
 	UdpAggTime     int
 	UdpIdleTime    int
+	UdpMaxFlows    int
 	// RuleText is a ruleset in the rule DSL, parsed and installed on
 	// the queue by OpenQueue. Empty means no rules. Processes matched
 	// by poison rules carry the tag in Process.PoisonTag.
@@ -442,6 +443,7 @@ func DefaultQueueAttr() QueueAttr {
 		HoldTime:       int(attr.hold_time),
 		UdpAggTime:     int(attr.udp_agg_time),
 		UdpIdleTime:    int(attr.udp_idle_time),
+		UdpMaxFlows:    int(attr.udp_max_flows),
 	}
 }
 
@@ -508,6 +510,7 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	cattr.hold_time = C.int(attr.HoldTime)
 	cattr.udp_agg_time = C.int(attr.UdpAggTime)
 	cattr.udp_idle_time = C.int(attr.UdpIdleTime)
+	cattr.udp_max_flows = C.int(attr.UdpMaxFlows)
 	ok, err := C.quark_queue_open(queue.quarkQueue, &cattr)
 	if ok == -1 {
 		C.free(unsafe.Pointer(queue.quarkQueue))

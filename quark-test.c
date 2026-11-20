@@ -4682,6 +4682,115 @@ t_udp_flow_drain(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * udp_max_flows is the size of the flow maps. One unconnected socket sends
+ * one datagram to each of UDP_MAX_SENT ports nobody listens on, four times
+ * the flows a map holds: the map fills up and stays full, and each datagram
+ * that found no room is counted in udp_flow_lost. A flow that made it in
+ * keeps being accounted. The host's own traffic competes for the room, so
+ * only the map's total is exact.
+ */
+#define UDP_MAX_PORT	25000
+#define UDP_MAX_FLOWS	64
+#define UDP_MAX_SENT	(4 * UDP_MAX_FLOWS)
+
+static int
+t_udp_max_flows(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_queue_stats	 stats;
+	struct bpf_probes		*p;
+	struct ebpf_udp_flow_key	 key, ours, *prev;
+	struct ebpf_udp_flow_val	 val;
+	struct sockaddr_in		 sin;
+	socklen_t			 sinlen;
+	u16				 bound_port;
+	int				 fd, i, nflows, nours;
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	assert_localhost();
+
+	qa->flags |= QQ_UDP_FLOW;
+	/* keep the drain out of the way */
+	qa->udp_agg_time = 600000;
+	qa->udp_idle_time = 600000;
+
+	qa->udp_max_flows = 0;
+	errno = 0;
+	assert(quark_queue_open(&qq, qa) == -1);
+	assert(errno == EINVAL);
+
+	qa->udp_max_flows = UDP_MAX_FLOWS;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	p = quark_get_bpf_probes(&qq);
+	assert(p != NULL);
+	assert(bpf_map__max_entries(p->maps.udp_flows0) == UDP_MAX_FLOWS);
+	assert(bpf_map__max_entries(p->maps.udp_flows1) == UDP_MAX_FLOWS);
+
+	if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
+		err(1, "socket");
+	bzero(&sin, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (bind(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
+		err(1, "bind");
+	sinlen = sizeof(sin);
+	if (getsockname(fd, (struct sockaddr *)&sin, &sinlen) == -1)
+		err(1, "getsockname");
+	bound_port = sin.sin_port;
+
+	for (i = 0; i < UDP_MAX_SENT; i++) {
+		sin.sin_port = htons(UDP_MAX_PORT + i);
+		if (sendto(fd, PATTERN, strlen(PATTERN), 0,
+		    (struct sockaddr *)&sin, sizeof(sin)) == -1)
+			err(1, "sendto");
+	}
+
+	nflows = nours = 0;
+	bzero(&ours, sizeof(ours));
+	prev = NULL;
+	while (bpf_map__get_next_key(p->maps.udp_flows0, prev, &key,
+	    sizeof(key)) == 0) {
+		prev = &key;
+		nflows++;
+		if (key.lport != bound_port ||
+		    ntohs(key.rport) < UDP_MAX_PORT ||
+		    ntohs(key.rport) >= UDP_MAX_PORT + UDP_MAX_SENT)
+			continue;
+		ours = key;
+		nours++;
+	}
+	assert(errno == ENOENT);
+	/* we alone sent more flows than fit */
+	assert(nflows == UDP_MAX_FLOWS);
+	assert(nours > 0);
+
+	/* one datagram per flow, the ones that are not in the map */
+	quark_queue_get_stats(&qq, &stats);
+	assert(stats.udp_flow_lost >= (u64)(UDP_MAX_SENT - nours));
+
+	/* a full map still accounts the flows it holds */
+	sin.sin_port = ours.rport;
+	if (sendto(fd, PATTERN, strlen(PATTERN), 0,
+	    (struct sockaddr *)&sin, sizeof(sin)) == -1)
+		err(1, "sendto");
+	assert(bpf_map__lookup_elem(p->maps.udp_flows0, &ours, sizeof(ours),
+	    &val, sizeof(val), 0) == 0);
+	assert(val.packets_sent == 2);
+	assert(val.bytes_sent == 2 * strlen(PATTERN));
+
+	close(fd);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
  * One aggregation period of a UDP flow as the drain would hand it over,
  * on the loopback with the ports and cookie given. Nothing is held when
  * the time is ancient, so the raw event pops on the next get_event.
@@ -8080,6 +8189,7 @@ struct test all_tests[] = {
 	T_EBPF(t_udp_flow),
 	T_EBPF(t_udp_flow_periods),
 	T_EBPF(t_udp_flow_drain),
+	T_EBPF(t_udp_max_flows),
 	T(t_udp_idle_close),
 	T(t_udp_reuseport),
 	T_EBPF(t_cgroup_parse),

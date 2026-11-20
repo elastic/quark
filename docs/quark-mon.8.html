@@ -28,6 +28,7 @@
     <td>[<code class="Fl">-BbDEeFGgHhkLMNnSsTtUuv</code>]
       [<code class="Fl">-A</code> <var class="Ar">udp_agg_ms</var>]
       [<code class="Fl">-C</code> <var class="Ar">filename</var>]
+      [<code class="Fl">-f</code> <var class="Ar">udp_max_flows</var>]
       [<code class="Fl">-I</code> <var class="Ar">udp_idle_ms</var>]
       [<code class="Fl">-K</code> <var class="Ar">kubeconfig</var>]
       [<code class="Fl">-l</code> <var class="Ar">maxlength</var>]
@@ -112,6 +113,12 @@
       default as it is Elastic/ECS specific.</dd>
   <dt id="F"><a class="permalink" href="#F"><code class="Fl">-F</code></a></dt>
   <dd>Enable file events (experimental).</dd>
+  <dt id="f"><a class="permalink" href="#f"><code class="Fl">-f</code></a>
+    <var class="Ar">udp_max_flows</var></dt>
+  <dd>How many UDP flows the kernel holds per aggregation period, implies
+      <code class="Fl">-U</code>. Flows past that go uncounted until the next
+      period, defaults to 65536, refer to
+      <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</dd>
   <dt id="G"><a class="permalink" href="#G"><code class="Fl">-G</code></a></dt>
   <dd>Enables a getpid probe, only for benchmarking,
       <a class="permalink" href="#don't"><i class="Em" id="don't">don't</i></a>
@@ -303,7 +310,7 @@ drop on any</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 5, 2026</td>
+    <td class="foot-date">November 20, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

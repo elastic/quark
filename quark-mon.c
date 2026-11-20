@@ -126,10 +126,11 @@ usage(void)
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
 	fprintf(stderr, "usage: %s [-BbDEeFGgHhkLMNnSsTtUuv]\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "%16c [-A udp_agg_ms] [-C filename ] [-I udp_idle_ms] "
-	    "[-K kubeconfig]\n", ' ');
-	fprintf(stderr, "%16c [-l maxlength] [-m maxnodes] [-P ppid] "
-	    "[-r rulefile ]\n", ' ');
+	fprintf(stderr, "%16c [-A udp_agg_ms] [-C filename ] "
+	    "[-f udp_max_flows]\n", ' ');
+	fprintf(stderr, "%16c [-I udp_idle_ms] [-K kubeconfig] [-l maxlength] "
+	    "[-m maxnodes]\n", ' ');
+	fprintf(stderr, "%16c [-P ppid] [-r rulefile ]\n", ' ');
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
 
 	exit(1);
@@ -192,7 +193,7 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "A:BbC:DEeFGgHhI:K:kLl:Mm:NnP:Ttr:SsUuvV")) != -1) {
+	while ((ch = getopt(argc, argv, "A:BbC:DEeFf:GgHhI:K:kLl:Mm:NnP:Ttr:SsUuvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -220,6 +221,14 @@ main(int argc, char *argv[])
 			break;
 		case 'F':
 			qa.flags |= QQ_FILE;
+			break;
+		case 'f':
+			if (optarg == NULL)
+				usage();
+			qa.udp_max_flows = strtonum(optarg, 1, INT_MAX, &errstr);
+			if (errstr != NULL)
+				errx(1, "invalid udp max flows: %s", errstr);
+			qa.flags |= QQ_UDP_FLOW;
 			break;
 		case 'G':
 			qa.flags |= QQ_GETPID;
@@ -367,7 +376,7 @@ main(int argc, char *argv[])
 		    lflag ||
 		    filter_ppid ||
 		    !do_snap)
-			errx(1, "bypass(B) cannot be used with options: ACegIklmPstU");
+			errx(1, "bypass(B) cannot be used with options: ACefgIklmPstU");
 		qa.flags |= QQ_EBPF;
 	}
 

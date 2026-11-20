@@ -309,9 +309,11 @@ Changes from 0.11 to 0.12
     must be at least the period, and cache_grace_time should exceed
     the period or the last flow of a process that exits right after
     its last datagram may arrive with no process. The kernel holds up
-    to 65536 flows per period, beyond that new flows go uncounted and
-    the new udp_flow_lost member of quark_queue_stats{} counts the
-    dropped datagrams. QQ_UDP_FLOW can't be combined with QQ_BYPASS.
+    to udp_max_flows flows per period, another new member of
+    quark_queue_attr{} defaulting to 65536, beyond that new flows go
+    uncounted and the new udp_flow_lost member of quark_queue_stats{}
+    counts the dropped datagrams. QQ_UDP_FLOW can't be combined with
+    QQ_BYPASS.
   o quark_socket{} got transport, a quark_transport enum of
     QUARK_TRANSPORT_{TCP,UDP}, and for UDP: cookie, the kernel's socket
     cookie, last_time, the time of the last datagram, and

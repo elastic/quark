@@ -92,14 +92,6 @@ struct bpf_queue {
 	struct udp_flow_batch	*udp_flow_batch;
 };
 
-/*
- * Flows per generation map, per period. A flow is a (socket, 5-tuple).
- * With a 48 byte key and a 56 byte value plus hash overhead this is on
- * the order of 10MB of kernel memory per map at full capacity, allocated
- * lazily on demand (BPF_F_NO_PREALLOC).
- */
-#define UDP_FLOWS_MAX_ENTRIES	65536
-
 static int	bpf_queue_populate(struct quark_queue *);
 static int	bpf_queue_update_stats(struct quark_queue *);
 static void	bpf_queue_close(struct quark_queue *);
@@ -1587,12 +1579,18 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 * The flow maps are referenced by the cgroup_skb programs whether or
 	 * not flows are on, so they can't be skipped. Only grow their size
 	 * if UDP flows are enabled.
+	 *
+	 * udp_max_flows is the size of each map, the flows of one period. A
+	 * flow is a (socket, 5-tuple). With a 48 byte key and a 56 byte value
+	 * plus hash overhead the default of 65536 is on the order of 10MB of
+	 * kernel memory per map at full capacity, allocated lazily on demand
+	 * (BPF_F_NO_PREALLOC).
 	 */
 	if (qq->flags & QQ_UDP_FLOW) {
 		if (bpf_map__set_max_entries(p->maps.udp_flows0,
-		    UDP_FLOWS_MAX_ENTRIES) != 0 ||
+		    qq->udp_max_flows) != 0 ||
 		    bpf_map__set_max_entries(p->maps.udp_flows1,
-		    UDP_FLOWS_MAX_ENTRIES) != 0) {
+		    qq->udp_max_flows) != 0) {
 			qwarn("bpf_map__set_max_entries udp_flows");
 			goto fail;
 		}

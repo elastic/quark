@@ -1009,6 +1009,7 @@ struct quark_queue_attr {
 	int			 hold_time;		/* in ms */
 	int			 udp_agg_time;		/* in ms, QQ_UDP_FLOW period */
 	int			 udp_idle_time;		/* in ms, UDP socket closes after */
+	int			 udp_max_flows;		/* QQ_UDP_FLOW flows held per period */
 	size_t			 max_env;		/* max process environment in bytes */
 	int			 kubefd;		/* quark-kube-talker pipe, -1 disables */
 	struct quark_ruleset	*ruleset;		/* active ruleset */
@@ -1040,6 +1041,7 @@ struct quark_queue {
 	int				 hold_time;		/* in ms */
 	u64				 udp_agg_time;		/* in ns */
 	u64				 udp_idle_time;		/* in ns */
+	int				 udp_max_flows;		/* per period */
 	TAILQ_HEAD(udp_idle_queue, quark_socket) udp_idle;	/* UDP sockets, longest idle first */
 	size_t				 max_env;		/* max process environment in bytes */
 	struct quark_kube		*qkube;			/* NULL if disabled */

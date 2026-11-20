@@ -9,6 +9,7 @@
 .Op Fl BbDEeFGgHhkLMNnSsTtUuv
 .Op Fl A Ar udp_agg_ms
 .Op Fl C Ar filename
+.Op Fl f Ar udp_max_flows
 .Op Fl I Ar udp_idle_ms
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
@@ -76,6 +77,12 @@ Entry leader is how the process entered the system, it is disabled by default as
 it is Elastic/ECS specific.
 .It Fl F
 Enable file events (experimental).
+.It Fl f Ar udp_max_flows
+How many UDP flows the kernel holds per aggregation period, implies
+.Fl U .
+Flows past that go uncounted until the next period, defaults to 65536, refer
+to
+.Xr quark_queue_open 3 .
 .It Fl G
 Enables a getpid probe, only for benchmarking,
 .Em don't

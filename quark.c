@@ -4742,6 +4742,7 @@ quark_queue_default_attr(struct quark_queue_attr *qa)
 	qa->hold_time = 1000;		/* one second */
 	qa->udp_agg_time = 3000;	/* three seconds, under cache_grace_time */
 	qa->udp_idle_time = 30000;	/* thirty seconds */
+	qa->udp_max_flows = 65536;	/* per period */
 	qa->max_env = 4096;		/* one page per process */
 	qa->kubefd = -1;		/* disabled */
 	qa->ruleset = NULL;		/* no rules */
@@ -4864,7 +4865,8 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	 * live sockets.
 	 */
 	if ((qa->flags & QQ_UDP_FLOW) &&
-	    (qa->udp_agg_time <= 0 || qa->udp_idle_time < qa->udp_agg_time))
+	    (qa->udp_agg_time <= 0 || qa->udp_idle_time < qa->udp_agg_time ||
+	    qa->udp_max_flows <= 0))
 		return (errno = EINVAL, -1);
 
 	if (quark_init() == -1)
@@ -4878,6 +4880,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->hold_time = qa->hold_time;
 	qq->udp_agg_time = MS_TO_NS(qa->udp_agg_time);
 	qq->udp_idle_time = MS_TO_NS(qa->udp_idle_time);
+	qq->udp_max_flows = qa->udp_max_flows;
 	qq->max_env = qa->max_env;
 	qq->ruleset = qa->ruleset;
 	qq->length = 0;

@@ -78,6 +78,7 @@
 	int	 hold_time;		/* in milliseconds */
 	int	 udp_agg_time;		/* in milliseconds */
 	int	 udp_idle_time;		/* in milliseconds */
+	int	 udp_max_flows;
 	...
 };</pre>
 </div>
@@ -134,11 +135,9 @@
           a socket that goes <i class="Em">udp_idle_time</i> without traffic is
           reported as <code class="Dv">QUARK_EV_SOCK_CONN_CLOSED</code> with its
           totals. Datagrams are counted whether or not the owning process is
-          known. The kernel holds up to 65536 flows per aggregation period,
-          beyond that new flows go uncounted until the next aggregation period
-          and
-          <a class="permalink" href="#udp_flow_lost"><i class="Em" id="udp_flow_lost">udp_flow_lost</i></a>
-          of
+          known. The kernel holds up to <i class="Em">udp_max_flows</i> flows
+          per aggregation period, beyond that new flows go uncounted until the
+          next aggregation period and <i class="Em">udp_flow_lost</i> of
           <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>
           is incremented. A socket whose first flow had no known process is
           established with a
@@ -204,6 +203,20 @@
         that a datagram sent within the idle time is never reported after the
         close. Defaults to thirty seconds.</p>
   </dd>
+  <dt id="udp_max_flows"><a class="permalink" href="#udp_max_flows"><i class="Em">udp_max_flows</i></a></dt>
+  <dd>How many UDP flows the kernel holds per aggregation period, only
+      meaningful with <code class="Dv">QQ_UDP_FLOW</code>.
+    <p class="Pp">This is the limit on what one aggregation period can cost.
+        Every flow held is delivered as one
+        <code class="Dv">QUARK_EV_SOCK_FLOW</code> when the period ends and
+        takes about 160 bytes of kernel memory until then. Flows past the limit
+        go uncounted until the next aggregation period, see
+        <i class="Em">udp_flow_lost</i> in
+        <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>.</p>
+    <p class="Pp">Must be greater than zero. The kernel sets the upper limit,
+        <code class="Nm">quark_queue_open</code> fails if it refuses flow maps
+        of that size. Defaults to 65536.</p>
+  </dd>
 </dl>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
@@ -242,7 +255,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 5, 2026</td>
+    <td class="foot-date">November 20, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
