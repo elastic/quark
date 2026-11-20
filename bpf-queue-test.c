@@ -13,6 +13,7 @@
 #define quark_get_bpf_probes test_quark_get_bpf_probes
 #define quark_queue_trusted_pid_reset test_quark_queue_trusted_pid_reset
 #define quark_queue_trusted_pid_add test_quark_queue_trusted_pid_add
+#define quark_queue_file_access_name_reset test_quark_queue_file_access_name_reset
 #define quark_queue_file_access_name_add test_quark_queue_file_access_name_add
 #include "quark.h"
 #include "quark-test.h"
@@ -34,6 +35,7 @@ static void test_log(int, int, const char *, int, const char *, ...);
 #undef bpf_map__lookup_elem
 #undef libbpf_num_possible_cpus
 #undef quark_queue_file_access_name_add
+#undef quark_queue_file_access_name_reset
 #undef quark_queue_trusted_pid_add
 #undef quark_queue_trusted_pid_reset
 #undef quark_get_bpf_probes
