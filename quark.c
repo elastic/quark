@@ -473,6 +473,8 @@ event_storage_clear(struct quark_queue *qq)
 {
 	qq->event_storage.events = 0;
 	qq->event_storage.time = 0;
+	qq->event_storage.tags = 0;
+	qq->event_storage.ruleset = NULL;
 	qq->event_storage.process = NULL;
 	qq->event_storage.socket = NULL;
 	free(qq->event_storage.packet);
@@ -1617,6 +1619,70 @@ kube_read_events(struct quark_queue *qq)
 }
 
 /*
+ * Container scopes of the systemd cgroup driver, <prefix><id>.scope, where
+ * <id> is the container ID in lowercase hex:
+ * docker-<id>.scope                 -> docker://<id>
+ * crio-<id>.scope|libpod-<id>.scope -> cri-o://<id>
+ * cri-containerd-<id>.scope         -> containerd://<id>
+ * containerd-<id>.scope             -> containerd://<id>
+ * The hex ID keeps out host units that share a prefix, like the conmon
+ * monitor in crio-conmon-<id>.scope or libpod-conmon-<id>.scope, and
+ * services like crio-wipe.service.
+ */
+struct container_scope {
+	const char	*prefix;
+	size_t		 prefix_len;
+	const char	*runtime;
+};
+
+static const struct container_scope container_scopes[] = {
+	{ "docker-",		7,	"docker" },
+	{ "crio-",		5,	"cri-o" },
+	{ "libpod-",		7,	"cri-o" },
+	{ "cri-containerd-",	15,	"containerd" },
+	{ "containerd-",	11,	"containerd" },
+};
+
+#define CONTAINER_SCOPE_SUFFIX		".scope"
+#define CONTAINER_SCOPE_SUFFIX_LEN	(sizeof(CONTAINER_SCOPE_SUFFIX) - 1)
+
+/*
+ * The container scope that a cgroup component of len bytes names, or NULL.
+ * The ID is name + prefix_len, len - prefix_len - CONTAINER_SCOPE_SUFFIX_LEN
+ * bytes long.
+ */
+static const struct container_scope *
+container_scope_lookup(const char *name, size_t len)
+{
+	const struct container_scope	*cs;
+	const char			*id;
+	size_t				 i, j, id_len;
+
+	if (len <= CONTAINER_SCOPE_SUFFIX_LEN ||
+	    strncmp(name + len - CONTAINER_SCOPE_SUFFIX_LEN,
+	    CONTAINER_SCOPE_SUFFIX, CONTAINER_SCOPE_SUFFIX_LEN))
+		return (NULL);
+
+	for (i = 0; i < nitems(container_scopes); i++) {
+		cs = &container_scopes[i];
+		if (len <= cs->prefix_len + CONTAINER_SCOPE_SUFFIX_LEN ||
+		    strncmp(name, cs->prefix, cs->prefix_len))
+			continue;
+		id = name + cs->prefix_len;
+		id_len = len - cs->prefix_len - CONTAINER_SCOPE_SUFFIX_LEN;
+		for (j = 0; j < id_len; j++) {
+			if (!((id[j] >= '0' && id[j] <= '9') ||
+			    (id[j] >= 'a' && id[j] <= 'f')))
+				break;
+		}
+		if (j == id_len)
+			return (cs);
+	}
+
+	return (NULL);
+}
+
+/*
  * Build the kubernetes container_id from a cgroup
  * cgroup is what we get from the kernel, like docker-<id>.scope.
  * container_id is how kubernetes sees it, like docker://<id>.
@@ -1626,59 +1692,75 @@ kube_read_events(struct quark_queue *qq)
 int
 parse_container_cgroup(const char *cgroup, char *container_id, size_t container_id_len)
 {
-	char		*dot;
-	const char	*name, *id;
-	const char	*lookup_prefix;
-	int		 r, id_skip;
+	const char			*name;
+	const struct container_scope	*cs;
+	size_t				 len, id_len;
+	int				 r;
 
 	if ((name = safe_basename(cgroup)) == NULL)
 		return (-1);
 
-	/*
-	 * Atm we only accept the systemd format, foo-<id>.scope
-	 * docker-<id>.scope                 -> docker://<id>
-	 * crio-<id>.scope|libpod-<id>.scope -> cri-o://<id>
-	 * cri-containerd-<id>.scope         -> containerd://<id>
-	 * containerd-<id>.scope             -> containerd://<id>
-	 */
-	id_skip = 0;
-
-	lookup_prefix = NULL;
-	if (!strncmp(name, "docker-", 7)) {
-		id_skip = 7;
-		lookup_prefix = "docker";
-	} else if (!strncmp(name, "crio-", 5)) {
-		id_skip = 5;
-		lookup_prefix = "cri-o";
-	} else if (!strncmp(name, "libpod-", 7)) {
-		id_skip = 7;
-		lookup_prefix = "cri-o";
-	} else if (!strncmp(name, "cri-containerd-", 15)) {
-		id_skip = 15;
-		lookup_prefix = "containerd";
-	} else if (!strncmp(name, "containerd-", 11)) {
-		id_skip = 11;
-		lookup_prefix = "containerd";
-	} else
+	/* Atm we only accept the systemd format, see container_scopes */
+	len = strlen(name);
+	if ((cs = container_scope_lookup(name, len)) == NULL)
 		return (-1);
+	id_len = len - cs->prefix_len - CONTAINER_SCOPE_SUFFIX_LEN;
 
-	/*
-	 * id starts after the foo- prefix, we still need to chomp the trailing
-	 * .scope
-	 */
-	id = name + id_skip;
-
-	/* copy the whole thing with the lookup_prefix, and then chomp .scope */
-	r = snprintf(container_id, container_id_len,
-	    "%s://%s", lookup_prefix, id);
+	r = snprintf(container_id, container_id_len, "%s://%.*s",
+	    cs->runtime, (int)id_len, name + cs->prefix_len);
 	if (r < 0 || r >= (int)container_id_len)
 		return (-1);
-	dot = strrchr(container_id, '.');
-	if (dot == NULL)
-		return (-1);
-	*dot = 0;
 
 	return (0);
+}
+
+/*
+ * Return 1 when the cgroup is positively a host cgroup, 0 otherwise. A
+ * host cgroup is an absolute path under a root of the systemd host
+ * layout, /init.scope, /system.slice or /user.slice, with no ..
+ * component and no component that names a container at any depth. So
+ * these are not host:
+ *   /                                     the root, or our own cgroup
+ *                                         in a private cgroup namespace
+ *   /../system.slice/foo.service          relative to a cgroup namespace
+ *   /system.slice/docker-<id>.scope/init  nested in a container
+ *   /kubepods/burstable/pod<uid>/<id>     cgroupfs driver
+ *   /machine.slice/...                    VMs and systemd-nspawn
+ * Keep this function non static so we can test it.
+ */
+int
+cgroup_is_host(const char *cgroup)
+{
+	static const char	*roots[] = {
+		"init.scope", "system.slice", "user.slice"
+	};
+	const char		*p;
+	size_t			 i, len, n;
+
+	if (cgroup == NULL || *cgroup != '/')
+		return (0);
+	for (p = cgroup, n = 0; *p != 0; p += len) {
+		if (*p == '/') {
+			len = 1;
+			continue;
+		}
+		len = strcspn(p, "/");
+		if (n++ == 0) {
+			for (i = 0; i < nitems(roots); i++) {
+				if (len == strlen(roots[i]) &&
+				    !strncmp(p, roots[i], len))
+					break;
+			}
+			if (i == nitems(roots))
+				return (0);
+		}
+		if (len == 2 && !strncmp(p, "..", 2))
+			return (0);
+		if (container_scope_lookup(p, len) != NULL)
+			return (0);
+	}
+
+	return (n > 0);
 }
 
 /*
@@ -1714,8 +1796,8 @@ process_container_id(struct quark_process *qp)
 }
 
 /*
- * Drop the container link and the cached container ID, they no longer
- * match qp->cgroup. link_container_data() relinks lazily.
+ * Reset the data derived from qp->cgroup. link_container_data() relinks
+ * the container lazily.
  */
 static void
 process_forget_container(struct quark_process *qp)
@@ -1724,6 +1806,7 @@ process_forget_container(struct quark_process *qp)
 	free(qp->container_id);
 	qp->container_id = NULL;
 	qp->container_id_parsed = 0;
+	qp->host_scope = QUARK_RULE_SCOPE_INVALID;
 }
 
 /*
@@ -2323,6 +2406,22 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 	if (qev->events)
 		P(" (%s)", buf);
 	P("\n");
+
+	if (qev->tags != 0 && qev->ruleset != NULL) {
+		const char	*sep, *name;
+		u_int		 bit;
+
+		fl = "TAGS";
+		PF(fl, "tags=[ ");
+		for (bit = 0, sep = ""; bit < QUARK_MAX_TAGS; bit++) {
+			if (!(qev->tags & (1ULL << bit)))
+				continue;
+			name = quark_ruleset_tag_name(qev->ruleset, bit);
+			P("%s%s", sep, name != NULL ? name : "?");
+			sep = ", ";
+		}
+		P(" ]\n");
+	}
 
 	if (qev->events & (QUARK_EV_SOCK_CONN_ESTABLISHED|QUARK_EV_SOCK_CONN_CLOSED)) {
 		char local[INET6_ADDRSTRLEN], remote[INET6_ADDRSTRLEN];
@@ -4697,7 +4796,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	struct quark_process	*qp;
 	struct timespec		 unused;
 	char			*ver;
-	int			 backends;
+	int			 backends, saved_errno;
 
 	if ((ver = getenv("QUARK_VERBOSE")) != NULL) {
 		const char *errstr;
@@ -4749,6 +4848,10 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (qa->max_length <= 0 ||
 	    qa->cache_grace_time < 0 ||
 	    qa->hold_time < 10)
+		return (errno = EINVAL, -1);
+
+	/* A tag block must be closed, see quark_ruleset_tag_end() */
+	if (qa->ruleset != NULL && qa->ruleset->block_open)
 		return (errno = EINVAL, -1);
 
 	if (quark_init() == -1)
@@ -4924,9 +5027,10 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	return (0);
 
 fail:
+	saved_errno = errno;
 	quark_queue_close(qq);
 
-	return (-1);
+	return (errno = saved_errno, -1);
 }
 
 /*
@@ -5463,342 +5567,6 @@ raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 	return (qev);
 }
 
-void
-quark_ruleset_init(struct quark_ruleset *ruleset)
-{
-	bzero(ruleset, sizeof(*ruleset));
-}
-
-void
-quark_ruleset_clear(struct quark_ruleset *ruleset)
-{
-	struct quark_rule	*rule;
-	size_t			 i, j;
-
-	for (i = 0; i < ruleset->n_rules; i++) {
-		rule = ruleset->rules + i;
-		for (j = 0; j < rule->n_fields; j++) {
-			switch (rule->fields[j].code) {
-			case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
-			case QUARK_RF_EXE:		/* FALLTHROUGH */
-			case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
-			case QUARK_RF_CONTAINER_IMAGE:
-				free(rule->fields[j].wild.pre);
-				break;
-			default:
-				break;
-			}
-		}
-		free(rule->fields);
-	}
-
-	free(ruleset->rules);
-	ruleset->rules = NULL;
-	ruleset->n_rules = 0;
-}
-
-int
-quark_ruleset_parse(struct quark_ruleset *ruleset, FILE *in,
-    char *err_buf, size_t err_buf_len)
-{
-	struct quark_parser_ctx	 ctx;
-	size_t			 i;
-	int			 quark_parse(struct quark_parser_ctx *);
-
-	quark_ruleset_init(ruleset);
-	bzero(&ctx, sizeof(ctx));
-	ctx.in = in;
-	ctx.ruleset = ruleset;
-
-	quark_parse(&ctx);
-
-	/* Free up parser arena */
-	for (i = 0; i < ctx.n_allocs; i++)
-		free(ctx.allocs[i]);
-	free(ctx.allocs);
-
-	if (ctx.error) {
-		quark_ruleset_clear(ctx.ruleset);
-		if (err_buf != NULL)
-			strlcpy(err_buf, ctx.errorbuf, err_buf_len);
-
-		return (-1);
-	}
-
-	return (0);
-}
-
-static int
-path_match(struct quark_rule_field *field, const char *a)
-{
-	struct quark_wild	*w = &field->wild;
-	size_t			 alen;
-
-	/*
-	 * Include NUL in the comparison. Without it, "foo" would match "foobar"
-	 * as a prefix. pre_len includes the NUL when it's an exact match. If
-	 * post_len is 0, NUL is not included (hence zero), if post_len is
-	 * positive, NUL is included.
-	 */
-	alen = strlen(a) + 1;	/* include NUL */
-
-	if (w->pre_len + w->post_len > alen)
-		return (0);
-	if (memcmp(w->pre, a, w->pre_len) != 0)
-		return (0);
-	if (memcmp(w->post, a + alen - w->post_len, w->post_len) != 0)
-		return (0);
-
-	return (1);
-}
-
-/* 1 for match, 0 for non match */
-static int
-quark_rule_field_match(struct quark_rule *rule, struct quark_rule_field *field,
-    struct quark_event *qev)
-{
-	const struct quark_process	*qp;
-
-	qp = qev->process;
-
-#define MATCH_PROC_FIELD(_p, _n, _v)					\
-	((_p) != NULL && ((_p)->flags & QUARK_F_PROC) && (_p)->_n == (_v))
-
-	switch (field->code) {
-	case QUARK_RF_PID:
-		if (qp != NULL)
-			return (qp->pid == field->pid);
-		break;
-	case QUARK_RF_PPID:
-		return (MATCH_PROC_FIELD(qp, proc_ppid, field->pid));
-	case QUARK_RF_EXE:
-		if (qp != NULL && qp->exe != NULL)
-			return (path_match(field, qp->exe));
-		break;
-	case QUARK_RF_UID:
-		return (MATCH_PROC_FIELD(qp, proc_uid, field->id));
-	case QUARK_RF_GID:
-		return (MATCH_PROC_FIELD(qp, proc_gid, field->id));
-	case QUARK_RF_SID:
-		return (MATCH_PROC_FIELD(qp, proc_sid, field->id));
-		break;
-	case QUARK_RF_COMM:
-		if (qp != NULL)
-			return (!strcmp(field->comm, qp->comm));
-		break;
-	case QUARK_RF_FILEPATH:
-		if (qev->file != NULL)
-			return (path_match(field, qev->file->path));
-		break;
-	case QUARK_RF_FILE_EXEC_CHANGE:
-		if (qev->file != NULL)
-			return (((qev->file->op_mask & QUARK_FILE_OP_CREATE) ||
-			    (qev->file->change_mask & QUARK_FILE_CH_PERMS)) &&
-			    (qev->file->mode & (S_IXUSR | S_IXGRP | S_IXOTH)));
-		break;
-	case QUARK_RF_POD_NAME:
-		if (qp != NULL && qp->container != NULL &&
-		    qp->container->pod != NULL &&
-		    qp->container->pod->name != NULL)
-			return (path_match(field, qp->container->pod->name));
-		break;
-	case QUARK_RF_CONTAINER_IMAGE:
-		if (qp != NULL && qp->container != NULL &&
-		    qp->container->image != NULL)
-			return (path_match(field, qp->container->image));
-		break;
-	case QUARK_RF_EVENT_SCOPE:
-		/* An unknown cgroup is not a container. */
-		if (qp != NULL && field->id == QUARK_RULE_SCOPE_CONTAINER)
-			return (process_container_id(
-			    (struct quark_process *)qp) != NULL);
-		break;
-	case QUARK_RF_POISON:
-		if (qp != NULL)
-			return (qp->poison_tag == field->poison_tag);
-		break;
-	default:
-		break;
-	}
-
-#undef MATCH_PROC_FIELD
-
-	return (0);
-}
-
-struct quark_rule *
-quark_ruleset_match(struct quark_ruleset *ruleset, struct quark_event *qev)
-{
-	struct quark_rule	*rule;
-	struct quark_rule_field		*field;
-	size_t			 i, j;
-	struct quark_process	*qp;
-
-	for (i = 0; i < ruleset->n_rules; i++) {
-		rule = ruleset->rules + i;
-		rule->evals++;
-		for (j = 0; j < rule->n_fields; j++) {
-			field = rule->fields + j;
-			if (!quark_rule_field_match(rule, field, qev))
-				break;
-		}
-		/* All fields matched, this is the rule! */
-		if (j == rule->n_fields) {
-			rule->hits++;
-			/* Poison rules continue to evaluate, others are done */
-			if (rule->action != QUARK_RA_POISON)
-				return (rule);
-			/* Poison this process */
-			qp = (struct quark_process *)qev->process;
-			if (qp != NULL)
-				qp->poison_tag = rule->poison_tag;
-		}
-	}
-
-	return (NULL);
-}
-
-struct quark_rule *
-quark_ruleset_append_rule(struct quark_ruleset *ruleset, int action, u64 poison_tag)
-{
-	struct quark_rule	*new_rules, *rule;
-	size_t			 new_n_rules;
-
-	if (action != QUARK_RA_DROP &&
-	    action != QUARK_RA_PASS &&
-	    action != QUARK_RA_POISON)
-		return (errno = EINVAL, NULL);
-	new_n_rules = ruleset->n_rules + 1;
-	new_rules = reallocarray(ruleset->rules, new_n_rules,
-	    sizeof(*ruleset->rules));
-	if (new_rules == NULL)
-		return (NULL);
-
-	ruleset->rules = new_rules;
-	ruleset->n_rules = new_n_rules;
-
-	rule = &ruleset->rules[ruleset->n_rules - 1];
-	rule->fields = NULL;
-	rule->n_fields = 0;
-	rule->action = action;
-	rule->number = ruleset->n_rules - 1;
-	rule->evals = 0;
-	rule->hits = 0;
-	if (action == QUARK_RA_POISON)
-		rule->poison_tag = poison_tag;
-	else
-		rule->poison_tag = 0;
-
-	return (rule);
-}
-
-/*
- * Initialize a wildcard from the user string in w->pre, which is copied.
- * As in foo*bar: pre = foo, post = bar. Only one * is allowed. On error
- * w->pre is left untouched and nothing is allocated. Returns -1 with
- * errno set.
- */
-static int
-wild_init(struct quark_wild *w)
-{
-	char	*copy, *star;
-	size_t	 len;
-
-	w->post = NULL;
-	w->pre_len = w->post_len = 0;
-
-	if (w->pre == NULL || (len = strlen(w->pre)) == 0 || len >= PATH_MAX)
-		return (errno = EINVAL, -1);
-	star = strchr(w->pre, '*');
-	if (star != NULL && strchr(star + 1, '*') != NULL)
-		return (errno = EINVAL, -1);
-	if ((copy = strdup(w->pre)) == NULL)
-		return (-1);
-	/* Rebase star into the copy */
-	if (star != NULL)
-		star = copy + (star - w->pre);
-	w->pre = copy;
-	w->post = w->pre + len;
-	if (star != NULL) {
-		*star = 0;
-		w->post = star + 1;
-	}
-	/* Don't move this up, as the block above might shorten "pre" */
-	w->pre_len = strlen(w->pre);
-	w->post_len = strlen(w->post);
-	if (star == NULL)
-		w->pre_len++; /* Include NUL in the comparison */
-	if (w->post_len > 0)
-		w->post_len++; /* Include NUL in the comparison */
-
-	return (0);
-}
-
-int
-quark_rule_match_field(struct quark_rule *rule, struct quark_rule_field rf)
-{
-	struct quark_rule_field	*new_fields;
-	size_t			 new_n_fields;
-	char			*path;
-
-	path = NULL;
-
-	switch (rf.code) {
-	case QUARK_RF_PID:		/* FALLTHROUGH */
-	case QUARK_RF_PPID:
-		if (rf.pid == 0)
-			goto inval;
-		break;
-	case QUARK_RF_UID:		/* FALLTHROUGH */
-	case QUARK_RF_GID:		/* FALLTHROUGH */
-	case QUARK_RF_SID:
-		break;
-	case QUARK_RF_COMM:
-		if (strlen(rf.comm) == 0)
-			goto inval;
-		break;
-	case QUARK_RF_EXE:		/* FALLTHROUGH */
-	case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
-	case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
-	case QUARK_RF_CONTAINER_IMAGE:
-		if (wild_init(&rf.wild) == -1)
-			goto bad;
-		path = rf.wild.pre;
-		break;
-	case QUARK_RF_FILE_EXEC_CHANGE:
-		break;
-	case QUARK_RF_EVENT_SCOPE:
-		if (rf.id != QUARK_RULE_SCOPE_CONTAINER)
-			goto inval;
-		break;
-	case QUARK_RF_POISON:
-		if (rf.poison_tag == 0)
-			goto inval;
-		break;
-	default:
-		goto inval;
-	}
-
-	new_n_fields = rule->n_fields + 1;
-	new_fields = reallocarray(rule->fields, new_n_fields,
-	    sizeof(*rule->fields));
-	if (new_fields == NULL)
-		goto bad;
-
-	rule->fields = new_fields;
-	rule->n_fields = new_n_fields;
-	rule->fields[rule->n_fields - 1] = rf;
-
-	return (0);
-
-inval:
-	errno = EINVAL;
-bad:
-	free(path);
-
-	return (-1);
-}
-
 static struct quark_event *
 get_bypass_event(struct quark_queue *qq)
 {
@@ -5912,10 +5680,14 @@ quark_queue_get_event(struct quark_queue *qq)
 
 next:
 	qev = quark_queue_get_event1(qq);
-	/* Run ruleset, if we drop, get the next event */
+	/*
+	 * Run ruleset, if we drop, get the next event. A tag means "deliver
+	 * this event", so drop removes only an event without tags.
+	 */
 	if (qev != NULL && qq->ruleset != NULL) {
 		rule = quark_ruleset_match(qq->ruleset, qev);
-		if (rule != NULL && rule->action == QUARK_RA_DROP)
+		if (rule != NULL && rule->action == QUARK_RA_DROP &&
+		    qev->tags == 0)
 			goto next;
 	}
 

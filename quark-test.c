@@ -3966,6 +3966,7 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 		{ "foo/cri-containerd-abc123def456.scope", "containerd://abc123def456", 0 },
 		{ "foo/containerd-abc123def456.scope", "containerd://abc123def456", 0 },
 		{ "foo/crio-0123456789abcdef.scope", "cri-o://0123456789abcdef", 0 },
+		{ "foo/libpod-0123456789abcdef.scope", "cri-o://0123456789abcdef", 0 },
 		/* negative cases */
 		{ "crio-0123456789abcdef.scope", "cri-o://0123456789abcdef", -1 },
 		{ "docker-.scope", NULL, -1 },
@@ -3975,6 +3976,22 @@ t_cgroup_parse(const struct test *t, struct quark_queue_attr *qa)
 		{ "ABCDEF", NULL, -1 },
 		{ "something-abcdef.scope", NULL, -1 },
 		{ "docker-abcdef.scopeX", NULL, -1 },
+		/* with a directory, so they reach the prefix check */
+		{ "foo/docker-.scope", NULL, -1 },
+		{ "foo/containerd-.scope", NULL, -1 },
+		{ "foo/crio-.scope", NULL, -1 },
+		{ "foo/something-abcdef.scope", NULL, -1 },
+		{ "foo/docker-abcdef.scopeX", NULL, -1 },
+		{ "foo/docker-abcdef.service", NULL, -1 },
+		{ "foo/docker-abcdef", NULL, -1 },
+		{ "foo/docker-ABCDEF.scope", NULL, -1 },
+		{ "foo/docker-abc.def.scope", NULL, -1 },
+		{ "foo/docker-abcdeg.scope", NULL, -1 },
+		/* host units that share a runtime prefix */
+		{ "/system.slice/crio-wipe.service", NULL, -1 },
+		{ "/system.slice/docker-cleanup.service", NULL, -1 },
+		{ "/system.slice/crio-conmon-0123abcd.scope", NULL, -1 },
+		{ "/machine.slice/libpod-conmon-0123abcd.scope", NULL, -1 },
 		{ NULL, NULL, -1 }
 	};
 
@@ -4115,8 +4132,11 @@ t_fork_pid_reuse_cgroup(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue	 qq;
 	struct quark_container	*container;
 	struct quark_process	*qp;
+	struct quark_ruleset	 ruleset;
 
 	quark_queue_init_bare(&qq);
+	ruleset_from_string(&ruleset, "pass on event.scope host\n");
+	qq.ruleset = &ruleset;
 	/* Keep exited processes cached, as within the gc grace window. */
 	qq.cache_grace_time = MS_TO_NS(60000);
 	container = quark_container_create(&qq, "docker://abc", NULL, NULL,
@@ -4152,8 +4172,16 @@ t_fork_pid_reuse_cgroup(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qp->cgroup, "/user.slice/user-1000.slice"));
 	assert(qp->container == NULL);
 	assert(TAILQ_EMPTY(&container->processes));
+	assert(qp->host_scope == QUARK_RULE_SCOPE_HOST);
+
+	/* Reusing a host PID also clears the cached host scope. */
+	assert(test_raw_task_event(&qq, RAW_EXIT_THREAD, 100, NULL) == qp);
+	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, NULL) == qp);
+	assert(qp->cgroup == NULL);
+	assert(qp->host_scope == QUARK_RULE_SCOPE_INVALID);
 
 	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
 
 	return (0);
 }
@@ -4174,12 +4202,12 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	TAILQ_INIT(&container.processes);
 
 	/* Parse and cache the first container ID. */
-	cgroup = strdup("/system.slice/docker-old.scope");
+	cgroup = strdup("/system.slice/docker-0a1d.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
 	assert(process_container_id(&qp) != NULL);
-	assert(!strcmp(qp.container_id, "docker://old"));
+	assert(!strcmp(qp.container_id, "docker://0a1d"));
 	assert(qp.container_id_parsed);
 	assert(qp.container_id != NULL);
 	cached = qp.container_id;
@@ -4191,7 +4219,7 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
 	qp.container = &container;
 
-	cgroup = strdup("/system.slice/docker-old.scope");
+	cgroup = strdup("/system.slice/docker-0a1d.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
@@ -4204,11 +4232,11 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	 * cgroup inside the same container. The parser only looks at the
 	 * basename, so it does not relink nested cgroups yet.
 	 */
-	cgroup = strdup("/system.slice/docker-old.scope/init.scope");
+	cgroup = strdup("/system.slice/docker-0a1d.scope/init.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
-	assert(!strcmp(qp.cgroup, "/system.slice/docker-old.scope/init.scope"));
+	assert(!strcmp(qp.cgroup, "/system.slice/docker-0a1d.scope/init.scope"));
 	assert(qp.container == NULL);
 	assert(TAILQ_EMPTY(&container.processes));
 	assert(qp.container_id == NULL);
@@ -4218,15 +4246,15 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	 * A different container cgroup must remove the old link and clear
 	 * the cached ID.
 	 */
-	cgroup = strdup("/system.slice/docker-old.scope");
+	cgroup = strdup("/system.slice/docker-0a1d.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
-	assert(!strcmp(process_container_id(&qp), "docker://old"));
+	assert(!strcmp(process_container_id(&qp), "docker://0a1d"));
 	TAILQ_INSERT_TAIL(&container.processes, &qp, entry_container);
 	qp.container = &container;
 
-	cgroup = strdup("/system.slice/containerd-new.scope");
+	cgroup = strdup("/system.slice/containerd-0e3.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
@@ -4235,7 +4263,7 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp.container_id == NULL);
 	assert(!qp.container_id_parsed);
 
-	assert(!strcmp(process_container_id(&qp), "containerd://new"));
+	assert(!strcmp(process_container_id(&qp), "containerd://0e3"));
 	assert(qp.container_id_parsed);
 
 	/*
@@ -4272,12 +4300,12 @@ t_process_container_cache(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp.container_id_parsed);
 
 	/* A container cgroup after a negative result must be parsed. */
-	cgroup = strdup("/system.slice/docker-late.scope");
+	cgroup = strdup("/system.slice/docker-1a7e.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	assert(cgroup == NULL);
 	assert(!qp.container_id_parsed);
-	assert(!strcmp(process_container_id(&qp), "docker://late"));
+	assert(!strcmp(process_container_id(&qp), "docker://1a7e"));
 	assert(qp.container_id_parsed);
 
 	free(qp.cgroup);
@@ -4305,7 +4333,7 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	quark_queue_init_bare(&qq);
 	bzero(&qp, sizeof(qp));
 
-	qp.cgroup = strdup("/system.slice/docker-target.scope");
+	qp.cgroup = strdup("/system.slice/docker-7a6e7.scope");
 	assert(qp.cgroup != NULL);
 
 	/* No metadata exists. RB_EMPTY must stop the parse. */
@@ -4322,7 +4350,7 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	link_container_data(&qq, &qp);
 	assert(qp.container == NULL);
 	assert(qp.container_id_parsed);
-	assert(!strcmp(qp.container_id, "docker://target"));
+	assert(!strcmp(qp.container_id, "docker://7a6e7"));
 	cached = qp.container_id;
 
 	/* A second failed lookup must use the same cached string. */
@@ -4331,7 +4359,7 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp.container_id == cached);
 
 	/* Matching metadata arrives after the process. */
-	container = quark_container_get(&qq, "docker://target", NULL);
+	container = quark_container_get(&qq, "docker://7a6e7", NULL);
 	assert(container != NULL);
 	link_container_data(&qq, &qp);
 	assert(qp.container == container);
@@ -4339,19 +4367,19 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 
 	/* Public cache reads must link metadata that arrived later. */
 	lookup_qp = test_process_event(&qq, 100,
-	    "/system.slice/docker-lookup.scope");
+	    "/system.slice/docker-100c.scope");
 	iter_qp = test_process_event(&qq, 200,
-	    "/system.slice/docker-iterator.scope");
+	    "/system.slice/docker-17e6a7.scope");
 
-	assert(quark_container_get(&qq, "docker://lookup", NULL) != NULL);
-	assert(quark_container_get(&qq, "docker://iterator", NULL) != NULL);
+	assert(quark_container_get(&qq, "docker://100c", NULL) != NULL);
+	assert(quark_container_get(&qq, "docker://17e6a7", NULL) != NULL);
 	assert(lookup_qp->container == NULL);
 	assert(iter_qp->container == NULL);
 
 	seen = quark_process_lookup(&qq, lookup_qp->pid);
 	assert(seen == lookup_qp);
 	assert(lookup_qp->container != NULL);
-	assert(!strcmp(lookup_qp->container->container_id, "docker://lookup"));
+	assert(!strcmp(lookup_qp->container->container_id, "docker://100c"));
 
 	quark_process_iter_init(&qi, &qq);
 	seen = quark_process_iter_next(&qi);
@@ -4359,7 +4387,7 @@ t_link_container_data(const struct test *t, struct quark_queue_attr *qa)
 	seen = quark_process_iter_next(&qi);
 	assert(seen == iter_qp);
 	assert(iter_qp->container != NULL);
-	assert(!strcmp(iter_qp->container->container_id, "docker://iterator"));
+	assert(!strcmp(iter_qp->container->container_id, "docker://17e6a7"));
 	assert(quark_process_iter_next(&qi) == NULL);
 
 	/* Stats must work without a backend. */
@@ -4558,6 +4586,98 @@ t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
 	return (0);
 }
 
+/* A failed diagnostic write must preserve the nova validation error. */
+static void
+check_nova_ruleset_errno(struct quark_queue_attr *attr)
+{
+	struct quark_queue	 qq;
+	char			*verbose_env;
+	int			 full_fd, stderr_fd, saved_verbose;
+	int			 r, saved_errno, stderr_error;
+
+	verbose_env = getenv("QUARK_VERBOSE");
+	if (verbose_env != NULL) {
+		if ((verbose_env = strdup(verbose_env)) == NULL)
+			err(1, "copy QUARK_VERBOSE");
+		if (unsetenv("QUARK_VERBOSE") == -1)
+			err(1, "unset QUARK_VERBOSE");
+	}
+	saved_verbose = quark_verbose;
+	quark_verbose = QUARK_VL_WARN;
+
+	if ((stderr_fd = dup(STDERR_FILENO)) == -1)
+		err(1, "dup stderr");
+	if ((full_fd = open("/dev/full", O_WRONLY | O_CLOEXEC)) == -1)
+		err(1, "open /dev/full");
+	if (dup2(full_fd, STDERR_FILENO) == -1)
+		err(1, "redirect stderr");
+	close(full_fd);
+	clearerr(stderr);
+
+	errno = 0;
+	r = quark_queue_open(&qq, attr);
+	saved_errno = errno;
+	stderr_error = ferror(stderr);
+
+	if (dup2(stderr_fd, STDERR_FILENO) == -1)
+		err(1, "restore stderr");
+	close(stderr_fd);
+	clearerr(stderr);
+	quark_verbose = saved_verbose;
+	if (verbose_env != NULL) {
+		if (setenv("QUARK_VERBOSE", verbose_env, 1) == -1)
+			err(1, "restore QUARK_VERBOSE");
+		free(verbose_env);
+	}
+
+	assert(stderr_error);
+	assert(r == -1);
+	assert(saved_errno == ENOTSUP);
+}
+
+static int
+t_nova_ruleset_validation(const struct test *t, struct quark_queue_attr *unused)
+{
+	struct quark_queue	 qq;
+	struct quark_queue_attr	 attr;
+	struct quark_ruleset	 ruleset;
+	size_t			 i;
+	char			*policies[] = {
+		"tag log {\n on any\n}\n",
+		"drop on process.pid { 1 2 }\n",
+		"drop on file.exec_change\n",
+		"drop on event.scope container\n",
+		"drop on pod.name test\n",
+		"drop on container.image test\n",
+	};
+
+	quark_queue_default_attr(&attr);
+	attr.flags = QQ_NOVA;
+	attr.ruleset = &ruleset;
+	for (i = 0; i < nitems(policies); i++) {
+		ruleset_from_string(&ruleset, policies[i]);
+		errno = 0;
+		assert(quark_queue_open(&qq, &attr) == -1);
+		assert(errno == ENOTSUP);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	ruleset_from_string(&ruleset, policies[0]);
+	check_nova_ruleset_errno(&attr);
+	quark_ruleset_clear(&ruleset);
+
+	quark_ruleset_init(&ruleset);
+	for (i = 0; i < NOVA_MAX_RULES + 1; i++)
+		assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP,
+		    0) != NULL);
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EFBIG);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
 static int
 t_hanson(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -4680,7 +4800,7 @@ t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 	assert(ruleset.n_rules == 1);
 	rule = &ruleset.rules[0];
 	assert(rule->action == QUARK_RA_DROP);
-	assert(rule->n_fields == 2);
+	assert(rule->n_conds == 2);
 
 	qa->ruleset = &ruleset;
 	qa->flags |= QQ_FILE;
@@ -4754,10 +4874,10 @@ t_rule_exec_change(const struct test *t, struct quark_queue_attr *qa)
 	assert(ruleset.n_rules == 2);
 	pass_rule = &ruleset.rules[0];
 	assert(pass_rule->action == QUARK_RA_PASS);
-	assert(pass_rule->n_fields == 3);
+	assert(pass_rule->n_conds == 3);
 	drop_rule = &ruleset.rules[1];
 	assert(drop_rule->action == QUARK_RA_DROP);
-	assert(drop_rule->n_fields == 1);
+	assert(drop_rule->n_conds == 1);
 
 	qa->ruleset = &ruleset;
 	qa->flags |= QQ_FILE;
@@ -4852,17 +4972,17 @@ t_rule_path2(const struct test *t, struct quark_queue_attr *qa)
 	/* Assert suff_rule */
 	suff_rule = &ruleset.rules[0];
 	assert(suff_rule->action == QUARK_RA_PASS);
-	assert(suff_rule->n_fields == 2);
+	assert(suff_rule->n_conds == 2);
 
 	/* Assert inf_rule */
 	inf_rule = &ruleset.rules[1];
 	assert(inf_rule->action == QUARK_RA_PASS);
-	assert(inf_rule->n_fields == 2);
+	assert(inf_rule->n_conds == 2);
 
 	/* Assert drop_rule */
 	drop_rule = &ruleset.rules[2];
 	assert(drop_rule->action == QUARK_RA_DROP);
-	assert(drop_rule->n_fields == 1);
+	assert(drop_rule->n_conds == 1);
 
 	/* Start the ball */
 	qa->ruleset = &ruleset;
@@ -5246,6 +5366,39 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"pass on process.exe /foo/*\n",
 		"drop on process.exe \"/foo bar/*\"\n",
 		"pass on process.exe \\\nfoo",	/* line split by \ */
+		/* value lists */
+		"drop on process.pid { 1 2 3 }\n",
+		"drop on process.pid {1 2}\n",
+		"drop on process.pid { 7 }\n",
+		"drop on process.ppid { 1 2 } process.uid { 0 1000 }\n",
+		"drop on process.gid { 0 1 } process.sid { 5 6 }\n",
+		"drop on process.exe { /bin/* /usr/bin/* \"/opt/my app/*\" }\n",
+		"drop on file.path { /tmp/* */.bashrc } file.exec_change\n",
+		"pass on pod.name { nginx-* *-sidecar } container.image { a b }\n",
+		"pass on event.scope { container }\n",
+		"drop on event.scope host\n",
+		"drop on event.scope unknown\n",
+		"drop on event.scope { host unknown }\n",
+		"poison 3 on poison { 1 2 }\n",
+		"drop on pod.name {\n\tnginx-*\n\n\t*-sidecar # comment\n}\n",
+		"drop on pod.name { a\n b } process.pid 1\n",
+		/* braces are tokens, unless quoted or escaped */
+		"drop on file.path \"/a{b}\"\n",
+		"drop on file.path /a\\{b\\}\n",
+		/* tag blocks */
+		"tag log {\n\ton any\n}\n",
+		"tag log {\n\ton any\n}",
+		"tag alert {\n\texcept on file.path /tmp/*\n"
+		    "\ton file.exec_change\n\ton process.pid { 1 2 }\n}\n",
+		"tag log {\n\texcept on process.pid 1\n"
+		    "\texcept on process.uid { 0 1 }\n\ton any\n}\n",
+		"tag log {\n\n# comment\n\ton any # comment\n\n}\n",
+		"tag log {\n\ton any\n}\ntag log {\n\ton process.pid 1\n}\n",
+		"tag log {\n\ton any\n}\ntag alert {\n\ton any\n}\n",
+		"tag \"alert\" {\n\ton any\n}\n",
+		"tag log {\n\ton pod.name {\n\t\tx\n\t\ty\n\t}\n}\n",
+		"drop on event.scope { host unknown }\n"
+		    "tag log {\n\ton any\n}\ndrop on any\n",
 		NULL
 	};
 	char *bad_cases[] = {
@@ -5269,11 +5422,57 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on file.name \"foo\n",
 		"drop on event.scope\n",
 		"drop on event.scope guest\n",
-		"drop on event.scope host\n",
+		"drop on event.scope Host\n",
+		"drop on event.scope { host guest }\n",
 		"drop on pod.name\n",
 		"drop on pod.name a*b*\n",
 		"drop on container.image\n",
 		"drop on container.image */nginx:*\n",
+		/* value lists */
+		"drop on process.pid { }\n",
+		"drop on process.pid {\n",
+		"drop on process.pid { 1 2\n",
+		"drop on process.pid { 1 2",
+		"drop on process.pid 1 }\n",
+		"drop on process.pid } 1 {\n",
+		"drop on { process.pid 1 }\n",
+		"drop on process.pid { 1 { 2 } }\n",
+		"drop on process.pid { 1 x }\n",
+		"drop on process.pid { 1 0 }\n",
+		"drop on process.exe { /a /b** }\n",
+		"drop on file.exec_change { 1 }\n",
+		"drop on any { }\n",
+		"drop on event.scope { container guest }\n",
+		"poison { 1 } on any\n",
+		"drop on file.path /a{b\n",
+		/* tag blocks */
+		"tag log {\n}\n",
+		"tag log {\n\texcept on process.pid 1\n}\n",
+		"tag log {\n\ton any\n\texcept on process.pid 1\n}\n",
+		"tag log {\n\texcept on any\n\ton any\n}\n",
+		"tag log {\n\tpass on any\n}\n",
+		"tag log {\n\tpoison 1 on any\n}\n",
+		"tag log {\n\ton any\n",
+		"tag log { on any }\n",
+		"tag log {\n\ton any }\n",
+		"tag log\n{\n\ton any\n}\n",
+		"tag log {\n\ttag alert {\n\t\ton any\n\t}\n}\n",
+		"tag log {\n\ton any\n} drop on any\n",
+		"tag log {\n\ton\n}\n",
+		/* tag names: log and alert only */
+		"tag a {\n\ton any\n}\n",
+		"tag x.y_z-1 {\n\ton any\n}\n",
+		"tag Log {\n\ton any\n}\n",
+		"tag \"log \" {\n\ton any\n}\n",
+		"tag blocked {\n\ton any\n}\n",
+		"tag \"\" {\n\ton any\n}\n",
+		"tag {\n\ton any\n}\n",
+		"tag log alert {\n\ton any\n}\n",
+		"tag on {\n\ton any\n}\n",
+		"tag al\xe9rt {\n\ton any\n}\n",	/* a Latin-1 byte */
+		"}\n",
+		"on any\n",
+		"except on any\n",
 		NULL
 	};
 
@@ -5296,9 +5495,513 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * The values of a field are ORed, the fields of a rule are ANDed.
+ */
+static int
+t_rule_values(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_event	 qev;
+	struct quark_process	 qp;
+	struct quark_file	 file;
+	struct quark_rule	*rule;
+	struct quark_rule_field	 rfs[3];
+	struct quark_ruleset	 ruleset;
+	char			 exe[] = "/usr/bin/curl";
+	u32			 pid;
+
+	bzero(&qev, sizeof(qev));
+	bzero(&qp, sizeof(qp));
+	bzero(&file, sizeof(file));
+	qev.process = &qp;
+	qp.flags = QUARK_F_PROC;
+
+	ruleset_from_string(&ruleset,
+	    "pass on process.pid { 10 20 30 } process.uid { 0 1000 }\n"
+	    "drop on process.exe { /bin/* /usr/bin/curl *-helper }\n"
+	    "poison 9 on file.path { /tmp/* \"/srv/a b\" }\n");
+	assert(ruleset.n_rules == 3);
+	rule = &ruleset.rules[0];
+	assert(rule->n_conds == 2);
+	assert(rule->conds[0].code == QUARK_RF_PID);
+	assert(rule->conds[0].n_values == 3);
+	assert(rule->conds[1].code == QUARK_RF_UID);
+	assert(rule->conds[1].n_values == 2);
+	assert(ruleset.rules[1].conds[0].n_values == 3);
+	assert(ruleset.rules[2].conds[0].n_values == 2);
+
+	/* First, middle and last value, with both uids */
+	for (pid = 10; pid <= 30; pid += 10) {
+		qp.pid = pid;
+		qp.proc_uid = pid == 20 ? 1000 : 0;
+		rule = quark_ruleset_match(&ruleset, &qev);
+		assert(rule != NULL && rule->number == 0);
+	}
+	/* One field matches, the other does not: no AND */
+	qp.pid = 10;
+	qp.proc_uid = 5;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	qp.pid = 11;
+	qp.proc_uid = 0;
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+
+	/* Wildcard values: prefix, exact and suffix */
+	qp.exe = exe;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	strlcpy(exe, "/bin/sh", sizeof(exe));
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	strlcpy(exe, "/opt/x-helper", sizeof(exe));
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	strlcpy(exe, "/usr/bin/cur", sizeof(exe));
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	qp.exe = NULL;
+
+	/* A quoted value with a space, and no file is no match */
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp.poison_tag == 0);
+	qev.file = &file;
+	file.path = "/srv/a b";
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp.poison_tag == 9);
+	qp.poison_tag = 0;
+	file.path = "/tmp/x";
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp.poison_tag == 9);
+	qp.poison_tag = 0;
+	file.path = "/srv/a";
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qp.poison_tag == 0);
+
+	quark_ruleset_clear(&ruleset);
+
+	/* The list API */
+	quark_ruleset_init(&ruleset);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
+	assert(rule != NULL);
+	bzero(rfs, sizeof(rfs));
+	rfs[0].code = rfs[1].code = rfs[2].code = QUARK_RF_EXE;
+	rfs[0].wild.pre = "/a/*";
+	rfs[1].wild.pre = "/b";
+	rfs[2].wild.pre = "/c/**";
+	/* No values */
+	errno = 0;
+	assert(quark_rule_match_field_list(rule, rfs, 0) == -1);
+	assert(errno == EINVAL);
+	assert(quark_rule_match_field_list(rule, NULL, 1) == -1);
+	/* A bad value after good ones leaves the rule unchanged */
+	errno = 0;
+	assert(quark_rule_match_field_list(rule, rfs, 3) == -1);
+	assert(errno == EINVAL);
+	assert(rule->n_conds == 0);
+	/* Mixed codes */
+	rfs[2].code = QUARK_RF_FILEPATH;
+	rfs[2].wild.pre = "/c";
+	errno = 0;
+	assert(quark_rule_match_field_list(rule, rfs, 3) == -1);
+	assert(errno == EINVAL);
+	assert(rule->n_conds == 0);
+	/* The values are copied, the caller keeps its strings */
+	assert(quark_rule_match_field_list(rule, rfs, 2) == 0);
+	assert(rule->n_conds == 1);
+	assert(rule->conds[0].n_values == 2);
+	assert(rule->conds[0].values[0].wild.pre != rfs[0].wild.pre);
+	/* A single field is a list of one */
+	assert(quark_rule_match_field(rule, rfs[2]) == 0);
+	assert(rule->n_conds == 2);
+	assert(rule->conds[1].n_values == 1);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/* An event of a process with pid, its file is NULL unless path is set */
+static void
+tag_test_event(struct quark_event *qev, struct quark_process *qp,
+    struct quark_file *file, u32 pid, const char *path, u32 mode, u32 op)
+{
+	bzero(qev, sizeof(*qev));
+	bzero(qp, sizeof(*qp));
+	bzero(file, sizeof(*file));
+	qp->pid = pid;
+	qev->process = qp;
+	if (path != NULL) {
+		file->path = path;
+		file->mode = mode;
+		file->op_mask = op;
+		qev->file = file;
+	}
+}
+
+/*
+ * Tag blocks: the L2 example of the D4C gap analysis, the exclude applies
+ * to one response only.
+ */
+static int
+t_rule_tag(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_event	 qev;
+	struct quark_process	 qp;
+	struct quark_file	 file;
+	struct quark_rule	*rule;
+	struct quark_ruleset	 ruleset;
+	u64			 alert, log;
+	FILE			*dump_f;
+	char			*dump_buf;
+	size_t			 dump_len;
+
+	ruleset_from_string(&ruleset,
+	    "tag alert {\n"
+	    "\texcept on file.path /tmp/*\n"
+	    "\ton file.exec_change\n"
+	    "\ton file.path /usr/bin/*\n"
+	    "}\n"
+	    "tag log {\n"
+	    "\ton file.path *\n"
+	    "}\n"
+	    "drop on any\n");
+	assert(ruleset.n_rules == 5);
+	assert(ruleset.n_tags == 2);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 0), "alert"));
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 1), "log"));
+	assert(quark_ruleset_tag_name(&ruleset, 2) == NULL);
+	alert = 1ULL << 0;
+	log = 1ULL << 1;
+	assert(ruleset.rules[0].action == QUARK_RA_EXCEPT);
+	assert(ruleset.rules[1].action == QUARK_RA_TAG);
+	assert(ruleset.rules[2].action == QUARK_RA_TAG);
+	assert(ruleset.rules[3].action == QUARK_RA_TAG);
+	assert(ruleset.rules[4].action == QUARK_RA_DROP);
+	assert(ruleset.rules[0].skip_to == 3 && ruleset.rules[2].skip_to == 3);
+	assert(ruleset.rules[3].skip_to == 4);
+	assert(ruleset.rules[0].tags == alert && ruleset.rules[1].tags == alert);
+	assert(ruleset.rules[3].tags == log);
+
+	/* A new executable in /tmp: the exclude stops the alert only */
+	tag_test_event(&qev, &qp, &file, 1, "/tmp/x", 0755,
+	    QUARK_FILE_OP_CREATE);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->action == QUARK_RA_DROP);
+	assert(qev.tags == log);
+	assert(qev.ruleset == &ruleset);
+	/* The except line left the block, its on lines were not evaluated */
+	assert(ruleset.rules[0].hits == 1);
+	assert(ruleset.rules[1].evals == 0 && ruleset.rules[2].evals == 0);
+
+	/* Elsewhere: both tags, the first on line decides the block */
+	tag_test_event(&qev, &qp, &file, 1, "/usr/bin/x", 0755,
+	    QUARK_FILE_OP_CREATE);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->action == QUARK_RA_DROP);
+	assert(qev.tags == (alert | log));
+	assert(ruleset.rules[1].hits == 1);
+	assert(ruleset.rules[2].evals == 0);
+
+	/* The dump prints the names, in bit order */
+	dump_buf = NULL;
+	dump_len = 0;
+	dump_f = open_memstream(&dump_buf, &dump_len);
+	assert(dump_f != NULL);
+	assert(quark_event_dump(&qev, dump_f) == 0);
+	fclose(dump_f);
+	if (strstr(dump_buf, "  TAGS\ttags=[ alert, log ]\n") == NULL)
+		errx(1, "no TAGS line in:\n%s", dump_buf);
+	free(dump_buf);
+
+	/* Not executable: the second on line of the block */
+	tag_test_event(&qev, &qp, &file, 1, "/usr/bin/y", 0644,
+	    QUARK_FILE_OP_CREATE);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(qev.tags == (alert | log));
+	assert(ruleset.rules[2].hits == 1);
+
+	/* Not executable, not /usr/bin: log only */
+	tag_test_event(&qev, &qp, &file, 1, "/etc/z", 0644,
+	    QUARK_FILE_OP_CREATE);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(qev.tags == log);
+
+	/* No file: no tag, the last rule drops it */
+	tag_test_event(&qev, &qp, &file, 1, NULL, 0, 0);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 4);
+	assert(qev.tags == 0);
+	/* No tags, no TAGS line */
+	dump_buf = NULL;
+	dump_f = open_memstream(&dump_buf, &dump_len);
+	assert(dump_f != NULL);
+	assert(quark_event_dump(&qev, dump_f) == 0);
+	fclose(dump_f);
+	assert(strstr(dump_buf, "TAGS") == NULL);
+	free(dump_buf);
+
+	/* A match starts with no tags */
+	qev.tags = alert;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(qev.tags == 0);
+	quark_ruleset_clear(&ruleset);
+	assert(ruleset.n_tags == 0 && ruleset.n_rules == 0);
+
+	/*
+	 * Two blocks with the same tag are an OR, and the second is skipped
+	 * when the first set the tag. Except is local to its block.
+	 */
+	ruleset_from_string(&ruleset,
+	    "poison 5 on process.pid 1\n"
+	    "tag log {\n"
+	    "\texcept on process.pid 2\n"
+	    "\ton process.pid { 1 2 }\n"
+	    "}\n"
+	    "tag log {\n"
+	    "\ton process.pid { 1 3 }\n"
+	    "}\n"
+	    "tag alert {\n"
+	    "\ton any\n"
+	    "}\n");
+	assert(ruleset.n_tags == 2);
+	tag_test_event(&qev, &qp, &file, 1, NULL, 0, 0);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qev.tags == 3);
+	assert(qp.poison_tag == 5);
+	assert(ruleset.rules[3].evals == 0);
+	tag_test_event(&qev, &qp, &file, 2, NULL, 0, 0);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qev.tags == 2);
+	assert(qp.poison_tag == 0);
+	tag_test_event(&qev, &qp, &file, 3, NULL, 0, 0);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	assert(qev.tags == 3);
+	assert(ruleset.rules[3].hits == 1);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+/* Insert a process event for pid and get it back, NULL if it was dropped */
+static const struct quark_event *
+tag_queue_event(struct quark_queue *qq, u32 pid)
+{
+	struct raw_event	*raw;
+
+	raw = raw_event_alloc(RAW_GETPID);
+	assert(raw != NULL);
+	raw->pid = pid;
+	assert(raw_event_insert(qq, raw) == 0);
+
+	return (quark_queue_get_event(qq));
+}
+
+/*
+ * The delivery rule through quark_queue_get_event(): an event with a tag
+ * is delivered, drop removes only an event without tags.
+ */
+static int
+t_rule_tag_delivery(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_ruleset		 ruleset;
+	const struct quark_event	*qev;
+
+	quark_queue_init_bare(&qq);
+	ruleset_from_string(&ruleset,
+	    "drop on process.pid 1\n"
+	    "tag log {\n"
+	    "\texcept on process.pid 3\n"
+	    "\ton process.pid { 1 2 3 4 }\n"
+	    "}\n"
+	    "tag alert {\n"
+	    "\ton process.pid 4\n"
+	    "}\n"
+	    "drop on any\n");
+	qq.ruleset = &ruleset;
+
+	/* A drop before the block ends the evaluation, no tag, dropped */
+	assert(tag_queue_event(&qq, 1) == NULL);
+	/* Tagged, the last drop keeps it */
+	qev = tag_queue_event(&qq, 2);
+	assert(qev != NULL && qev->process->pid == 2);
+	assert(qev->tags == 1 && qev->ruleset == &ruleset);
+	/* Excepted, no tag, dropped */
+	assert(tag_queue_event(&qq, 3) == NULL);
+	/* Two tags */
+	qev = tag_queue_event(&qq, 4);
+	assert(qev != NULL && qev->tags == 3);
+	/* No rule but the last matches */
+	assert(tag_queue_event(&qq, 5) == NULL);
+	quark_ruleset_clear(&ruleset);
+
+	/* A pass before the block ends the evaluation, delivered, no tag */
+	ruleset_from_string(&ruleset,
+	    "pass on process.pid 6\n"
+	    "tag log {\n"
+	    "\ton any\n"
+	    "}\n"
+	    "drop on any\n");
+	qq.ruleset = &ruleset;
+	qev = tag_queue_event(&qq, 6);
+	assert(qev != NULL && qev->tags == 0);
+	qev = tag_queue_event(&qq, 7);
+	assert(qev != NULL && qev->tags == 1);
+	quark_ruleset_clear(&ruleset);
+
+	/* Without a terminal rule an event is delivered, as before */
+	ruleset_from_string(&ruleset,
+	    "tag log {\n"
+	    "\ton process.pid 8\n"
+	    "}\n");
+	qq.ruleset = &ruleset;
+	qev = tag_queue_event(&qq, 9);
+	assert(qev != NULL && qev->tags == 0);
+	quark_ruleset_clear(&ruleset);
+
+	qq.ruleset = NULL;
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/* Building tag blocks with the library calls */
+static int
+t_rule_tag_api(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_ruleset	 ruleset;
+	struct quark_queue_attr	 attr;
+	struct quark_queue	 qq;
+	struct quark_rule	*rule;
+	struct quark_rule_field	 rf;
+	struct quark_event	 qev;
+	const char		*bad_names[] = {
+		"", "a", "Log", "log ", " log", "logs", "blocked", "alert\n"
+	};
+	size_t			 i;
+
+	quark_ruleset_init(&ruleset);
+	bzero(&rf, sizeof(rf));
+	rf.code = QUARK_RF_PID;
+	rf.pid = 1;
+
+	/* Block lines only inside a block */
+	errno = 0;
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) == NULL);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0) == NULL);
+	assert(quark_ruleset_tag_end(&ruleset) == -1);
+
+	/* The names are log and alert */
+	assert(quark_ruleset_tag_begin(&ruleset, NULL) == -1);
+	for (i = 0; i < nitems(bad_names); i++) {
+		errno = 0;
+		if (quark_ruleset_tag_begin(&ruleset, bad_names[i]) != -1 ||
+		    errno != EINVAL)
+			errx(1, "tag name \"%s\" should fail", bad_names[i]);
+	}
+	assert(ruleset.n_tags == 0 && !ruleset.block_open);
+	assert(quark_ruleset_tag_begin(&ruleset, "log") == 0);
+	assert(quark_ruleset_tag_end(&ruleset) == -1);	/* no on line */
+	assert(ruleset.block_open);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0);
+	assert(rule != NULL && rule->tags == 1);
+	assert(quark_ruleset_tag_end(&ruleset) == 0);
+	assert(ruleset.n_tags == 1);
+
+	/* One block at a time, and pass, drop, poison stay outside */
+	assert(quark_ruleset_tag_begin(&ruleset, "alert") == 0);
+	errno = 0;
+	assert(quark_ruleset_tag_begin(&ruleset, "log") == -1);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0) == NULL);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_POISON, 1) == NULL);
+
+	/* An open block is refused by the queue */
+	quark_queue_default_attr(&attr);
+	attr.ruleset = &ruleset;
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EINVAL);
+
+	/* Except lines first, an except line needs a field */
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0);
+	assert(rule != NULL && rule->tags == 2);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0) != NULL);
+
+	/*
+	 * A direct match on the open block returns: until the block is
+	 * closed, skip_to is past each rule. The except line has no field
+	 * yet and matches, a skip_to of 0 would loop forever.
+	 */
+	assert(ruleset.rules[1].skip_to == 2 && ruleset.rules[2].skip_to == 3);
+	bzero(&qev, sizeof(qev));
+	alarm(5);
+	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
+	alarm(0);
+	errno = 0;
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_EXCEPT, 0) == NULL);
+	assert(errno == EINVAL);
+	assert(quark_ruleset_tag_end(&ruleset) == -1);	/* except on any */
+	assert(quark_rule_match_field(&ruleset.rules[1], rf) == 0);
+	assert(quark_ruleset_tag_end(&ruleset) == 0);
+	assert(ruleset.rules[1].skip_to == 3 && ruleset.rules[2].skip_to == 3);
+	assert(!ruleset.block_open);
+	assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP, 0) != NULL);
+	assert(ruleset.rules[3].tags == 0);
+
+	/* A known name reuses its bit, the bits follow the first use */
+	assert(quark_ruleset_tag_begin(&ruleset, "alert") == 0);
+	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_TAG, 0);
+	assert(rule != NULL && rule->tags == 2);
+	assert(quark_ruleset_tag_end(&ruleset) == 0);
+	assert(ruleset.n_tags == 2);
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 0), "log"));
+	assert(!strcmp(quark_ruleset_tag_name(&ruleset, 1), "alert"));
+	assert(quark_ruleset_tag_name(&ruleset, 2) == NULL);
+	assert(quark_ruleset_tag_name(&ruleset, 63) == NULL);
+	assert(quark_ruleset_tag_name(&ruleset, 64) == NULL);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
 static int
 t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 {
+	const char *host_cgroups[] = {
+		"/init.scope",
+		"/system.slice",
+		"/system.slice/sshd.service",
+		"/system.slice//cron.service/",
+		"/user.slice/user-1000.slice/session-2.scope",
+		"/user.slice/user-1000.slice/user@1000.service/app.slice/x.service",
+		/* host units that share a runtime prefix */
+		"/system.slice/crio-wipe.service",
+		"/system.slice/docker-cleanup.service",
+		"/system.slice/crio-conmon-0123abcd.scope",
+		"/user.slice/user-1000.slice/user@1000.service/user.slice/"
+		    "libpod-conmon-0123abcd.scope",
+	};
+	const char *unknown_cgroups[] = {
+		"",
+		"/",
+		"//",
+		"system.slice/sshd.service",
+		"/../system.slice/sshd.service",
+		"/system.slice/../kubepods.slice",
+		"/system.slice/docker-abc123.scope/init.scope",
+		"/user.slice/user-1000.slice/user@1000.service/user.slice/"
+		    "libpod-abc123.scope/container",
+		"/kubepods/burstable/pod1234/abc123",
+		"/kubepods.slice/kubepods-burstable.slice/"
+		    "kubepods-burstable-pod1234.slice",
+		"/docker/abc123",
+		"/machine.slice/machine-qemu-1.scope",
+		"/lxc.payload.c1",
+		"/init.scopes",
+		"/system.slicex/sshd.service",
+		"/kubepods.slice/kubepods-pod1234.slice/crio-conmon-0123abcd.scope",
+	};
+	size_t			 i;
 	struct quark_event	 qev;
 	struct quark_process	 qp;
 	struct quark_rule	*rule;
@@ -5394,6 +6097,97 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp.container_id == NULL);
 
 	quark_ruleset_clear(&ruleset);
+	free(qp.cgroup);
+	free(qp.container_id);
+
+	/* Every event has exactly one of the three values. */
+	ruleset_from_string(&ruleset,
+	    "pass on event.scope host\n"
+	    "pass on event.scope unknown\n"
+	    "pass on event.scope container\n");
+	bzero(&qp, sizeof(qp));
+
+	/* No process, or a process without a cgroup, is unknown. */
+	qev.process = NULL;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	qev.process = &qp;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 1);
+	assert(!qp.container_id_parsed);
+
+	/* A cgroup in the systemd host layout is host. */
+	cgroup = strdup("/user.slice/user-1000.slice");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+	assert(qp.host_scope == QUARK_RULE_SCOPE_HOST);
+
+	/* A sidecar seen from another cgroup namespace. */
+	cgroup = strdup("/../cri-containerd-abc123.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(qp.host_scope == QUARK_RULE_SCOPE_INVALID);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 2);
+	assert(qp.container_id != NULL);
+	assert(!strcmp(qp.container_id, "containerd://abc123"));
+	assert(qp.host_scope == QUARK_RULE_SCOPE_INVALID);
+
+	/*
+	 * Not recognized as a container (see above), and not host either:
+	 * a cgroup nested in a container, the cgroupfs driver, the root, a
+	 * path relative to a cgroup namespace, and an empty cgroup.
+	 */
+	for (i = 0; i < nitems(unknown_cgroups); i++) {
+		cgroup = strdup(unknown_cgroups[i]);
+		assert(cgroup != NULL);
+		process_set_cgroup(&qp, &cgroup);
+		rule = quark_ruleset_match(&ruleset, &qev);
+		assert(rule != NULL);
+		if (rule->number != 1)
+			errx(1, "%s: scope rule %u", unknown_cgroups[i],
+			    rule->number);
+		if (*unknown_cgroups[i] != '\0')
+			assert(qp.host_scope == QUARK_RULE_SCOPE_UNKNOWN);
+	}
+	cgroup = strdup("/system.slice/sshd.service");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	assert(qp.host_scope == QUARK_RULE_SCOPE_INVALID);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->number == 0);
+	assert(qp.host_scope == QUARK_RULE_SCOPE_HOST);
+	quark_ruleset_clear(&ruleset);
+
+	/* Host needs positive evidence, see cgroup_is_host() */
+	for (i = 0; i < nitems(host_cgroups); i++) {
+		if (!cgroup_is_host(host_cgroups[i]))
+			errx(1, "%s should be host", host_cgroups[i]);
+	}
+	for (i = 0; i < nitems(unknown_cgroups); i++) {
+		if (cgroup_is_host(unknown_cgroups[i]))
+			errx(1, "%s should not be host", unknown_cgroups[i]);
+	}
+	assert(!cgroup_is_host(NULL));
+	assert(!cgroup_is_host("/system.slice/docker-abc123.scope"));
+
+	/* "Containers only" is one rule with a list. */
+	ruleset_from_string(&ruleset,
+	    "drop on event.scope { host unknown }\n"
+	    "pass on any\n");
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->action == QUARK_RA_DROP);
+	cgroup = strdup("/system.slice/crio-def456.scope");
+	assert(cgroup != NULL);
+	process_set_cgroup(&qp, &cgroup);
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->action == QUARK_RA_PASS);
+	qev.process = NULL;
+	rule = quark_ruleset_match(&ruleset, &qev);
+	assert(rule != NULL && rule->action == QUARK_RA_DROP);
+	quark_ruleset_clear(&ruleset);
 
 	quark_ruleset_init(&ruleset);
 	rule = quark_ruleset_append_rule(&ruleset, QUARK_RA_PASS, 0);
@@ -5404,6 +6198,12 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	errno = 0;
 	assert(quark_rule_match_field(rule, rf) == -1);
 	assert(errno == EINVAL);
+	rf.id = QUARK_RULE_SCOPE_INVALID;
+	errno = 0;
+	assert(quark_rule_match_field(rule, rf) == -1);
+	assert(errno == EINVAL);
+	rf.id = QUARK_RULE_SCOPE_UNKNOWN;
+	assert(quark_rule_match_field(rule, rf) == 0);
 	quark_ruleset_clear(&ruleset);
 	free(qp.cgroup);
 	free(qp.container_id);
@@ -5516,19 +6316,19 @@ t_rule_pod_name(const struct test *t, struct quark_queue_attr *qa)
 	qp = rule_kube_process(&qq, 101, "bbb", "pod-b", "nginx", NULL);
 	qev.process = qp;
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
-	qp = rule_kube_process(&qq, 107, "hhh", "pod-h", "nginx-", NULL);
+	qp = rule_kube_process(&qq, 107, "a08", "pod-h", "nginx-", NULL);
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 0);
 
 	/* PoC: pod.name ignores the namespace. */
-	qp = rule_kube_process(&qq, 108, "iii", "pod-i", "nginx-web", NULL);
+	qp = rule_kube_process(&qq, 108, "a09", "pod-i", "nginx-web", NULL);
 	qp->container->pod->ns = strdup("default");
 	assert(qp->container->pod->ns != NULL);
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 0);
-	qp = rule_kube_process(&qq, 109, "jjj", "pod-j", "nginx-web", NULL);
+	qp = rule_kube_process(&qq, 109, "a0a", "pod-j", "nginx-web", NULL);
 	qp->container->pod->ns = strdup("other");
 	assert(qp->container->pod->ns != NULL);
 	qev.process = qp;
@@ -5561,7 +6361,7 @@ t_rule_pod_name(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 
 	/* Container without a pod, no match. */
-	qp = rule_kube_process(&qq, 106, "ggg", NULL, NULL, NULL);
+	qp = rule_kube_process(&qq, 106, "a07", NULL, NULL, NULL);
 	qev.process = qp;
 	assert(qp->container->pod == NULL);
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
@@ -5638,28 +6438,28 @@ t_rule_container_image(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 
 	/* Suffix wildcard matches a whole registry, digests included. */
-	qp = rule_kube_process(&qq, 106, "ggg", "pod-g", "web",
+	qp = rule_kube_process(&qq, 106, "a07", "pod-g", "web",
 	    "quay.io/prometheus/node-exporter@sha256:0123456789abcdef");
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 2);
 	/* The wildcard may be empty, but the prefix must be complete. */
-	qp = rule_kube_process(&qq, 107, "hhh", "pod-h", "web", "quay.io/");
+	qp = rule_kube_process(&qq, 107, "a08", "pod-h", "web", "quay.io/");
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 2);
-	qp = rule_kube_process(&qq, 112, "mmm", "pod-m", "web", "quay.io");
+	qp = rule_kube_process(&qq, 112, "a0d", "pod-m", "web", "quay.io");
 	qev.process = qp;
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 
 	/* Container without an image, no match. */
-	qp = rule_kube_process(&qq, 108, "iii", "pod-i", "web", NULL);
+	qp = rule_kube_process(&qq, 108, "a09", "pod-i", "web", NULL);
 	qev.process = qp;
 	assert(qp->container->image == NULL);
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 
 	/* Container without a pod still matches on the image. */
-	qp = rule_kube_process(&qq, 109, "jjj", NULL, NULL,
+	qp = rule_kube_process(&qq, 109, "a0a", NULL, NULL,
 	    "docker.io/library/nginx:1.25");
 	qev.process = qp;
 	assert(qp->container->pod == NULL);
@@ -5667,13 +6467,13 @@ t_rule_container_image(const struct test *t, struct quark_queue_attr *qa)
 	assert(rule != NULL && rule->number == 0);
 
 	/* Combined with pod.name, both must match. */
-	qp = rule_kube_process(&qq, 110, "kkk", "pod-k", "e2e-test",
+	qp = rule_kube_process(&qq, 110, "a0b", "pod-k", "e2e-test",
 	    "registry.k8s.io/e2e-test-images/agnhost:2.39");
 	qev.process = qp;
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 3 &&
 	    rule->action == QUARK_RA_PASS);
-	qp = rule_kube_process(&qq, 111, "lll", "pod-l", "prod-test",
+	qp = rule_kube_process(&qq, 111, "a0c", "pod-l", "prod-test",
 	    "registry.k8s.io/e2e-test-images/agnhost:2.39");
 	qev.process = qp;
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
@@ -7115,6 +7915,7 @@ struct test all_tests[] = {
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
 	T(t_backend_flags),
+	T(t_nova_ruleset_validation),
 	T(t_bpf_call_stack),
 	T(t_bpf_telemetry),
 	T(t_bpf_telemetry_retprobe),
@@ -7139,6 +7940,10 @@ struct test all_tests[] = {
 	T_EBPF(t_rule_poison_existing),
 	T_EBPF(t_rule_id),
 	T_EBPF(t_rule_parser),
+	T(t_rule_values),
+	T(t_rule_tag),
+	T(t_rule_tag_delivery),
+	T(t_rule_tag_api),
 	T(t_rule_scope),
 	T_KPROBE(t_rule_container_kprobe),
 	T(t_rule_pod_name),

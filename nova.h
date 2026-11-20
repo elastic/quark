@@ -39,9 +39,14 @@
 #define QUARK_RF_POD_NAME	(1ULL << 11)
 #define QUARK_RF_CONTAINER_IMAGE (1ULL << 12)
 
+/*
+ * event.scope, every event has exactly one of the valid values.
+ */
 enum quark_rule_scope {
 	QUARK_RULE_SCOPE_INVALID,
-	QUARK_RULE_SCOPE_CONTAINER,
+	QUARK_RULE_SCOPE_CONTAINER,	/* the cgroup names a container */
+	QUARK_RULE_SCOPE_HOST,		/* a cgroup of the host layout */
+	QUARK_RULE_SCOPE_UNKNOWN,	/* not enough evidence for either */
 };
 
 enum quark_rule_action {
@@ -49,6 +54,8 @@ enum quark_rule_action {
 	QUARK_RA_DROP,
 	QUARK_RA_PASS,
 	QUARK_RA_POISON,
+	QUARK_RA_TAG,		/* "on" line of a tag block, userspace only */
+	QUARK_RA_EXCEPT,	/* "except on" line of a tag block, userspace only */
 };
 
 /*

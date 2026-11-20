@@ -290,6 +290,52 @@ Changes from 0.11 to 0.12
     traffic is captured however it is used; only the attribution can
     lag: after fork(2) or SCM_RIGHTS passing it stays with the creating
     process until the new owner makes one of the calls above.
+  o The rule engine moved from quark.c to ruleset.c, and its structures
+    and functions from quark.h to ruleset.h, which quark.h includes.
+    quark_rule{} holds conditions, quark_rule_cond{}, in place of fields:
+    fields and n_fields are now conds and n_conds. A condition is one
+    field code with one or more values, each a quark_rule_field{} as
+    before. quark_rule_match_field() adds a condition with one value.
+  o The rule DSL learned value lists. A field takes a list of values in
+    braces, which are alternatives, as in "drop on process.exe { /bin/*
+    /usr/bin/curl } process.uid { 0 1000 }". A list may span lines. The
+    new quark_rule_match_field_list() adds a condition with a list. An
+    unquoted { or } is now a token, so a value with a brace must be
+    quoted. The nova backend rejects a list with more than one value.
+  o The event.scope rule field learned the host and unknown values.
+    Every event has exactly one of container, host and unknown. host is
+    an absolute cgroup under /init.scope, /system.slice or /user.slice
+    with no .. component and no container scope component. A recognized
+    container scope at the end of a path identifies a container even
+    when the path is relative to a cgroup namespace. Other paths are
+    unknown, including the root cgroup, cgroupfs and nested container
+    cgroups. Events with no process, or no or an empty cgroup, are
+    unknown too.
+    "drop on event.scope { host unknown }" keeps only container events.
+  o A container cgroup needs the .scope suffix and a container ID in
+    lowercase hex, as in docker-<id>.scope. Host units that share a
+    runtime prefix, like crio-conmon-<id>.scope, libpod-conmon-<id>.scope
+    or crio-wipe.service, were parsed as containers before, and are not
+    containers now. This applies to event.scope and to the container
+    link of a process.
+  o The rule DSL learned tag blocks. "tag <name> {", then "except on"
+    lines, then "on" lines, one per line, then "}". A block sets its tag
+    on the event when no except line and one on line match. Blocks don't
+    end the evaluation, every matching block sets its tag, and an except
+    line only applies to its own block. The tag is log or alert, the
+    actions of a D4C response. Change in behavior: a drop rule no
+    longer drops an event that has a tag, it still ends the evaluation.
+    A ruleset without tag blocks behaves as before. quark_event{} got
+    the members tags, one bit per name, and ruleset, the ruleset that
+    names the bits. New functions quark_ruleset_tag_begin(),
+    quark_ruleset_tag_end() and quark_ruleset_tag_name(), and new rule
+    actions QUARK_RA_TAG and QUARK_RA_EXCEPT. quark_queue_open() fails
+    with EINVAL on a ruleset with an open block. The nova backend rejects
+    tag blocks with ENOTSUP. tag and except are now reserved words, like
+    pass, drop, poison, on, any and the field names, so a value spelled
+    like any of them must be quoted, as in drop on pod.name "tag".
+  o quark_event_dump() prints a TAGS line with the tag names of an event,
+    and go/quark has them in Event.Tags.
   o The EBPF backend now reports process start times, proc_time_boot
     and bpf.start_time_ns, in CLOCK_BOOTTIME like event times and the
     kprobe backend. They were CLOCK_MONOTONIC, which stops during

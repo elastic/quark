@@ -257,6 +257,7 @@ type Tty struct {
 // event, Process is the context of the Event.
 type Event struct {
 	Events     uint64
+	Tags       []string // Tags set by tag blocks of the ruleset, nil if none
 	Process    Process
 	Socket     *Socket
 	Packet     *Packet
@@ -279,6 +280,7 @@ type Event struct {
 type Queue struct {
 	quarkQueue *C.struct_quark_queue   // pointer to the queue structure
 	ruleset    *C.struct_quark_ruleset // active ruleset, nil if none
+	tagNames   []string                // names of the ruleset tag bits
 	epollFd    int
 }
 
@@ -359,7 +361,8 @@ type QueueAttr struct {
 	HoldTime       int
 	// RuleText is a ruleset in the rule DSL, parsed and installed on
 	// the queue by OpenQueue. Empty means no rules. Processes matched
-	// by poison rules carry the tag in Process.PoisonTag.
+	// by poison rules carry the tag in Process.PoisonTag. Events
+	// matched by tag blocks carry the tag names in Event.Tags.
 	RuleText string
 }
 
@@ -435,6 +438,29 @@ func rulesetFromText(text string) (*C.struct_quark_ruleset, error) {
 	return ruleset, nil
 }
 
+// tagNamesFromC returns the tag names of a ruleset, indexed by tag bit.
+func tagNamesFromC(ruleset *C.struct_quark_ruleset) []string {
+	names := make([]string, int(ruleset.n_tags))
+	for i := range names {
+		names[i] = C.GoString(C.quark_ruleset_tag_name(ruleset, C.u_int(i)))
+	}
+
+	return names
+}
+
+// tagsFromBits returns the names of the tag bits set in bits, nil if none.
+func (queue *Queue) tagsFromBits(bits uint64) []string {
+	var tags []string
+
+	for i, name := range queue.tagNames {
+		if bits&(uint64(1)<<uint(i)) != 0 {
+			tags = append(tags, name)
+		}
+	}
+
+	return tags
+}
+
 // freeRuleset releases a ruleset allocated by rulesetFromText.
 func freeRuleset(ruleset *C.struct_quark_ruleset) {
 	C.quark_ruleset_clear(ruleset)
@@ -454,6 +480,7 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 			return nil, err
 		}
 		queue.ruleset = ruleset
+		queue.tagNames = tagNamesFromC(ruleset)
 		cattr.ruleset = ruleset
 	}
 
@@ -498,6 +525,7 @@ func (queue *Queue) Close() {
 		freeRuleset(queue.ruleset)
 		queue.ruleset = nil
 	}
+	queue.tagNames = nil
 }
 
 func (queue *Queue) GetEvent() (Event, bool) {
@@ -509,6 +537,9 @@ func (queue *Queue) GetEvent() (Event, bool) {
 	}
 
 	event.Events = uint64(cev.events)
+	if cev.tags != 0 {
+		event.Tags = queue.tagsFromBits(uint64(cev.tags))
+	}
 	event.Process = processFromC(cev.process)
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)

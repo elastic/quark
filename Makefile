@@ -169,7 +169,8 @@ LIBQUARK_SRCS:=			\
 	nova_queue.c		\
 	qbtf.c			\
 	quark.c			\
-	qutil.c
+	qutil.c			\
+	ruleset.c
 # CJSON
 # We build the source directly as it's just one file
 ifndef SYSLIB
@@ -333,7 +334,7 @@ nova.bpf.o: $(NOVA_DEPS)
 		-c nova.bpf.c							\
 		-o $@
 
-parse.tab.c: parse.y quark.h
+parse.tab.c: parse.y quark.h ruleset.h
 	$(call msg,BISON,$@)
 	$(Q)bison parse.y
 
