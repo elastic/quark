@@ -263,9 +263,13 @@ Rule evaluation updates the ruleset counters.
 Use a separate ruleset for each concurrently driven queue, or serialize
 all access to the shared ruleset across queues.
 .Pp
-Opening a queue resets the ruleset's hit and evaluation counters for
-every rule except
-.Cm poison .
+Opening a queue evaluates the ruleset against its initial process cache.
+This can increment the hit and evaluation counters for
+.Cm poison
+rules.
+Quark resets the counters for all other rules after the scan.
+To measure live-event counts, read the counters after opening the queue
+and use those values as the baseline.
 Use separate rulesets to keep independent counts for each queue.
 .El
 .Sh MEMORY PROTOCOL
