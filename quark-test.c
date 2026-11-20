@@ -2772,10 +2772,10 @@ expect_memfd_sentinel(struct quark_queue *qq, const char *name)
 
 /*
  * memfd_create(2) events are emitted from {shmem,hugetlb}_file_setup() using
- * state saved at syscall entry, that state must not outlive the syscall. A
- * SHM_HUGETLB shmget(2) also goes through hugetlb_file_setup(), so after a
- * memfd_create(2), successful or not, it must yield SHMGET only, not a bogus
- * MEMFD_CREATE.
+ * state saved at syscall entry, that state must not outlive the syscall,
+ * successful or not. A SHM_HUGETLB shmget(2) also goes through
+ * hugetlb_file_setup(), so after a memfd_create(2) it must yield SHMGET only,
+ * not a bogus MEMFD_CREATE.
  */
 static int
 t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
@@ -2787,26 +2787,32 @@ t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
 	const struct quark_shm		*qshm;
-	int				 fd;
+	int				 fd, hugetlb;
 
-	/* Without hugetlb there is nothing to test */
+	/* Without hugetlb QQ_SHM may not load, its probes hook hugetlb */
 	if (!hugetlbfs_registered()) {
 		warnx("%s: no hugetlb support, skipping", __func__);
 		return (0);
 	}
 
 	/*
-	 * A SHM_HUGETLB segment needs CAP_IPC_LOCK or vm.hugetlb_shm_group
-	 * membership, a runner that can load BPF may have neither. Any other
-	 * failure is an error, see shmget_hugetlb().
+	 * The shmget(2) checks need SHM_HUGETLB segments: valgrind drops the
+	 * flag, and creating one needs CAP_IPC_LOCK or vm.hugetlb_shm_group
+	 * membership, a runner that can load BPF may have neither. Without
+	 * them, still check the map. Any other failure is an error, see
+	 * shmget_hugetlb().
 	 */
-	if (shmget_hugetlb() == -1) {
-		if (errno == EPERM) {
-			warnx("%s: can't create SHM_HUGETLB segments, skipping",
-			    __func__);
-			return (0);
-		}
-		err(1, "shmget(SHM_HUGETLB)");
+	hugetlb = 1;
+	if (in_valgrind) {
+		warnx("%s: valgrind ignores SHM_HUGETLB, skipping shmget checks",
+		    __func__);
+		hugetlb = 0;
+	} else if (shmget_hugetlb() == -1) {
+		if (errno != EPERM)
+			err(1, "shmget(SHM_HUGETLB)");
+		warnx("%s: can't create SHM_HUGETLB segments, skipping shmget "
+		    "checks", __func__);
+		hugetlb = 0;
 	}
 
 	qa->flags |= QQ_SHM;
@@ -2832,8 +2838,10 @@ t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
 	assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
 	assert(qshm->memfd_create_flags == MFD_CLOEXEC);
 	assert(!strcmp(qshm->path, "memfd:t_memfd_stale_state-first"));
-	expect_shmget_hugetlb(&qq);
-	expect_memfd_sentinel(&qq, "t_memfd_stale_state-sentinel1");
+	if (hugetlb) {
+		expect_shmget_hugetlb(&qq);
+		expect_memfd_sentinel(&qq, "t_memfd_stale_state-sentinel1");
+	}
 
 	/*
 	 * A memfd_create(2) that fails before setting up a file, no flag uses
@@ -2847,8 +2855,10 @@ t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
 	if (errno != EINVAL)
 		err(1, "memfd_create with an invalid flag");
 	assert(!bpf_queue_test_memfd_state(&qq));
-	expect_shmget_hugetlb(&qq);
-	expect_memfd_sentinel(&qq, "t_memfd_stale_state-sentinel2");
+	if (hugetlb) {
+		expect_shmget_hugetlb(&qq);
+		expect_memfd_sentinel(&qq, "t_memfd_stale_state-sentinel2");
+	}
 
 	quark_queue_close(&qq);
 
