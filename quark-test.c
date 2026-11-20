@@ -4576,6 +4576,45 @@ t_backend_flags(const struct test *t, struct quark_queue_attr *unused)
 }
 
 static int
+t_nova_ruleset_validation(const struct test *t, struct quark_queue_attr *unused)
+{
+	struct quark_queue	 qq;
+	struct quark_queue_attr	 attr;
+	struct quark_ruleset	 ruleset;
+	size_t			 i;
+	char			*policies[] = {
+		"tag log {\n on any\n}\n",
+		"drop on process.pid { 1 2 }\n",
+		"drop on file.exec_change\n",
+		"drop on event.scope container\n",
+		"drop on pod.name test\n",
+		"drop on container.image test\n",
+	};
+
+	quark_queue_default_attr(&attr);
+	attr.flags = QQ_NOVA;
+	attr.ruleset = &ruleset;
+	for (i = 0; i < nitems(policies); i++) {
+		ruleset_from_string(&ruleset, policies[i]);
+		errno = 0;
+		assert(quark_queue_open(&qq, &attr) == -1);
+		assert(errno == ENOTSUP);
+		quark_ruleset_clear(&ruleset);
+	}
+
+	quark_ruleset_init(&ruleset);
+	for (i = 0; i < NOVA_MAX_RULES + 1; i++)
+		assert(quark_ruleset_append_rule(&ruleset, QUARK_RA_DROP,
+		    0) != NULL);
+	errno = 0;
+	assert(quark_queue_open(&qq, &attr) == -1);
+	assert(errno == EFBIG);
+	quark_ruleset_clear(&ruleset);
+
+	return (0);
+}
+
+static int
 t_hanson(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct hanson	 h;
@@ -7803,6 +7842,7 @@ struct test all_tests[] = {
 	T_EBPF(t_stats),
 	T_KPROBE(t_stats),
 	T(t_backend_flags),
+	T(t_nova_ruleset_validation),
 	T(t_bpf_call_stack),
 	T(t_bpf_telemetry),
 	T(t_bpf_telemetry_retprobe),

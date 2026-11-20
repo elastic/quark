@@ -4795,7 +4795,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	struct quark_process	*qp;
 	struct timespec		 unused;
 	char			*ver;
-	int			 backends;
+	int			 backends, saved_errno;
 
 	if ((ver = getenv("QUARK_VERBOSE")) != NULL) {
 		const char *errstr;
@@ -5026,9 +5026,10 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	return (0);
 
 fail:
+	saved_errno = errno;
 	quark_queue_close(qq);
 
-	return (-1);
+	return (errno = saved_errno, -1);
 }
 
 /*

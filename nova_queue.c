@@ -118,30 +118,69 @@ alloc_path(struct nova_queue *nqq, int rule_i, struct quark_rule_field *field)
 }
 
 static int
+validate_ruleset(const struct quark_ruleset *ruleset)
+{
+	const struct quark_rule		*rule;
+	const struct quark_rule_cond	*cond;
+	const char			*name;
+	size_t				 i, j;
+
+	if (ruleset == NULL)
+		return (0);
+	if (ruleset->n_rules > NOVA_MAX_RULES)
+		return (errno = EFBIG, -1);
+
+	for (i = 0; i < ruleset->n_rules; i++) {
+		rule = ruleset->rules + i;
+		/* Tags run in userspace. The first match ends the BPF loop. */
+		if (rule->action == QUARK_RA_TAG ||
+		    rule->action == QUARK_RA_EXCEPT) {
+			qwarnx("tag blocks are not supported in nova backend");
+			return (errno = ENOTSUP, -1);
+		}
+		for (j = 0; j < rule->n_conds; j++) {
+			cond = &rule->conds[j];
+			if (cond->n_values != 1) {
+				qwarnx("value lists are not supported "
+				    "in nova backend");
+				return (errno = ENOTSUP, -1);
+			}
+			switch (cond->values->code) {
+			case QUARK_RF_FILE_EXEC_CHANGE:
+				name = "file.exec_change";
+				break;
+			case QUARK_RF_EVENT_SCOPE:
+				name = "event.scope";
+				break;
+			case QUARK_RF_POD_NAME:
+				name = "pod.name";
+				break;
+			case QUARK_RF_CONTAINER_IMAGE:
+				name = "container.image";
+				break;
+			default:
+				continue;
+			}
+			qwarnx("%s is not supported in nova backend", name);
+			return (errno = ENOTSUP, -1);
+		}
+	}
+
+	return (0);
+}
+
+/* The ruleset must pass validate_ruleset() before conversion. */
+static int
 nova_rule_from_quark(struct nova_queue *nqq,
     struct nova_rule *nr, struct quark_rule *qr)
 {
 	size_t			 i;
-	struct quark_rule_cond	*cond;
 	struct quark_rule_field *field;
 
 	bzero(nr, sizeof(*nr));
 
-	/* Tags run in userspace, the first match ends the loop in BPF */
-	if (qr->action == QUARK_RA_TAG || qr->action == QUARK_RA_EXCEPT) {
-		errno = ENOTSUP;
-		qwarn("tag blocks are not supported in nova backend");
-		return (-1);
-	}
-
 	for (i = 0; i < qr->n_conds; i++) {
-		cond = qr->conds + i;
-		if (cond->n_values != 1) {
-			errno = ENOTSUP;
-			qwarn("value lists are not supported in nova backend");
-			return (-1);
-		}
-		field = cond->values;
+		field = qr->conds[i].values;
 
 		switch (field->code) {
 		case QUARK_RF_PID:
@@ -177,26 +216,6 @@ nova_rule_from_quark(struct nova_queue *nqq,
 		case QUARK_RF_POISON:
 			nr->poison_tag = field->poison_tag;
 			break;
-		case QUARK_RF_FILE_EXEC_CHANGE:
-			errno = ENOTSUP;
-			qwarn("file.exec_change is not supported in nova backend");
-			return (-1);
-			break;
-		case QUARK_RF_EVENT_SCOPE:
-			errno = ENOTSUP;
-			qwarn("event.scope is not supported in nova backend");
-			return (-1);
-			break;
-		case QUARK_RF_POD_NAME:
-			errno = ENOTSUP;
-			qwarn("pod.name is not supported in nova backend");
-			return (-1);
-			break;
-		case QUARK_RF_CONTAINER_IMAGE:
-			errno = ENOTSUP;
-			qwarn("container.image is not supported in nova backend");
-			return (-1);
-			break;
 		default:
 			errno = EINVAL;
 			qwarn("bad field->code %llu", field->code);
@@ -209,19 +228,6 @@ nova_rule_from_quark(struct nova_queue *nqq,
 
 	nr->number = qr->number;
 	nr->action = qr->action;
-
-	return (0);
-}
-
-static int
-load_rodata(struct quark_queue *qq, struct nova_queue *nqq)
-{
-	if (qq->ruleset == NULL)
-		return (0);
-	if (qq->ruleset->n_rules > NOVA_MAX_RULES)
-		return (errno = EFBIG, -1);
-
-	nqq->nova->rodata->rules_active = qq->ruleset->n_rules;
 
 	return (0);
 }
@@ -239,8 +245,6 @@ load_ruleset(struct quark_queue *qq, struct nova_queue *nqq)
 
 	if (qq->ruleset == NULL)
 		return (0);
-	if (qq->ruleset->n_rules > NOVA_MAX_RULES)
-		return (errno = EFBIG, -1);
 	if (qq->ruleset->n_rules != nqq->nova->rodata->rules_active)
 		return (errno = EINVAL, -1);
 	if ((nova = nqq->nova) == NULL)
@@ -377,6 +381,8 @@ nova_queue_open(struct quark_queue *qq)
 
 	if ((qq->flags & QQ_NOVA) == 0)
 		return (errno = ENOTSUP, -1);
+	if (validate_ruleset(qq->ruleset) == -1)
+		return (-1);
 
 	setup_libbpf_logs();
 
@@ -391,8 +397,8 @@ nova_queue_open(struct quark_queue *qq)
 		if (quark_verbose >= QUARK_VL_DEBUG)
 			bpf_program__set_log_level(prog, 1);
 	}
-	if (load_rodata(qq, nqq) == -1)
-		goto fail;
+	if (qq->ruleset != NULL)
+		nqq->nova->rodata->rules_active = qq->ruleset->n_rules;
 	if (nova__load(nqq->nova) != 0)
 		goto fail;
 	if (load_ruleset(qq, nqq) == -1)
