@@ -176,21 +176,11 @@ or a
 .Sq }
 must be quoted, as in
 .Ql \(dq/opt/my app/*\(dq .
-The words of the rule language are reserved:
-.Cm pass ,
-.Cm drop ,
-.Cm poison ,
-.Cm on ,
-.Cm any ,
+A value spelled like a word of the rule language, such as
 .Cm tag ,
-.Cm except
-and the field names.
-A value spelled like one of them must be quoted too, as in
-.Ql drop on pod.name \(dqtag\(dq ,
-since unquoted it is read as the word and the rule fails to load.
-Only the whole value counts, so
-.Ql /usr/bin/tag
-needs no quotes.
+.Cm any
+or a field name, needs no quotes, as in
+.Ql drop on pod.name tag .
 A
 .Sq \e
 at the end of a line continues the rule on the next line.
