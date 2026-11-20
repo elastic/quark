@@ -253,6 +253,9 @@
     <p class="Pp">Rule evaluation updates the ruleset counters. Use a separate
         ruleset for each concurrently driven queue, or serialize all access to
         the shared ruleset across queues.</p>
+    <p class="Pp">Opening a queue resets the ruleset's hit and evaluation
+        counters for every rule except <code class="Cm">poison</code>. Use
+        separate rulesets to keep independent counts for each queue.</p>
   </dd>
 </dl>
 <section class="Sh">
