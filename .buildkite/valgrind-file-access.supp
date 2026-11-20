@@ -7,3 +7,10 @@
    fun:mount
    fun:t_file_access
 }
+{
+   file-access-path-bind-mount
+   Memcheck:Param
+   mount(type)
+   fun:mount
+   fun:t_file_access_paths
+}
