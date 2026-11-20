@@ -267,6 +267,8 @@ Changes from 0.10 to 0.11
 
 Changes from 0.11 to 0.12
 ~~~~~~~~~~~~~~~~~~~~~~~~~
+  o Added the experimental eBPF file access name API,
+    quark_queue_file_access_name_add(3), with QQ_FILE_ACCESS.
   o File-backed executable mprotect() transitions use the inode generation
     on ext2, ext3, ext4, XFS and tmpfs when it is nonzero. A new file that
     reuses an inode number with a different generation is reported again.
