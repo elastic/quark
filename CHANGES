@@ -296,3 +296,8 @@ Changes from 0.11 to 0.12
     suspend, so a process started after the host had slept read as
     started earlier by the total time asleep since boot. For those
     processes, proc_entity_id, which hashes proc_time_boot, changes too.
+  o ECS dates print milliseconds as three digits. They were previously
+    printed unpadded, so 5ms came out as ".5Z", which was inaccurate:
+    process.start, process.end and file.{ctime,mtime,atime} with a
+    millisecond part between 1 and 99 used to parse as up to 891ms
+    later than they were.
