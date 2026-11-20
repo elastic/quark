@@ -4132,8 +4132,11 @@ t_fork_pid_reuse_cgroup(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue	 qq;
 	struct quark_container	*container;
 	struct quark_process	*qp;
+	struct quark_ruleset	 ruleset;
 
 	quark_queue_init_bare(&qq);
+	ruleset_from_string(&ruleset, "pass on event.scope host\n");
+	qq.ruleset = &ruleset;
 	/* Keep exited processes cached, as within the gc grace window. */
 	qq.cache_grace_time = MS_TO_NS(60000);
 	container = quark_container_create(&qq, "docker://abc", NULL, NULL,
@@ -4169,8 +4172,16 @@ t_fork_pid_reuse_cgroup(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qp->cgroup, "/user.slice/user-1000.slice"));
 	assert(qp->container == NULL);
 	assert(TAILQ_EMPTY(&container->processes));
+	assert(qp->host_scope == QUARK_RULE_SCOPE_HOST);
+
+	/* Reusing a host PID also clears the cached host scope. */
+	assert(test_raw_task_event(&qq, RAW_EXIT_THREAD, 100, NULL) == qp);
+	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, NULL) == qp);
+	assert(qp->cgroup == NULL);
+	assert(qp->host_scope == QUARK_RULE_SCOPE_INVALID);
 
 	quark_queue_close(&qq);
+	quark_ruleset_clear(&ruleset);
 
 	return (0);
 }
@@ -6052,19 +6063,24 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 	assert(rule != NULL && rule->number == 1);
 	assert(!qp.container_id_parsed);
 
-	/* A known cgroup that does not name a container is host. */
+	/* A cgroup in the systemd host layout is host. */
 	cgroup = strdup("/user.slice/user-1000.slice");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 0);
+	assert(qp.host_scope == QUARK_RULE_SCOPE_HOST);
 
-	/* A container. */
-	cgroup = strdup("/system.slice/cri-containerd-abc123.scope");
+	/* A sidecar seen from another cgroup namespace. */
+	cgroup = strdup("/../cri-containerd-abc123.scope");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
+	assert(qp.host_scope == QUARK_RULE_SCOPE_INVALID);
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 2);
+	assert(qp.container_id != NULL);
+	assert(!strcmp(qp.container_id, "containerd://abc123"));
+	assert(qp.host_scope == QUARK_RULE_SCOPE_INVALID);
 
 	/*
 	 * Not recognized as a container (see above), and not host either:
@@ -6080,12 +6096,16 @@ t_rule_scope(const struct test *t, struct quark_queue_attr *qa)
 		if (rule->number != 1)
 			errx(1, "%s: scope rule %u", unknown_cgroups[i],
 			    rule->number);
+		if (*unknown_cgroups[i] != '\0')
+			assert(qp.host_scope == QUARK_RULE_SCOPE_UNKNOWN);
 	}
 	cgroup = strdup("/system.slice/sshd.service");
 	assert(cgroup != NULL);
 	process_set_cgroup(&qp, &cgroup);
+	assert(qp.host_scope == QUARK_RULE_SCOPE_INVALID);
 	rule = quark_ruleset_match(&ruleset, &qev);
 	assert(rule != NULL && rule->number == 0);
+	assert(qp.host_scope == QUARK_RULE_SCOPE_HOST);
 	quark_ruleset_clear(&ruleset);
 
 	/* Host needs positive evidence, see cgroup_is_host() */

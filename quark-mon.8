@@ -386,6 +386,9 @@ where
 .Ar id
 is the container ID in lowercase hex.
 This is the kubeadm default since Kubernetes 1.22.
+A path relative to a cgroup namespace also identifies a container when
+it ends in a recognized container scope, such as
+.Pa /../cri-containerd-<id>.scope .
 Host units that share the prefix, like the conmon monitor in
 .Pa crio-conmon-<id>.scope
 or the service
@@ -422,9 +425,9 @@ A process in a nested cgroup of a container, like
 .It
 The root cgroup
 .Pa / ,
-a cgroup path relative to a cgroup namespace, like
+any other path relative to a cgroup namespace, such as
 .Pa /../system.slice/foo.service ,
-and any other layout, like
+and any other layout, such as
 .Pa /machine.slice .
 .It
 An event without a process, or from a process with an unknown or empty

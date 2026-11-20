@@ -305,11 +305,13 @@ Changes from 0.11 to 0.12
   o The event.scope rule field learned the host and unknown values.
     Every event has exactly one of container, host and unknown. host is
     an absolute cgroup under /init.scope, /system.slice or /user.slice
-    with no .. component and no container scope component. Everything
-    else that is not a container is unknown: no process, no or an empty
-    cgroup, the root cgroup, a path relative to a cgroup namespace,
-    cgroupfs and nested container cgroups. "drop on event.scope { host
-    unknown }" keeps only container events in one rule.
+    with no .. component and no container scope component. A recognized
+    container scope at the end of a path identifies a container even
+    when the path is relative to a cgroup namespace. Other paths are
+    unknown, including the root cgroup, cgroupfs and nested container
+    cgroups. Events with no process, or no or an empty cgroup, are
+    unknown too.
+    "drop on event.scope { host unknown }" keeps only container events.
   o A container cgroup needs the .scope suffix and a container ID in
     lowercase hex, as in docker-<id>.scope. Host units that share a
     runtime prefix, like crio-conmon-<id>.scope, libpod-conmon-<id>.scope

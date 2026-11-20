@@ -1796,8 +1796,8 @@ process_container_id(struct quark_process *qp)
 }
 
 /*
- * Drop the container link and the cached container ID, they no longer
- * match qp->cgroup. link_container_data() relinks lazily.
+ * Reset the data derived from qp->cgroup. link_container_data() relinks
+ * the container lazily.
  */
 static void
 process_forget_container(struct quark_process *qp)
@@ -1806,6 +1806,7 @@ process_forget_container(struct quark_process *qp)
 	free(qp->container_id);
 	qp->container_id = NULL;
 	qp->container_id_parsed = 0;
+	qp->host_scope = QUARK_RULE_SCOPE_INVALID;
 }
 
 /*

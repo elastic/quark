@@ -125,11 +125,12 @@ path_match(struct quark_rule_field *field, const char *a)
  * The event.scope of an event, one of QUARK_RULE_SCOPE_*. The values are
  * disjoint, a value needs positive evidence, and "not a container" is
  * { host unknown }:
- *   container	the last cgroup component names a container
+ *   container	the last cgroup component names a container, including in
+ *		a path relative to a cgroup namespace
  *   host	the cgroup is in the systemd host layout, see cgroup_is_host()
- *   unknown	everything else: no process, no or empty cgroup, a relative
- *		path, a layout we don't recognize, a cgroup nested in a
- *		container, or the container ID could not be stored
+ *   unknown	everything else: no process, no or empty cgroup, an
+ *		unrecognized layout, a cgroup nested in a container, or
+ *		the container ID could not be stored
  *		(process_container_id() tries again next time)
  */
 static int
@@ -142,11 +143,14 @@ event_scope(struct quark_event *qev)
 		return (QUARK_RULE_SCOPE_UNKNOWN);
 	if (process_container_id(qp) != NULL)
 		return (QUARK_RULE_SCOPE_CONTAINER);
-	/* Not parsed means the container ID could not be stored */
-	if (qp->container_id_parsed && cgroup_is_host(qp->cgroup))
-		return (QUARK_RULE_SCOPE_HOST);
+	/* Retry the container ID lookup next time if allocation failed. */
+	if (!qp->container_id_parsed)
+		return (QUARK_RULE_SCOPE_UNKNOWN);
+	if (qp->host_scope == QUARK_RULE_SCOPE_INVALID)
+		qp->host_scope = cgroup_is_host(qp->cgroup) ?
+		    QUARK_RULE_SCOPE_HOST : QUARK_RULE_SCOPE_UNKNOWN;
 
-	return (QUARK_RULE_SCOPE_UNKNOWN);
+	return (qp->host_scope);
 }
 
 /* 1 for match, 0 for non match */

@@ -717,6 +717,7 @@ struct quark_process {
 	struct quark_container *container;
 	char	*env;
 	size_t	 env_len;
+	enum quark_rule_scope host_scope;	/* cached host or unknown scope */
 };
 
 struct quark_process_iter {
