@@ -34,6 +34,23 @@ static_assert(QUARK_BPF_VALID_OBJECT == EBPF_BPF_VALID_OBJECT, "bpf validity dri
 static_assert(QUARK_BPF_NAME_LEN == EBPF_BPF_NAME_LEN, "bpf names drifted");
 #endif
 
+/*
+ * Size of one batch of flows the kernel already deleted from the inactive map.
+ * Entries [pos, n) are not in the queue yet, they are all there is left of
+ * those flows. The token is the kernel's position in the map, valid while
+ * walking is true.
+ */
+#define FLOW_BATCH_LEN	512
+
+struct udp_flow_batch {
+	struct ebpf_udp_flow_key keys[FLOW_BATCH_LEN];
+	struct ebpf_udp_flow_val vals[FLOW_BATCH_LEN];
+	u32			 n;
+	u32			 pos;
+	u32			 token;
+	bool			 walking;
+};
+
 struct bpf_queue {
 	struct bpf_probes	*probes;
 	struct ring_buffer	*ringbuf;
@@ -69,11 +86,10 @@ struct bpf_queue {
 	bool			 udp_flow_draining;
 
 	/*
-	 * Where a drain that ran out of queue space resumes: the first key
-	 * of the inactive map not drained yet. See udp_flow_drain().
+	 * What udp_flow_drain() got out of the inactive map and the queue
+	 * had no room for yet. Allocated only with QQ_UDP_FLOW.
 	 */
-	struct ebpf_udp_flow_key udp_flow_cursor;
-	bool			 udp_flow_has_cursor;
+	struct udp_flow_batch	*udp_flow_batch;
 };
 
 /*
@@ -1719,6 +1735,14 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		goto fail;
 	}
 
+	if (qq->flags & QQ_UDP_FLOW) {
+		bqq->udp_flow_batch = calloc(1, sizeof(*bqq->udp_flow_batch));
+		if (bqq->udp_flow_batch == NULL) {
+			qwarn("calloc(udp_flow_batch)");
+			goto fail;
+		}
+	}
+
 	if (harden & BPF_HARDEN_FREEZE)
 		bpf_maps_freeze(p);
 	else
@@ -1903,82 +1927,132 @@ udp_flow_to_raw(struct ebpf_udp_flow_key *key, struct ebpf_udp_flow_val *val)
 }
 
 /*
- * Drain up to space_left entries of the inactive map into raw events. Nothing
- * writes to it anymore, so the key chain can't be disturbed and deleting
- * behind the iteration is safe.
- *
- * When the queue has no room for the whole map, the drain spans several calls
- * and each one resumes from udp_flow_cursor. Asking the kernel for the first
- * key instead makes it walk the hash buckets from the start, over everything
- * already emptied, and a saturated queue drains one entry per call.
+ * Retrieve the next batch of flows from the inactive map. Entries
+ * that end up in a udp_flow_batch are automatically deleted.
+ */
+enum {
+	UDP_FLOW_FILL_OK,	/* got a batch, might be an empty one */
+	UDP_FLOW_FILL_EMPTY,	/* nothing left in the map */
+	UDP_FLOW_FILL_LATER,	/* kernel is busy, try on the next call */
+	UDP_FLOW_FILL_BROKEN	/* an error we don't expect, see errno */
+};
+
+static int
+udp_flow_batch_fill(struct udp_flow_batch *b, struct bpf_map *m)
+{
+	u32	count;
+	int	error;
+	bool	from_start;
+
+	from_start = !b->walking;
+	count = FLOW_BATCH_LEN;
+	error = 0;
+	if (bpf_map_lookup_and_delete_batch(bpf_map__fd(m),
+	    from_start ? NULL : &b->token, &b->token, b->keys, b->vals, &count,
+	    NULL) != 0)
+		error = errno;
+	/*
+	 * Other than on EFAULT, the kernel reports how many entries it copied
+	 * and where it stopped even when it fails, and those entries are
+	 * deleted, so take them first and look at the error after.
+	 */
+	b->pos = 0;
+	b->n = error == EFAULT ? 0 : count;
+
+	if (error == 0) {
+		/* There are more flows remaining in the map */
+		b->walking = true;
+		return (UDP_FLOW_FILL_OK);
+	}
+	/*
+	 * ENOENT is the end of the walk.
+	 */
+	if (error == ENOENT) {
+		b->walking = false;
+		if (from_start && b->n == 0)
+			/*
+			 * Only a walk that went through the whole map and found nothing
+			 * returns that the map is empty. Otherwise, a walk is followed
+			 * by a new one, which picks up what a late program added behind it.
+			 */
+			return (UDP_FLOW_FILL_EMPTY);
+		return (UDP_FLOW_FILL_OK);
+	}
+	/* Made progress, if there is an error the next fill gets it */
+	if (b->n > 0) {
+		b->walking = true;
+		return (UDP_FLOW_FILL_OK);
+	}
+	/* No progress and batch lookup-and-delete returned an error */
+	switch (error) {
+	case EAGAIN:		/* FALLTHROUGH */
+	case EBUSY:		/* FALLTHROUGH */
+	case EDEADLK:		/* FALLTHROUGH */
+	case EINTR:		/* FALLTHROUGH */
+	case ENOMEM:		/* FALLTHROUGH */
+	case ETIMEDOUT:
+		/* a bucket lock or memory it couldn't get, nothing was lost */
+		return (UDP_FLOW_FILL_LATER);
+	default:
+		/*
+		 * ENOSPC lands here: a single bucket with more entries than
+		 * FLOW_BATCH_LEN, which the kernel never splits.
+		 *
+		 * TODO: Maybe grow the arrays inside udp_flow_batch.
+		 */
+		errno = error;
+		return (UDP_FLOW_FILL_BROKEN);
+	}
+}
+
+/*
+ * Drain up to space_left entries of the inactive map into raw events, one
+ * syscall per FLOW_BATCH_LEN entries. The kernel deletes flows it returns,
+ * so the entries the queue has no room for wait in udp_flow_batch for the
+ * next call, the same goes for an entry we failed to allocate a raw event
+ * for.
  *
  * Returns the number drained, sets *empty to 1 when the map has nothing left.
- * Only a pass that began at the first key declares the map empty. A resumed
- * pass that reaches the end leaves that to the next call, which starts over
- * and picks up anything a late program added behind the cursor. Any error
- * drops the cursor, so the next call starts over as well.
+ *
+ * An error we don't expect is retried on the next call like the others.
+ * If the error persists and no progress is made, the drain never finishes,
+ * no flip follows and flows stop being reported (should never happen).
  */
 static int
 udp_flow_drain(struct quark_queue *qq, struct bpf_map *m, int space_left,
     int *empty)
 {
-	struct bpf_queue		*bqq = qq->queue_be;
-	struct ebpf_udp_flow_key	 key, next;
-	struct ebpf_udp_flow_val	 val;
-	struct raw_event		*raw;
-	int				 n, have_next;
-	bool				 resumed;
+	struct bpf_queue	*bqq = qq->queue_be;
+	struct udp_flow_batch	*b = bqq->udp_flow_batch;
+	struct raw_event	*raw;
+	int			 n;
 
 	*empty = 0;
-	resumed = bqq->udp_flow_has_cursor;
-	bqq->udp_flow_has_cursor = false;
-	if (resumed)
-		key = bqq->udp_flow_cursor;
-	else if (bpf_map__get_next_key(m, NULL, &key, sizeof(key)) != 0) {
-		if (errno == ENOENT)
-			*empty = 1;
-		else
-			qwarn("bpf_map__get_next_key udp_flows");
-		return (0);
-	}
 	for (n = 0; n < space_left; n++) {
-		have_next = bpf_map__get_next_key(m, &key, &next,
-		    sizeof(next)) == 0;
-		if (!have_next && errno != ENOENT) {
-			qwarn("bpf_map__get_next_key udp_flows");
-			return (n);
+		while (b->pos == b->n) {
+			switch (udp_flow_batch_fill(b, m)) {
+			case UDP_FLOW_FILL_OK:
+				break;
+			case UDP_FLOW_FILL_EMPTY:
+				*empty = 1;
+				return (n);
+			case UDP_FLOW_FILL_LATER:
+				return (n);
+			default:
+				qwarn("bpf_map_lookup_and_delete_batch "
+				    "udp_flows");
+				return (n);
+			}
 		}
-		if (bpf_map__lookup_elem(m, &key, sizeof(key), &val,
-		    sizeof(val), 0) != 0) {
-			qwarn("bpf_map__lookup_elem udp_flows");
-			return (n);
-		}
-		/*
-		 * Allocate before deleting so a failed allocation leaves the
-		 * entry for the next pass instead of losing the period.
-		 */
-		if ((raw = udp_flow_to_raw(&key, &val)) == NULL) {
+		raw = udp_flow_to_raw(&b->keys[b->pos], &b->vals[b->pos]);
+		if (raw == NULL) {
 			qwarn("udp_flow_to_raw");
 			return (n);
 		}
-		if (bpf_map__delete_elem(m, &key, sizeof(key), 0) != 0) {
-			qwarn("bpf_map__delete_elem udp_flows");
-			raw_event_free(raw);
-			return (n);
-		}
+		b->pos++;
 		if (raw_event_insert(qq, raw) == -1)
 			raw_event_free(raw);
-		if (!have_next) {
-			if (!resumed)
-				*empty = 1;
-			return (n + 1);
-		}
-		key = next;
 	}
-
-	/* Out of room, key is the first entry we didn't get to */
-	bqq->udp_flow_cursor = key;
-	bqq->udp_flow_has_cursor = true;
 
 	return (n);
 }
@@ -2125,6 +2199,7 @@ bpf_queue_close(struct quark_queue *qq)
 		ringbuf_fd = -1;
 		bqq->ringbuf = NULL;
 	}
+	free(bqq->udp_flow_batch);
 	free(bqq);
 	bqq = NULL;
 	qq->queue_be = NULL;

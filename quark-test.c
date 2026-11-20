@@ -4554,6 +4554,134 @@ t_udp_flow_periods(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * A drain that doesn't fit: more flows in one aggregation period than the
+ * queue has room for, so the inactive map is emptied over many populate
+ * calls, each resuming where the last one stopped. One unconnected socket
+ * sends one datagram to each of UDP_DRAIN_FLOWS ports nobody listens on,
+ * that's one flow per port. Every flow must come out exactly once, with its
+ * one datagram, and nothing of ours may be left in either map.
+ */
+#define UDP_DRAIN_PORT	21000
+#define UDP_DRAIN_FLOWS	3000
+
+static int
+udp_drain_is_ours(u16 lport, u16 rport, u16 bound_port)
+{
+	return (lport == bound_port &&
+	    ntohs(rport) >= UDP_DRAIN_PORT &&
+	    ntohs(rport) < UDP_DRAIN_PORT + UDP_DRAIN_FLOWS);
+}
+
+static void
+udp_drain_not_in_map(struct bpf_map *m, u16 bound_port)
+{
+	struct ebpf_udp_flow_key	 key, *prev;
+
+	prev = NULL;
+	while (bpf_map__get_next_key(m, prev, &key, sizeof(key)) == 0) {
+		prev = &key;
+		assert(!udp_drain_is_ours(key.lport, key.rport, bound_port));
+	}
+	assert(errno == ENOENT);
+}
+
+static int
+t_udp_flow_drain(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct bpf_probes		*p;
+	const struct quark_event	*qev;
+	const struct quark_socket	*qsk;
+	struct sockaddr_in		 sin;
+	socklen_t			 sinlen;
+	struct timespec			 start, now;
+	u16				 bound_port;
+	int				 fd, i, nseen;
+	static u8			 seen[UDP_DRAIN_FLOWS];
+
+	if (in_valgrind) {
+		warnx("%s: skipping due to valgrind false positive: "
+		    "short memset before sys_bpf", __func__);
+		return (0);
+	}
+
+	assert_localhost();
+
+	qa->flags |= QQ_UDP_FLOW;
+	qa->max_length = UDP_DRAIN_FLOWS / 30;
+	qa->udp_agg_time = 1000;
+	qa->udp_idle_time = 60000;		/* no closes during the test */
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	p = quark_get_bpf_probes(&qq);
+	assert(p != NULL);
+
+	if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
+		err(1, "socket");
+	bzero(&sin, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (bind(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1)
+		err(1, "bind");
+	sinlen = sizeof(sin);
+	if (getsockname(fd, (struct sockaddr *)&sin, &sinlen) == -1)
+		err(1, "getsockname");
+	bound_port = sin.sin_port;
+
+	for (i = 0; i < UDP_DRAIN_FLOWS; i++) {
+		sin.sin_port = htons(UDP_DRAIN_PORT + i);
+		if (sendto(fd, PATTERN, strlen(PATTERN), 0,
+		    (struct sockaddr *)&sin, sizeof(sin)) == -1)
+			err(1, "sendto");
+	}
+
+	bzero(seen, sizeof(seen));
+	nseen = 0;
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	while (nseen < UDP_DRAIN_FLOWS) {
+		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
+			err(1, "clock_gettime");
+		if (now.tv_sec - start.tv_sec >= 20)
+			errx(1, "timeout, %d of %d flows", nseen,
+			    UDP_DRAIN_FLOWS);
+		if ((qev = quark_queue_get_event(&qq)) == NULL) {
+			if (quark_queue_block(&qq) == -1)
+				err(1, "quark_queue_block");
+			continue;
+		}
+		if ((qev->events & QUARK_EV_SOCK_FLOW) == 0)
+			continue;
+		qsk = qev->socket;
+		assert(qsk != NULL);
+		if (qsk->transport != QUARK_TRANSPORT_UDP ||
+		    qsk->local.af != AF_INET || qsk->remote.af != AF_INET ||
+		    !udp_drain_is_ours(qsk->local.port, qsk->remote.port,
+		    bound_port))
+			continue;
+		i = ntohs(qsk->remote.port) - UDP_DRAIN_PORT;
+		assert(seen[i] == 0);
+		seen[i] = 1;
+		nseen++;
+		assert((pid_t)qsk->pid_origin == getpid());
+		assert(qsk->remote.u.addr4 == htonl(INADDR_LOOPBACK));
+		assert(qev->flow.packets_sent == 1);
+		assert(qev->flow.bytes_sent == strlen(PATTERN));
+		assert(qev->flow.packets_received == 0);
+		assert(qev->flow.bytes_received == 0);
+	}
+
+	udp_drain_not_in_map(p->maps.udp_flows0, bound_port);
+	udp_drain_not_in_map(p->maps.udp_flows1, bound_port);
+
+	close(fd);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
  * One aggregation period of a UDP flow as the drain would hand it over,
  * on the loopback with the ports and cookie given. Nothing is held when
  * the time is ancient, so the raw event pops on the next get_event.
@@ -7951,6 +8079,7 @@ struct test all_tests[] = {
 	T_EBPF(t_udp_flow_map6),
 	T_EBPF(t_udp_flow),
 	T_EBPF(t_udp_flow_periods),
+	T_EBPF(t_udp_flow_drain),
 	T(t_udp_idle_close),
 	T(t_udp_reuseport),
 	T_EBPF(t_cgroup_parse),
