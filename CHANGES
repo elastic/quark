@@ -326,10 +326,10 @@ Changes from 0.11 to 0.12
     socket with the endpoints. Existing callers must pass
     QUARK_TRANSPORT_TCP and 0.
   o quark_event.process may be NULL for a UDP flow whose owner was
-    never seen and, as before, for socket and packet events whose
-    process already aged out of the cache. The Go binding's GetEvent
-    now delivers these events with a zero-valued Process, Pid 0,
-    instead of silently dropping them.
+    never seen and, as before, for any other event whose process is
+    not in the cache, having aged out or never been learned. The Go
+    binding's GetEvent now delivers these events with a zero-valued
+    Process, Pid 0, instead of silently dropping them.
   o quark-mon(8) got -U to enable UDP flows and -A and -I to set the
     aggregation and idle times in milliseconds, both implying -U. Its
     stats line got a udp-lost column.
