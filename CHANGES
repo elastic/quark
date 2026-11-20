@@ -296,6 +296,11 @@ Changes from 0.11 to 0.12
     suspend, so a process started after the host had slept read as
     started earlier by the total time asleep since boot. For those
     processes, proc_entity_id, which hashes proc_time_boot, changes too.
+  o ECS dates print milliseconds as three digits. They were previously
+    printed unpadded, so 5ms came out as ".5Z", which was inaccurate:
+    process.start, process.end and file.{ctime,mtime,atime} with a
+    millisecond part between 1 and 99 used to parse as up to 891ms
+    later than they were.
   o The EBPF backend no longer reports QUARK_SHM_MEMFD_CREATE for later
     {shmem,hugetlb}_file_setup() calls in a thread that once called
     memfd_create(2), like a SHM_HUGETLB shmget(2) or a DRM buffer

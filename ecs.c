@@ -94,7 +94,8 @@ ecs_date(u64 ns, char *buf, size_t buf_len)
 	ms = ns % NS_PER_S;
 	ms = ms / NS_PER_MS;
 
-	r = snprintf(buf, buf_len, "%s%lluZ", tmp, ms);
+	/* A fraction of a second, so three digits: 5ms is .005, not .5 */
+	r = snprintf(buf, buf_len, "%s%03lluZ", tmp, ms);
 	if (r < 0 || r >= (int)buf_len)
 		goto bad;
 
