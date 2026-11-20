@@ -602,8 +602,8 @@ struct quark_event {
 #define QUARK_ID_CHANGE_SETUID		(1 << 1)
 #define QUARK_ID_CHANGE_SETGID		(1 << 2)
 	u32				 id_change;
-	u64				 tags;		/* bits of quark_ruleset.tag_names */
-	const struct quark_ruleset	*ruleset;	/* that set tags, or NULL */
+	u64				 tags;		/* one bit per ruleset tag */
+	const struct quark_ruleset	*ruleset;	/* borrowed ruleset, or NULL */
 };
 
 /*

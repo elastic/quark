@@ -46,16 +46,22 @@
       <var class="Vt">quark_event</var>. This involves consulting its internal
       cache and enriching said event. The storage for the returned
       <var class="Vt">quark_event</var> is static and must not be modified.</li>
+  <li>Evaluates the ruleset on the event, if a ruleset is active. A matching
+      <code class="Cm">drop</code> rule stops evaluation and drops the event
+      only if it has no tags.</li>
   <li>Garbage collects cached events that are marked for deletion and are old
       enough. When a process exits, its event cache is marked for deletion, but
       a grace time is given before purging it so that the user might still query
       it for some time.</li>
 </ul>
-<p class="Pp">A <var class="Vt">quark_event</var> is defined as:</p>
+<p class="Pp">The following members of <var class="Vt">quark_event</var>
+    describe the event, its process and its ruleset.</p>
 <div class="Bd Pp Li">
 <pre>struct quark_event {
 	u64				 events;
 	const struct quark_process	*process;
+	u64				 tags;
+	const struct quark_ruleset	*ruleset;
 };</pre>
 </div>
 <dl class="Bl-tag">
@@ -233,6 +239,16 @@
           is valid.</dd>
     </dl>
   </dd>
+  <dt id="tags"><a class="permalink" href="#tags"><i class="Em">tags</i></a></dt>
+  <dd>A bitmask of the tags set on the event. A value of zero means the event
+      has no tags. For each set bit, call
+      <a class="permalink" href="#quark_ruleset_tag_name"><code class="Fn" id="quark_ruleset_tag_name">quark_ruleset_tag_name</code></a>(<var class="Fa">event-&gt;ruleset</var>,
+      <var class="Fa">bit</var>) with the zero-based bit index to obtain the tag
+      name.</dd>
+  <dt id="ruleset"><a class="permalink" href="#ruleset"><i class="Em">ruleset</i></a></dt>
+  <dd>A borrowed pointer to the ruleset that evaluated the event, or
+      <code class="Dv">NULL</code> if no ruleset evaluated it. The caller owns
+      the ruleset and must keep it valid until the queue closes.</dd>
 </dl>
 <section class="Sh">
 <h1 class="Sh" id="MEMORY_PROTOCOL"><a class="permalink" href="#MEMORY_PROTOCOL">MEMORY
@@ -243,8 +259,13 @@
     be modified and/or stored. In the case of multithreading, the pointers
     should not be accessed concurrently with another running
     <code class="Nm">quark_queue_get_event</code>.</p>
-<p class="Pp">In other words, read the stuff you want, copy it out, and forget
-    about it.</p>
+<p class="Pp" id="quark_ruleset_tag_name~2">Copy any event data you need to
+    keep, including the <i class="Em">tags</i> bitmask, before the next call to
+    <code class="Nm">quark_queue_get_event</code> or before closing the queue.
+    The strings returned by
+    <a class="permalink" href="#quark_ruleset_tag_name~2"><code class="Fn">quark_ruleset_tag_name</code></a>()
+    belong to the ruleset. To keep a tag name beyond the life of the ruleset,
+    copy the string before you clear or free the ruleset.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
@@ -272,7 +293,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 17, 2026</td>
+    <td class="foot-date">November 20, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

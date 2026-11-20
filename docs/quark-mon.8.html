@@ -304,6 +304,10 @@ tag log {
 }
 drop on any</pre>
 </div>
+<p class="Pp">Save the ruleset to <span class="Pa">rules.conf</span>. To capture
+    file events and apply the ruleset, run</p>
+<div class="Bd Bd-indent"><code class="Li">quark-mon -F -r
+  rules.conf</code></div>
 <p class="Pp">A block sets its tag when no <code class="Cm">except on</code>
     line matches and one <code class="Cm">on</code> line matches. An
     <code class="Cm">except on</code> line only applies to its own block, and it
@@ -315,21 +319,23 @@ drop on any</pre>
 <p class="Pp">The name is <b class="Sy">log</b> or <b class="Sy">alert</b>, the
     actions of a Defend for Containers response. The &#x2018;{&#x2019; follows
     the name, and the &#x2018;}&#x2019; has a line of its own. Blocks with the
-    same name are alternatives. No rule tests a tag, a tag is an output:
-    <code class="Nm">quark-mon</code> prints it, see
-    <a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>.</p>
+    same name are alternatives. No rule tests a tag. The default text output
+    prints the tag names, as described in
+    <a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>. With
+    <code class="Fl">-E</code>, tags still affect event delivery, and the ECS
+    JSON omits them.</p>
 </section>
 <section class="Ss">
 <h2 class="Ss" id="Evaluation"><a class="permalink" href="#Evaluation">Evaluation</a></h2>
-<p class="Pp">The rules are evaluated from top to bottom. The first matching
-    <code class="Cm">pass</code> or <code class="Cm">drop</code> rule ends the
-    evaluation. <code class="Cm">poison</code> rules and tag blocks don't end
-    it, so every matching block sets its tag. After the evaluation an event is
-    dropped when the last matching rule is a <code class="Cm">drop</code> and
-    the event has no tag. Every other event is delivered, also an event that no
-    rule matched. So a <code class="Cm">drop</code> rule before a tag block
-    removes an event, and &#x201C;drop on any&#x201D; as the last rule removes
-    every event without a tag.</p>
+<p class="Pp">The rules are evaluated from top to bottom. When a
+    <code class="Cm">pass</code> or <code class="Cm">drop</code> rule matches,
+    Quark skips all later rules and tag blocks. <code class="Cm">poison</code>
+    rules and tag blocks allow evaluation to continue. Each matching block sets
+    its tag.</p>
+<p class="Pp">A matching <code class="Cm">drop</code> rule drops the event only
+    if it has no tags. Quark delivers all other events, including events with a
+    tag from an earlier block and events that match no rule. &#x201C;drop on
+    any&#x201D; as the last rule drops untagged events that reach it.</p>
 <p class="Pp">The initial snapshot of existing processes, see
     <code class="Fl">-s</code>, is not filtered by the rules.</p>
 </section>

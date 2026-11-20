@@ -303,6 +303,11 @@ tag log {
 drop on any
 .Ed
 .Pp
+Save the ruleset to
+.Pa rules.conf .
+To capture file events and apply the ruleset, run
+.Dl quark-mon -F -r rules.conf
+.Pp
 A block sets its tag when no
 .Cm except on
 line matches and one
@@ -334,28 +339,30 @@ follows the name, and the
 .Sq }
 has a line of its own.
 Blocks with the same name are alternatives.
-No rule tests a tag, a tag is an output:
-.Nm
-prints it, see
+No rule tests a tag.
+The default text output prints the tag names, as described in
 .Xr quark_event_dump 3 .
+With
+.Fl E ,
+tags still affect event delivery, and the ECS JSON omits them.
 .Ss Evaluation
 The rules are evaluated from top to bottom.
-The first matching
+When a
 .Cm pass
 or
 .Cm drop
-rule ends the evaluation.
+rule matches, Quark skips all later rules and tag blocks.
 .Cm poison
-rules and tag blocks don't end it, so every matching block sets its tag.
-After the evaluation an event is dropped when the last matching rule is a
+rules and tag blocks allow evaluation to continue.
+Each matching block sets its tag.
+.Pp
+A matching
 .Cm drop
-and the event has no tag.
-Every other event is delivered, also an event that no rule matched.
-So a
-.Cm drop
-rule before a tag block removes an event, and
+rule drops the event only if it has no tags.
+Quark delivers all other events, including events with a tag from an
+earlier block and events that match no rule.
 .Dq drop on any
-as the last rule removes every event without a tag.
+as the last rule drops untagged events that reach it.
 .Pp
 The initial snapshot of existing processes, see
 .Fl s ,

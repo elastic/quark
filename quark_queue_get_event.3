@@ -35,18 +35,25 @@ The storage for the returned
 .Vt quark_event
 is static and must not be modified.
 .It
+Evaluates the ruleset on the event, if a ruleset is active.
+A matching
+.Cm drop
+rule stops evaluation and drops the event only if it has no tags.
+.It
 Garbage collects cached events that are marked for deletion and are old enough.
 When a process exits, its event cache is marked for deletion, but a grace time
 is given before purging it so that the user might still query it for some time.
 .El
 .Pp
-A
+The following members of
 .Vt quark_event
-is defined as:
+describe the event, its process and its ruleset.
 .Bd -literal
 struct quark_event {
 	u64				 events;
 	const struct quark_process	*process;
+	u64				 tags;
+	const struct quark_ruleset	*ruleset;
 };
 .Ed
 .Bl -tag -width "events"
@@ -238,6 +245,17 @@ is valid.
 .Em cgroup
 is valid.
 .El
+.It Em tags
+A bitmask of the tags set on the event.
+A value of zero means the event has no tags.
+For each set bit, call
+.Fn quark_ruleset_tag_name "event->ruleset" "bit"
+with the zero-based bit index to obtain the tag name.
+.It Em ruleset
+A borrowed pointer to the ruleset that evaluated the event, or
+.Dv NULL
+if no ruleset evaluated it.
+The caller owns the ruleset and must keep it valid until the queue closes.
 .El
 .Sh MEMORY PROTOCOL
 The returned
@@ -251,7 +269,16 @@ In the case of multithreading, the pointers should not be accessed concurrently
 with another running
 .Nm .
 .Pp
-In other words, read the stuff you want, copy it out, and forget about it.
+Copy any event data you need to keep, including the
+.Em tags
+bitmask, before the next call to
+.Nm
+or before closing the queue.
+The strings returned by
+.Fn quark_ruleset_tag_name
+belong to the ruleset.
+To keep a tag name beyond the life of the ruleset, copy the string before
+you clear or free the ruleset.
 .Sh RETURN VALUES
 A pointer to
 .Vt quark_event .
