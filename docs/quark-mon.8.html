@@ -202,17 +202,12 @@ pass on any</pre>
 <p class="Pp">A &#x2018;#&#x2019; starts a comment that ends at the end of the
     line. A value with a blank, a &#x2018;#&#x2019;, a &#x2018;{&#x2019; or a
     &#x2018;}&#x2019; must be quoted, as in
-    &#x2018;<code class="Li">&quot;/opt/my app/*&quot;</code>&#x2019;. The words
-    of the rule language are reserved: <code class="Cm">pass</code>,
-    <code class="Cm">drop</code>, <code class="Cm">poison</code>,
-    <code class="Cm">on</code>, <code class="Cm">any</code>,
-    <code class="Cm">tag</code>, <code class="Cm">except</code> and the field
-    names. A value spelled like one of them must be quoted too, as in
-    &#x2018;<code class="Li">drop on pod.name &quot;tag&quot;</code>&#x2019;,
-    since unquoted it is read as the word and the rule fails to load. Only the
-    whole value counts, so &#x2018;<code class="Li">/usr/bin/tag</code>&#x2019;
-    needs no quotes. A &#x2018;\&#x2019; at the end of a line continues the rule
-    on the next line.</p>
+    &#x2018;<code class="Li">&quot;/opt/my app/*&quot;</code>&#x2019;. A value
+    spelled like a word of the rule language, such as
+    <code class="Cm">tag</code>, <code class="Cm">any</code> or a field name,
+    needs no quotes, as in &#x2018;<code class="Li">drop on pod.name
+    tag</code>&#x2019;. A &#x2018;\&#x2019; at the end of a line continues the
+    rule on the next line.</p>
 <p class="Pp">The actions are:</p>
 <dl class="Bl-tag">
   <dt id="pass"><a class="permalink" href="#pass"><code class="Cm">pass</code></a></dt>

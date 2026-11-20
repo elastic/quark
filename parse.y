@@ -187,10 +187,36 @@ valuelist:	value
 		| valuelist optnl value
 		;
 
-value:		STRING {
+value:		word {
 			if (push_value(ctx, $1.str) == -1)
 				ABORT("%s", strerror(errno));
 		} ;
+
+/*
+ * A value is one word, a field takes exactly one value or a braced list,
+ * so a word of the language in a value position is just a value. The
+ * lexer sets str for keywords too.
+ */
+word:		STRING
+		| PASS
+		| DROP
+		| POISON
+		| ON
+		| ANY
+		| TAG
+		| EXCEPT
+		| PROCESS_PID
+		| PROCESS_PPID
+		| PROCESS_UID
+		| PROCESS_GID
+		| PROCESS_SID
+		| PROCESS_EXE
+		| FILE_PATH
+		| FILE_EXEC_CHANGE
+		| EVENT_SCOPE
+		| POD_NAME
+		| CONTAINER_IMAGE
+		;
 
 optnl:		/* empty */
 		| optnl '\n'
@@ -223,7 +249,10 @@ quark_error(struct quark_parser_ctx *ctx, const char *fmt, ...)
 	va_end(va);
 }
 
-/* Collect one value of the current field, the string is in the arena */
+/*
+ * Collect one value of the current field, the string is in the arena or
+ * is a static keyword string
+ */
 static int
 push_value(struct quark_parser_ctx *ctx, const char *str)
 {
@@ -507,8 +536,11 @@ eow:
 	}
 	if (!nonkw) {
 		for (i = 0; i < (int)nitems(keywords); i++) {
-			if (strcmp(buf, keywords[i].word) == 0)
+			if (strcmp(buf, keywords[i].word) == 0) {
+				/* Read as a value in a value position */
+				lvalp->str = keywords[i].word;
 				return keywords[i].token;
+			}
 		}
 	}
 

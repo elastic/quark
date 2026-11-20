@@ -5346,6 +5346,17 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"tag log {\n\ton pod.name {\n\t\tx\n\t\ty\n\t}\n}\n",
 		"drop on event.scope { host unknown }\n"
 		    "tag log {\n\ton any\n}\ndrop on any\n",
+		/* words of the language are plain values in a value position */
+		"drop on pod.name tag\n",
+		"drop on pod.name except\n",
+		"drop on process.exe any\n",
+		"drop on file.path on\n",
+		"drop on pod.name { pass drop poison on any tag except }\n",
+		"drop on container.image process.exe\n",
+		"drop on pod.name process.pid process.pid 1\n",
+		"drop on pod.name file.exec_change file.exec_change\n",
+		"tag log {\n\texcept on pod.name except\n"
+		    "\ton pod.name tag\n}\n",
 		NULL
 	};
 	char *bad_cases[] = {
@@ -5392,6 +5403,11 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on event.scope { container guest }\n",
 		"poison { 1 } on any\n",
 		"drop on file.path /a{b\n",
+		/* a word of the language is still checked as a value */
+		"drop on process.pid any\n",
+		"drop on event.scope tag\n",
+		"poison on on any\n",
+		"drop on file.exec_change any\n",
 		/* tag blocks */
 		"tag log {\n}\n",
 		"tag log {\n\texcept on process.pid 1\n}\n",
@@ -5522,6 +5538,20 @@ t_rule_values(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_ruleset_match(&ruleset, &qev) == NULL);
 	assert(qp.poison_tag == 0);
 
+	quark_ruleset_clear(&ruleset);
+
+	/* A word of the language is a plain value in a value position */
+	ruleset_from_string(&ruleset,
+	    "drop on pod.name { tag except } process.exe any\n");
+	assert(ruleset.n_rules == 1);
+	rule = &ruleset.rules[0];
+	assert(rule->n_conds == 2);
+	assert(rule->conds[0].code == QUARK_RF_POD_NAME);
+	assert(rule->conds[0].n_values == 2);
+	assert(!strcmp(rule->conds[0].values[0].wild.pre, "tag"));
+	assert(!strcmp(rule->conds[0].values[1].wild.pre, "except"));
+	assert(rule->conds[1].code == QUARK_RF_EXE);
+	assert(!strcmp(rule->conds[1].values[0].wild.pre, "any"));
 	quark_ruleset_clear(&ruleset);
 
 	/* The list API */
