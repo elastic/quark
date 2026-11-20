@@ -706,6 +706,47 @@ fork_exec_nop(void)
 	return (fork_exec_nop1(0, 0));
 }
 
+/*
+ * Fork and exec true with an environment of len bytes, a single variable
+ * that starts with PAD=, and wait for it.
+ */
+static pid_t
+fork_exec_env(size_t len)
+{
+	pid_t		 child;
+	int		 status;
+	char		*pad, *envp[2];
+	char *const	 argv[] = { "true", NULL };
+
+	if (len < 5)
+		errx(1, "%s: environment too short", __func__);
+	if ((pad = malloc(len)) == NULL)
+		err(1, "malloc");
+	memset(pad, 'e', len);
+	memcpy(pad, "PAD=", 4);
+	pad[len - 1] = 0;
+	envp[0] = pad;
+	envp[1] = NULL;
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	/* child */
+	else if (child == 0) {
+		execve("/usr/bin/true", argv, envp);
+		execve("/bin/true", argv, envp);
+		err(1, "execve true");
+	}
+
+	/* parent */
+	free(pad);
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child didn't exit cleanly");
+
+	return (child);
+}
+
 static void
 fork_n(int n)
 {
@@ -1223,6 +1264,100 @@ t_ringbuf_max(const struct test *t, struct quark_queue_attr *qa)
 	close(fd);
 
 	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * List the descriptors of this process that would be inherited on exec.
+ * The caller frees the list.
+ */
+static int *
+inheritable_fds(size_t *nfds)
+{
+	DIR		*dir;
+	struct dirent	*d;
+	struct rlimit	 rl;
+	int		*fds, *tmp, fd, fl;
+	size_t		 n;
+
+	if (getrlimit(RLIMIT_NOFILE, &rl) == -1)
+		err(1, "getrlimit");
+	if ((dir = opendir("/proc/self/fd")) == NULL)
+		err(1, "opendir /proc/self/fd");
+	fds = NULL;
+	n = 0;
+	while ((d = readdir(dir)) != NULL) {
+		if (!isnumber(d->d_name))
+			continue;
+		fd = atoi(d->d_name);
+		if ((rlim_t)fd >= rl.rlim_cur)
+			/*
+			 * A descriptor at or above the soft limit is not ours
+			 * (e.g. it is where valgrind keeps its own fds).
+			 */
+			continue;
+		if ((fl = fcntl(fd, F_GETFD)) == -1)
+			err(1, "fcntl descriptor %d", fd);
+		if (fl & FD_CLOEXEC)
+			continue;
+		if ((tmp = realloc(fds, (n + 1) * sizeof(*fds))) == NULL)
+			err(1, "realloc");
+		fds = tmp;
+		fds[n++] = fd;
+	}
+	closedir(dir);
+	*nfds = n;
+
+	return (fds);
+}
+
+/*
+ * A queue must not add descriptors that survive an exec. An inherited
+ * perf descriptor of the KPROBE backend keeps its event alive in the
+ * child, quark_queue_close() can then no longer uninstall the kprobes and
+ * leaves them behind for good.
+ */
+static int
+t_cloexec(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	int			*before, *after;
+	size_t			 nbefore, nafter, i, j;
+	char			 path[64], target[256];
+	ssize_t			 n;
+	int			 leaked;
+
+	before = inheritable_fds(&nbefore);
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	after = inheritable_fds(&nafter);
+
+	leaked = 0;
+	/*
+	 * Report each descriptor that is inheritable now and wasn't before the
+	 * open (so it must have been added by the queue). The inner loop
+	 * only scans and it stops short of nbefore when after[i] was in the old
+	 * list.
+	 */
+	for (i = 0; i < nafter; i++) {
+		for (j = 0; j < nbefore && before[j] != after[i]; j++)
+			;	/* Nothing */
+		if (j < nbefore)
+			continue;
+		snprintf(path, sizeof(path), "/proc/self/fd/%d", after[i]);
+		if ((n = readlink(path, target, sizeof(target) - 1)) == -1)
+			n = 0;
+		target[n] = 0;
+		warnx("descriptor %d (%s) lacks close-on-exec", after[i],
+		    target);
+		leaked++;
+	}
+	quark_queue_close(&qq);
+	free(before);
+	free(after);
+	if (leaked != 0)
+		errx(1, "%d descriptors would be inherited", leaked);
 
 	return (0);
 }
@@ -5850,6 +5985,85 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * How many bytes the probes have written to the ring so far.
+ */
+static u64
+ringbuf_produced(void)
+{
+	struct bpf_map_info	 info;
+	unsigned long		*pos;
+	long			 pgsz;
+	u64			 produced;
+	int			 fd;
+
+	if ((pgsz = sysconf(_SC_PAGESIZE)) == -1)
+		err(1, "sysconf");
+	fd = find_map(&info, BPF_MAP_TYPE_RINGBUF, 0, 0, 0, "ringbuf");
+	/* The consumer page comes first, the producer page follows it */
+	pos = mmap(NULL, pgsz, PROT_READ, MAP_SHARED, fd, pgsz);
+	if (pos == MAP_FAILED)
+		err(1, "mmap ringbuf");
+	produced = *pos;
+	if (munmap(pos, pgsz) == -1)
+		err(1, "munmap");
+	close(fd);
+
+	return (produced);
+}
+
+/*
+ * max_env is how much of an environment is kept for a process, NUL
+ * include. A max_env=0 keeps none.
+ */
+static int
+t_env_max(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	const size_t			 env_len = 39000;
+	u64				 before, cost, min_cost;
+	pid_t				 child;
+	int				 i;
+
+	/* No env */
+	qa->max_env = 0;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	child = fork_exec_env(env_len);
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_EXEC);
+	qp = qev->process;
+	assert(qp->env == NULL);
+	assert(qp->env_len == 0);
+	quark_queue_close(&qq);
+
+	 /* 4096 bytes of env */
+	qa->max_env = 4096;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	for (i = 0, child = -1, min_cost = UINT64_MAX; i < 3; i++) {
+		before = ringbuf_produced();
+		child = fork_exec_env(env_len);
+		cost = ringbuf_produced() - before;
+		if (cost < min_cost)
+			min_cost = cost;
+	}
+	if (min_cost >= env_len)
+		errx(1, "a child took %llu bytes of the ring", min_cost);
+	qev = drain_for_pid(&qq, child);
+	assert(qev->events & QUARK_EV_EXEC);
+	qp = qev->process;
+	assert(qp->env != NULL);
+	assert(qp->env_len == 4096);
+	assert(!strncmp(qp->env, "PAD=eeee", 8));
+	assert(qp->env[qp->env_len - 1] == 0);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 /* Fixed uapi bit, absent from older system headers in SYSLIB builds. */
 #define TB_LOAD_COMMON_ATTRS (1U << 16)
 #define TB_LOAD_SYSCALL 31
@@ -6900,11 +7114,14 @@ struct test all_tests[] = {
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
 	T_KPROBE(t_kprobe_clockid),
+	T_EBPF(t_cloexec),
+	T_KPROBE(t_cloexec),
 	T_EBPF(t_os_release),
 	T_KPROBE(t_os_release),
 	T_EBPF(t_fork_exec_exit),
 	T_KPROBE(t_fork_exec_exit),
 	T_EBPF(t_fork_exec_exit_rel),
+	T_EBPF(t_env_max),
 	T_KPROBE(t_exec_long_path),
 	T_KPROBE(t_cwd_deep),
 	T_EBPF(t_id_change),

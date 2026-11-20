@@ -1316,6 +1316,13 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 * Maps and other state
 	 */
 	p->rodata->consumer_pid = getpid();
+	/*
+	 * The probes read no more of a process environment than what
+	 * userspace keeps (and nothing if max_env is zero). A bypass
+	 * consumer reads the ring itself, as it always did.
+	 */
+	if (!(qq->flags & QQ_BYPASS))
+		p->rodata->env_max = MIN(qq->max_env, UINT32_MAX);
 
 	/*
 	 * Unload everything since it has way more than we want

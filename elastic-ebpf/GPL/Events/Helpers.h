@@ -227,6 +227,10 @@ static long read_kernel_str_or_empty_str(void *dst, int size, const void *unsafe
 #define ARGV_MAX 20480u
 #define ENV_MAX 40960u
 
+// How much of an environment userspace keeps, quark_queue_attr.max_env, zero
+// for none.
+const volatile u32 env_max = ENV_MAX;
+
 static long ebpf_argv__fill(char *buf, const struct task_struct *task)
 {
     unsigned long start, end;
@@ -279,9 +283,14 @@ static long ebpf_env__fill(char *buf, const struct task_struct *task)
      * computation, which makes the verifier lose track of bounds.
      */
     size = (u32)(end - start);
+    /*
+     * Clamp to what userspace keeps first and to the constant last: env_max
+     * is not a known value to every verifier, ENV_MAX is the bound it needs.
+     */
+    size = size > env_max ? env_max : size;
+    size = size > ENV_MAX ? ENV_MAX : size;
     if (size == 0)
             return 1;
-    size = size > ENV_MAX ? ENV_MAX : size;
 
     bpf_probe_read_user(buf, size, (void *)start);
 
