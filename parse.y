@@ -152,6 +152,22 @@ match:		FILE_EXEC_CHANGE {
 				ABORT("parser bug, cur_rule is NULL");
 			if (add_values(ctx, $1.rf.code) == -1)
 				YYABORT;
+		} | valuefield '\n' {
+			/*
+			 * Too many tokens can start a value for bison to list
+			 * them, so say what is wrong in the common mistakes.
+			 */
+			ABORT("missing value");
+		} | valuefield '}' {
+			ABORT("missing value");
+		} | valuefield value STRING {
+			/*
+			 * A STRING never starts a match, a field name does. A
+			 * field name in a value position is a value, so this
+			 * is also a field without a value before another field.
+			 */
+			ABORT("two values for one field: a list needs { }, "
+			    "or a field is missing its value");
 		} ;
 
 valuefield:	PROCESS_PID {
@@ -181,16 +197,44 @@ valuefield:	PROCESS_PID {
 /* One value, or a list of values that may span lines */
 values:		value
 		| '{' optnl valuelist optnl '}'
-		;
+		| '{' optnl '}' {
+			ABORT("empty list");
+		} ;
 
 valuelist:	value
 		| valuelist optnl value
 		;
 
-value:		STRING {
+value:		word {
 			if (push_value(ctx, $1.str) == -1)
 				ABORT("%s", strerror(errno));
 		} ;
+
+/*
+ * A value is one word, a field takes exactly one value or a braced list,
+ * so a word of the language in a value position is just a value. The
+ * lexer sets str for keywords too.
+ */
+word:		STRING
+		| PASS
+		| DROP
+		| POISON
+		| ON
+		| ANY
+		| TAG
+		| EXCEPT
+		| PROCESS_PID
+		| PROCESS_PPID
+		| PROCESS_UID
+		| PROCESS_GID
+		| PROCESS_SID
+		| PROCESS_EXE
+		| FILE_PATH
+		| FILE_EXEC_CHANGE
+		| EVENT_SCOPE
+		| POD_NAME
+		| CONTAINER_IMAGE
+		;
 
 optnl:		/* empty */
 		| optnl '\n'
@@ -223,7 +267,10 @@ quark_error(struct quark_parser_ctx *ctx, const char *fmt, ...)
 	va_end(va);
 }
 
-/* Collect one value of the current field, the string is in the arena */
+/*
+ * Collect one value of the current field, the string is in the arena or
+ * is a static keyword string
+ */
 static int
 push_value(struct quark_parser_ctx *ctx, const char *str)
 {
@@ -507,8 +554,11 @@ eow:
 	}
 	if (!nonkw) {
 		for (i = 0; i < (int)nitems(keywords); i++) {
-			if (strcmp(buf, keywords[i].word) == 0)
+			if (strcmp(buf, keywords[i].word) == 0) {
+				/* Read as a value in a value position */
+				lvalp->str = keywords[i].word;
 				return keywords[i].token;
+			}
 		}
 	}
 
