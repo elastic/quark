@@ -423,7 +423,6 @@ out:
  * one that is off.
  */
 const volatile bool file_events_enabled = false;
-const volatile bool file_access_enabled = false;
 
 /* Userspace registers source-dentry names; probes only read this map. */
 struct {
@@ -612,7 +611,7 @@ static int do_filp_open__exit(const struct open_flags *op, struct file *f)
     // is then the fallback, and do_dentry_open() has already stripped
     // O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC from it, so such an open is reported
     // without them.
-    if (file_access_enabled)
+    if (file_access_enabled && !file_access_is_consumer())
         file_access__open(f, op != NULL ? (u32)BPF_CORE_READ(op, open_flag)
                                         : (u32)BPF_CORE_READ(f, f_flags));
 
@@ -737,8 +736,8 @@ static int do_filp_open__enter(const struct open_flags *op)
 {
     struct ebpf_events_state state = {};
 
-    // Same exclusion as the exit side, which is the only reader of this state
-    if (ebpf_events_is_trusted_pid())
+    // Same exclusions as the file-access exit side, the only state reader.
+    if (ebpf_events_is_trusted_pid() || file_access_is_consumer())
         return 0;
     state.filp_open.op       = op;
     ebpf_events_state__set(EBPF_EVENTS_STATE_FILP_OPEN, &state);
