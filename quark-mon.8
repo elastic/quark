@@ -176,11 +176,16 @@ or a
 .Sq }
 must be quoted, as in
 .Ql \(dq/opt/my app/*\(dq .
-A value spelled like a word of the rule language, such as
+A value spelled like an action or a keyword, such as
 .Cm tag ,
 .Cm any
-or a field name, needs no quotes, as in
+or
+.Cm drop ,
+needs no quotes, as in
 .Ql drop on pod.name tag .
+A value spelled like a field name must be quoted, as in
+.Ql drop on pod.name \(dqprocess.exe\(dq ,
+since unquoted it is read as the next field and the rule fails to load.
 A
 .Sq \e
 at the end of a line continues the rule on the next line.

@@ -5353,9 +5353,11 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on process.exe any\n",
 		"drop on file.path on\n",
 		"drop on pod.name { pass drop poison on any tag except }\n",
-		"drop on container.image process.exe\n",
-		"drop on pod.name process.pid process.pid 1\n",
-		"drop on pod.name file.exec_change file.exec_change\n",
+		/* a field name is a value only when quoted */
+		"drop on container.image \"process.exe\"\n",
+		"drop on pod.name \"process.pid\" process.pid 1\n",
+		"drop on pod.name \"file.exec_change\" file.exec_change\n",
+		"drop on pod.name { \"file.path\" tag }\n",
 		"tag log {\n\texcept on pod.name except\n"
 		    "\ton pod.name tag\n}\n",
 		NULL
@@ -5459,7 +5461,19 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		{ "drop on process.pid 1 process.exe a b\n",
 		    "two values for one field" },
 		{ "drop on pod.name process.exe /bin/sh\n",
-		    "two values for one field" },
+		    "missing value before process.exe" },
+		{ "drop on pod.name file.exec_change\n",
+		    "missing value before file.exec_change" },
+		{ "drop on process.exe pod.name file.path /x\n",
+		    "missing value before pod.name" },
+		{ "drop on container.image process.exe\n",
+		    "missing value before process.exe" },
+		{ "tag log {\n\texcept on pod.name event.scope host\n"
+		    "\ton any\n}\n", "missing value before event.scope" },
+		{ "drop on pod.name { a process.exe }\n",
+		    "process.exe is a field name" },
+		{ "drop on pod.name {\n\tfile.path\n}\n",
+		    "file.path is a field name" },
 		{ NULL, NULL }
 	};
 

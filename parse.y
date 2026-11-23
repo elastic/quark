@@ -160,14 +160,12 @@ match:		FILE_EXEC_CHANGE {
 			ABORT("missing value");
 		} | valuefield '}' {
 			ABORT("missing value");
+		} | valuefield fieldname {
+			ABORT("missing value before %s, quote it to use it "
+			    "as a value", $2.str);
 		} | valuefield value STRING {
-			/*
-			 * A STRING never starts a match, a field name does. A
-			 * field name in a value position is a value, so this
-			 * is also a field without a value before another field.
-			 */
-			ABORT("two values for one field: a list needs { }, "
-			    "or a field is missing its value");
+			/* A STRING never starts a match, a field name does */
+			ABORT("two values for one field, a list needs { }");
 		} ;
 
 valuefield:	PROCESS_PID {
@@ -201,9 +199,15 @@ values:		value
 			ABORT("empty list");
 		} ;
 
-valuelist:	value
-		| valuelist optnl value
+valuelist:	listvalue
+		| valuelist optnl listvalue
 		;
+
+listvalue:	value
+		| fieldname {
+			ABORT("%s is a field name, quote it to use it as a "
+			    "value", $1.str);
+		} ;
 
 value:		word {
 			if (push_value(ctx, $1.str) == -1)
@@ -213,7 +217,9 @@ value:		word {
 /*
  * A value is one word, a field takes exactly one value or a braced list,
  * so a word of the language in a value position is just a value. The
- * lexer sets str for keywords too.
+ * lexer sets str for keywords too. A field name is not a value unless
+ * quoted, else a forgotten value reads the next field name as the value,
+ * as in "pod.name file.exec_change". poison is an action word first.
  */
 word:		STRING
 		| PASS
@@ -223,7 +229,9 @@ word:		STRING
 		| ANY
 		| TAG
 		| EXCEPT
-		| PROCESS_PID
+		;
+
+fieldname:	PROCESS_PID
 		| PROCESS_PPID
 		| PROCESS_UID
 		| PROCESS_GID

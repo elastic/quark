@@ -203,11 +203,14 @@ pass on any</pre>
     line. A value with a blank, a &#x2018;#&#x2019;, a &#x2018;{&#x2019; or a
     &#x2018;}&#x2019; must be quoted, as in
     &#x2018;<code class="Li">&quot;/opt/my app/*&quot;</code>&#x2019;. A value
-    spelled like a word of the rule language, such as
-    <code class="Cm">tag</code>, <code class="Cm">any</code> or a field name,
-    needs no quotes, as in &#x2018;<code class="Li">drop on pod.name
-    tag</code>&#x2019;. A &#x2018;\&#x2019; at the end of a line continues the
-    rule on the next line.</p>
+    spelled like an action or a keyword, such as <code class="Cm">tag</code>,
+    <code class="Cm">any</code> or <code class="Cm">drop</code>, needs no
+    quotes, as in &#x2018;<code class="Li">drop on pod.name tag</code>&#x2019;.
+    A value spelled like a field name must be quoted, as in
+    &#x2018;<code class="Li">drop on pod.name
+    &quot;process.exe&quot;</code>&#x2019;, since unquoted it is read as the
+    next field and the rule fails to load. A &#x2018;\&#x2019; at the end of a
+    line continues the rule on the next line.</p>
 <p class="Pp">The actions are:</p>
 <dl class="Bl-tag">
   <dt id="pass"><a class="permalink" href="#pass"><code class="Cm">pass</code></a></dt>
@@ -450,7 +453,7 @@ drop on any</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 20, 2026</td>
+    <td class="foot-date">November 23, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
