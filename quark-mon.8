@@ -186,6 +186,13 @@ needs no quotes, as in
 A value spelled like a field name must be quoted, as in
 .Ql drop on pod.name \(dqprocess.exe\(dq ,
 since unquoted it is read as the next field and the rule fails to load.
+.Cm poison
+is an exception: it is an action too, so it needs no quotes and
+.Ql drop on pod.name poison
+matches the pod named poison.
+A forgotten value before the
+.Cm poison
+field is thus not an error.
 A
 .Sq \e
 at the end of a line continues the rule on the next line.

@@ -209,8 +209,13 @@ pass on any</pre>
     A value spelled like a field name must be quoted, as in
     &#x2018;<code class="Li">drop on pod.name
     &quot;process.exe&quot;</code>&#x2019;, since unquoted it is read as the
-    next field and the rule fails to load. A &#x2018;\&#x2019; at the end of a
-    line continues the rule on the next line.</p>
+    next field and the rule fails to load. <code class="Cm">poison</code> is an
+    exception: it is an action too, so it needs no quotes and
+    &#x2018;<code class="Li">drop on pod.name poison</code>&#x2019; matches the
+    pod named poison. A forgotten value before the
+    <code class="Cm">poison</code> field is thus not an error. A
+    &#x2018;\&#x2019; at the end of a line continues the rule on the next
+  line.</p>
 <p class="Pp">The actions are:</p>
 <dl class="Bl-tag">
   <dt id="pass"><a class="permalink" href="#pass"><code class="Cm">pass</code></a></dt>

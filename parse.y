@@ -134,9 +134,18 @@ matchbody:	matchlist
 		| ANY
 		;
 
+/*
+ * A word after a whole match is a second value of its field, or a value
+ * after file.exec_change. It is caught here and not in match, so the
+ * reduction of a match needs no lookahead and the values are checked at
+ * their own line and column.
+ */
 matchlist:	match
 		| matchlist match
-		;
+		| matchlist strayword {
+			ABORT("unexpected value %s, a field takes one value "
+			    "or a { } list", $2.str);
+		} ;
 
 match:		FILE_EXEC_CHANGE {
 			struct quark_rule_field rf;
@@ -163,9 +172,6 @@ match:		FILE_EXEC_CHANGE {
 		} | valuefield fieldname {
 			ABORT("missing value before %s, quote it to use it "
 			    "as a value", $2.str);
-		} | valuefield value STRING {
-			/* A STRING never starts a match, a field name does */
-			ABORT("two values for one field, a list needs { }");
 		} ;
 
 valuefield:	PROCESS_PID {
@@ -219,12 +225,17 @@ value:		word {
  * so a word of the language in a value position is just a value. The
  * lexer sets str for keywords too. A field name is not a value unless
  * quoted, else a forgotten value reads the next field name as the value,
- * as in "pod.name file.exec_change". poison is an action word first.
+ * as in "pod.name file.exec_change". poison is a field name and an action,
+ * it stays a value, see quark-mon(8).
  */
-word:		STRING
+word:		strayword
+		| POISON
+		;
+
+/* A word after a match, poison is left out since it starts a field */
+strayword:	STRING
 		| PASS
 		| DROP
-		| POISON
 		| ON
 		| ANY
 		| TAG

@@ -335,7 +335,10 @@ Changes from 0.11 to 0.12
     language. A value spelled like an action or a keyword, such as tag,
     any or drop, needs no quotes, as in drop on pod.name tag. A value
     spelled like a field name must be quoted, as in
-    drop on pod.name "process.exe".
+    drop on pod.name "process.exe". poison is an exception, it is an
+    action too and needs no quotes: drop on pod.name poison matches the
+    pod named poison, so a forgotten value before the poison field is
+    not an error.
   o quark_event_dump() prints a TAGS line with the tag names of an event,
     and go/quark has them in Event.Tags.
   o The EBPF backend now reports process start times, proc_time_boot
