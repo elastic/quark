@@ -203,19 +203,15 @@ pass on any</pre>
     line. A value with a blank, a &#x2018;#&#x2019;, a &#x2018;{&#x2019; or a
     &#x2018;}&#x2019; must be quoted, as in
     &#x2018;<code class="Li">&quot;/opt/my app/*&quot;</code>&#x2019;. A value
-    spelled like an action or a keyword, such as <code class="Cm">tag</code>,
-    <code class="Cm">any</code> or <code class="Cm">drop</code>, needs no
+    spelled like <code class="Cm">pass</code>, <code class="Cm">drop</code>,
+    <code class="Cm">on</code>, <code class="Cm">any</code>,
+    <code class="Cm">tag</code> or <code class="Cm">except</code> needs no
     quotes, as in &#x2018;<code class="Li">drop on pod.name tag</code>&#x2019;.
-    A value spelled like a field name must be quoted, as in
-    &#x2018;<code class="Li">drop on pod.name
+    A value spelled like a field name, including <code class="Cm">poison</code>,
+    must be quoted, as in &#x2018;<code class="Li">drop on pod.name
     &quot;process.exe&quot;</code>&#x2019;, since unquoted it is read as the
-    next field and the rule fails to load. <code class="Cm">poison</code> is an
-    exception: it is an action too, so it needs no quotes and
-    &#x2018;<code class="Li">drop on pod.name poison</code>&#x2019; matches the
-    pod named poison. A forgotten value before the
-    <code class="Cm">poison</code> field is thus not an error. A
-    &#x2018;\&#x2019; at the end of a line continues the rule on the next
-  line.</p>
+    next field and the rule fails to load. A &#x2018;\&#x2019; at the end of a
+    line continues the rule on the next line.</p>
 <p class="Pp">The actions are:</p>
 <dl class="Bl-tag">
   <dt id="pass"><a class="permalink" href="#pass"><code class="Cm">pass</code></a></dt>

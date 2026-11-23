@@ -138,11 +138,15 @@ matchbody:	matchlist
  * A word after a whole match is a second value of its field, or a value
  * after file.exec_change. It is caught here and not in match, so the
  * reduction of a match needs no lookahead and the values are checked at
- * their own line and column.
+ * their own line and column. rf.code is the code of the last field.
  */
 matchlist:	match
-		| matchlist match
-		| matchlist strayword {
+		| matchlist match {
+			$$.rf.code = $2.rf.code;
+		} | matchlist word {
+			if ($1.rf.code == QUARK_RF_FILE_EXEC_CHANGE)
+				ABORT("unexpected value %s, file.exec_change "
+				    "takes no value", $2.str);
 			ABORT("unexpected value %s, a field takes one value "
 			    "or a { } list", $2.str);
 		} ;
@@ -156,11 +160,13 @@ match:		FILE_EXEC_CHANGE {
 			rf.code = QUARK_RF_FILE_EXEC_CHANGE;
 			if (quark_rule_match_field(ctx->cur_rule, rf) != 0)
 				ABORT("can't add match field");
+			$$.rf.code = QUARK_RF_FILE_EXEC_CHANGE;
 		} | valuefield values {
 			if (ctx->cur_rule == NULL)
 				ABORT("parser bug, cur_rule is NULL");
 			if (add_values(ctx, $1.rf.code) == -1)
 				YYABORT;
+			$$.rf.code = $1.rf.code;
 		} | valuefield '\n' {
 			/*
 			 * Too many tokens can start a value for bison to list
@@ -223,17 +229,12 @@ value:		word {
 /*
  * A value is one word, a field takes exactly one value or a braced list,
  * so a word of the language in a value position is just a value. The
- * lexer sets str for keywords too. A field name is not a value unless
- * quoted, else a forgotten value reads the next field name as the value,
- * as in "pod.name file.exec_change". poison is a field name and an action,
- * it stays a value, see quark-mon(8).
+ * lexer sets str for keywords too. A field name, poison included, is not
+ * a value unless quoted, else a forgotten value reads the next field name
+ * as the value, as in "pod.name file.exec_change". None of these words
+ * starts a field, so a word after a match is a stray value.
  */
-word:		strayword
-		| POISON
-		;
-
-/* A word after a match, poison is left out since it starts a field */
-strayword:	STRING
+word:		STRING
 		| PASS
 		| DROP
 		| ON
@@ -242,7 +243,8 @@ strayword:	STRING
 		| EXCEPT
 		;
 
-fieldname:	PROCESS_PID
+fieldname:	POISON
+		| PROCESS_PID
 		| PROCESS_PPID
 		| PROCESS_UID
 		| PROCESS_GID
