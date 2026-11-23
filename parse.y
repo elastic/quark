@@ -462,7 +462,7 @@ int
 quark_lex(YYSTYPE *lvalp, struct quark_parser_ctx *ctx)
 {
 	char buf[4096], *ebuf, *p;
-	int c, quoted = 0, quotes = 0, escape = 0, nonkw = 0;
+	int c, quoted = 0, quotes = 0, escape = 0, nonkw = 0, split = 0;
 	unsigned long qpos = 0;
 	size_t i;
 
@@ -517,7 +517,13 @@ repeat:
 				ABORT("unterminated quotes in column %lu",
 				    qpos + 1);
 			if (escape) {
-				nonkw = 1;
+				/*
+				 * A word split by a continuation, with text
+				 * before and after it, is not a keyword. A
+				 * word that ends at the continuation, or a
+				 * lone \, may still be one.
+				 */
+				split = p != buf;
 				escape = 0;
 				ctx->colno = ULONG_MAX;
 				ctx->lineno++;
@@ -555,6 +561,8 @@ repeat:
 		*p++ = c;
 		if (p == ebuf)
 			ABORT("too long line");
+		if (split)
+			nonkw = 1;
 		escape = 0;
 	}
 

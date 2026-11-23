@@ -5360,6 +5360,17 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"drop on pod.name { \"file.path\" tag }\n",
 		"drop on pod.name \"poison\" poison 1\n",
 		"drop on pod.name { \"poison\" a }\n",
+		/* a lone \ continues the rule, the next word may be a keyword */
+		"drop on process.pid 1 \\\nprocess.uid 0\n",
+		"drop on process.pid 1 \\\n\tprocess.uid 0\n",
+		"drop on process.pid 1\\\n process.uid 0\n",
+		"drop \\\non \\\n\tany\n",
+		"tag log {\n\ton pod.name a \\\n\t    process.exe /bin/sh\n}\n",
+		"\tdrop on process.pid \\\n\t\t1 process.uid 0\n",
+		"drop on process.pid \\\n1 \\\nprocess.uid \\\n0\n",
+		"drop on process.pid\\\n\t\t  1 process.uid 0\n",
+		"drop\\\n on\\\n any\n",
+		"tag log {\n\ton pod.name\\\n\t    a process.exe /bin/sh\n}\n",
 		"tag log {\n\texcept on pod.name except\n"
 		    "\ton pod.name tag\n}\n",
 		NULL
@@ -5478,6 +5489,12 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		    "missing value before poison" },
 		{ "drop on pod.name { a poison }\n",
 		    "poison is a field name" },
+		/* a keyword split by a continuation is a plain value */
+		{ "drop on process.p\\\nid 1\n",
+		    "syntax error, unexpected STRING" },
+		/* \ before a blank escapes the blank, it is no continuation */
+		{ "drop on process.pid \\ \n\t1 process.uid 0\n",
+		    "bad number:  : invalid at line 1 column 23" },
 		/* a bad value is reported at its own line, not at the next */
 		{ "drop on process.pid nope\ndrop on any\n",
 		    "bad number: nope: invalid at line 1 column 25" },
@@ -5630,6 +5647,45 @@ t_rule_values(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(rule->conds[0].values[1].wild.pre, "except"));
 	assert(rule->conds[1].code == QUARK_RF_EXE);
 	assert(!strcmp(rule->conds[1].values[0].wild.pre, "any"));
+	quark_ruleset_clear(&ruleset);
+
+	/*
+	 * A lone \ continues the rule and the next word is still a field
+	 * name, a word split by a continuation is a plain value
+	 */
+	ruleset_from_string(&ruleset,
+	    "drop on process.pid 1 \\\n\tpod.name pod\\\n.name\n");
+	assert(ruleset.n_rules == 1);
+	rule = &ruleset.rules[0];
+	assert(rule->n_conds == 2);
+	assert(rule->conds[0].code == QUARK_RF_PID);
+	assert(rule->conds[0].values[0].pid == 1);
+	assert(rule->conds[1].code == QUARK_RF_POD_NAME);
+	assert(!strcmp(rule->conds[1].values[0].wild.pre, "pod.name"));
+	quark_ruleset_clear(&ruleset);
+
+	/* A word that ends at a continuation is still a field name */
+	ruleset_from_string(&ruleset,
+	    "drop on process.pid\\\n\t1 pod.name\\\n a\n");
+	assert(ruleset.n_rules == 1);
+	rule = &ruleset.rules[0];
+	assert(rule->n_conds == 2);
+	assert(rule->conds[0].code == QUARK_RF_PID);
+	assert(rule->conds[0].values[0].pid == 1);
+	assert(rule->conds[1].code == QUARK_RF_POD_NAME);
+	assert(!strcmp(rule->conds[1].values[0].wild.pre, "a"));
+	quark_ruleset_clear(&ruleset);
+
+	/* A continuation after every word */
+	ruleset_from_string(&ruleset,
+	    "drop on process.pid \\\n1 \\\nprocess.uid \\\n1000\n");
+	assert(ruleset.n_rules == 1);
+	rule = &ruleset.rules[0];
+	assert(rule->n_conds == 2);
+	assert(rule->conds[0].code == QUARK_RF_PID);
+	assert(rule->conds[0].values[0].pid == 1);
+	assert(rule->conds[1].code == QUARK_RF_UID);
+	assert(rule->conds[1].values[0].pid == 1000);	/* uid is in pid */
 	quark_ruleset_clear(&ruleset);
 
 	/* The list API */
