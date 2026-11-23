@@ -37,6 +37,7 @@ void	quark_error(struct quark_parser_ctx *, const char *fmt, ...);
 int	quark_lex(YYSTYPE *, struct quark_parser_ctx *);
 static int	push_value(struct quark_parser_ctx *, const char *);
 static int	add_values(struct quark_parser_ctx *, u64);
+static int	is_text_field(u64);
 
 #define ABORT(_fmt, ...) do {			\
 	yyerror(ctx, _fmt, ##__VA_ARGS__);	\
@@ -143,7 +144,7 @@ matchbody:	matchlist
 matchlist:	match
 		| matchlist match {
 			$$.rf.code = $2.rf.code;
-		} | matchlist word {
+		} | matchlist stray {
 			if ($1.rf.code == QUARK_RF_FILE_EXEC_CHANGE)
 				ABORT("unexpected value %s, file.exec_change "
 				    "takes no value", $2.str);
@@ -178,6 +179,20 @@ match:		FILE_EXEC_CHANGE {
 		} | valuefield fieldname {
 			ABORT("missing value before %s, quote it to use it "
 			    "as a value", $2.str);
+		} | valuefield ANY {
+			/*
+			 * "every value" is * for a text field and no field for
+			 * a number, but there is no "any poison tag": without
+			 * the field, untagged processes match too.
+			 */
+			if (is_text_field($1.rf.code))
+				ABORT("any matches every event only after on, "
+				    "use * to match every value, or quote it");
+			if ($1.rf.code == QUARK_RF_POISON)
+				ABORT("any matches every event only after on, "
+				    "poison takes one tag number");
+			ABORT("any matches every event only after on, leave "
+			    "the field out to match every value");
 		} ;
 
 valuefield:	PROCESS_PID {
@@ -215,10 +230,18 @@ valuelist:	listvalue
 		| valuelist optnl listvalue
 		;
 
+/*
+ * A field name or any in a list is a value that needs quotes, or the
+ * next rule after a list without its }.
+ */
 listvalue:	value
 		| fieldname {
-			ABORT("%s is a field name, quote it to use it as a "
-			    "value", $1.str);
+			ABORT("%s is a field name, close the list with } "
+			    "before it, or quote it to use it as a value",
+			    $1.str);
+		} | ANY {
+			ABORT("any is not a value, close the list with } "
+			    "before it, or quote it");
 		} ;
 
 value:		word {
@@ -231,16 +254,21 @@ value:		word {
  * so a word of the language in a value position is just a value. The
  * lexer sets str for keywords too. A field name, poison included, is not
  * a value unless quoted, else a forgotten value reads the next field name
- * as the value, as in "pod.name file.exec_change". None of these words
- * starts a field, so a word after a match is a stray value.
+ * as the value, as in "pod.name file.exec_change". any is not a value
+ * unless quoted either, since process.exe any reads as every program but
+ * would match only the one named any.
  */
 word:		STRING
 		| PASS
 		| DROP
 		| ON
-		| ANY
 		| TAG
 		| EXCEPT
+		;
+
+/* None of these starts a field, so after a match it is a stray value */
+stray:		word
+		| ANY
 		;
 
 fieldname:	POISON
@@ -394,6 +422,21 @@ done:
 	return (r);
 }
 
+/* If the field takes text, where * matches every value */
+static int
+is_text_field(u64 code)
+{
+	switch (code) {
+	case QUARK_RF_EXE:		/* FALLTHROUGH */
+	case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
+	case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
+	case QUARK_RF_CONTAINER_IMAGE:
+		return (1);
+	default:
+		return (0);
+	}
+}
+
 /* Arena allocator so we can free intermediate allocations */
 static char *
 ctx_strdup(struct quark_parser_ctx *ctx, char *s)
@@ -411,6 +454,14 @@ ctx_strdup(struct quark_parser_ctx *ctx, char *s)
 	return (ctx->allocs[ctx->n_allocs - 1]);
 }
 
+/*
+ * Each keyword is a %token in exactly one group of the grammar: word, a
+ * plain value in a value position; fieldname, which starts a field and is
+ * a value only when quoted; or ANY, which is a value only when quoted too.
+ * A keyword in no group is reserved again in value positions, and a field
+ * name in word brings back the silent forgotten value. The keyword cases
+ * of t_rule_parser() cover every keyword, add new ones there too.
+ */
 static struct keyword {
 	const char	*word;
 	int		 token;
@@ -561,7 +612,8 @@ repeat:
 		*p++ = c;
 		if (p == ebuf)
 			ABORT("too long line");
-		if (split)
+		/* An escaped character, like quotes, makes a word a value */
+		if (split || escape)
 			nonkw = 1;
 		escape = 0;
 	}

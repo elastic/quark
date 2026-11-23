@@ -5350,9 +5350,10 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		/* words of the language are plain values in a value position */
 		"drop on pod.name tag\n",
 		"drop on pod.name except\n",
-		"drop on process.exe any\n",
+		"drop on process.exe \"any\"\n",
+		"drop on pod.name *\n",
 		"drop on file.path on\n",
-		"drop on pod.name { pass drop on any tag except }\n",
+		"drop on pod.name { pass drop on tag except \"any\" }\n",
 		/* a field name is a value only when quoted */
 		"drop on container.image \"process.exe\"\n",
 		"drop on pod.name \"process.pid\" process.pid 1\n",
@@ -5484,6 +5485,40 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		{ "tag log {\n\ton pod.name a any\n}\n",
 		    "unexpected value any" },
 		{ "drop on pod.name a poison\n", "missing value" },
+		/* any after on is every event, after a field it is an error */
+		{ "tag alert {\n\ton process.exe any\n}\n",
+		    "any matches every event only after on, use * to match "
+		    "every value, or quote it at line 2 column 20" },
+		{ "pass on pod.name any # every pod\ndrop on any\n",
+		    "use * to match every value" },
+		{ "pass on container.image any\ndrop on any\n",
+		    "use * to match every value" },
+		{ "drop on process.uid any\n",
+		    "leave the field out to match every value" },
+		{ "drop on event.scope any\n",
+		    "leave the field out to match every value" },
+		{ "drop on poison any\n",
+		    "any matches every event only after on, poison takes one "
+		    "tag number" },
+		/* an escaped character makes a word a value, not a keyword */
+		{ "drop on \\any\n", "syntax error, unexpected STRING" },
+		{ "drop on process\\.exe /bin/sh\n",
+		    "syntax error, unexpected STRING" },
+		{ "drop on process.exe { /bin/sh any }\n",
+		    "any is not a value, close the list with } before it" },
+		{ "drop on pod.name a any\n", "unexpected value any" },
+		{ "drop on file.exec_change any\n",
+		    "unexpected value any, file.exec_change takes no value" },
+		/* a list without its } is reported at the next rule */
+		{ "drop on pod.name {\n\ta\n\tb\ndrop on process.exe /bin/sh\n",
+		    "process.exe is a field name, close the list with } "
+		    "before it, or quote it to use it as a value at line 4" },
+		{ "drop on pod.name {\n\ta\n\tb\ndrop on any\n",
+		    "any is not a value, close the list with } before it, "
+		    "or quote it at line 4" },
+		{ "tag alert {\n\ton pod.name { a b\n\ton any\n}\n}\n",
+		    "any is not a value, close the list with } before it, "
+		    "or quote it at line 3" },
 		{ "drop on pod.name poison\n", "missing value before poison" },
 		{ "drop on pod.name poison 1\n",
 		    "missing value before poison" },
@@ -5518,6 +5553,31 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		    "file.path is a field name" },
 		{ NULL, NULL }
 	};
+	/* v: plain value, f: field name, a: any */
+	struct {
+		const char	*word;
+		int		 kind;
+	} keyword_cases[] = {
+		{ "pass", 'v' },
+		{ "drop", 'v' },
+		{ "on", 'v' },
+		{ "tag", 'v' },
+		{ "except", 'v' },
+		{ "any", 'a' },
+		{ "poison", 'f' },
+		{ "process.pid", 'f' },
+		{ "process.ppid", 'f' },
+		{ "process.uid", 'f' },
+		{ "process.gid", 'f' },
+		{ "process.sid", 'f' },
+		{ "process.exe", 'f' },
+		{ "file.path", 'f' },
+		{ "file.exec_change", 'f' },
+		{ "event.scope", 'f' },
+		{ "pod.name", 'f' },
+		{ "container.image", 'f' },
+		{ NULL, 0 }
+	};
 
 	for (s = good_cases, i = 1; *s != NULL; s++, i++) {
 		parser_error[0] = 0;
@@ -5548,6 +5608,70 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 			    error_cases[j].rules, error_cases[j].error,
 			    parser_error);
 		quark_ruleset_clear(&ruleset);
+	}
+
+	/*
+	 * Every keyword of parse.y as a value: alone, in a list and
+	 * quoted. A plain value word loads, a field name and any fail,
+	 * quoted or escaped every keyword is a value. Keep in sync with
+	 * keywords[].
+	 */
+	for (j = 0; keyword_cases[j].word != NULL; j++) {
+		const char	*w = keyword_cases[j].word;
+		char		 rules[4][128];
+		const char	*want[4];
+		int		 k;
+
+		snprintf(rules[0], sizeof(rules[0]), "drop on pod.name %s\n", w);
+		snprintf(rules[1], sizeof(rules[1]),
+		    "drop on pod.name { %s }\n", w);
+		snprintf(rules[2], sizeof(rules[2]),
+		    "drop on pod.name \"%s\"\n", w);
+		snprintf(rules[3], sizeof(rules[3]),
+		    "drop on pod.name \\%s\n", w);
+		switch (keyword_cases[j].kind) {
+		case 'v':
+			want[0] = want[1] = NULL;
+			break;
+		case 'f':
+			want[0] = "missing value before";
+			want[1] = "is a field name";
+			break;
+		case 'a':
+			want[0] = "any matches every event only after on";
+			want[1] = "any is not a value";
+			break;
+		default:
+			errx(1, "bad keyword case %s", w);
+		}
+		want[2] = want[3] = NULL;
+		for (k = 0; k < 4; k++) {
+			struct quark_rule_cond *cond;
+
+			parser_error[0] = 0;
+			quark_ruleset_init(&ruleset);
+			if (ruleset_from_string1(&ruleset, rules[k],
+			    parser_error, sizeof(parser_error)) == -1) {
+				if (want[k] == NULL)
+					errx(1, "keyword %s: %s: %s", w,
+					    rules[k], parser_error);
+				if (strstr(parser_error, want[k]) == NULL)
+					errx(1, "keyword %s: %s: want %s, "
+					    "got %s", w, rules[k], want[k],
+					    parser_error);
+				quark_ruleset_clear(&ruleset);
+				continue;
+			}
+			if (want[k] != NULL)
+				errx(1, "keyword %s should have failed: %s",
+				    w, rules[k]);
+			cond = &ruleset.rules[0].conds[0];
+			if (cond->code != QUARK_RF_POD_NAME ||
+			    strcmp(cond->values[0].wild.pre, w) != 0)
+				errx(1, "keyword %s: %s: bad value", w,
+				    rules[k]);
+			quark_ruleset_clear(&ruleset);
+		}
 	}
 
 	return (0);
@@ -5637,7 +5761,7 @@ t_rule_values(const struct test *t, struct quark_queue_attr *qa)
 
 	/* A word of the language is a plain value in a value position */
 	ruleset_from_string(&ruleset,
-	    "drop on pod.name { tag except } process.exe any\n");
+	    "drop on pod.name { tag except } process.exe \"any\"\n");
 	assert(ruleset.n_rules == 1);
 	rule = &ruleset.rules[0];
 	assert(rule->n_conds == 2);
@@ -5647,6 +5771,20 @@ t_rule_values(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(rule->conds[0].values[1].wild.pre, "except"));
 	assert(rule->conds[1].code == QUARK_RF_EXE);
 	assert(!strcmp(rule->conds[1].values[0].wild.pre, "any"));
+	quark_ruleset_clear(&ruleset);
+
+	/* An escaped character makes a keyword a plain value */
+	ruleset_from_string(&ruleset,
+	    "drop on pod.name { \\any process\\.exe } process.exe \\poison\n");
+	assert(ruleset.n_rules == 1);
+	rule = &ruleset.rules[0];
+	assert(rule->n_conds == 2);
+	assert(rule->conds[0].code == QUARK_RF_POD_NAME);
+	assert(rule->conds[0].n_values == 2);
+	assert(!strcmp(rule->conds[0].values[0].wild.pre, "any"));
+	assert(!strcmp(rule->conds[0].values[1].wild.pre, "process.exe"));
+	assert(rule->conds[1].code == QUARK_RF_EXE);
+	assert(!strcmp(rule->conds[1].values[0].wild.pre, "poison"));
 	quark_ruleset_clear(&ruleset);
 
 	/*

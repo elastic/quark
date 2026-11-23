@@ -176,11 +176,21 @@ or a
 .Sq }
 must be quoted, as in
 .Ql \(dq/opt/my app/*\(dq .
+A
+.Sq \e
+makes the next character part of the value, as in
+.Ql \e\(dq
+for a quote or
+.Ql \e\e
+for a backslash, inside quotes too.
+A word with a quote or an escaped character in it is always a value, so
+.Ql \eany
+is the same as
+.Ql \(dqany\(dq .
 A value spelled like
 .Cm pass ,
 .Cm drop ,
 .Cm on ,
-.Cm any ,
 .Cm tag
 or
 .Cm except
@@ -191,9 +201,33 @@ A value spelled like a field name, including
 must be quoted, as in
 .Ql drop on pod.name \(dqprocess.exe\(dq ,
 since unquoted it is read as the next field and the rule fails to load.
+So must
+.Ql \(dqany\(dq :
+unquoted after a field,
+.Cm any
+is an error, it means every event only after
+.Cm on .
+A
+.Sq *
+matches every value of a text field, see below.
+A program that writes rules should quote every value, so that a new word
+of the language never changes the meaning of its rules.
+.Pp
 A
 .Sq \e
 at the end of a line continues the rule on the next line.
+The next line is joined to the end of the line, so a blank before the
+.Sq \e
+or at the start of the next line is needed between two words.
+The
+.Sq \e
+must be the last character of the line, a
+.Sq \e
+before a blank makes the blank part of a value:
+.Bd -literal -offset indent
+drop on process.uid 0 \e
+	process.exe /usr/bin/*
+.Ed
 .Pp
 The actions are:
 .Bl -tag -width "poison N"
