@@ -1614,6 +1614,13 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			goto fail;
 		}
 	}
+	/* Only the DNS hooks use it, 12KiB per possible CPU */
+	if (!(qq->flags & QQ_DNS)) {
+		if (bpf_map__set_autocreate(p->maps.dns_ctx_map, 0) != 0) {
+			qwarn("bpf_map__set_autocreate dns_ctx_map");
+			goto fail;
+		}
+	}
 
 	/*
 	 * Older kernels account BPF maps against RLIMIT_MEMLOCK. libbpf
