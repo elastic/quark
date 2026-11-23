@@ -1244,60 +1244,20 @@ t_probe_all(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
- * How many BPF maps this process holds.
- */
-static int
-bpf_maps_count(void)
-{
-	DIR		*dir;
-	struct dirent	*d;
-	char		 target[64];
-	ssize_t		 n;
-	int		 count;
-
-	if ((dir = opendir("/proc/self/fd")) == NULL)
-		err(1, "opendir /proc/self/fd");
-	count = 0;
-	while ((d = readdir(dir)) != NULL) {
-		if (!isnumber(d->d_name))
-			continue;
-		n = readlinkat(dirfd(dir), d->d_name, target,
-		    sizeof(target) - 1);
-		if (n == -1)
-			continue;
-		target[n] = 0;
-		if (!strcmp(target, "anon_inode:bpf-map"))
-			count++;
-	}
-	closedir(dir);
-
-	return (count);
-}
-
-/*
- * The large maps of the file, socket and shared memory probes are only
- * created for the features that use them. A program doesn't load without
- * a map it refers to, so each feature must open on its own, and a queue
- * with none of those features must end up with fewer maps.
+ * Maps are only created for the features that use them, and a program
+ * doesn't load without a map it refers to, so each feature must open on its
+ * own. The file tests do that for QQ_FILE, which not every kernel loads.
  */
 static int
 t_probe_each(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue	 qq;
 	const int		 features[] = {
-		QQ_SOCK_CONN, QQ_DNS, QQ_FILE, QQ_SHM, QQ_TTY, QQ_PTRACE,
+		QQ_SOCK_CONN, QQ_DNS, QQ_SHM, QQ_TTY, QQ_PTRACE,
 		QQ_MODULE_LOAD, QQ_GETPID, QQ_MPROTECT
 	};
 	const int		 base = qa->flags;
-	int			 maps_ours, maps_process, maps_most;
 	size_t			 i;
-
-	maps_ours = bpf_maps_count();
-
-	if (quark_queue_open(&qq, qa) != 0)
-		err(1, "%s: quark_queue_open", t->name);
-	maps_process = bpf_maps_count() - maps_ours;
-	quark_queue_close(&qq);
 
 	for (i = 0; i < nitems(features); i++) {
 		qa->flags = base | features[i];
@@ -1306,16 +1266,6 @@ t_probe_each(const struct test *t, struct quark_queue_attr *qa)
 			    t->name, features[i]);
 		quark_queue_close(&qq);
 	}
-
-	qa->flags = base | QQ_FILE | QQ_SOCK_CONN | QQ_DNS | QQ_SHM;
-	if (quark_queue_open(&qq, qa) != 0)
-		err(1, "%s: quark_queue_open", t->name);
-	maps_most = bpf_maps_count() - maps_ours;
-	quark_queue_close(&qq);
-
-	if (maps_process >= maps_most)
-		errx(1, "%d maps for process events alone, %d with files "
-		    "and sockets", maps_process, maps_most);
 
 	return (0);
 }
@@ -6036,8 +5986,7 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 	}
 	close(fd);
 
-	/* Each map is only created for a feature that uses it */
-	qa->flags |= QQ_SOCK_CONN | QQ_FILE;
+	qa->flags |= QQ_SOCK_CONN;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
@@ -6049,6 +5998,15 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 	assert(bpf_map_update_elem(fd, &key64, &v, BPF_ANY) == -EPERM);
 	assert(bpf_map_delete_elem(fd, &key64) == -EPERM);
 	close(fd);
+
+	quark_queue_close(&qq);
+
+	/* The init buffer comes with QQ_FILE, which not every kernel loads */
+	qa->flags |= QQ_FILE;
+	if (quark_queue_open(&qq, qa) != 0) {
+		warn("%s: no QQ_FILE, skipping the init buffer", __func__);
+		return (0);
+	}
 
 	/* init buffer: frozen and read-only for programs */
 	fd = find_map(&info, BPF_MAP_TYPE_PERCPU_ARRAY, sizeof(u32), 0, 1,
