@@ -5494,31 +5494,55 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		{ "pass on container.image any\ndrop on any\n",
 		    "use * to match every value" },
 		{ "drop on process.uid any\n",
-		    "leave the field out to match every value" },
+		    "leave the field out to match every value, or write on any "
+		    "if it is the only field" },
 		{ "drop on event.scope any\n",
 		    "leave the field out to match every value" },
 		{ "drop on poison any\n",
-		    "any matches every event only after on, poison takes one "
-		    "tag number" },
+		    "any matches every event only after on, poison takes a "
+		    "tag number or a { } list of them" },
 		/* an escaped character makes a word a value, not a keyword */
 		{ "drop on \\any\n", "syntax error, unexpected STRING" },
 		{ "drop on process\\.exe /bin/sh\n",
 		    "syntax error, unexpected STRING" },
 		{ "drop on process.exe { /bin/sh any }\n",
-		    "any is not a value, close the list with } before it" },
+		    "any is not a value, check that the list ends with } before "
+		    "the next rule, or quote it" },
+		/* quoting is no hint for a number field */
+		{ "drop on process.pid { 1 any }\n",
+		    "any is not a value, check that the list ends with } before "
+		    "the next rule at" },
+		{ "drop on process.pid { 1 process.exe }\n",
+		    "process.exe is a field name, check that the list ends with "
+		    "} before the next rule at" },
+		{ "drop on process.pid process.exe /bin/sh\n",
+		    "missing value before process.exe at" },
+		/* except on takes no any and needs a condition */
+		{ "tag log {\n\texcept on process.uid any\n\ton any\n}\n",
+		    "any matches every event only after on, except on needs a "
+		    "condition, leave the field out only if another one "
+		    "remains at" },
+		{ "tag log {\n\texcept on pod.name a process.uid any\n"
+		    "\ton any\n}\n", "except on needs a condition" },
+		{ "tag log {\n\ton process.uid any\n}\n",
+		    "or write on any if it is the only field at" },
 		{ "drop on pod.name a any\n", "unexpected value any" },
 		{ "drop on file.exec_change any\n",
 		    "unexpected value any, file.exec_change takes no value" },
 		/* a list without its } is reported at the next rule */
 		{ "drop on pod.name {\n\ta\n\tb\ndrop on process.exe /bin/sh\n",
-		    "process.exe is a field name, close the list with } "
-		    "before it, or quote it to use it as a value at line 4" },
+		    "process.exe is a field name, check that the list ends with "
+		    "} before the next rule, or quote it to use it as a value "
+		    "at line 4" },
 		{ "drop on pod.name {\n\ta\n\tb\ndrop on any\n",
-		    "any is not a value, close the list with } before it, "
-		    "or quote it at line 4" },
+		    "any is not a value, check that the list ends with } before "
+		    "the next rule, or quote it at line 4" },
 		{ "tag alert {\n\ton pod.name { a b\n\ton any\n}\n}\n",
-		    "any is not a value, close the list with } before it, "
-		    "or quote it at line 3" },
+		    "any is not a value, check that the list ends with } before "
+		    "the next rule, or quote it at line 3" },
+		{ "drop on process.pid {\n\t1\ndrop on any\n",
+		    "any is not a value, check that the list ends with } before "
+		    "the next rule at line 3" },
 		{ "drop on pod.name poison\n", "missing value before poison" },
 		{ "drop on pod.name poison 1\n",
 		    "missing value before poison" },
@@ -5527,6 +5551,8 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		/* a keyword split by a continuation is a plain value */
 		{ "drop on process.p\\\nid 1\n",
 		    "syntax error, unexpected STRING" },
+		/* a quoted value can't be continued */
+		{ "drop on pod.name \"abc\\\ndef\"\n", "unterminated quotes" },
 		/* \ before a blank escapes the blank, it is no continuation */
 		{ "drop on process.pid \\ \n\t1 process.uid 0\n",
 		    "bad number:  : invalid at line 1 column 23" },

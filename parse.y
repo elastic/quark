@@ -162,24 +162,27 @@ match:		FILE_EXEC_CHANGE {
 			if (quark_rule_match_field(ctx->cur_rule, rf) != 0)
 				ABORT("can't add match field");
 			$$.rf.code = QUARK_RF_FILE_EXEC_CHANGE;
-		} | valuefield values {
+		} | field values {
 			if (ctx->cur_rule == NULL)
 				ABORT("parser bug, cur_rule is NULL");
 			if (add_values(ctx, $1.rf.code) == -1)
 				YYABORT;
 			$$.rf.code = $1.rf.code;
-		} | valuefield '\n' {
+		} | field '\n' {
 			/*
 			 * Too many tokens can start a value for bison to list
 			 * them, so say what is wrong in the common mistakes.
+			 * Quoting only helps a field that takes text.
 			 */
 			ABORT("missing value");
-		} | valuefield '}' {
+		} | field '}' {
 			ABORT("missing value");
-		} | valuefield fieldname {
-			ABORT("missing value before %s, quote it to use it "
-			    "as a value", $2.str);
-		} | valuefield ANY {
+		} | field fieldname {
+			if (is_text_field($1.rf.code))
+				ABORT("missing value before %s, quote it to "
+				    "use it as a value", $2.str);
+			ABORT("missing value before %s", $2.str);
+		} | field ANY {
 			/*
 			 * "every value" is * for a text field and no field for
 			 * a number, but there is no "any poison tag": without
@@ -190,9 +193,28 @@ match:		FILE_EXEC_CHANGE {
 				    "use * to match every value, or quote it");
 			if ($1.rf.code == QUARK_RF_POISON)
 				ABORT("any matches every event only after on, "
-				    "poison takes one tag number");
+				    "poison takes a tag number or a { } list "
+				    "of them");
+			/*
+			 * except on takes no any and needs a condition.
+			 * Removing the line is no repair: an except line
+			 * that matches every event suppresses the tag of
+			 * the block, without it every event gets the tag.
+			 */
+			if (ctx->cur_rule != NULL &&
+			    ctx->cur_rule->action == QUARK_RA_EXCEPT)
+				ABORT("any matches every event only after on, "
+				    "except on needs a condition, leave the "
+				    "field out only if another one remains");
 			ABORT("any matches every event only after on, leave "
-			    "the field out to match every value");
+			    "the field out to match every value, or write "
+			    "on any if it is the only field");
+		} ;
+
+/* The field whose values follow, for the errors in a list */
+field:		valuefield {
+			ctx->field_code = $1.rf.code;
+			$$ = $1;
 		} ;
 
 valuefield:	PROCESS_PID {
@@ -232,16 +254,26 @@ valuelist:	listvalue
 
 /*
  * A field name or any in a list is a value that needs quotes, or the
- * next rule after a list without its }.
+ * next rule after a list without its }. The } goes before the next rule,
+ * not just before this word: for "drop on } process.exe" that would put
+ * drop and on into the list and process.exe into the rule above. Quoting
+ * only helps a field that takes text.
  */
 listvalue:	value
 		| fieldname {
-			ABORT("%s is a field name, close the list with } "
-			    "before it, or quote it to use it as a value",
-			    $1.str);
+			if (is_text_field(ctx->field_code))
+				ABORT("%s is a field name, check that the list "
+				    "ends with } before the next rule, or "
+				    "quote it to use it as a value", $1.str);
+			ABORT("%s is a field name, check that the list ends "
+			    "with } before the next rule", $1.str);
 		} | ANY {
-			ABORT("any is not a value, close the list with } "
-			    "before it, or quote it");
+			if (is_text_field(ctx->field_code))
+				ABORT("any is not a value, check that the list "
+				    "ends with } before the next rule, or "
+				    "quote it");
+			ABORT("any is not a value, check that the list ends "
+			    "with } before the next rule");
 		} ;
 
 value:		word {

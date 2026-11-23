@@ -219,6 +219,10 @@ at the end of a line continues the rule on the next line.
 The next line is joined to the end of the line, so a blank before the
 .Sq \e
 or at the start of the next line is needed between two words.
+A word split by a
+.Sq \e
+is always a value, so a word of the language must stay on one line, and
+a quoted value can't be continued.
 The
 .Sq \e
 must be the last character of the line, a
