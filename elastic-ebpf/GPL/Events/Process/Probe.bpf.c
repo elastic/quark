@@ -826,8 +826,7 @@ static int emit_memfd_create_event(const char *name)
     // Only memfd_create names its files "memfd:*", other setups that find
     // state left by a failed memfd_create, like SysV shm (SYSV<key>) or
     // MAP_HUGETLB (anon_hugepage), are not reported.
-    if (size < (long)sizeof(MEMFD_STRING) ||
-        !is_equal_prefix(field->data, MEMFD_STRING, sizeof(MEMFD_STRING) - 1))
+    if (!is_equal_prefix(field->data, MEMFD_STRING, sizeof(MEMFD_STRING) - 1))
         goto out;
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
