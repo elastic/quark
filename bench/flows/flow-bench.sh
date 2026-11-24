@@ -273,8 +273,8 @@ Flows sent is how many the loader got out per period: where that is short of
 the first column the sender could not get them through the device fast
 enough, and the CPU figures are those of the flows sent. Quark CPU is the time
 of a process which takes every event and discards it, not that of the sender,
-and all of it: what such a process costs with ${flow_name} off is in there,
-the same in every row.
+and all of it: what such a process costs with ${flow_name} off is not
+measured here.
 Kernel CPU is the sender's share: the time the programs quark attaches to the
 packet path (${packet_progs[*]}) took for the flows it sent, as timed by
 the kernel, first in percent of one core as for quark, then for each flow. It
