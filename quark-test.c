@@ -20,6 +20,7 @@
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 
 #include <linux/fs.h>
@@ -3397,6 +3398,161 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert(qev->events == QUARK_EV_EXIT);
 
 	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static void
+kprobe_state_tcp_connect(struct quark_queue *qq, int af, const char *op)
+{
+	struct sockaddr_storage		 ss;
+	const struct quark_event	*qev;
+	socklen_t			 sslen;
+	int				 lfd, cfd;
+
+	lfd = local_listen(af, 0, SOCK_STREAM, 0);
+	sslen = sizeof(ss);
+	if (getsockname(lfd, (struct sockaddr *)&ss, &sslen) == -1)
+		err(1, "getsockname");
+	if ((cfd = socket(af, SOCK_STREAM, 0)) == -1)
+		err(1, "socket");
+	if (connect(cfd, (struct sockaddr *)&ss, sslen) == -1)
+		err(1, "connect");
+	if (bpf_queue_test_state_present(qq, op))
+		errx(1, "%s state leaked after connect", op);
+	close(cfd);
+	close(lfd);
+
+	qev = drain_for_pid(qq, getpid());
+	assert(qev->events == QUARK_EV_SOCK_CONN_ESTABLISHED);
+	assert(qev->socket != NULL);
+	assert(qev->socket->conn_origin == SOCK_CONN_CONNECT);
+	assert(qev->socket->remote.af == af);
+	assert(qev->socket->remote.port == sockaddr_port(&ss));
+
+	qev = drain_for_pid(qq, getpid());
+	assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+	assert(qev->socket != NULL);
+	assert(qev->socket->remote.af == af);
+	assert(qev->socket->remote.port == sockaddr_port(&ss));
+}
+
+/*
+ * In the EBPF backend's kprobe fallback, the file-modification and TCP connect
+ * kprobes stash per-thread state in the shared state map for their kretprobes.
+ * Each kretprobe must delete its entry after reading it so exited or idle
+ * threads do not fill the shared LRU map and evict live state of other probes.
+ */
+static int
+t_bpf_kprobe_state(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct stat		 st;
+	struct iovec		 iov;
+	char			 path[] = "/tmp/quark-test.XXXXXX";
+	char			 buf[] = "x";
+	char			*saved_kprobe;
+	const char		*env;
+	int			 fd, pfd[2], r;
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	if (pipe(pfd) == -1)
+		err(1, "pipe");
+
+	env = getenv("QUARK_BPF_KPROBE");
+	if (env != NULL) {
+		if ((saved_kprobe = strdup(env)) == NULL)
+			err(1, "strdup");
+	} else {
+		saved_kprobe = NULL;
+	}
+	if (setenv("QUARK_BPF_KPROBE", "1", 1) == -1)
+		err(1, "setenv");
+
+	qa->flags |= QQ_FILE | QQ_SOCK_CONN;
+	r = quark_queue_open(&qq, qa);
+
+	if (saved_kprobe != NULL) {
+		if (setenv("QUARK_BPF_KPROBE", saved_kprobe, 1) == -1)
+			err(1, "setenv");
+		free(saved_kprobe);
+	} else {
+		if (unsetenv("QUARK_BPF_KPROBE") == -1)
+			err(1, "unsetenv");
+	}
+	if (r != 0)
+		err(1, "quark_queue_open");
+
+	/* CHMOD */
+	if (chmod(path, 0640) == -1)
+		err(1, "chmod");
+	if (bpf_queue_test_state_present(&qq, "EBPF_EVENTS_STATE_CHMOD"))
+		errx(1, "EBPF_EVENTS_STATE_CHMOD state leaked");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path);
+
+	/* WRITE: regular file and non-regular file (early return) */
+	if (write(fd, buf, 1) != 1)
+		err(1, "write");
+	if (bpf_queue_test_state_present(&qq, "EBPF_EVENTS_STATE_WRITE"))
+		errx(1, "EBPF_EVENTS_STATE_WRITE state leaked");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (write(pfd[1], buf, 1) != 1)
+		err(1, "write pipe");
+	if (bpf_queue_test_state_present(&qq, "EBPF_EVENTS_STATE_WRITE"))
+		errx(1, "EBPF_EVENTS_STATE_WRITE state leaked on pipe");
+
+	/* WRITEV: regular file and non-regular file (early return) */
+	iov.iov_base = buf;
+	iov.iov_len = 1;
+	if (writev(fd, &iov, 1) != 1)
+		err(1, "writev");
+	if (bpf_queue_test_state_present(&qq, "EBPF_EVENTS_STATE_WRITEV"))
+		errx(1, "EBPF_EVENTS_STATE_WRITEV state leaked");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (writev(pfd[1], &iov, 1) != 1)
+		err(1, "writev pipe");
+	if (bpf_queue_test_state_present(&qq, "EBPF_EVENTS_STATE_WRITEV"))
+		errx(1, "EBPF_EVENTS_STATE_WRITEV state leaked on pipe");
+
+	/* TRUNCATE */
+	if (ftruncate(fd, 0) == -1)
+		err(1, "ftruncate");
+	if (bpf_queue_test_state_present(&qq, "EBPF_EVENTS_STATE_TRUNCATE"))
+		errx(1, "EBPF_EVENTS_STATE_TRUNCATE state leaked");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+
+	/* CHOWN */
+	if (chown(path, getuid(), getgid()) == -1)
+		err(1, "chown");
+	if (bpf_queue_test_state_present(&qq, "EBPF_EVENTS_STATE_CHOWN"))
+		errx(1, "EBPF_EVENTS_STATE_CHOWN state leaked");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_OWNER, path);
+
+	/* TCP_V4_CONNECT */
+	kprobe_state_tcp_connect(&qq, AF_INET,
+	    "EBPF_EVENTS_STATE_TCP_V4_CONNECT");
+
+	/* TCP_V6_CONNECT */
+	if (have_ipv6())
+		kprobe_state_tcp_connect(&qq, AF_INET6,
+		    "EBPF_EVENTS_STATE_TCP_V6_CONNECT");
+	else
+		warnx("%s: no IPv6 support, skipping TCP_V6_CONNECT", __func__);
+
+	quark_queue_close(&qq);
+	close(pfd[0]);
+	close(pfd[1]);
+	close(fd);
+	if (unlink(path) == -1)
+		err(1, "unlink");
 
 	return (0);
 }
@@ -7145,6 +7301,7 @@ struct test all_tests[] = {
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
+	T_EBPF(t_bpf_kprobe_state),
 	T_EBPF(t_dns),
 	T_EBPF(t_dns6),
 	T_EBPF(t_dns6_exthdrs),

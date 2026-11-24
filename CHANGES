@@ -301,3 +301,8 @@ Changes from 0.11 to 0.12
     process.start, process.end and file.{ctime,mtime,atime} with a
     millisecond part between 1 and 99 used to parse as up to 891ms
     later than they were.
+  o In the EBPF backend's kprobe fallback, the chmod, chown, truncate,
+    write, writev and TCP connect kretprobes now delete their per-thread
+    state from the shared state map after reading it. Previously those
+    entries stayed until evicted by the LRU, which could evict live state
+    of other probes such as unlink and rename and drop their events.
