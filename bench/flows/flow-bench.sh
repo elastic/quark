@@ -228,7 +228,8 @@ function cmd_flows {
   for ((r = 1; r <= REPS; r++)); do
     for n in "${flow_points[@]}"; do
       # The loader runs until with-quark has measured its window
-      out="$(__with_quark -p "${flow_flags[@]}" -w "${warmup}" -d "${window}" -- \
+      out="$(__with_quark --prog-stats "${flow_flags[@]}" \
+               --warmup "${warmup}" --duration "${window}" -- \
                flows -P "${period}" "${n}")"
       percent="$(__val sent_percent <<< "${out}")"
       cpu[$n]+=" $(__val cpu_percent <<< "${out}")"
@@ -281,7 +282,7 @@ function __ns_per_packet {
   local senders="$1" out pps packets prog runs ns=0 ran=0
   shift
 
-  out="$(__with_quark -p "$@" -- pps -j "${senders}" -t "${seconds}")"
+  out="$(__with_quark --prog-stats "$@" -- pps -j "${senders}" -t "${seconds}")"
   pps="$(__val pps <<< "${out}")"
   if (( pps == 0 )); then
     echo "$0: the senders got no packet out" >&2

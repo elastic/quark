@@ -14,9 +14,10 @@
  * backend (-b, -k, -n), the features (-B, -e, -F, -G, -g, -H, -L, -N, -S,
  * -T, -t, -U, -u), their settings (-A, -f, -I, -l) and -v.
  *
- * Three more are our own: we measure from the end of the warm-up (-w) for as
- * long as told (-d), or until the command exits, and -p has the BPF programs
- * timed, see below.
+ * Every letter belongs to quark-mon, so to avoid collisions our own options
+ * are long ones: we measure from the end of the warm-up (--warmup) for as
+ * long as told (--duration), or until the command exits, and --prog-stats
+ * has the BPF programs timed, see below.
  *
  * Results are "name value" lines on stdout, after whatever the command wrote:
  *
@@ -28,9 +29,9 @@
  *
  * That covers the userspace CPU cost. Most of what quark costs in the kernel
  * is usually not ours to pay: quark BPF programs run in the context of whoever
- * opens the file or processes the packet on egress/ingress. With -p we have
- * the kernel time all the BPF programs while we measure (BPF_ENABLE_STATS,
- * Linux 5.8) and add two lines for each program that ran:
+ * opens the file or processes the packet on egress/ingress. With --prog-stats
+ * we have the kernel time all the BPF programs while we measure
+ * (BPF_ENABLE_STATS, Linux 5.8) and add two lines for each program that ran:
  *
  *   prog_runs.NAME  how many times it ran
  *   prog_ns.NAME    how long a run took on average
@@ -42,11 +43,11 @@
  * (to avoid delaying exit even further, as aggregation periods can be
  * long).
  *
- * If -d is given and the command is still running when that time is up, we
- * stop measuring right there, do not wait the extra second, and end the
- * command with SIGTERM. Only the command itself is signaled, not what it may
- * have started. If it is still there five seconds later it gets a SIGKILL:
- * the results are printed all the same, but we exit with an error.
+ * If --duration is given and the command is still running when that time is
+ * up, we stop measuring right there, do not wait the extra second, and end
+ * the command with SIGTERM. Only the command itself is signaled, not what it
+ * may have started. If it is still there five seconds later it gets a
+ * SIGKILL: the results are printed all the same, but we exit with an error.
  *
  * Otherwise our exit status is that of the command, and success if it died
  * of our SIGTERM. Should we die first, the command gets a SIGTERM as well.
@@ -61,6 +62,7 @@
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
+#include <getopt.h>
 #include <limits.h>
 #include <sched.h>
 #include <signal.h>
@@ -77,6 +79,23 @@
 #define KILL_GRACE_NS	(5 * NS_PER_S)	/* from SIGTERM to SIGKILL */
 #define MAX_PROGS	256
 #define PROG_NAME_LEN	128
+
+/*
+ * Our own options. They start past any character, so that none can collide
+ * with a quark-mon option, present or future.
+ */
+enum {
+	OPT_DURATION = UCHAR_MAX + 1,
+	OPT_PROG_STATS,
+	OPT_WARMUP
+};
+
+static const struct option	longopts[] = {
+	{ "duration",	required_argument,	NULL,	OPT_DURATION },
+	{ "prog-stats",	no_argument,		NULL,	OPT_PROG_STATS },
+	{ "warmup",	required_argument,	NULL,	OPT_WARMUP },
+	{ NULL,		0,			NULL,	0 }
+};
 
 /*
  * A BPF program of the queue. The counters are what the kernel had when we
@@ -213,9 +232,9 @@ number(const char *what, const char *s, int min)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-BbeFGgHkLNnpSTtUuv] [-A agg_ms] "
-	    "[-d duration_ms]\n"
-	    "\t    [-f max_flows] [-I idle_ms] [-l maxlength] [-w warmup_ms]\n"
+	fprintf(stderr, "usage: %s [-BbeFGgHkLNnSTtUuv] [-A agg_ms] "
+	    "[-f max_flows] [-I idle_ms]\n"
+	    "\t    [-l maxlength] [--duration ms] [--prog-stats] [--warmup ms]\n"
 	    "\t    command [argument ...]\n",
 	    program_invocation_short_name);
 
@@ -232,7 +251,7 @@ main(int argc, char *argv[])
 	cpu_set_t			 set;
 	pid_t				 child, parent;
 	struct prog			*p;
-	int				 ch, measuring, killed, pflag, status;
+	int				 ch, measuring, killed, prog_stats, status;
 	u64				 cpu_ns, wall_ns, t0, warmup, duration;
 	u64				 events, deadline;
 
@@ -240,9 +259,10 @@ main(int argc, char *argv[])
 	qa.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	warmup = 0;
 	duration = UINT64_MAX;
-	pflag = 0;
+	prog_stats = 0;
 
-	while ((ch = getopt(argc, argv, "+A:Bbd:eFf:GgHI:kLl:NnpSTtUuvw:")) != -1) {
+	while ((ch = getopt_long(argc, argv, "+A:BbeFf:GgHI:kLl:NnSTtUuv",
+	    longopts, NULL)) != -1) {
 		switch (ch) {
 		/*
 		 * These are quark-mon's
@@ -317,13 +337,13 @@ main(int argc, char *argv[])
 		/*
 		 * These are ours
 		 */
-		case 'p':
-			pflag = 1;
-			break;
-		case 'd':
+		case OPT_DURATION:
 			duration = number("duration", optarg, 1) * NS_PER_MS;
 			break;
-		case 'w':
+		case OPT_PROG_STATS:
+			prog_stats = 1;
+			break;
+		case OPT_WARMUP:
 			warmup = number("warm-up", optarg, 0) * NS_PER_MS;
 			break;
 		default:
@@ -355,7 +375,7 @@ main(int argc, char *argv[])
 	if (quark_queue_open(qq, &qa) != 0)
 		err(1, "quark_queue_open");
 	/* The kernel times programs for as long as we hold on to this */
-	if (pflag) {
+	if (prog_stats) {
 		if (bpf_enable_stats(BPF_STATS_RUN_TIME) < 0)
 			err(1, "bpf_enable_stats");
 		progs_find();
