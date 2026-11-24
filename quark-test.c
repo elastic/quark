@@ -2698,6 +2698,270 @@ t_shmget(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+#ifndef NO_MEMFD
+#define HUGETLB_SHMFLG	(IPC_CREAT | SHM_HUGETLB | SHM_NORESERVE | 0600)
+
+/*
+ * The kernel registers hugetlbfs only when it supports at least one huge
+ * page size, failing to read the list is an error, not a lack of support.
+ */
+static int
+hugetlbfs_registered(void)
+{
+	FILE	*f;
+	char	*line, *fs;
+	size_t	 linecap;
+	int	 found;
+
+	if ((f = fopen("/proc/filesystems", "r")) == NULL)
+		err(1, "fopen /proc/filesystems");
+	line = NULL;
+	linecap = 0;
+	found = 0;
+	while (getline(&line, &linecap, f) != -1) {
+		line[strcspn(line, "\n")] = 0;
+		fs = strrchr(line, '\t');
+		fs = fs != NULL ? fs + 1 : line;
+		if (!strcmp(fs, "hugetlbfs")) {
+			found = 1;
+			break;
+		}
+	}
+	if (ferror(f))
+		err(1, "getline /proc/filesystems");
+	free(line);
+	fclose(f);
+
+	return (found);
+}
+
+/*
+ * Create and remove a SHM_HUGETLB segment, SHM_NORESERVE lets it succeed
+ * without reserved huge pages. Only success proves hugetlb_file_setup() was
+ * called, shmget(2) can fail before it (shmall, LSM) while SHMGET is still
+ * emitted at syscall entry.
+ */
+static int
+shmget_hugetlb(void)
+{
+	int	id;
+
+	if ((id = shmget(IPC_PRIVATE, 2 * 1024 * 1024, HUGETLB_SHMFLG)) == -1)
+		return (-1);
+	if (shmctl(id, IPC_RMID, NULL) == -1)
+		err(1, "shmctl");
+
+	return (0);
+}
+
+/* The next event of this process must be the SHMGET of shmget_hugetlb() */
+static void
+expect_shmget_hugetlb(struct quark_queue *qq)
+{
+	const struct quark_event	*qev;
+	const struct quark_shm		*qshm;
+
+	if (shmget_hugetlb() == -1)
+		err(1, "shmget(SHM_HUGETLB)");
+	qev = drain_for_pid(qq, getpid());
+	assert(qev->events & QUARK_EV_SHM);
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_SHMGET);
+	assert(qshm->shmget_key == IPC_PRIVATE);
+	assert(qshm->shmget_shmflg == HUGETLB_SHMFLG);
+}
+
+/* The default huge page size, the one MAP_HUGETLB uses without MAP_HUGE_* */
+static size_t
+default_hugepagesize(void)
+{
+	FILE	*f;
+	char	*line;
+	size_t	 linecap, kb;
+
+	if ((f = fopen("/proc/meminfo", "r")) == NULL)
+		err(1, "fopen /proc/meminfo");
+	line = NULL;
+	linecap = 0;
+	kb = 0;
+	while (getline(&line, &linecap, f) != -1) {
+		if (sscanf(line, "Hugepagesize: %zu kB", &kb) == 1)
+			break;
+	}
+	if (ferror(f))
+		err(1, "getline /proc/meminfo");
+	free(line);
+	fclose(f);
+	if (kb == 0)
+		errx(1, "no Hugepagesize in /proc/meminfo");
+
+	return (kb * 1024);
+}
+
+/*
+ * Map and unmap anonymous huge pages. The kernel sets up their file with
+ * hugetlb_file_setup(), named anon_hugepage, before it maps anything, and
+ * MAP_NORESERVE lets it succeed without reserved huge pages. Unlike
+ * shmget_hugetlb() it needs no privileges. It yields no event.
+ */
+static void
+mmap_hugetlb(void)
+{
+	void	*p;
+	size_t	 len;
+
+	len = default_hugepagesize();
+	p = mmap(NULL, len, PROT_READ | PROT_WRITE,
+	    MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_NORESERVE, -1, 0);
+	if (p == MAP_FAILED)
+		err(1, "mmap(MAP_HUGETLB)");
+	if (munmap(p, len) == -1)
+		err(1, "munmap");
+}
+
+/*
+ * The next event of this process must be the MEMFD_CREATE of a memfd_create(2)
+ * of name without flags. With stale state a bogus MEMFD_CREATE for the
+ * preceding file setup, like SYSV00000000 of shmget(2) or anon_hugepage of
+ * mmap(2), comes first.
+ */
+static void
+expect_memfd_sentinel(struct quark_queue *qq, const char *name)
+{
+	const struct quark_event	*qev;
+	const struct quark_shm		*qshm;
+	char				 path[64];
+	int				 fd;
+
+	if ((fd = memfd_create(name, 0)) == -1)
+		err(1, "memfd_create");
+	close(fd);
+	snprintf(path, sizeof(path), "memfd:%s", name);
+	qev = drain_for_pid(qq, getpid());
+	assert(qev->events & QUARK_EV_SHM);
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
+	assert(!strcmp(qshm->path, path));
+	assert(qshm->memfd_create_flags == 0);
+}
+#endif	/* NO_MEMFD */
+
+/*
+ * memfd_create(2) events are emitted from {shmem,hugetlb}_file_setup() using
+ * state saved at syscall entry. A SHM_HUGETLB shmget(2) and a MAP_HUGETLB
+ * mmap(2) also go through hugetlb_file_setup(), so after a memfd_create(2),
+ * successful or not, they must not yield a bogus MEMFD_CREATE. A MFD_HUGETLB
+ * memfd_create(2) must still yield its MEMFD_CREATE.
+ */
+static int
+t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
+{
+#ifdef NO_MEMFD
+	warnx("%s: compiled with NO_MEMFD, skipping", __func__);
+	return (0);
+#else
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_shm		*qshm;
+	int				 fd, hugetlb;
+
+	/* Without hugetlb QQ_SHM may not load, its probes hook hugetlb */
+	if (!hugetlbfs_registered()) {
+		warnx("%s: no hugetlb support, skipping", __func__);
+		return (0);
+	}
+
+	/*
+	 * The shmget(2) check needs SHM_HUGETLB segments: valgrind drops the
+	 * flag, and creating one needs CAP_IPC_LOCK or vm.hugetlb_shm_group
+	 * membership, a runner that can load BPF may have neither. Without
+	 * them, still run the other checks. Any other failure is an error, see
+	 * shmget_hugetlb().
+	 */
+	hugetlb = 1;
+	if (in_valgrind) {
+		warnx("%s: valgrind ignores SHM_HUGETLB, skipping shmget checks",
+		    __func__);
+		hugetlb = 0;
+	} else if (shmget_hugetlb() == -1) {
+		if (errno != EPERM)
+			err(1, "shmget(SHM_HUGETLB)");
+		warnx("%s: can't create SHM_HUGETLB segments, skipping shmget "
+		    "checks", __func__);
+		hugetlb = 0;
+	}
+
+	qa->flags |= QQ_SHM;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* A memfd_create(2) that sets up its file */
+	if ((fd = memfd_create("t_memfd_stale_state-first", MFD_CLOEXEC)) == -1) {
+		if (errno == ENOTSUP || errno == ENOSYS) {
+			warn("old kernel, skipping memfd_create");
+			quark_queue_close(&qq);
+
+			return (0);
+		}
+		err(1, "memfd_create");
+	}
+	close(fd);
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events & QUARK_EV_SHM);
+	qshm = qev->shm;
+	assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
+	assert(qshm->memfd_create_flags == MFD_CLOEXEC);
+	assert(!strcmp(qshm->path, "memfd:t_memfd_stale_state-first"));
+
+	/*
+	 * A MFD_HUGETLB memfd_create(2) sets up its file with
+	 * hugetlb_file_setup(), this is the only check that the hugetlb hook
+	 * emits, the ones below only check that it doesn't. It needs neither
+	 * privileges nor reserved huge pages, the kernel checks those for
+	 * SHM_HUGETLB only and passes VM_NORESERVE with size 0.
+	 */
+	if ((fd = memfd_create("t_memfd_stale_state-huge",
+	    MFD_HUGETLB | MFD_CLOEXEC)) == -1) {
+		if (errno != ENODEV && errno != ENOENT)
+			err(1, "memfd_create(MFD_HUGETLB)");
+		warn("%s: no default huge page size, skipping MFD_HUGETLB",
+		    __func__);
+	} else {
+		close(fd);
+		qev = drain_for_pid(&qq, getpid());
+		assert(qev->events & QUARK_EV_SHM);
+		qshm = qev->shm;
+		assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
+		assert(qshm->memfd_create_flags == (MFD_HUGETLB | MFD_CLOEXEC));
+		assert(!strcmp(qshm->path, "memfd:t_memfd_stale_state-huge"));
+	}
+
+	if (hugetlb) {
+		expect_shmget_hugetlb(&qq);
+		expect_memfd_sentinel(&qq, "t_memfd_stale_state-sentinel1");
+	}
+
+	/*
+	 * A memfd_create(2) that fails before setting up a file, no flag uses
+	 * the top bit without MFD_HUGETLB, so it yields no event but its state
+	 * is saved at syscall entry all the same and outlives the syscall. The
+	 * next file setup of this thread finds it, only the name tells it
+	 * apart from a memfd. Without privileges, as the mmap(2) needs none.
+	 */
+	if ((fd = memfd_create("t_memfd_stale_state-einval", 1U << 31)) != -1)
+		errx(1, "memfd_create with an invalid flag succeeded");
+	if (errno != EINVAL)
+		err(1, "memfd_create with an invalid flag");
+	mmap_hugetlb();
+	expect_memfd_sentinel(&qq, "t_memfd_stale_state-sentinel2");
+
+	quark_queue_close(&qq);
+
+	return (0);
+#endif	/* NO_MEMFD */
+}
+
 /* Ordinary dedup tests do not need an ext4 image or inode-number reuse. */
 static void
 test_fs_tmpfs(struct test_fs *fs)
@@ -7175,6 +7439,7 @@ struct test all_tests[] = {
 	T_EBPF(t_detached_mount_exec),
 	T_EBPF(t_chroot_escape_exec),
 	T_EBPF(t_shmget),
+	T_EBPF(t_memfd_stale_state),
 	T_EBPF(t_mprotect),
 	T_EBPF(t_mprotect_retry),
 	T_EBPF(t_mprotect_file_identity),
