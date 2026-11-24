@@ -455,7 +455,7 @@ task_sample_to_raw_task(struct kprobe_queue *kqq, const struct sample_attr *satt
 	    sizeof(task->comm));
 	if (sattr->kind == EXIT_THREAD_SAMPLE) {
 		task->exit_code = (w->exit_code >> 8) & 0xff;
-		task->exit_time_event = sample->sample_id.time;
+		/* exit_time_event is set with raw->time */
 		task->cwd = NULL;
 		/* No cwd on exit */
 		return;
@@ -649,6 +649,9 @@ perf_event_to_raw(struct quark_queue *qq, struct perf_event *ev)
 		raw->tid = sid->tid;
 		raw->time = sid->time + kqq->boot_offset;
 		raw->cpu = sid->cpu;
+		/* Same clock as event times, like the ebpf backend */
+		if (raw->type == RAW_EXIT_THREAD)
+			raw->task.exit_time_event = raw->time;
 	}
 
 	return (raw);

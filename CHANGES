@@ -308,3 +308,7 @@ Changes from 0.11 to 0.12
     0.6 these were reported with a non memfd path, such as anon_hugepage
     or SYSV<key>, and the flags of the earlier memfd_create(2). Only files
     named memfd:* are reported now.
+  o The KPROBE backend now reports exit_time_event in CLOCK_BOOTTIME
+    like event times and the EBPF backend. It was CLOCK_MONOTONIC, so
+    after a suspend ECS process.end read as earlier by the total time
+    asleep since boot.

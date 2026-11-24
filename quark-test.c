@@ -1669,12 +1669,12 @@ suspend_vm(int secs)
 }
 
 /*
- * Process start times are CLOCK_BOOTTIME like event times. The kernel also
- * keeps a CLOCK_MONOTONIC start (task_struct.start_time) and only a host
- * that has slept tells the two apart: a monotonic start of a process
- * forked after a suspend is behind by the total time asleep. In the test
- * initramfs, sleep a few seconds first if the VM never did. Elsewhere only
- * test if the host already slept.
+ * Process start and exit times are CLOCK_BOOTTIME like event times. The kernel
+ * also keeps a CLOCK_MONOTONIC start (task_struct.start_time), perf stamps
+ * with CLOCK_MONOTONIC too, and only a host that has slept tells the two
+ * apart: a monotonic time after a suspend is behind by the total time asleep.
+ * In the test initramfs, sleep a few seconds first if the VM never did.
+ * Elsewhere only test if the host already slept.
  */
 #define SUSPEND_SECS	3
 #define SUSPEND_MIN_NS	(1000ULL * 1000ULL * 1000ULL)
@@ -1714,6 +1714,10 @@ t_suspend(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp->flags & QUARK_F_PROC);
 	/* A monotonic start would be behind before by asleep */
 	assert_start_time(&qq, qa, qp, before, after);
+	/* So would a monotonic exit time */
+	assert(qp->flags & QUARK_F_EXIT);
+	assert(qp->exit_time_event >= before);
+	assert(qp->exit_time_event <= after);
 
 	quark_queue_close(&qq);
 
