@@ -3669,10 +3669,10 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 static void
 assert_no_bpf_state(struct quark_queue *qq, const char *step)
 {
-	unsigned int	op;
+	const char	*op;
 
-	if (bpf_queue_test_state_present(qq, &op))
-		errx(1, "state map entry leaked after %s (op=%u)", step, op);
+	if ((op = bpf_queue_test_state_present(qq)) != NULL)
+		errx(1, "state map entry leaked after %s (%s)", step, op);
 }
 
 static void
