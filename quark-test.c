@@ -4609,7 +4609,7 @@ t_fork_pid_reuse_cgroup(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue	 qq;
 	struct quark_container	*container;
-	struct quark_process	*qp;
+	struct quark_process	*qp, *old;
 
 	quark_queue_init_bare(&qq);
 	/* Keep exited processes cached, as within the gc grace window. */
@@ -4626,10 +4626,18 @@ t_fork_pid_reuse_cgroup(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qp->cgroup, "/system.slice/docker-abc.scope"));
 	assert(qp->container == container);
 
-	/* The owner exits, a new process reuses the PID without a cgroup. */
+	/*
+	 * The owner exits, a new process reuses the PID without a cgroup. It
+	 * gets a new entry, the old one keeps its data but not the link.
+	 */
 	assert(test_raw_task_event(&qq, RAW_EXIT_THREAD, 100, NULL) == qp);
 	assert(qp->flags & QUARK_F_EXIT);
-	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, NULL) == qp);
+	old = qp;
+	qp = test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, NULL);
+	assert(qp != old);
+	assert(quark_process_lookup(&qq, 100) == qp);
+	assert(!strcmp(old->cgroup, "/system.slice/docker-abc.scope"));
+	assert(old->container == NULL);
 	assert(qp->cgroup == NULL);
 	assert(qp->container == NULL);
 	assert(TAILQ_EMPTY(&container->processes));
@@ -4637,13 +4645,15 @@ t_fork_pid_reuse_cgroup(const struct test *t, struct quark_queue_attr *qa)
 	assert(!qp->container_id_parsed);
 
 	/* A reuse by a process in the same container links it again. */
-	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100,
-	    "/system.slice/docker-abc.scope") == qp);
+	assert(test_raw_task_event(&qq, RAW_EXIT_THREAD, 100, NULL) == qp);
+	qp = test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100,
+	    "/system.slice/docker-abc.scope");
 	assert(qp->container == container);
 
 	/* A reuse by a host process does not keep the link. */
-	assert(test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100,
-	    "/user.slice/user-1000.slice") == qp);
+	assert(test_raw_task_event(&qq, RAW_EXIT_THREAD, 100, NULL) == qp);
+	qp = test_raw_task_event(&qq, RAW_WAKE_UP_NEW_TASK, 100,
+	    "/user.slice/user-1000.slice");
 	assert(!strcmp(qp->cgroup, "/user.slice/user-1000.slice"));
 	assert(qp->container == NULL);
 	assert(TAILQ_EMPTY(&container->processes));

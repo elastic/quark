@@ -724,6 +724,13 @@ struct quark_process {
 	struct quark_container *container;
 	char	*env;
 	size_t	 env_len;
+	/* Relations, NULL if unknown, kept while pointed to */
+	struct quark_process	*parent;
+	struct quark_process	*group_leader;
+	struct quark_process	*session_leader;
+	struct quark_process	*entry_leader;
+	u32	 refcnt;	/* relations pointing to us */
+	u32	 retained;	/* grace time over, freed when refcnt reaches 0 */
 };
 
 struct quark_process_iter {
