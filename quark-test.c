@@ -1244,6 +1244,33 @@ t_probe_all(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * Maps are only created for the features that use them, and a program
+ * doesn't load without a map it refers to, so each feature must open on its
+ * own. The file tests do that for QQ_FILE, which not every kernel loads.
+ */
+static int
+t_probe_each(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	const int		 features[] = {
+		QQ_SOCK_CONN, QQ_DNS, QQ_SHM, QQ_TTY, QQ_PTRACE,
+		QQ_MODULE_LOAD, QQ_GETPID, QQ_MPROTECT
+	};
+	const int		 base = qa->flags;
+	size_t			 i;
+
+	for (i = 0; i < nitems(features); i++) {
+		qa->flags = base | features[i];
+		if (quark_queue_open(&qq, qa) != 0)
+			err(1, "%s: quark_queue_open with flag 0x%x",
+			    t->name, features[i]);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
+/*
  * CI boxes are small, so quark_queue_open() only allocates the 4 MiB
  * floor. Create a 64 MiB ringbuf so RLIMIT_MEMLOCK / memcg accounting
  * is exercised on every kernel we test.
@@ -6236,6 +6263,15 @@ t_map_freeze(const struct test *t, struct quark_queue_attr *qa)
 	assert(bpf_map_delete_elem(fd, &key64) == -EPERM);
 	close(fd);
 
+	quark_queue_close(&qq);
+
+	/* The init buffer comes with QQ_FILE, which not every kernel loads */
+	qa->flags |= QQ_FILE;
+	if (quark_queue_open(&qq, qa) != 0) {
+		warn("%s: no QQ_FILE, skipping the init buffer", __func__);
+		return (0);
+	}
+
 	/* init buffer: frozen and read-only for programs */
 	fd = find_map(&info, BPF_MAP_TYPE_PERCPU_ARRAY, sizeof(u32), 0, 1,
 	    "elastic_ebpf_events_init_buffer");
@@ -7374,6 +7410,7 @@ struct test all_tests[] = {
 	T(t_test_fs),
 	T_EBPF(t_probe),
 	T_EBPF(t_probe_all),
+	T_EBPF(t_probe_each),
 	T_EBPF(t_ringbuf_max),
 	T_KPROBE(t_probe),
 	T_NOVA(t_probe),
