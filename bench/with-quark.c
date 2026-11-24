@@ -12,7 +12,7 @@
  *
  * What the queue does is chosen as in quark-mon(8), by the same letters: the
  * backend (-b, -k, -n), the features (-B, -e, -F, -G, -g, -H, -L, -N, -S,
- * -T, -t, -U, -u), their settings (-A, -I, -l) and -v.
+ * -T, -t, -U, -u), their settings (-A, -f, -I, -l) and -v.
  *
  * Three more are our own: we measure from the end of the warm-up (-w) for as
  * long as told (-d), or until the command exits, and -p has the BPF programs
@@ -214,8 +214,9 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s [-BbeFGgHkLNnpSTtUuv] [-A agg_ms] "
-	    "[-d duration_ms] [-I idle_ms]\n"
-	    "\t    [-l maxlength] [-w warmup_ms] command [argument ...]\n",
+	    "[-d duration_ms]\n"
+	    "\t    [-f max_flows] [-I idle_ms] [-l maxlength] [-w warmup_ms]\n"
+	    "\t    command [argument ...]\n",
 	    program_invocation_short_name);
 
 	exit(1);
@@ -241,7 +242,7 @@ main(int argc, char *argv[])
 	duration = UINT64_MAX;
 	pflag = 0;
 
-	while ((ch = getopt(argc, argv, "+A:Bbd:eFGgHI:kLl:NnpSTtUuvw:")) != -1) {
+	while ((ch = getopt(argc, argv, "+A:Bbd:eFf:GgHI:kLl:NnpSTtUuvw:")) != -1) {
 		switch (ch) {
 		/*
 		 * These are quark-mon's
@@ -262,6 +263,10 @@ main(int argc, char *argv[])
 			break;
 		case 'F':
 			qa.flags |= QQ_FILE;
+			break;
+		case 'f':
+			qa.udp_max_flows = number("udp max flows", optarg, 1);
+			qa.flags |= QQ_UDP_FLOW;
 			break;
 		case 'G':
 			qa.flags |= QQ_GETPID;

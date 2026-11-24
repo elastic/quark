@@ -86,6 +86,10 @@ export LC_ALL=C
 # Aggregation period we ask of quark, in ms
 period=3000
 
+# Flows the kernel holds per period. We set it instead of taking quark's
+# default so that the maximum number of flows we use in the benchmark fits.
+max_flows=65536
+
 # flows: periods we measure
 measured=4
 
@@ -110,7 +114,7 @@ function proto_udp {
   base_name='QQ_DNS'
   base_flags=(-N)
   flow_name='QQ_UDP_FLOW'
-  flow_flags=(-N -U -A "${period}")
+  flow_flags=(-N -U -A "${period}" -f "${max_flows}")
   flow_points=(1024 32768 61440)
   packet_progs=(skb_egress skb_ingress)
 }
@@ -261,7 +265,8 @@ of a process which takes every event and discards it, not that of the sender.
 Kernel CPU is the sender's share: the time quark's programs took for each flow
 it sent, as timed by the kernel. It is all of the programs' time, not what
 ${flow_name} adds to it, and other traffic on the machine counts too.
-Lost is events dropped by the ring plus packets refused by a full flow map.
+Lost is events dropped by the ring plus packets refused by a full flow map,
+which we size for ${max_flows} flows per period whatever quark's default is.
 EOF
 }
 
