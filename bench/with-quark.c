@@ -22,8 +22,9 @@
  * Results are "name value" lines on stdout, after whatever the command wrote:
  *
  *   wall_ms      how long we measured for, without the wait after the
- *                command exits (see below). It can be 100 ms more than told,
- *                as we only look at the clock when quark wakes us up
+ *                command exits (see below). It is a little more than told:
+ *                we only look at the clock between waits for quark, and a
+ *                wait times out at 100 ms
  *   cpu_ms       our cpu time, user and system
  *   cpu_percent  the same in percent of one core, over the time measured
  *   events       events we were given
@@ -45,8 +46,9 @@
  * hands us during that second count in events, and the CPU time we spend
  * taking them in cpu_ms. wall_ms and the timing of the programs do not
  * include that second. Both stop when we see that the command is gone, not
- * at the instant it exits: normally at once, as its SIGCHLD wakes us, and at
- * worst 100 ms later. Flows are the exception, and those of the last
+ * at the instant it exits: normally at once, as its SIGCHLD wakes us, but a
+ * signal that arrives just after we looked is only seen after our next wait,
+ * which times out at 100 ms. Flows are the exception, and those of the last
  * aggregation period are never drained (to avoid delaying exit even further,
  * as aggregation periods can be long).
  *
