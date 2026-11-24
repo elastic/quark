@@ -227,12 +227,20 @@ pass on any</pre>
     next line. The next line is joined to the end of the line, so a blank before
     the &#x2018;\&#x2019; or at the start of the next line is needed between two
     words. A word split by a &#x2018;\&#x2019; is always a value, so a word of
-    the language must stay on one line, and a quoted value can't be continued.
-    The &#x2018;\&#x2019; must be the last character of the line, a
-    &#x2018;\&#x2019; before a blank makes the blank part of a value:</p>
+    the language must stay on one line. The &#x2018;\&#x2019; must be the last
+    character of the line, a &#x2018;\&#x2019; before a blank makes the blank
+    part of a value:</p>
 <div class="Bd Pp Bd-indent Li">
 <pre>drop on process.uid 0 \
 	process.exe /usr/bin/*</pre>
+</div>
+<p class="Pp">A &#x2018;\&#x2019; inside quotes is no continuation. To continue
+    a quoted value, close the quotes before the &#x2018;\&#x2019; and open them
+    again at the very start of the next line, since a blank there would end the
+    value:</p>
+<div class="Bd Pp Bd-indent Li">
+<pre>drop on process.exe &quot;/opt/my &quot;\
+&quot;app/*&quot;</pre>
 </div>
 <p class="Pp">The actions are:</p>
 <dl class="Bl-tag">
@@ -476,7 +484,7 @@ drop on any</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 23, 2026</td>
+    <td class="foot-date">November 24, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

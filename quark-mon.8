@@ -221,8 +221,7 @@ The next line is joined to the end of the line, so a blank before the
 or at the start of the next line is needed between two words.
 A word split by a
 .Sq \e
-is always a value, so a word of the language must stay on one line, and
-a quoted value can't be continued.
+is always a value, so a word of the language must stay on one line.
 The
 .Sq \e
 must be the last character of the line, a
@@ -231,6 +230,18 @@ before a blank makes the blank part of a value:
 .Bd -literal -offset indent
 drop on process.uid 0 \e
 	process.exe /usr/bin/*
+.Ed
+.Pp
+A
+.Sq \e
+inside quotes is no continuation.
+To continue a quoted value, close the quotes before the
+.Sq \e
+and open them again at the very start of the next line, since a blank
+there would end the value:
+.Bd -literal -offset indent
+drop on process.exe "/opt/my "\e
+"app/*"
 .Ed
 .Pp
 The actions are:

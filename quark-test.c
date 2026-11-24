@@ -5369,6 +5369,7 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		"tag log {\n\ton pod.name a \\\n\t    process.exe /bin/sh\n}\n",
 		"\tdrop on process.pid \\\n\t\t1 process.uid 0\n",
 		"drop on process.pid \\\n1 \\\nprocess.uid \\\n0\n",
+		"drop on process.exe \"/opt/my \"\\\n\"app/*\"\n",
 		"drop on process.pid\\\n\t\t  1 process.uid 0\n",
 		"drop\\\n on\\\n any\n",
 		"tag log {\n\ton pod.name\\\n\t    a process.exe /bin/sh\n}\n",
@@ -5506,15 +5507,20 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		{ "drop on process\\.exe /bin/sh\n",
 		    "syntax error, unexpected STRING" },
 		{ "drop on process.exe { /bin/sh any }\n",
-		    "any is not a value, check that the list ends with } before "
-		    "the next rule, or quote it" },
+		    "any is not a value, end the list with } before the next "
+		    "rule, or quote it" },
 		/* quoting is no hint for a number field */
 		{ "drop on process.pid { 1 any }\n",
-		    "any is not a value, check that the list ends with } before "
-		    "the next rule at" },
-		{ "drop on process.pid { 1 process.exe }\n",
-		    "process.exe is a field name, check that the list ends with "
-		    "} before the next rule at" },
+		    "any is not a value, end the list with } before the next "
+		    "rule at" },
+		/* a } after the next field of the same rule */
+		{ "drop on process.pid { 1 process.uid 0 }\n",
+		    "process.uid is a field name, end the list with } before it "
+		    "or before the next rule at" },
+		{ "drop on pod.name { a process.exe /bin/sh }\n",
+		    "process.exe is a field name, end the list with } before it "
+		    "or before the next rule, or quote it to use it as a "
+		    "value" },
 		{ "drop on process.pid process.exe /bin/sh\n",
 		    "missing value before process.exe at" },
 		/* except on takes no any and needs a condition */
@@ -5531,18 +5537,21 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		    "unexpected value any, file.exec_change takes no value" },
 		/* a list without its } is reported at the next rule */
 		{ "drop on pod.name {\n\ta\n\tb\ndrop on process.exe /bin/sh\n",
-		    "process.exe is a field name, check that the list ends with "
-		    "} before the next rule, or quote it to use it as a value "
+		    "process.exe is a field name, end the list with } before it "
+		    "or before the next rule, or quote it to use it as a value "
 		    "at line 4" },
 		{ "drop on pod.name {\n\ta\n\tb\ndrop on any\n",
-		    "any is not a value, check that the list ends with } before "
-		    "the next rule, or quote it at line 4" },
+		    "any is not a value, end the list with } before the next "
+		    "rule, or quote it at line 4" },
 		{ "tag alert {\n\ton pod.name { a b\n\ton any\n}\n}\n",
-		    "any is not a value, check that the list ends with } before "
-		    "the next rule, or quote it at line 3" },
+		    "any is not a value, end the list with } before the next "
+		    "rule, or quote it at line 3" },
 		{ "drop on process.pid {\n\t1\ndrop on any\n",
-		    "any is not a value, check that the list ends with } before "
-		    "the next rule at line 3" },
+		    "any is not a value, end the list with } before the next "
+		    "rule at line 3" },
+		{ "drop on process.pid {\n\t1\ndrop on process.uid 0\n",
+		    "process.uid is a field name, end the list with } before it "
+		    "or before the next rule at line 3" },
 		{ "drop on pod.name poison\n", "missing value before poison" },
 		{ "drop on pod.name poison 1\n",
 		    "missing value before poison" },
@@ -5551,7 +5560,7 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		/* a keyword split by a continuation is a plain value */
 		{ "drop on process.p\\\nid 1\n",
 		    "syntax error, unexpected STRING" },
-		/* a quoted value can't be continued */
+		/* a \ inside quotes is no continuation */
 		{ "drop on pod.name \"abc\\\ndef\"\n", "unterminated quotes" },
 		/* \ before a blank escapes the blank, it is no continuation */
 		{ "drop on process.pid \\ \n\t1 process.uid 0\n",
@@ -5838,6 +5847,15 @@ t_rule_values(const struct test *t, struct quark_queue_attr *qa)
 	assert(rule->conds[0].values[0].pid == 1);
 	assert(rule->conds[1].code == QUARK_RF_POD_NAME);
 	assert(!strcmp(rule->conds[1].values[0].wild.pre, "a"));
+	quark_ruleset_clear(&ruleset);
+
+	/* A quoted value continued by closing and opening the quotes */
+	ruleset_from_string(&ruleset,
+	    "drop on pod.name \"my \"\\\n\"pod\"\n");
+	assert(ruleset.n_rules == 1);
+	rule = &ruleset.rules[0];
+	assert(rule->n_conds == 1);
+	assert(!strcmp(rule->conds[0].values[0].wild.pre, "my pod"));
 	quark_ruleset_clear(&ruleset);
 
 	/* A continuation after every word */
