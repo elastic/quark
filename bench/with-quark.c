@@ -21,8 +21,9 @@
  *
  * Results are "name value" lines on stdout, after whatever the command wrote:
  *
- *   wall_ms      how long we measured for. That can be 100 ms more than
- *                told, as we only look at the clock when quark wakes us up
+ *   wall_ms      how long we measured for, without the wait after the
+ *                command exits (see below). It can be 100 ms more than told,
+ *                as we only look at the clock when quark wakes us up
  *   cpu_ms       our cpu time, user and system
  *   cpu_percent  the same in percent of one core, over the time measured
  *   events       events we were given
@@ -40,10 +41,12 @@
  *
  * Quark holds an event for a while before handing it over (hold_time, one
  * second). If the command exits while we measure, we stay that much longer
- * so that a whole command is counted and paid for in full. Flows are the
- * exception, and those of the last aggregation period are never drained
- * (to avoid delaying exit even further, as aggregation periods can be
- * long).
+ * so that a whole command is counted and paid for in full: the events quark
+ * hands us during that second count in events, and the CPU time we spend
+ * taking them in cpu_ms. wall_ms does not include that second, it ends where
+ * the command did, and so does the timing of the programs. Flows are the
+ * exception, and those of the last aggregation period are never drained (to
+ * avoid delaying exit even further, as aggregation periods can be long).
  *
  * If --duration is given and the command is still running when that time is
  * up, we stop measuring right there, do not wait the extra second, and end
