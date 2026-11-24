@@ -257,18 +257,21 @@ valuelist:	listvalue
  * list lacks its }. A field name is then the next field of this rule, as
  * in "{ 1 process.uid 0 }", and the } goes before it, or a field of the
  * next rule, and the } goes before that rule: "drop on } process.exe"
- * would put drop and on into the list. The parser can't tell, so the
- * error names both. any only starts a rule, as in "on any". Quoting only
- * helps a field that takes text.
+ * would put drop and on into the list and merge the two rules. The
+ * parser can't tell, so the error names both, each with its condition.
+ * any only starts a rule, as in "on any". Quoting only helps a field
+ * that takes text.
  */
 listvalue:	value
 		| fieldname {
 			if (is_text_field(ctx->field_code))
-				ABORT("%s is a field name, end the list with } "
-				    "before it or before the next rule, or "
-				    "quote it to use it as a value", $1.str);
+				ABORT("%s is a field name, end the list with "
+				    "} before it if it belongs to this rule, "
+				    "else before the next rule, or quote it to "
+				    "use it as a value", $1.str);
 			ABORT("%s is a field name, end the list with } before "
-			    "it or before the next rule", $1.str);
+			    "it if it belongs to this rule, else before the "
+			    "next rule", $1.str);
 		} | ANY {
 			if (is_text_field(ctx->field_code))
 				ABORT("any is not a value, end the list with } "

@@ -5516,10 +5516,11 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		/* a } after the next field of the same rule */
 		{ "drop on process.pid { 1 process.uid 0 }\n",
 		    "process.uid is a field name, end the list with } before it "
-		    "or before the next rule at" },
+		    "if it belongs to this rule, else before the next rule at" },
 		{ "drop on pod.name { a process.exe /bin/sh }\n",
 		    "process.exe is a field name, end the list with } before it "
-		    "or before the next rule, or quote it to use it as a "
+		    "if it belongs to this rule, else before the next rule, or "
+		    "quote it to use it as a "
 		    "value" },
 		{ "drop on process.pid process.exe /bin/sh\n",
 		    "missing value before process.exe at" },
@@ -5538,7 +5539,8 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		/* a list without its } is reported at the next rule */
 		{ "drop on pod.name {\n\ta\n\tb\ndrop on process.exe /bin/sh\n",
 		    "process.exe is a field name, end the list with } before it "
-		    "or before the next rule, or quote it to use it as a value "
+		    "if it belongs to this rule, else before the next rule, or "
+		    "quote it to use it as a value "
 		    "at line 4" },
 		{ "drop on pod.name {\n\ta\n\tb\ndrop on any\n",
 		    "any is not a value, end the list with } before the next "
@@ -5551,7 +5553,8 @@ t_rule_parser(const struct test *t, struct quark_queue_attr *qa)
 		    "rule at line 3" },
 		{ "drop on process.pid {\n\t1\ndrop on process.uid 0\n",
 		    "process.uid is a field name, end the list with } before it "
-		    "or before the next rule at line 3" },
+		    "if it belongs to this rule, else before the next rule at "
+		    "line 3" },
 		{ "drop on pod.name poison\n", "missing value before poison" },
 		{ "drop on pod.name poison 1\n",
 		    "missing value before poison" },
