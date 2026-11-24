@@ -397,9 +397,10 @@ EOF
          "another machine, which is not measured."
   fi
   if [ "$(__calc "${worst} > 1")" = '1.000' ]; then
-    printf 'Up to %.0f%% of the sends were refused for lack of room in the ' "${worst}"
-    echo "device queue. Those never reach the programs, so the figures stand," \
-         "but the device, not the CPU, limited the senders."
+    printf 'Up to %.0f%% of the sends failed. Those never reach the ' "${worst}"
+    echo "programs, so the figures stand, but something other than the CPU" \
+         "held the senders back: the device queue had no room, or the" \
+         "destination answered with ICMP errors."
   fi
 }
 

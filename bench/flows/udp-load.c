@@ -126,7 +126,9 @@ udp_socket(void)
  * would look like a slow kernel. Failed sends are captured regardless: there
  * was no room in the device queue, or the destination answered an earlier
  * datagram with an ICMP error, as it does when nobody is on the port or its
- * firewall rejects.
+ * firewall rejects. Only a connected socket is told of those answers: from an
+ * unconnected one the same errors mean we have no way to the destination, and
+ * that is fatal.
  */
 static void
 send1(int fd, const struct sockaddr_in *to, struct count *c)
@@ -140,8 +142,10 @@ send1(int fd, const struct sockaddr_in *to, struct count *c)
 		    (const struct sockaddr *)to, sizeof(*to));
 	if (n != -1)
 		c->sent++;
-	else if (errno == EAGAIN || errno == ENOBUFS || errno == ECONNREFUSED ||
-	    errno == EHOSTUNREACH || errno == ENETUNREACH)
+	else if (errno == EAGAIN || errno == ENOBUFS)
+		c->failed++;
+	else if (to == NULL && (errno == ECONNREFUSED ||
+	    errno == EHOSTUNREACH || errno == ENETUNREACH))
 		c->failed++;
 	else
 		err(1, "send");
@@ -196,8 +200,9 @@ flows(int nflows, int period_ms)
  * full receive buffer is the cheapest way to take a datagram which still gets
  * it all the way up to the socket. If the destination is on another machine
  * it may answer with ICMP errors too, when nobody is on the port or its
- * firewall rejects. Those are harmless: the kernel there limits them to about
- * one a second, and each fails one of our sends, which send1() counts.
+ * firewall rejects. Each fails one of our sends, which send1() counts, and
+ * does no other harm. A Linux destination sends about one a second unless
+ * told otherwise. A destination that sends many more shows in refused_percent.
  */
 static void
 sink(void)
