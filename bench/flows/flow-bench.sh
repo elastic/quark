@@ -115,7 +115,7 @@ function proto_udp {
   base_flags=(-N)
   flow_name='QQ_UDP_FLOW'
   flow_flags=(-N -U -A "${period}" -f "${max_flows}")
-  flow_points=(1024 32768 61440)
+  flow_points=(1024 8192 32768 61440)
   packet_progs=(skb_egress skb_ingress)
 }
 
@@ -217,8 +217,8 @@ function __ns_per_flow {
 }
 
 function cmd_flows {
-  local -A cpu sent kern lost
-  local warmup window r n out median spread percent ns spread_ns
+  local -A cpu sent kern kcpu lost
+  local warmup window r n out median spread percent ns spread_ns k spread_k
 
   # Two and a half periods of warm-up, so that the window we measure opens
   # and closes halfway between two drains.
@@ -232,28 +232,33 @@ function cmd_flows {
                --warmup "${warmup}" --duration "${window}" -- \
                flows -P "${period}" "${n}")"
       percent="$(__val sent_percent <<< "${out}")"
+      ns="$(__ns_per_flow "${out}" \
+              "$(__calc "${n} * ${measured} * ${percent} / 100")")"
       cpu[$n]+=" $(__val cpu_percent <<< "${out}")"
       sent[$n]+=" ${percent}"
-      kern[$n]+=" $(__ns_per_flow "${out}" \
-                      "$(__calc "${n} * ${measured} * ${percent} / 100")")"
+      kern[$n]+=" ${ns}"
+      # What that comes to at this many flows, in percent of one core
+      kcpu[$n]+=" $(__calc "${ns} * ${n} * ${percent} / (${period} * 1000000)")"
       lost[$n]=$((${lost[$n]:-0} + $(__val lost <<< "${out}")))
       __progress "flows ${r}/${REPS}, ${n} flows: ${percent}% sent," \
-                 "${cpu[$n]##* }% cpu, ${kern[$n]##* } ns per flow in the kernel," \
-                 "${lost[$n]} lost so far"
+                 "${cpu[$n]##* }% cpu, ${kcpu[$n]##* }% in the kernel" \
+                 "at ${ns} ns per flow, ${lost[$n]} lost so far"
     done
   done
 
   printf '\n### %s: cost by flows per period\n\n' "${flow_name}"
   printf '| flows per period | flows sent | quark CPU, %% of one core |'
-  printf ' kernel CPU, ns per flow | lost |\n'
-  printf '|---:|---:|---:|---:|---:|\n'
+  printf ' kernel CPU, %% of one core | kernel CPU, ns per flow | lost |\n'
+  printf '|---:|---:|---:|---:|---:|---:|\n'
   for n in "${flow_points[@]}"; do
     read -r median spread < <(__median "${cpu[$n]}")
     read -r percent _ < <(__median "${sent[$n]}")
+    read -r k spread_k < <(__median "${kcpu[$n]}")
     read -r ns spread_ns < <(__median "${kern[$n]}")
-    printf '| %d | %.0f | %.2f +/-%d%% | %.0f +/-%d%% | %d |\n' \
+    printf '| %d | %.0f | %.2f +/-%d%% | %.2f +/-%d%% | %.0f +/-%d%% | %d |\n' \
            "${n}" "$(__calc "${n} * ${percent} / 100")" \
-           "${median}" "${spread}" "${ns}" "${spread_ns}" "${lost[$n]}"
+           "${median}" "${spread}" "${k}" "${spread_k}" \
+           "${ns}" "${spread_ns}" "${lost[$n]}"
   done
 
   cat <<EOF
@@ -263,9 +268,10 @@ Flows sent is how many the loader got out per period: where that is short of
 the first column the sender could not get them through the device fast
 enough, and the CPU figures are those of the flows sent. Quark CPU is the time
 of a process which takes every event and discards it, not that of the sender.
-Kernel CPU is the sender's share: the time quark's programs took for each flow
-it sent, as timed by the kernel. It is all of the programs' time, not what
-${flow_name} adds to it, and other traffic on the machine counts too.
+Kernel CPU is the sender's share: the time quark's programs took for the flows
+it sent, as timed by the kernel, first in percent of one core as for quark,
+then for each flow. It is all of the programs' time, not what ${flow_name}
+adds to it, and other traffic on the machine counts too.
 Lost is events dropped by the ring plus packets refused by a full flow map,
 which we size for ${max_flows} flows per period whatever quark's default is.
 EOF
