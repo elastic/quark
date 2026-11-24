@@ -2775,7 +2775,8 @@ expect_memfd_sentinel(struct quark_queue *qq, const char *name)
  * state saved at syscall entry, that state must not outlive the syscall,
  * successful or not. A SHM_HUGETLB shmget(2) also goes through
  * hugetlb_file_setup(), so after a memfd_create(2) it must yield SHMGET only,
- * not a bogus MEMFD_CREATE.
+ * not a bogus MEMFD_CREATE. A MFD_HUGETLB memfd_create(2) must still yield
+ * its MEMFD_CREATE.
  */
 static int
 t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
@@ -2838,6 +2839,31 @@ t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
 	assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
 	assert(qshm->memfd_create_flags == MFD_CLOEXEC);
 	assert(!strcmp(qshm->path, "memfd:t_memfd_stale_state-first"));
+
+	/*
+	 * A MFD_HUGETLB memfd_create(2) sets up its file with
+	 * hugetlb_file_setup(), this is the only check that the hugetlb hook
+	 * emits, the ones below only check that it doesn't. It needs neither
+	 * privileges nor reserved huge pages, the kernel checks those for
+	 * SHM_HUGETLB only and passes VM_NORESERVE with size 0.
+	 */
+	if ((fd = memfd_create("t_memfd_stale_state-huge",
+	    MFD_HUGETLB | MFD_CLOEXEC)) == -1) {
+		if (errno != ENODEV && errno != ENOENT)
+			err(1, "memfd_create(MFD_HUGETLB)");
+		warn("%s: no default huge page size, skipping MFD_HUGETLB",
+		    __func__);
+	} else {
+		close(fd);
+		assert(!bpf_queue_test_memfd_state(&qq));
+		qev = drain_for_pid(&qq, getpid());
+		assert(qev->events & QUARK_EV_SHM);
+		qshm = qev->shm;
+		assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
+		assert(qshm->memfd_create_flags == (MFD_HUGETLB | MFD_CLOEXEC));
+		assert(!strcmp(qshm->path, "memfd:t_memfd_stale_state-huge"));
+	}
+
 	if (hugetlb) {
 		expect_shmget_hugetlb(&qq);
 		expect_memfd_sentinel(&qq, "t_memfd_stale_state-sentinel1");
