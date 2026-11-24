@@ -29,7 +29,9 @@
  *   cpu_percent  the same in percent of one core, over the time measured
  *   events       events we were given
  *   lost         events lost by the ring, plus packets refused by a full
- *                flow map
+ *                flow map, since the queue was opened: unlike the rest it
+ *                counts the warm-up too, and the time the command takes
+ *                to go when we end it
  *
  * That covers the userspace CPU cost. Most of what quark costs in the kernel
  * is usually not ours to pay: quark BPF programs run in the context of whoever

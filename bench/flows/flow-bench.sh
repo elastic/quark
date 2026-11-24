@@ -26,8 +26,9 @@
 #          and have the kernel time our programs, with the feature off and on.
 #
 #   pps is compared against a baseline that already attaches the same
-#   programs, so its figures are the cost of the accounting alone. Results are
-#   markdown on stdout, progress goes to stderr.
+#   programs, so its figures are the cost of the accounting alone. Those of
+#   flows are not: they are all that the process, and the programs, cost.
+#   Results are markdown on stdout, progress goes to stderr.
 #
 # Examples:
 #
@@ -271,7 +272,9 @@ One packet to each flow every ${period} ms period, measured over ${measured} per
 Flows sent is how many the loader got out per period: where that is short of
 the first column the sender could not get them through the device fast
 enough, and the CPU figures are those of the flows sent. Quark CPU is the time
-of a process which takes every event and discards it, not that of the sender.
+of a process which takes every event and discards it, not that of the sender,
+and all of it: what such a process costs with ${flow_name} off is in there,
+the same in every row.
 Kernel CPU is the sender's share: the time the programs quark attaches to the
 packet path (${packet_progs[*]}) took for the flows it sent, as timed by
 the kernel, first in percent of one core as for quark, then for each flow. It
@@ -279,6 +282,8 @@ is all of their time, not what ${flow_name} adds to it, and other traffic on
 the machine counts too.
 Lost is events dropped by the ring plus packets refused by a full flow map,
 which we size for ${max_flows} flows per period whatever quark's default is.
+It is counted over all the runs of a row, warm-up included, so it tells
+whether anything was lost, not how much of what was measured.
 EOF
 }
 
