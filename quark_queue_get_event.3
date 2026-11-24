@@ -219,7 +219,15 @@ is unset, the respective members are invalid/unknown.
 members are valid.
 .It Dv QUARK_F_EXIT
 .Em exit_code
-is valid.
+and
+.Em exit_time_event
+are valid.
+.Em exit_time_event
+is in nanoseconds of CLOCK_BOOTTIME, like event times, see
+.Dv QQ_KPROBE
+in
+.Xr quark_queue_open 3
+for samples read across a suspend.
 .It Dv QUARK_F_COMM
 .Em comm
 is valid.

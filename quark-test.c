@@ -1699,12 +1699,16 @@ t_suspend(const struct test *t, struct quark_queue_attr *qa)
 		return (0);
 	}
 
+	/* Standalone exit, its event time is the exit time */
+	qa->flags |= QQ_MIN_AGG;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
 	before = ns_clock();
 	child = fork_exec_nop1(0, 0);
-	qev = drain_for_pid(&qq, child);
+	do {
+		qev = drain_for_pid(&qq, child);
+	} while (!(qev->events & QUARK_EV_EXIT));
 	after = ns_clock();
 
 	assert(qev->time >= before);
@@ -1714,10 +1718,13 @@ t_suspend(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp->flags & QUARK_F_PROC);
 	/* A monotonic start would be behind before by asleep */
 	assert_start_time(&qq, qa, qp, before, after);
-	/* So would a monotonic exit time */
+	/*
+	 * A monotonic exit time would be behind the exit event by asleep,
+	 * raw_event_insert() only bumps the event up to 999ns on collisions
+	 */
 	assert(qp->flags & QUARK_F_EXIT);
-	assert(qp->exit_time_event >= before);
-	assert(qp->exit_time_event <= after);
+	assert(qp->exit_time_event <= qev->time);
+	assert(qev->time - qp->exit_time_event < 1000);
 
 	quark_queue_close(&qq);
 

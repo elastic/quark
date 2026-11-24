@@ -213,7 +213,11 @@
           members are valid.</dd>
       <dt id="QUARK_F_EXIT"><a class="permalink" href="#QUARK_F_EXIT"><code class="Dv">QUARK_F_EXIT</code></a></dt>
       <dd><a class="permalink" href="#exit_code"><i class="Em" id="exit_code">exit_code</i></a>
-          is valid.</dd>
+          and <i class="Em">exit_time_event</i> are valid.
+          <i class="Em">exit_time_event</i> is in nanoseconds of CLOCK_BOOTTIME,
+          like event times, see <code class="Dv">QQ_KPROBE</code> in
+          <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>
+          for samples read across a suspend.</dd>
       <dt id="QUARK_F_COMM"><a class="permalink" href="#QUARK_F_COMM"><code class="Dv">QUARK_F_COMM</code></a></dt>
       <dd><a class="permalink" href="#comm"><i class="Em" id="comm">comm</i></a>
           is valid.</dd>
@@ -272,7 +276,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 17, 2026</td>
+    <td class="foot-date">November 24, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
