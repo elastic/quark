@@ -43,10 +43,12 @@
  * second). If the command exits while we measure, we stay that much longer
  * so that a whole command is counted and paid for in full: the events quark
  * hands us during that second count in events, and the CPU time we spend
- * taking them in cpu_ms. wall_ms does not include that second, it ends where
- * the command did, and so does the timing of the programs. Flows are the
- * exception, and those of the last aggregation period are never drained (to
- * avoid delaying exit even further, as aggregation periods can be long).
+ * taking them in cpu_ms. wall_ms and the timing of the programs do not
+ * include that second. Both stop when we see that the command is gone, not
+ * at the instant it exits: normally at once, as its SIGCHLD wakes us, and at
+ * worst 100 ms later. Flows are the exception, and those of the last
+ * aggregation period are never drained (to avoid delaying exit even further,
+ * as aggregation periods can be long).
  *
  * If --duration is given and the command is still running when that time is
  * up, we stop measuring right there, do not wait the extra second, and end
