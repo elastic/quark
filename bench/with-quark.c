@@ -21,6 +21,8 @@
  *
  * Results are "name value" lines on stdout, after whatever the command wrote:
  *
+ *   wall_ms      how long we measured for. That can be 100 ms more than
+ *                told, as we only look at the clock when quark wakes us up
  *   cpu_ms       our cpu time, user and system
  *   cpu_percent  the same in percent of one core, over the time measured
  *   events       events we were given
@@ -471,6 +473,7 @@ main(int argc, char *argv[])
 	}
 
 	quark_queue_get_stats(qq, &st);
+	printf("wall_ms %.3f\n", (double)wall_ns / NS_PER_MS);
 	printf("cpu_ms %.3f\n", (double)cpu_ns / NS_PER_MS);
 	printf("cpu_percent %.3f\n", 100.0 * cpu_ns / wall_ns);
 	printf("events %llu\n", (unsigned long long)events);

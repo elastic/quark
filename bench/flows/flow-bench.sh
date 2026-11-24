@@ -192,7 +192,7 @@ function __with_quark {
     "${load}" "$1" -d "${ADDR}" ${IFACE:+-i "${IFACE}"} "${@:2}"
 }
 
-# Time quark's programs took for each flow of a flows run, in ns:
+# Time quark's packet programs took for each flow of a flows run, in ns:
 # __ns_per_flow <with-quark output> <flows sent while it measured>.
 #
 # This is all of their time over the flows sent, not the sum of their
@@ -219,6 +219,7 @@ function __ns_per_flow {
 function cmd_flows {
   local -A cpu sent kern kcpu lost
   local warmup window r n out median spread percent ns spread_ns k spread_k
+  local wall flows
 
   # Two and a half periods of warm-up, so that the window we measure opens
   # and closes halfway between two drains.
@@ -232,13 +233,16 @@ function cmd_flows {
                --warmup "${warmup}" --duration "${window}" -- \
                flows -P "${period}" "${n}")"
       percent="$(__val sent_percent <<< "${out}")"
-      ns="$(__ns_per_flow "${out}" \
-              "$(__calc "${n} * ${measured} * ${percent} / 100")")"
+      # with-quark measures for a little longer than told, and the kernel
+      # times the programs for as long: go by the time it says it took.
+      wall="$(__val wall_ms <<< "${out}")"
+      flows="$(__calc "${n} * ${percent} / 100 * ${wall} / ${period}")"
+      ns="$(__ns_per_flow "${out}" "${flows}")"
       cpu[$n]+=" $(__val cpu_percent <<< "${out}")"
       sent[$n]+=" ${percent}"
       kern[$n]+=" ${ns}"
-      # What that comes to at this many flows, in percent of one core
-      kcpu[$n]+=" $(__calc "${ns} * ${n} * ${percent} / (${period} * 1000000)")"
+      # All of the programs' time over that of the measurement, in percent
+      kcpu[$n]+=" $(__calc "${ns} * ${flows} / (${wall} * 10000)")"
       lost[$n]=$((${lost[$n]:-0} + $(__val lost <<< "${out}")))
       __progress "flows ${r}/${REPS}, ${n} flows: ${percent}% sent," \
                  "${cpu[$n]##* }% cpu, ${kcpu[$n]##* }% in the kernel" \
@@ -268,10 +272,11 @@ Flows sent is how many the loader got out per period: where that is short of
 the first column the sender could not get them through the device fast
 enough, and the CPU figures are those of the flows sent. Quark CPU is the time
 of a process which takes every event and discards it, not that of the sender.
-Kernel CPU is the sender's share: the time quark's programs took for the flows
-it sent, as timed by the kernel, first in percent of one core as for quark,
-then for each flow. It is all of the programs' time, not what ${flow_name}
-adds to it, and other traffic on the machine counts too.
+Kernel CPU is the sender's share: the time the programs quark attaches to the
+packet path (${packet_progs[*]}) took for the flows it sent, as timed by
+the kernel, first in percent of one core as for quark, then for each flow. It
+is all of their time, not what ${flow_name} adds to it, and other traffic on
+the machine counts too.
 Lost is events dropped by the ring plus packets refused by a full flow map,
 which we size for ${max_flows} flows per period whatever quark's default is.
 EOF
