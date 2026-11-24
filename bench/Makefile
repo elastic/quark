@@ -15,8 +15,11 @@ CDIAGFLAGS+=	-Wstrict-prototypes -Wno-unused-parameter
 
 # The top level Makefile hands us the libraries quark needs in LDLIBS. If the
 # build starts here this doesn't take place, and on musl quark needs one extra
-# library.
+# library. MUSL is found in the same way as the top level.
 ifeq ($(shell ldd --version 2>&1|head -n1|grep -q ^musl && echo yes), yes)
+MUSL?= 1
+endif
+ifdef MUSL
 LDLIBS?= -lfts
 endif
 
