@@ -59,15 +59,17 @@ bpf_queue_test_state_present(struct quark_queue *qq, unsigned int *op)
 		u64	pid_tgid;
 		u32	op;
 	} __attribute__((packed))	 cur, next;
-	u64			 self;
+	u64			 i, limit, self;
 	int			 have_cur, r;
 
 	map = bqq->probes->maps.elastic_ebpf_events_state;
 	assert(bpf_map__key_size(map) == sizeof(cur));
+	limit = (u64)bpf_map__max_entries(map) * 4;
+	assert(limit > 0);
 
 	self = ((u64)getpid() << 32) | (u32)syscall(SYS_gettid);
 	have_cur = 0;
-	for (;;) {
+	for (i = 0; i < limit; i++) {
 		r = bpf_map__get_next_key(map, have_cur ? &cur : NULL, &next,
 		    sizeof(next));
 		if (r == -ENOENT)
@@ -84,6 +86,8 @@ bpf_queue_test_state_present(struct quark_queue *qq, unsigned int *op)
 		cur = next;
 		have_cur = 1;
 	}
+	errx(1, "bpf_map__get_next_key did not finish within %llu steps",
+	    (unsigned long long)limit);
 }
 
 enum stats_failure { STATS_OK, STATS_CPUS, STATS_MAP, STATS_SECOND_PROBE };
