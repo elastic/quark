@@ -4,6 +4,7 @@
 package quark
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/netip"
@@ -45,6 +46,58 @@ func TestQuark(t *testing.T) {
 		require.Equal(t, fetchPid, pid1.Pid)
 		require.NotEmpty(t, pid1.Comm)
 		require.NotEmpty(t, pid1.Cwd)
+	})
+
+	t.Run("Relations", func(t *testing.T) {
+		attr := DefaultQueueAttr()
+		attr.Flags |= QQ_ENTRY_LEADER
+		queue, err := OpenQueue(attr)
+		require.NoError(t, err)
+
+		defer queue.Close()
+
+		cmd := exec.Command("true")
+		require.NoError(t, cmd.Run())
+		pid := uint32(cmd.Process.Pid)
+
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			require.True(t, time.Now().Before(deadline), "no event for %d", pid)
+			event, ok := queue.GetEvent()
+			if !ok {
+				require.NoError(t, queue.Block())
+				continue
+			}
+			if event.Process.Pid != pid {
+				continue
+			}
+			require.NotNil(t, event.Process.Parent)
+			require.Equal(t, uint32(os.Getpid()), event.Process.Parent.Pid)
+			require.Nil(t, event.Process.Parent.Parent)
+			require.NotNil(t, event.Process.EntryLeader)
+			break
+		}
+
+		self, ok := queue.Lookup(os.Getpid())
+		require.True(t, ok)
+		require.NotNil(t, self.Parent)
+		require.Equal(t, uint32(os.Getppid()), self.Parent.Pid)
+
+		// One copy per related process, and no cycles
+		processes := queue.Snapshot()
+		leaders := make(map[uint32]*Process)
+		for _, p := range processes {
+			if p.SessionLeader == nil {
+				continue
+			}
+			if l, ok := leaders[p.SessionLeader.Pid]; ok {
+				require.Same(t, l, p.SessionLeader)
+			}
+			leaders[p.SessionLeader.Pid] = p.SessionLeader
+		}
+		require.NotEmpty(t, leaders)
+		_, err = json.Marshal(processes)
+		require.NoError(t, err)
 	})
 
 	t.Run("GetEvent", func(t *testing.T) {

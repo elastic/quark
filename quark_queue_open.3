@@ -139,6 +139,15 @@ When a process exits, it is removed from the cache, but only after
 this gives the user a small window where it can still query a terminated process
 via
 .Xr quark_process_lookup 3 .
+.Pp
+A process is kept for longer while it is the parent, group leader, session
+leader or entry leader of another process, or while queued events predate its
+exit.
+The relations in
+.Xr quark_queue_get_event 3
+don't depend on
+.Em cache_grace_time ,
+which can be zero.
 .It Em hold_time
 How long to buffer (hold) an event before delivering it to the user via
 .Xr quark_queue_get_event 3 .

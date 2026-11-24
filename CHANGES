@@ -312,3 +312,19 @@ Changes from 0.11 to 0.12
     like event times and the EBPF backend. It was CLOCK_MONOTONIC, so
     after a suspend ECS process.end read as earlier by the total time
     asleep since boot.
+  o quark_process{} got parent, group_leader, session_leader and
+    entry_leader, pointers to the related processes, NULL if unknown.
+    A process that exited stays in the cache while one of them points
+    to it, or while queued events predate its exit, regardless of
+    cache_grace_time. ECS process.parent and the leaders use them,
+    they used to be looked up by pid and went missing once the related
+    process was collected, for any child that outlived the grace time.
+  o proc_ppid, proc_pgid and proc_sid only change on fork, exec and
+    setsid, like in other Elastic products. An orphan keeps its
+    original parent until it execs, so the exit of a reparented process
+    reports the parent it was started by, not the reaper.
+  o A fork for a pid that exited gets a new quark_process{}, the old
+    one gives the pid away and quark_process_lookup(3) returns the new
+    one.
+  o Go: Process got Parent, GroupLeader, SessionLeader and EntryLeader,
+    filled by GetEvent, Lookup and Snapshot.

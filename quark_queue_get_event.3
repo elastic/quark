@@ -204,6 +204,11 @@ struct quark_process {
 	char	*cwd;
 	/* QUARK_F_CGROUP */
 	char	*cgroup;
+	/* Relations, NULL if unknown */
+	struct quark_process	*parent;
+	struct quark_process	*group_leader;
+	struct quark_process	*session_leader;
+	struct quark_process	*entry_leader;
 };
 .Ed
 .Pp
@@ -238,6 +243,32 @@ is valid.
 .Em cgroup
 is valid.
 .El
+.Pp
+.Em parent ,
+.Em group_leader ,
+.Em session_leader
+and
+.Em entry_leader
+point to the related processes, NULL if unknown, a process can be its own
+leader.
+.Em entry_leader
+requires
+.Dv QQ_ENTRY_LEADER .
+They follow
+.Em proc_ppid ,
+.Em proc_pgid
+and
+.Em proc_sid ,
+which only change on fork, exec and setsid, and
+.Em proc_entry_leader ,
+which only changes on fork and exec, like in other Elastic products: a
+reparented process keeps its original parent until it execs.
+A related process that exited is kept for as long as one of them points to it,
+regardless of
+.Em cache_grace_time
+in
+.Xr quark_queue_open 3 ,
+its own relations are then NULL.
 .El
 .Sh MEMORY PROTOCOL
 The returned

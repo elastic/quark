@@ -44,6 +44,12 @@
     time, meaning you can still lookup them for a little while before they're
     garbage collected. At the time of this writing, this is hardcoded to 4
     seconds.</p>
+<p class="Pp" id="parent">A process that exited is kept for longer while another
+    process is related to it, see
+    <a class="permalink" href="#parent"><i class="Em">parent</i></a> in
+    <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>,
+    its own relations are then NULL. If a new process reused its pid,
+    <code class="Nm">quark_process_lookup</code> returns the new one.</p>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
   VALUES</a></h1>
@@ -72,7 +78,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 24, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

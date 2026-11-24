@@ -3739,6 +3739,141 @@ t_cache_grace(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Children that outlive their parent keep it past the grace time, also as group
+ * and session leader. Reparented to us, a child only moves when it execs.
+ */
+static int
+t_relations_orphan(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	pid_t				 a, kids[2];
+	int				 fds[2], i, seen;
+	u64				 start;
+
+	qa->cache_grace_time = 100;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	/* Orphans are reparented to us */
+	if (prctl(PR_SET_CHILD_SUBREAPER, 1) == -1)
+		err(1, "prctl");
+	if (pipe(fds) == -1)
+		err(1, "pipe");
+	if ((a = fork()) == -1)
+		err(1, "fork");
+	if (a == 0) {
+		if (setsid() == -1)
+			err(1, "setsid");
+		/* Both outlive a past the grace time, the second execs */
+		for (i = 0; i < 2; i++) {
+			if ((kids[i] = fork()) == -1)
+				err(1, "fork");
+			if (kids[i] != 0)
+				continue;
+			msleep(qa->hold_time + qa->cache_grace_time * 3);
+			if (i == 1)
+				execlp("true", "true", NULL);
+			_exit(0);
+		}
+		if (write(fds[1], kids, sizeof(kids)) != sizeof(kids))
+			err(1, "write");
+		_exit(0);
+	}
+	if (read(fds[0], kids, sizeof(kids)) != sizeof(kids))
+		err(1, "read");
+	if (waitpid(a, NULL, 0) == -1)
+		err(1, "waitpid");
+	close(fds[0]);
+	close(fds[1]);
+
+	start = ns_clock();
+	for (seen = 0; seen != 3;) {
+		assert(ns_clock() - start < 10ULL * NS_PER_S);
+		qev = drain_any(&qq);
+		qp = qev->process;
+		if (qp == NULL)
+			continue;
+		if ((pid_t)qp->pid == kids[0] && (qev->events & QUARK_EV_EXIT)) {
+			assert(qp->parent != NULL);
+			assert((pid_t)qp->parent->pid == a);
+			assert(qp->parent->flags & QUARK_F_EXIT);
+			assert((pid_t)qp->proc_ppid == a);
+			assert(qp->group_leader == qp->parent);
+			assert(qp->session_leader == qp->parent);
+			seen |= 1;
+		} else if ((pid_t)qp->pid == kids[1] &&
+		    (qev->events & QUARK_EV_EXEC)) {
+			assert(qp->parent != NULL);
+			assert((pid_t)qp->parent->pid == getpid());
+			assert(qp->session_leader != NULL);
+			assert((pid_t)qp->session_leader->pid == a);
+			seen |= 2;
+		}
+	}
+	for (i = 0; i < 2; i++) {
+		if (waitpid(kids[i], NULL, 0) == -1)
+			err(1, "waitpid");
+	}
+	if (prctl(PR_SET_CHILD_SUBREAPER, 0) == -1)
+		err(1, "prctl");
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * Without a grace time, a parent that exits right after forking is still the
+ * parent of its child, whose event is queued behind the exit, in ECS too.
+ */
+static int
+t_relations_grace0(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	pid_t				 p, c;
+	int				 fds[2];
+	char				*buf, needle[64];
+	size_t				 len;
+
+	qa->cache_grace_time = 0;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	if (pipe(fds) == -1)
+		err(1, "pipe");
+	if ((p = fork()) == -1)
+		err(1, "fork");
+	if (p == 0) {
+		if ((c = fork()) == -1)
+			err(1, "fork");
+		if (c == 0)
+			_exit(0);
+		if (write(fds[1], &c, sizeof(c)) != sizeof(c))
+			err(1, "write");
+		_exit(0);
+	}
+	if (read(fds[0], &c, sizeof(c)) != sizeof(c))
+		err(1, "read");
+	if (waitpid(p, NULL, 0) == -1)
+		err(1, "waitpid");
+	close(fds[0]);
+	close(fds[1]);
+
+	qev = drain_for_pid(&qq, c);
+	assert(qev->process->parent != NULL);
+	assert((pid_t)qev->process->parent->pid == p);
+	assert(quark_event_to_ecs(&qq, qev, &buf, &len) == 0);
+	snprintf(needle, sizeof(needle), "\"parent\":{\"pid\":%d,", p);
+	assert(strstr(buf, needle) != NULL);
+	free(buf);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_min_agg1(const struct test *t, struct quark_queue *qq)
 {
@@ -4430,6 +4565,206 @@ t_fork_pid_reuse_cgroup(const struct test *t, struct quark_queue_attr *qa)
 	assert(!strcmp(qp->cgroup, "/user.slice/user-1000.slice"));
 	assert(qp->container == NULL);
 	assert(TAILQ_EMPTY(&container->processes));
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A raw process event carrying relation ids. It's on a tty, so a session leader
+ * is the entry leader of its session.
+ */
+static struct raw_event *
+test_ids_raw(int type, u32 pid, u32 ppid, u32 pgid, u32 sid, u32 id_change)
+{
+	static u64		 time;
+	struct raw_event	*raw;
+	struct raw_task		*task;
+
+	raw = raw_event_alloc(type);
+	assert(raw != NULL);
+	raw->pid = pid;
+	raw->time = ++time;
+	task = &raw->task;
+	if (type == RAW_EXEC) {
+		raw->exec.flags |= RAW_EXEC_F_EXT;
+		task = &raw->exec.ext.task;
+	}
+	task->ppid = ppid;
+	task->pgid = pgid;
+	task->sid = sid;
+	task->id_change = id_change;
+	task->tty_major = 4;
+	task->tty_minor = 64;
+	/* Like the backends */
+	if (type == RAW_EXIT_THREAD)
+		task->exit_time_event = raw->time;
+
+	return (raw);
+}
+
+static struct quark_process *
+test_ids_event(struct quark_queue *qq, int type, u32 pid, u32 ppid, u32 pgid,
+    u32 sid, u32 id_change)
+{
+	const struct quark_event	*qev;
+
+	assert(raw_event_insert(qq,
+	    test_ids_raw(type, pid, ppid, pgid, sid, id_change)) == 0);
+	qev = quark_queue_get_event(qq);
+	assert(qev != NULL);
+	assert(qev->process != NULL);
+	assert(qev->process->pid == pid);
+
+	return ((struct quark_process *)qev->process);
+}
+
+/*
+ * Relations keep exited processes for as long as they point to them, and only
+ * change on fork, exec and setsid.
+ */
+static int
+t_relations(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_process	*init, *p, *c;
+
+	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_ENTRY_LEADER;
+	/* No grace time, only relations keep exited processes */
+	qq.cache_grace_time = 0;
+
+	init = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 1, 0, 1, 1, 0);
+	assert(init->parent == NULL);
+	assert(init->entry_leader == init);
+	p = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, 1, 100, 100, 0);
+	assert(p->parent == init);
+	assert(p->group_leader == p);
+	assert(p->session_leader == p);
+	assert(p->entry_leader == p);
+	c = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 101, 100, 100, 100, 0);
+	assert(c->parent == p);
+	assert(c->group_leader == p);
+	assert(c->session_leader == p);
+	assert(c->entry_leader == p);
+	assert(p->refcnt == 4);
+
+	/* p exits, c keeps it retained, without relations of its own */
+	assert(test_ids_event(&qq, RAW_EXIT_THREAD, 100, 1, 100, 100, 0) == p);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(p->retained);
+	assert(p->parent == NULL);
+	assert(init->refcnt == 0);
+	assert(quark_process_lookup(&qq, 100) == p);
+
+	/* c is reparented to init, only an exec moves it, a setuid doesn't */
+	assert(test_ids_event(&qq, RAW_ID_CHANGE, 101, 1, 100, 100,
+	    QUARK_ID_CHANGE_SETUID) == c);
+	assert(c->parent == p);
+	assert(c->proc_ppid == 100);
+	assert(test_ids_event(&qq, RAW_EXEC, 101, 1, 100, 100, 0) == c);
+	assert(c->parent == init);
+	assert(c->proc_ppid == 1);
+	assert(c->entry_leader == init);
+	assert(c->session_leader == p);
+	assert(p->refcnt == 2);
+
+	/* setsid makes c its own leader, nothing points to p anymore */
+	assert(test_ids_event(&qq, RAW_ID_CHANGE, 101, 1, 101, 101,
+	    QUARK_ID_CHANGE_SETSID) == c);
+	assert(c->group_leader == c);
+	assert(c->session_leader == c);
+	assert(quark_process_lookup(&qq, 100) == NULL);
+
+	/* An exit doesn't move c either, then it goes */
+	assert(test_ids_event(&qq, RAW_EXIT_THREAD, 101, 50, 101, 101, 0) == c);
+	assert(c->proc_ppid == 1);
+	assert(c->parent == init);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_process_lookup(&qq, 101) == NULL);
+	assert(init->refcnt == 0);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A process that gave its pid away to a new one stays for the relations that
+ * point to it, new relations by that pid find the new one.
+ */
+static int
+t_relations_pid_reuse(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_process	*p, *c, *n, *nc;
+
+	quark_queue_init_bare(&qq);
+	qq.cache_grace_time = 0;
+
+	p = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, 1, 100, 100, 0);
+	c = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 101, 100, 100, 100, 0);
+	assert(test_ids_event(&qq, RAW_EXIT_THREAD, 100, 1, 100, 100, 0) == p);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(p->retained);
+
+	n = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, 1, 100, 100, 0);
+	assert(n != p);
+	assert(quark_process_lookup(&qq, 100) == n);
+	assert(c->parent == p);
+	assert(p->pid == 100 && (p->flags & QUARK_F_EXIT));
+	nc = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 102, 100, 100, 100, 0);
+	assert(nc->parent == n);
+	assert(nc->session_leader == n);
+	/* Same session id, c keeps its leader */
+	assert(test_ids_event(&qq, RAW_EXEC, 101, 1, 100, 100, 0) == c);
+	assert(c->session_leader == p);
+
+	/* c goes, so does p, n stays */
+	assert(test_ids_event(&qq, RAW_EXIT_THREAD, 101, 1, 100, 100, 0) == c);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_process_lookup(&qq, 101) == NULL);
+	assert(quark_process_lookup(&qq, 100) == n);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * An exit aggregated into its fork is processed before the events of the
+ * children forked in between, it must stay for them even without a grace time.
+ */
+static int
+t_relations_queued(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*p;
+
+	quark_queue_init_bare(&qq);
+	qq.cache_grace_time = 0;
+	assert(quark_queue_set_agg_matrix(&qq, RAW_WAKE_UP_NEW_TASK,
+	    RAW_EXIT_THREAD, quark_can_aggregate_single) == 0);
+
+	assert(raw_event_insert(&qq,
+	    test_ids_raw(RAW_WAKE_UP_NEW_TASK, 100, 1, 100, 100, 0)) == 0);
+	assert(raw_event_insert(&qq,
+	    test_ids_raw(RAW_WAKE_UP_NEW_TASK, 101, 100, 100, 100, 0)) == 0);
+	assert(raw_event_insert(&qq,
+	    test_ids_raw(RAW_EXIT_THREAD, 100, 1, 100, 100, 0)) == 0);
+
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == (QUARK_EV_FORK | QUARK_EV_EXIT));
+	p = qev->process;
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->process->pid == 101);
+	assert(qev->process->parent == p);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(p->retained);
 
 	quark_queue_close(&qq);
 
@@ -7439,10 +7774,17 @@ struct test all_tests[] = {
 	T(t_kube_container_attach),
 	T(t_kube_pod_attach),
 	T(t_fork_pid_reuse_cgroup),
+	T(t_relations),
+	T(t_relations_pid_reuse),
+	T(t_relations_queued),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),
 	T_EBPF(t_cache_grace),
 	T_KPROBE(t_cache_grace),
+	T_EBPF(t_relations_orphan),
+	T_KPROBE(t_relations_orphan),
+	T_EBPF(t_relations_grace0),
+	T_KPROBE(t_relations_grace0),
 	T_EBPF(t_min_agg),
 	T_KPROBE(t_min_agg),
 	T_EBPF(t_set_agg_matrix),

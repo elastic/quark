@@ -713,7 +713,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 		int				 parent_first = 1;
 		const struct quark_process	*parent;
 
-		if ((parent = quark_process_lookup(qq, qp->proc_ppid)) != NULL)
+		if ((parent = qp->parent) != NULL)
 			ecs_process(qq, h, parent,
 			    ECS_PROC_PARENT, boottime, &parent_first);
 	}
@@ -723,9 +723,9 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 	if ((qq->flags & QQ_ENTRY_LEADER) == 0)
 		return (0);
 
-	group_leader = quark_process_lookup(qq, qp->proc_pgid);
-	session_leader = quark_process_lookup(qq, qp->proc_sid);
-	entry_leader = quark_process_lookup(qq, qp->proc_entry_leader);
+	group_leader = qp->group_leader;
+	session_leader = qp->session_leader;
+	entry_leader = qp->entry_leader;
 
 	/* process.group_leader.* */
 	if (group_leader != NULL) {
