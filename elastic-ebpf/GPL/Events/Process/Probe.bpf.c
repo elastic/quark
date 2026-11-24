@@ -774,11 +774,26 @@ int BPF_KSYSCALL(ksyscall__memfd_create, const char *uname, unsigned int flags)
     return 0;
 }
 
+// The state saved by ksyscall__memfd_create is consumed by the next
+// {shmem,hugetlb}_file_setup() of the thread, which also serves SysV shm,
+// MAP_HUGETLB mmaps and DRM. A memfd_create that fails before file setup
+// leaves its state behind, and only the "memfd:" name check below keeps the
+// next setup of the thread from reporting it. The leftover lasts until that
+// setup, the next memfd_create of the thread or LRU eviction.
+//
+// There is no exit hook on purpose: the per syscall exit tracepoint skips
+// compat (AArch32, x32) calls, so the name check is needed anyway, and hooks
+// that see every call cost every syscall or are unreliable (kretprobes).
 static int emit_memfd_create_event(const char *name)
 {
     struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_MEMFD_CREATE);
     if (!state)
         goto out;
+
+    // One memfd_create sets up one file, consume the state so a later setup
+    // of the thread can't reuse it.
+    u32 flags = state->memfd.flags;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_MEMFD_CREATE);
 
     if (ebpf_events_is_trusted_pid())
         goto out;
@@ -794,7 +809,7 @@ static int emit_memfd_create_event(const char *name)
 
     event->hdr.type    = EBPF_EVENT_PROCESS_MEMFD_CREATE;
     event->hdr.ts      = bpf_ktime_get_boot_ns();
-    event->flags       = state->memfd.flags;
+    event->flags       = flags;
 
     ebpf_pid_info__fill(&event->pids, task);
 
@@ -807,6 +822,11 @@ static int emit_memfd_create_event(const char *name)
     field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_FILENAME);
     size  = bpf_probe_read_kernel_str(field->data, PATH_MAX, name);
     if (size <= 0)
+        goto out;
+    // Only memfd_create names its files "memfd:*", other setups that find
+    // state left by a failed memfd_create, like SysV shm (SYSV<key>) or
+    // MAP_HUGETLB (anon_hugepage), are not reported.
+    if (!is_equal_prefix(field->data, MEMFD_STRING, sizeof(MEMFD_STRING) - 1))
         goto out;
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 

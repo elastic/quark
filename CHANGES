@@ -301,6 +301,13 @@ Changes from 0.11 to 0.12
     process.start, process.end and file.{ctime,mtime,atime} with a
     millisecond part between 1 and 99 used to parse as up to 891ms
     later than they were.
+  o The EBPF backend no longer reports QUARK_SHM_MEMFD_CREATE for later
+    {shmem,hugetlb}_file_setup() calls in a thread that once called
+    memfd_create(2), like an anonymous MAP_HUGETLB mmap(2), which needs no
+    privileges, a SHM_HUGETLB shmget(2) or a DRM buffer allocation. Since
+    0.6 these were reported with a non memfd path, such as anon_hugepage
+    or SYSV<key>, and the flags of the earlier memfd_create(2). Only files
+    named memfd:* are reported now.
   o In the EBPF backend's kprobe fallback, the chmod, chown, truncate,
     write, writev and TCP connect kretprobes now delete their per-thread
     state from the shared state map after reading it. Previously those
