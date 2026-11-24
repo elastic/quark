@@ -3711,8 +3711,8 @@ state_map_tcp_connect(struct quark_queue *qq, int af, const char *step)
 
 /*
  * Exercise every operation that stores per-thread state in the shared BPF
- * state map (except memfd_create, which is handled separately) and verify that
- * no entry for the calling thread remains in the map, regardless of op.
+ * state map and verify that no entry for the calling thread remains in the
+ * map, regardless of op.
  */
 static void
 run_bpf_state_map(struct quark_queue_attr *qa)
@@ -3824,6 +3824,30 @@ run_bpf_state_map(struct quark_queue_attr *qa)
 	else
 		warnx("%s: no IPv6 support, skipping TCP_V6_CONNECT", __func__);
 
+#ifndef NO_MEMFD
+	/* MEMFD_CREATE */
+	if (qa->flags & QQ_SHM) {
+		const struct quark_shm	*qshm;
+		int			 mfd;
+
+		if ((mfd = memfd_create("t_bpf_state_map", MFD_CLOEXEC)) == -1) {
+			if (errno != ENOTSUP && errno != ENOSYS)
+				err(1, "memfd_create");
+			warn("old kernel, skipping memfd_create");
+		} else {
+			close(mfd);
+			assert_no_bpf_state(&qq, "memfd_create");
+			qev = drain_for_pid(&qq, getpid());
+			assert(qev->events & QUARK_EV_SHM);
+			qshm = qev->shm;
+			assert(qshm != NULL);
+			assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
+			assert(qshm->memfd_create_flags == MFD_CLOEXEC);
+			assert(!strcmp(qshm->path, "memfd:t_bpf_state_map"));
+		}
+	}
+#endif
+
 	quark_queue_close(&qq);
 	close(pfd[0]);
 	close(pfd[1]);
@@ -3836,6 +3860,12 @@ t_bpf_state_map(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue_attr	 kqa;
 
 	qa->flags |= QQ_FILE | QQ_SOCK_CONN;
+#ifndef NO_MEMFD
+	if (hugetlbfs_registered())
+		qa->flags |= QQ_SHM;
+	else
+		warnx("%s: no hugetlb support, skipping MEMFD_CREATE", __func__);
+#endif
 	run_bpf_state_map(qa);
 
 	/*
