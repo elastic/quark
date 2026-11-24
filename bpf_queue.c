@@ -1507,7 +1507,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 
 	if (qq->flags & QQ_SHM) {
 		bpf_program__set_autoload(p->progs.ksyscall__memfd_create, 1);
-		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_memfd_create, 1);
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_enter_shmget, 1);
 		if (use_fentry) {
 			bpf_program__set_autoload(p->progs.fentry__hugetlb_file_setup, 1);
@@ -1676,22 +1675,6 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		cgroup_fd = -1;
 	}
 	cgroup2_umount_tmp(&cgroup_umount);
-
-	/*
-	 * The skeleton attaches in program order, ksyscall__memfd_create first.
-	 * A memfd_create between it and the exit tracepoint that deletes its
-	 * state would leave an entry behind, so attach the tracepoint before.
-	 * bpf_probes__attach() skips programs that already have a link.
-	 */
-	if (qq->flags & QQ_SHM) {
-		p->links.tracepoint_syscalls_sys_exit_memfd_create =
-		    bpf_program__attach(
-		    p->progs.tracepoint_syscalls_sys_exit_memfd_create);
-		if (p->links.tracepoint_syscalls_sys_exit_memfd_create == NULL) {
-			qwarn("bpf_program__attach sys_exit_memfd_create");
-			goto fail;
-		}
-	}
 
 	if (bpf_probes__attach(p) != 0) {
 		qwarn("bpf_probes__attach");

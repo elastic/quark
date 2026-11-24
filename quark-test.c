@@ -2744,10 +2744,59 @@ expect_shmget_hugetlb(struct quark_queue *qq)
 	assert(qshm->shmget_shmflg == HUGETLB_SHMFLG);
 }
 
+/* The default huge page size, the one MAP_HUGETLB uses without MAP_HUGE_* */
+static size_t
+default_hugepagesize(void)
+{
+	FILE	*f;
+	char	*line;
+	size_t	 linecap, kb;
+
+	if ((f = fopen("/proc/meminfo", "r")) == NULL)
+		err(1, "fopen /proc/meminfo");
+	line = NULL;
+	linecap = 0;
+	kb = 0;
+	while (getline(&line, &linecap, f) != -1) {
+		if (sscanf(line, "Hugepagesize: %zu kB", &kb) == 1)
+			break;
+	}
+	if (ferror(f))
+		err(1, "getline /proc/meminfo");
+	free(line);
+	fclose(f);
+	if (kb == 0)
+		errx(1, "no Hugepagesize in /proc/meminfo");
+
+	return (kb * 1024);
+}
+
+/*
+ * Map and unmap anonymous huge pages. The kernel sets up their file with
+ * hugetlb_file_setup(), named anon_hugepage, before it maps anything, and
+ * MAP_NORESERVE lets it succeed without reserved huge pages. Unlike
+ * shmget_hugetlb() it needs no privileges. It yields no event.
+ */
+static void
+mmap_hugetlb(void)
+{
+	void	*p;
+	size_t	 len;
+
+	len = default_hugepagesize();
+	p = mmap(NULL, len, PROT_READ | PROT_WRITE,
+	    MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_NORESERVE, -1, 0);
+	if (p == MAP_FAILED)
+		err(1, "mmap(MAP_HUGETLB)");
+	if (munmap(p, len) == -1)
+		err(1, "munmap");
+}
+
 /*
  * The next event of this process must be the MEMFD_CREATE of a memfd_create(2)
  * of name without flags. With stale state a bogus MEMFD_CREATE for the
- * preceding shmget(2), named SYSV00000000, comes first.
+ * preceding file setup, like SYSV00000000 of shmget(2) or anon_hugepage of
+ * mmap(2), comes first.
  */
 static void
 expect_memfd_sentinel(struct quark_queue *qq, const char *name)
@@ -2772,11 +2821,10 @@ expect_memfd_sentinel(struct quark_queue *qq, const char *name)
 
 /*
  * memfd_create(2) events are emitted from {shmem,hugetlb}_file_setup() using
- * state saved at syscall entry, that state must not outlive the syscall,
- * successful or not. A SHM_HUGETLB shmget(2) also goes through
- * hugetlb_file_setup(), so after a memfd_create(2) it must yield SHMGET only,
- * not a bogus MEMFD_CREATE. A MFD_HUGETLB memfd_create(2) must still yield
- * its MEMFD_CREATE.
+ * state saved at syscall entry. A SHM_HUGETLB shmget(2) and a MAP_HUGETLB
+ * mmap(2) also go through hugetlb_file_setup(), so after a memfd_create(2),
+ * successful or not, they must not yield a bogus MEMFD_CREATE. A MFD_HUGETLB
+ * memfd_create(2) must still yield its MEMFD_CREATE.
  */
 static int
 t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
@@ -2797,10 +2845,10 @@ t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
 	}
 
 	/*
-	 * The shmget(2) checks need SHM_HUGETLB segments: valgrind drops the
+	 * The shmget(2) check needs SHM_HUGETLB segments: valgrind drops the
 	 * flag, and creating one needs CAP_IPC_LOCK or vm.hugetlb_shm_group
 	 * membership, a runner that can load BPF may have neither. Without
-	 * them, still check the map. Any other failure is an error, see
+	 * them, still run the other checks. Any other failure is an error, see
 	 * shmget_hugetlb().
 	 */
 	hugetlb = 1;
@@ -2832,7 +2880,6 @@ t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "memfd_create");
 	}
 	close(fd);
-	assert(!bpf_queue_test_memfd_state(&qq));
 	qev = drain_for_pid(&qq, getpid());
 	assert(qev->events & QUARK_EV_SHM);
 	qshm = qev->shm;
@@ -2855,7 +2902,6 @@ t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
 		    __func__);
 	} else {
 		close(fd);
-		assert(!bpf_queue_test_memfd_state(&qq));
 		qev = drain_for_pid(&qq, getpid());
 		assert(qev->events & QUARK_EV_SHM);
 		qshm = qev->shm;
@@ -2872,19 +2918,16 @@ t_memfd_stale_state(const struct test *t, struct quark_queue_attr *qa)
 	/*
 	 * A memfd_create(2) that fails before setting up a file, no flag uses
 	 * the top bit without MFD_HUGETLB, so it yields no event but its state
-	 * is saved at syscall entry all the same. The events below can't tell
-	 * whether that state outlived the syscall, the probe ignores non memfd
-	 * names, so look at the map.
+	 * is saved at syscall entry all the same and outlives the syscall. The
+	 * next file setup of this thread finds it, only the name tells it
+	 * apart from a memfd. Without privileges, as the mmap(2) needs none.
 	 */
 	if ((fd = memfd_create("t_memfd_stale_state-einval", 1U << 31)) != -1)
 		errx(1, "memfd_create with an invalid flag succeeded");
 	if (errno != EINVAL)
 		err(1, "memfd_create with an invalid flag");
-	assert(!bpf_queue_test_memfd_state(&qq));
-	if (hugetlb) {
-		expect_shmget_hugetlb(&qq);
-		expect_memfd_sentinel(&qq, "t_memfd_stale_state-sentinel2");
-	}
+	mmap_hugetlb();
+	expect_memfd_sentinel(&qq, "t_memfd_stale_state-sentinel2");
 
 	quark_queue_close(&qq);
 
