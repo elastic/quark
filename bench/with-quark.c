@@ -260,7 +260,7 @@ main(int argc, char *argv[])
 	cpu_set_t			 set;
 	pid_t				 child, parent;
 	struct prog			*p;
-	int				 ch, measuring, killed, prog_stats, status;
+	int				 ch, measuring, killed, n, prog_stats, status;
 	u64				 cpu_ns, wall_ns, t0, warmup, duration;
 	u64				 events, deadline;
 
@@ -443,16 +443,22 @@ main(int argc, char *argv[])
 
 	/*
 	 * The command is gone, but what it did last is still held by quark.
-	 * That is part of its bill, though the wait is not.
+	 * That is part of its bill, though the wait is not. Quark holds no
+	 * more than max_length events, so a pass that took as many has all
+	 * that waited when it began. We end the drain there and look at
+	 * the clock to avoid spinning on events that keep coming from
+	 * somewhere else.
 	 */
 	if (child_exited) {
 		deadline = now(CLOCK_MONOTONIC) + qa.hold_time * NS_PER_MS;
 		for (;;) {
-			while (quark_queue_get_event(qq) != NULL)
+			for (n = 0; n < qa.max_length &&
+			    quark_queue_get_event(qq) != NULL; n++)
 				events++;
 			if (now(CLOCK_MONOTONIC) >= deadline)
 				break;
-			quark_queue_block(qq);
+			if (n < qa.max_length)
+				quark_queue_block(qq);
 		}
 	}
 	cpu_ns = now(CLOCK_PROCESS_CPUTIME_ID) - cpu_ns;
