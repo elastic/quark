@@ -3048,6 +3048,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 	char			*exe;
 	char			*args;
 	size_t			 args_len;
+	int			 relink;
 
 	qp	 = (struct quark_process *)dst->process;
 	raw_task = NULL;
@@ -3092,6 +3093,9 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		args_len = src->exec_connector.args_len;
 		src->exec_connector.args = NULL;
 		src->exec_connector.args_len = 0;
+		/* The kprobe exec has no task, but its connector does */
+		process_set_ids(qq, qp, src->exec_connector.task.ppid,
+		    src->exec_connector.task.pgid, src->exec_connector.task.sid);
 		break;
 	case RAW_ID_CHANGE:
 		dst->events |= QUARK_EV_ID_CHANGE;
@@ -3108,6 +3112,13 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 	};
 
 	if (raw_task != NULL) {
+		/*
+		 * Like other elastic products, relations only follow fork, exec
+		 * and setsid, an orphan keeps its parent until it execs.
+		 */
+		relink = (qp->flags & QUARK_F_PROC) == 0 ||
+		    src->type == RAW_WAKE_UP_NEW_TASK || src->type == RAW_EXEC ||
+		    (raw_task->id_change & QUARK_ID_CHANGE_SETSID);
 		qp->flags |= QUARK_F_PROC;
 
 		qp->proc_cap_inheritable = raw_task->cap_inheritable;
@@ -3136,8 +3147,9 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		qp->proc_ipc_inonum = raw_task->ipc_inonum;
 		qp->proc_mnt_inonum = raw_task->mnt_inonum;
 		qp->proc_net_inonum = raw_task->net_inonum;
-		process_set_ids(qq, qp, raw_task->ppid, raw_task->pgid,
-		    raw_task->sid);
+		if (relink)
+			process_set_ids(qq, qp, raw_task->ppid, raw_task->pgid,
+			    raw_task->sid);
 
 		process_set_cgroup(qp, &raw_task->cgroup);
 		if (raw_task->env != NULL) {
