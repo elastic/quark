@@ -135,6 +135,12 @@
         after <i class="Em">cache_grace_time</i>, this gives the user a small
         window where it can still query a terminated process via
         <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>.</p>
+    <p class="Pp">A process is kept for longer while it is the parent, group
+        leader, session leader or entry leader of another process, or while
+        queued events predate its exit. The relations in
+        <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>
+        don't depend on <i class="Em">cache_grace_time</i>, which can be
+      zero.</p>
   </dd>
   <dt id="hold_time"><a class="permalink" href="#hold_time"><i class="Em">hold_time</i></a></dt>
   <dd>How long to buffer (hold) an event before delivering it to the user via
@@ -185,7 +191,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 24, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

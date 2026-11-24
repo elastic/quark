@@ -26,6 +26,16 @@ Quark's internal cache keeps processes that exited for a grace time, meaning
 you can still lookup them for a little while before they're garbage
 collected.
 At the time of this writing, this is hardcoded to 4 seconds.
+.Pp
+A process that exited is kept for longer while another process is related to
+it, see
+.Em parent
+in
+.Xr quark_queue_get_event 3 ,
+its own relations are then NULL.
+If a new process reused its pid,
+.Nm
+returns the new one.
 .Sh RETURN VALUES
 Returns a pointer to the internal process if found.
 The pointer points to the internal process used by quark, therefore, its
