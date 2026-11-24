@@ -1584,11 +1584,11 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		bpf_program__set_autoload(p->progs.tracepoint_syscalls_sys_exit_getpid, 1);
 
 	/*
-	 * After the ring, most of our kernel memory is in three preallocated
-	 * maps that the always loaded process probes never touch: the
-	 * scratch space of file renames (8MiB) with its init buffer, the
-	 * entry to exit state, and the socket owners. Only create them if
-	 * a user-selected feature uses them.
+	 * After the ring, most of our kernel memory is in three maps
+	 * that the always loaded process probes never touch: the scratch
+	 * space of file renames (8MiB) with its init buffer, the entry to
+	 * exit state, and the socket owners. Only create them if a
+	 * user-selected feature uses them.
 	 */
 	if (!(qq->flags & QQ_FILE)) {
 		if (bpf_map__set_autocreate(
