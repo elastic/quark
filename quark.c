@@ -511,6 +511,13 @@ event_storage_clear(struct quark_queue *qq)
 	qq->event_storage.id_change = 0;
 }
 
+/* Processes have their own queue, see gc_collect() */
+static struct gc_queue *
+gc_queue(struct quark_queue *qq, enum gc_type type)
+{
+	return (type == GC_PROCESS ? &qq->process_gc : &qq->event_gc);
+}
+
 static void
 gc_mark(struct quark_queue *qq, struct gc_link *gc, enum gc_type type)
 {
@@ -520,14 +527,14 @@ gc_mark(struct quark_queue *qq, struct gc_link *gc, enum gc_type type)
 
 	gc->gc_time = now64();
 	gc->gc_type = type;
-	TAILQ_INSERT_TAIL(&qq->event_gc, gc, gc_entry);
+	TAILQ_INSERT_TAIL(gc_queue(qq, type), gc, gc_entry);
 }
 
 static void
 gc_unlink(struct quark_queue *qq, struct gc_link *gc)
 {
 	if (gc->gc_time) {
-		TAILQ_REMOVE(&qq->event_gc, gc, gc_entry);
+		TAILQ_REMOVE(gc_queue(qq, gc->gc_type), gc, gc_entry);
 		gc->gc_time = 0;
 	}
 }
@@ -536,7 +543,6 @@ static int
 gc_collect(struct quark_queue *qq)
 {
 	struct gc_link		*gc;
-	struct gc_queue		 held;
 	struct quark_process	*qp;
 	struct raw_event	*min;
 	u64			 now;
@@ -544,24 +550,24 @@ gc_collect(struct quark_queue *qq)
 
 	now = now64();
 	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
-	TAILQ_INIT(&held);
 	n = 0;
+	/*
+	 * Queued events might relate to an exited process, it waits for them,
+	 * and so do the ones that exited after it. They have their own queue,
+	 * so the others don't wait.
+	 */
+	while ((gc = TAILQ_FIRST(&qq->process_gc)) != NULL) {
+		qp = (struct quark_process *)gc;
+		if (AGE(gc->gc_time, now) < qq->cache_grace_time ||
+		    (min != NULL && min->time <= qp->gc_until))
+			break;
+		/* A retained process counts when freed */
+		n += process_collect(qq, qp);
+	}
 	while ((gc = TAILQ_FIRST(&qq->event_gc)) != NULL) {
 		if (AGE(gc->gc_time, now) < qq->cache_grace_time)
 			break;
 		switch (gc->gc_type) {
-		case GC_PROCESS:
-			qp = (struct quark_process *)gc;
-			/* Queued events might relate to it, hold it alone */
-			if (min != NULL && min->time <= qp->gc_until) {
-				TAILQ_REMOVE(&qq->event_gc, gc, gc_entry);
-				TAILQ_INSERT_TAIL(&held, gc, gc_entry);
-				continue;
-			}
-			/* A retained process counts when freed */
-			if (!process_collect(qq, qp))
-				continue;
-			break;
 		case GC_SOCKET:
 			socket_cache_delete(qq, (struct quark_socket *)gc);
 			break;
@@ -578,9 +584,6 @@ gc_collect(struct quark_queue *qq)
 		}
 		n++;
 	}
-	/* Held ones are the oldest, back in front */
-	TAILQ_CONCAT(&held, &qq->event_gc, gc_entry);
-	TAILQ_CONCAT(&qq->event_gc, &held, gc_entry);
 
 	qq->stats.garbage_collections += n;
 
@@ -4888,6 +4891,7 @@ quark_queue_init_trees(struct quark_queue *qq)
 	RB_INIT(&qq->container_by_id);
 	RB_INIT(&qq->pod_by_uid);
 	TAILQ_INIT(&qq->event_gc);
+	TAILQ_INIT(&qq->process_gc);
 }
 
 static int
@@ -5179,7 +5183,7 @@ quark_queue_close(struct quark_queue *qq)
 {
 	struct raw_event	*raw;
 	struct quark_process	*qp;
-	struct gc_link		*gc, *gc_next;
+	struct gc_link		*gc;
 	struct quark_socket	*qsk;
 	struct quark_pod	*pod;
 	struct quark_container	*container;
@@ -5202,10 +5206,8 @@ quark_queue_close(struct quark_queue *qq)
 	 */
 	while ((qp = RB_ROOT(&qq->process_by_pid)) != NULL)
 		process_drop(qq, qp);
-	TAILQ_FOREACH_SAFE(gc, &qq->event_gc, gc_entry, gc_next) {
-		if (gc->gc_type == GC_PROCESS)
-			process_drop(qq, (struct quark_process *)gc);
-	}
+	while ((gc = TAILQ_FIRST(&qq->process_gc)) != NULL)
+		process_drop(qq, (struct quark_process *)gc);
 	/* Clean up all cached sockets */
 	while ((qsk = RB_ROOT(&qq->socket_by_src_dst)) != NULL)
 		socket_cache_delete(qq, qsk);

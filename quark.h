@@ -1014,6 +1014,7 @@ struct quark_queue {
 	struct raw_event_by_pidtime	 raw_event_by_pidtime;
 	struct process_by_pid		 process_by_pid;
 	struct gc_queue			 event_gc;
+	struct gc_queue			 process_gc;	/* in exit order */
 	struct socket_by_src_dst	 socket_by_src_dst;
 	struct passwd_by_uid		 passwd_by_uid;
 	struct group_by_gid		 group_by_gid;
