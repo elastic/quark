@@ -147,10 +147,11 @@ type Process struct {
 	Cgroup    string
 	PoisonTag uint64         // Set by matching poison rules, zero if none matched
 	Container *ContainerInfo // nil if the process is not in a container
-	// Relations, nil if unknown. They are one level deep, the relations
-	// of a relation are nil, and a process related more than once is
-	// copied once, Snapshot shares the copies across all processes. A
-	// process can be its own leader. EntryLeader needs QQ_ENTRY_LEADER.
+	// Relations, nil if unknown or without QueueAttr.Relations. They are
+	// one level deep, the relations of a relation are nil, and a process
+	// related more than once is copied once, Snapshot shares the copies
+	// across all processes. A process can be its own leader. EntryLeader
+	// needs QQ_ENTRY_LEADER.
 	Parent        *Process
 	GroupLeader   *Process
 	SessionLeader *Process
@@ -288,6 +289,7 @@ type Queue struct {
 	quarkQueue *C.struct_quark_queue   // pointer to the queue structure
 	ruleset    *C.struct_quark_ruleset // active ruleset, nil if none
 	epollFd    int
+	relations  bool // fill Process relations, see QueueAttr.Relations
 }
 
 const (
@@ -369,6 +371,10 @@ type QueueAttr struct {
 	// the queue by OpenQueue. Empty means no rules. Processes matched
 	// by poison rules carry the tag in Process.PoisonTag.
 	RuleText string
+	// Relations fills Process.Parent, GroupLeader, SessionLeader and
+	// EntryLeader in GetEvent, Lookup and Snapshot. Each related process
+	// is copied, which costs about one Process conversion per relation.
+	Relations bool
 }
 
 // Documented in https://elastic.github.io/quark/quark_queue_get_stats.3.html.
@@ -488,6 +494,7 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	}
 
 	queue.epollFd = int(C.quark_queue_get_epollfd(queue.quarkQueue))
+	queue.relations = attr.Relations
 
 	return &queue, nil
 }
@@ -518,8 +525,7 @@ func (queue *Queue) GetEvent() (Event, bool) {
 
 	event.Events = uint64(cev.events)
 	event.Process = processFromC(cev.process)
-	relationsFromC(&event.Process, cev.process,
-		make(map[*C.struct_quark_process]*Process))
+	queue.relationsFromC(&event.Process, cev.process, nil)
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)
 		event.Socket = &socket
@@ -594,8 +600,7 @@ func (queue *Queue) Lookup(pid int) (Process, bool) {
 	}
 
 	process := processFromC(cProcess)
-	relationsFromC(&process, cProcess,
-		make(map[*C.struct_quark_process]*Process))
+	queue.relationsFromC(&process, cProcess, nil)
 
 	return process, true
 }
@@ -716,7 +721,7 @@ func (queue *Queue) Snapshot() []Process {
 	C.quark_process_iter_init(&iter, queue.quarkQueue)
 	for qp = C.quark_process_iter_next(&iter); qp != nil; qp = C.quark_process_iter_next(&iter) {
 		process := processFromC(qp)
-		relationsFromC(&process, qp, copies)
+		queue.relationsFromC(&process, qp, copies)
 		processes = append(processes, process)
 	}
 
@@ -883,10 +888,16 @@ func processFromC(cProcess *C.struct_quark_process) Process {
 	return process
 }
 
-// relationsFromC fills the relations of process, one level deep, copies holds
-// the copy of each related process.
-func relationsFromC(process *Process, cProcess *C.struct_quark_process,
+// relationsFromC fills the relations of process, one level deep, if the queue
+// has Relations. copies holds the copy of each related process, nil makes one
+// when needed. Container metadata is linked through the process pointer, as
+// Lookup does through the pid, which might belong to another process by now.
+func (queue *Queue) relationsFromC(process *Process,
+	cProcess *C.struct_quark_process,
 	copies map[*C.struct_quark_process]*Process) {
+	if !queue.relations {
+		return
+	}
 	relation := func(c *C.struct_quark_process) *Process {
 		if c == nil {
 			return nil
@@ -894,6 +905,10 @@ func relationsFromC(process *Process, cProcess *C.struct_quark_process,
 		if p, ok := copies[c]; ok {
 			return p
 		}
+		if copies == nil {
+			copies = make(map[*C.struct_quark_process]*Process)
+		}
+		C.link_container_data(queue.quarkQueue, c)
 		p := processFromC(c)
 		copies[c] = &p
 		return &p

@@ -536,6 +536,7 @@ static int
 gc_collect(struct quark_queue *qq)
 {
 	struct gc_link		*gc;
+	struct gc_queue		 held;
 	struct quark_process	*qp;
 	struct raw_event	*min;
 	u64			 now;
@@ -543,6 +544,7 @@ gc_collect(struct quark_queue *qq)
 
 	now = now64();
 	min = RB_MIN(raw_event_by_time, &qq->raw_event_by_time);
+	TAILQ_INIT(&held);
 	n = 0;
 	while ((gc = TAILQ_FIRST(&qq->event_gc)) != NULL) {
 		if (AGE(gc->gc_time, now) < qq->cache_grace_time)
@@ -550,9 +552,12 @@ gc_collect(struct quark_queue *qq)
 		switch (gc->gc_type) {
 		case GC_PROCESS:
 			qp = (struct quark_process *)gc;
-			/* Queued events from before the exit might point to it */
-			if (min != NULL && min->time <= qp->exit_time_event)
-				goto done;
+			/* Queued events might relate to it, hold it alone */
+			if (min != NULL && min->time <= qp->gc_until) {
+				TAILQ_REMOVE(&qq->event_gc, gc, gc_entry);
+				TAILQ_INSERT_TAIL(&held, gc, gc_entry);
+				continue;
+			}
 			/* A retained process counts when freed */
 			if (!process_collect(qq, qp))
 				continue;
@@ -573,8 +578,10 @@ gc_collect(struct quark_queue *qq)
 		}
 		n++;
 	}
+	/* Held ones are the oldest, back in front */
+	TAILQ_CONCAT(&held, &qq->event_gc, gc_entry);
+	TAILQ_CONCAT(&qq->event_gc, &held, gc_entry);
 
-done:
 	qq->stats.garbage_collections += n;
 
 	return (n);
@@ -660,13 +667,38 @@ process_unlink_container(struct quark_process *qp)
 	qp->container = NULL;
 }
 
+/*
+ * Queue an exited process for collection, events queued up to its exit, or
+ * queued now, might still relate to it by pid.
+ */
+static void
+process_gc_mark(struct quark_queue *qq, struct quark_process *qp)
+{
+	struct raw_event	*max;
+
+	qp->gc_until = qp->exit_time_event;
+	max = RB_MAX(raw_event_by_time, &qq->raw_event_by_time);
+	if (max != NULL && max->time > qp->gc_until)
+		qp->gc_until = max->time;
+	gc_mark(qq, &qp->gc, GC_PROCESS);
+}
+
+/*
+ * The last relation to a retained process frees it, unless queued events might
+ * still relate to it, as a fork from before a setsid aggregated ahead of it,
+ * then gc collects it, as it does if it's queued for gc already.
+ */
 static void
 process_unref(struct quark_queue *qq, struct quark_process *qp)
 {
-	if (--qp->refcnt == 0 && qp->retained) {
-		qq->stats.garbage_collections++;
-		process_cache_delete(qq, qp);
+	if (--qp->refcnt != 0 || !qp->retained)
+		return;
+	if (!RB_EMPTY(&qq->raw_event_by_time) || qp->gc.gc_time != 0) {
+		process_gc_mark(qq, qp);
+		return;
 	}
+	qq->stats.garbage_collections++;
+	process_cache_delete(qq, qp);
 }
 
 /*
@@ -2039,6 +2071,9 @@ events_type_str(u64 events, char *buf, size_t len)
 	return (0);
 }
 
+/*
+ * Returns -1 if unknown, 1 if inherited from the parent, 0 otherwise.
+ */
 static int
 entry_leader_eval(struct quark_queue *qq, struct quark_process *qp)
 {
@@ -2113,7 +2148,7 @@ entry_leader_eval(struct quark_queue *qq, struct quark_process *qp)
 	qp->proc_entry_leader_type = parent->proc_entry_leader_type;
 	qp->proc_entry_leader = parent->proc_entry_leader;
 	if (!is_ses_leader)
-		return (0);
+		return (1);
 
 #define STARTS_WITH(_x, _y) (!strncmp(_x, _y, strlen(_y)))
 	/*
@@ -2125,7 +2160,7 @@ entry_leader_eval(struct quark_queue *qq, struct quark_process *qp)
 	    STARTS_WITH(basename, "check-status") ||
 	    STARTS_WITH(basename, "pause") ||
 	    STARTS_WITH(basename, "conmon"))
-		return (0);
+		return (1);
 
 	p_basename = NULL;
 	if (parent->exe != NULL)
@@ -2175,29 +2210,31 @@ entry_leader_eval(struct quark_queue *qq, struct quark_process *qp)
 		qwarnx("%d (%s) is UNKNOWN (tty=%d)",
 		    qp->pid, qp->exe ? qp->exe : "null", tty);
 
-	return (0);
+	return (1);
 }
 
+/*
+ * An inherited entry leader is the one of the parent, its pid might belong to
+ * another process by now, even to this one.
+ */
 static int
 entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 {
-	struct quark_process	*parent;
-	u32			 old;
+	struct quark_process	*leader;
+	int			 r;
 
 	if ((qq->flags & QQ_ENTRY_LEADER) == 0)
 		return (0);
 
-	old = qp->proc_entry_leader;
-	if (entry_leader_eval(qq, qp) == -1)
+	if ((r = entry_leader_eval(qq, qp)) == -1)
 		return (-1);
-	/* Same leader, keep it, its pid might belong to another process now */
-	if (qp->entry_leader != NULL && qp->proc_entry_leader == old)
-		return (0);
-	parent = qp->parent;
-	process_relate(qq, qp, &qp->entry_leader,
-	    process_leader(qq, qp, qp->proc_entry_leader,
-	    parent != NULL ? parent->proc_entry_leader : 0,
-	    parent != NULL ? parent->entry_leader : NULL));
+	if (r == 1)
+		leader = qp->parent->entry_leader;
+	else if (qp->proc_entry_leader == qp->pid)
+		leader = qp;
+	else
+		leader = process_cache_get(qq, qp->proc_entry_leader, 0);
+	process_relate(qq, qp, &qp->entry_leader, leader);
 
 	return (0);
 }
@@ -3061,7 +3098,9 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 	case RAW_WAKE_UP_NEW_TASK:
 		dst->events |= QUARK_EV_FORK;
 		raw_task = &src->task;
-		process_cache_inherit(qq, qp, raw_task->ppid);
+		/* A kprobe thread event is the process itself, not a child */
+		if (src->opid != src->pid)
+			process_cache_inherit(qq, qp, raw_task->ppid);
 		break;
 	case RAW_EXEC:
 		dst->events |= QUARK_EV_EXEC;
@@ -3113,12 +3152,13 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 
 	if (raw_task != NULL) {
 		/*
-		 * Like other elastic products, relations only follow fork, exec
-		 * and setsid, an orphan keeps its parent until it execs.
+		 * Relations only follow fork, exec and setsid, an orphan keeps
+		 * its parent until it execs. A kprobe thread event is a fork
+		 * of the process itself.
 		 */
 		relink = (qp->flags & QUARK_F_PROC) == 0 ||
-		    src->type == RAW_WAKE_UP_NEW_TASK || src->type == RAW_EXEC ||
-		    (raw_task->id_change & QUARK_ID_CHANGE_SETSID);
+		    (src->type == RAW_WAKE_UP_NEW_TASK &&
+		    src->opid != src->pid) || src->type == RAW_EXEC;
 		qp->flags |= QUARK_F_PROC;
 
 		qp->proc_cap_inheritable = raw_task->cap_inheritable;
@@ -3147,9 +3187,19 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		qp->proc_ipc_inonum = raw_task->ipc_inonum;
 		qp->proc_mnt_inonum = raw_task->mnt_inonum;
 		qp->proc_net_inonum = raw_task->net_inonum;
+		/*
+		 * setsid keeps the parent, otherwise the ids we have resolve
+		 * what was unknown, the related process might be known now.
+		 */
 		if (relink)
 			process_set_ids(qq, qp, raw_task->ppid, raw_task->pgid,
 			    raw_task->sid);
+		else if (raw_task->id_change & QUARK_ID_CHANGE_SETSID)
+			process_set_ids(qq, qp, qp->proc_ppid, raw_task->pgid,
+			    raw_task->sid);
+		else
+			process_set_ids(qq, qp, qp->proc_ppid, qp->proc_pgid,
+			    qp->proc_sid);
 
 		process_set_cgroup(qp, &raw_task->cgroup);
 		if (raw_task->env != NULL) {
@@ -3198,14 +3248,13 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 			qwarnx("unknown entry_leader for pid %d", qp->pid);
 	}
 	/*
-	 * With QQ_THREAD_EVENTS on kprobe the exit of any thread marks the live
-	 * process, more than once, maybe retained. gc_time guards presence in
-	 * the TAILQ.
+	 * Only the exit of the leader thread retires a process, kprobe with
+	 * QQ_THREAD_EVENTS also has the exits of other threads. gc_time guards
+	 * presence in the TAILQ.
 	 */
-	if (src->type == RAW_EXIT_THREAD) {
-		qp->retained = 0;
-		gc_mark(qq, &qp->gc, GC_PROCESS);
-	}
+	if (src->type == RAW_EXIT_THREAD &&
+	    (src->tid == 0 || src->tid == src->pid))
+		process_gc_mark(qq, qp);
 }
 
 static struct quark_event *
@@ -3221,12 +3270,13 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 		return (NULL);
 	/*
 	 * A fork for a PID we saw exit is a reused PID, the old process gives
-	 * it away but stays until freed, relations might point to it. A
+	 * it away but stays until freed, relations might point to it. So does
+	 * a retained one on any event, a new process whose fork went unseen. A
 	 * kprobe thread event is a fork of a live process from the same opid,
 	 * the exit of one of its threads sets QUARK_F_EXIT.
 	 */
-	if (src->type == RAW_WAKE_UP_NEW_TASK && (qp->flags & QUARK_F_EXIT) &&
-	    src->opid != src->pid) {
+	if (qp->retained || (src->type == RAW_WAKE_UP_NEW_TASK &&
+	    (qp->flags & QUARK_F_EXIT) && src->opid != src->pid)) {
 		RB_REMOVE(process_by_pid, &qq->process_by_pid, qp);
 		process_unlink_container(qp);
 		if ((qp = process_cache_get(qq, src->pid, 1)) == NULL)
@@ -6065,22 +6115,27 @@ quark_queue_get_event(struct quark_queue *qq)
 	struct quark_event	*qev;
 	struct quark_rule	*rule;
 
-	/* GC all processes and sockets that exited after some grace time */
-	gc_collect(qq);
-
 	/* Read from the kube pipe */
 	if (qq->qkube != NULL)
 		kube_read_events(qq);
 
 	/* Bypass skips everything */
-	if (qq->flags & QQ_BYPASS)
+	if (qq->flags & QQ_BYPASS) {
+		gc_collect(qq);
 		return (get_bypass_event(qq));
+	}
 
 	/*
 	 * Populate once before draining so we can have a fuller tree for
 	 * aggregation without chasing a continuously replenished stream.
 	 */
 	(void)quark_queue_populate(qq);
+
+	/*
+	 * GC all processes and sockets that exited after some grace time, after
+	 * populating, as events just read might relate to an exited process.
+	 */
+	gc_collect(qq);
 
 next:
 	qev = quark_queue_get_event1(qq);

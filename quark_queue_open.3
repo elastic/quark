@@ -141,8 +141,8 @@ via
 .Xr quark_process_lookup 3 .
 .Pp
 A process is kept for longer while it is the parent, group leader, session
-leader or entry leader of another process, or while queued events predate its
-exit.
+leader or entry leader of another process, or while queued events might still
+relate to it.
 The relations in
 .Xr quark_queue_get_event 3
 don't depend on

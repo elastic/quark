@@ -263,14 +263,17 @@ leader.
 requires
 .Dv QQ_ENTRY_LEADER .
 They follow
-.Em proc_ppid ,
+.Em proc_ppid
+and
+.Em proc_entry_leader ,
+which only change on fork and exec, and
 .Em proc_pgid
 and
 .Em proc_sid ,
-which only change on fork, exec and setsid, and
-.Em proc_entry_leader ,
-which only changes on fork and exec, like in other Elastic products: a
-reparented process keeps its original parent until it execs.
+which also change on setsid, the kprobe backend sees no setsid: a reparented
+process keeps its original parent until it execs.
+A relation that is unknown is resolved on a later event of the process, once
+the related process is known.
 A related process that exited is kept for as long as one of them points to it,
 regardless of
 .Em cache_grace_time

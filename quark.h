@@ -731,6 +731,7 @@ struct quark_process {
 	struct quark_process	*entry_leader;
 	u32	 refcnt;	/* relations pointing to us */
 	u32	 retained;	/* grace time over, freed when refcnt reaches 0 */
+	u64	 gc_until;	/* queued events up to this might need us */
 };
 
 struct quark_process_iter {

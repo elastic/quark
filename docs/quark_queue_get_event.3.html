@@ -248,16 +248,18 @@
         if unknown, a process can be its own leader.
         <i class="Em">entry_leader</i> requires
         <code class="Dv">QQ_ENTRY_LEADER</code>. They follow
-        <a class="permalink" href="#proc_ppid"><i class="Em" id="proc_ppid">proc_ppid</i></a>,
+        <a class="permalink" href="#proc_ppid"><i class="Em" id="proc_ppid">proc_ppid</i></a>
+        and
+        <a class="permalink" href="#proc_entry_leader"><i class="Em" id="proc_entry_leader">proc_entry_leader</i></a>,
+        which only change on fork and exec, and
         <a class="permalink" href="#proc_pgid"><i class="Em" id="proc_pgid">proc_pgid</i></a>
         and
         <a class="permalink" href="#proc_sid"><i class="Em" id="proc_sid">proc_sid</i></a>,
-        which only change on fork, exec and setsid, and
-        <a class="permalink" href="#proc_entry_leader"><i class="Em" id="proc_entry_leader">proc_entry_leader</i></a>,
-        which only changes on fork and exec, like in other Elastic products: a
-        reparented process keeps its original parent until it execs. A related
-        process that exited is kept for as long as one of them points to it,
-        regardless of
+        which also change on setsid, the kprobe backend sees no setsid: a
+        reparented process keeps its original parent until it execs. A relation
+        that is unknown is resolved on a later event of the process, once the
+        related process is known. A related process that exited is kept for as
+        long as one of them points to it, regardless of
         <a class="permalink" href="#cache_grace_time"><i class="Em" id="cache_grace_time">cache_grace_time</i></a>
         in <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
         its own relations are then NULL.</p>
@@ -301,7 +303,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 24, 2026</td>
+    <td class="foot-date">November 25, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

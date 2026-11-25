@@ -320,16 +320,25 @@ Changes from 0.11 to 0.12
   o quark_process{} got parent, group_leader, session_leader and
     entry_leader, pointers to the related processes, NULL if unknown.
     A process that exited stays in the cache while one of them points
-    to it, or while queued events predate its exit, regardless of
-    cache_grace_time. ECS process.parent and the leaders use them,
+    to it, or while queued events might still relate to it, regardless
+    of cache_grace_time. ECS process.parent and the leaders use them,
     they used to be looked up by pid and went missing once the related
     process was collected, for any child that outlived the grace time.
-  o proc_ppid, proc_pgid and proc_sid only change on fork, exec and
-    setsid, like in other Elastic products. An orphan keeps its
-    original parent until it execs, so the exit of a reparented process
-    reports the parent it was started by, not the reaper.
+    ECS same_as_process compares the processes, not their pids.
+  o proc_ppid only changes on fork and exec, proc_pgid and proc_sid on
+    fork, exec and setsid, the KPROBE backend sees no setsid. An orphan
+    keeps its original parent until it execs, so the exit of a
+    reparented process reports the parent it was started by, not the
+    reaper. A relation that was unknown is resolved on a later event
+    of the process, once the related process is known.
   o A fork for a pid that exited gets a new quark_process{}, the old
     one gives the pid away and quark_process_lookup(3) returns the new
-    one.
+    one. So does any event for an exited process that is only kept for
+    its relations.
+  o KPROBE with QQ_THREAD_EVENTS: a new thread no longer copies the
+    executable and command line of the parent process, nor moves the
+    process to its current parent, and the exit of a thread other than
+    the leader no longer drops the process from the cache.
   o Go: Process got Parent, GroupLeader, SessionLeader and EntryLeader,
-    filled by GetEvent, Lookup and Snapshot.
+    filled by GetEvent, Lookup and Snapshot if QueueAttr.Relations is
+    set.
