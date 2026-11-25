@@ -1706,13 +1706,14 @@ t_suspend(const struct test *t, struct quark_queue_attr *qa)
 
 	before = ns_clock();
 	child = fork_exec_nop1(0, 0);
+	/* A monotonic event time would be behind before by asleep */
 	do {
 		qev = drain_for_pid(&qq, child);
+		assert(qev->time >= before);
+		assert(qev->time <= ns_clock());
 	} while (!(qev->events & QUARK_EV_EXIT));
 	after = ns_clock();
 
-	assert(qev->time >= before);
-	assert(qev->time <= after);
 	qp = qev->process;
 	assert(qp != NULL);
 	assert(qp->flags & QUARK_F_PROC);
