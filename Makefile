@@ -526,6 +526,16 @@ hanson-bench: hanson-bench.c hanson.o compat.o quark.h
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
 		-o $@ $< hanson.o compat.o $(EXTRA_LDFLAGS)
 
+cache-bench: cache-bench.c $(LIBQUARK_TARGET)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+		-o $@ $< $(LIBQUARK_TARGET) $(EXTRA_LDFLAGS)
+
+cache-bench-static: cache-bench.c $(LIBQUARK_STATIC_BIG)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
+		-static -o $@ $< $(LIBQUARK_STATIC_BIG) $(EXTRA_LDFLAGS)
+
 quark-mon: quark-mon.c manpages.h $(LIBQUARK_TARGET)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) $(CDIAGFLAGS) \
@@ -664,6 +674,8 @@ clean:
 		*.o			\
 		*.a			\
 		parse.tab.c		\
+		cache-bench		\
+		cache-bench-static	\
 		hanson-bench		\
 		man-embedder		\
 		manpages.h		\
