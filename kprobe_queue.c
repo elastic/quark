@@ -1523,8 +1523,8 @@ kprobe_check_ruleset(struct quark_queue *qq)
 		return (0);
 	for (i = 0; i < qq->ruleset->n_rules; i++) {
 		qr = qq->ruleset->rules + i;
-		for (j = 0; j < qr->n_fields; j++) {
-			switch (qr->fields[j].code) {
+		for (j = 0; j < qr->n_conds; j++) {
+			switch (qr->conds[j].code) {
 			case QUARK_RF_EVENT_SCOPE:
 				errno = ENOTSUP;
 				qwarn("event.scope is not supported in kprobe backend");

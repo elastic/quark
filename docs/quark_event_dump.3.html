@@ -50,6 +50,7 @@
   EXAMPLE</a></h1>
 <div class="Bd Li">
 <pre>-&gt;818621 (FORK+EXEC+EXIT)
+  TAGS  tags=[ log ]
   COMM  comm=git
   CMDL  cmdline=[ /usr/bin/git, --no-pager, ls-tree, --name-only, -z, HEAD, --, quark_event_dump.3 ]
   PROC  ppid=5082
@@ -83,6 +84,10 @@
     <a class="permalink" href="#gid"><b class="Sy" id="gid">gid</b></a>,
     <a class="permalink" href="#suid"><b class="Sy" id="suid">suid
   ...</b></a></p>
+<p class="Pp"><b class="Sy">TAGS</b> is not a flag, it lists the names of the
+    tags that the tag blocks of the ruleset set on this event, see
+    <a class="Xr" href="quark-mon.8.html">quark-mon(8)</a>. An event without a
+    tag has no <b class="Sy">TAGS</b> line.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="RETURN_VALUES"><a class="permalink" href="#RETURN_VALUES">RETURN
@@ -108,7 +113,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">December 1, 2024</td>
+    <td class="foot-date">November 16, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

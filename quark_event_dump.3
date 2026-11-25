@@ -20,6 +20,7 @@ to the file specified in
 .Sh OUTPUT EXAMPLE
 .Bd -literal
 ->818621 (FORK+EXEC+EXIT)
+  TAGS  tags=[ log ]
   COMM  comm=git
   CMDL  cmdline=[ /usr/bin/git, --no-pager, ls-tree, --name-only, -z, HEAD, --, quark_event_dump.3 ]
   PROC  ppid=5082
@@ -59,6 +60,14 @@ and produces the fields
 .Sy uid ,
 .Sy gid ,
 .Sy suid ...
+.Pp
+.Sy TAGS
+is not a flag, it lists the names of the tags that the tag blocks of the
+ruleset set on this event, see
+.Xr quark-mon 8 .
+An event without a tag has no
+.Sy TAGS
+line.
 .Sh RETURN VALUES
 Zero on success, -1 in error from
 .Xr fwrite 3 .

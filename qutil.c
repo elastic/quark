@@ -284,8 +284,7 @@ qlog_func(int pri, int do_errno, const char *func, int lineno,
 	if (pri > quark_verbose)
 		return;
 
-	if (do_errno)
-		saved_errno = errno;
+	saved_errno = errno;
 
 	va_start(ap, fmt);
 
@@ -307,6 +306,7 @@ qlog_func(int pri, int do_errno, const char *func, int lineno,
 	}
 
 	va_end(ap);
+	errno = saved_errno;
 }
 
 const char *

@@ -22,6 +22,9 @@
 /* Shared quark_rule definitions are in nova.h */
 #include "nova.h"
 
+/* Rule engine, uses nova.h */
+#include "ruleset.h"
+
 /* Misc */
 #ifndef ALIGN_UP
 #define ALIGN_UP(_p, _b) (((u64)(_p) + ((_b) - 1)) & ~((_b) - 1))
@@ -42,9 +45,6 @@ struct quark_sockaddr;
 struct quark_queue;
 struct quark_queue_attr;
 struct quark_queue_stats;
-struct quark_ruleset;
-struct quark_rule;
-struct quark_rule_field;
 typedef int (*quark_can_aggregate_fn)(struct quark_queue *,
     struct raw_event *, struct raw_event *);
 struct raw_event	*raw_event_alloc(int);
@@ -92,16 +92,6 @@ struct quark_container	*quark_container_create(struct quark_queue *,
 			     const char *);
 int			 quark_pod_remove(struct quark_queue *, const char *);
 int			 quark_container_remove(struct quark_queue *, const char *);
-void			 quark_ruleset_init(struct quark_ruleset *);
-void			 quark_ruleset_clear(struct quark_ruleset *);
-int			 quark_ruleset_parse(struct quark_ruleset *, FILE *,
-			     char *, size_t);
-struct quark_rule	*quark_ruleset_append_rule(struct quark_ruleset *,
-			     int, u64);
-int			 quark_rule_match_field(struct quark_rule *,
-			     struct quark_rule_field);
-struct quark_rule	*quark_ruleset_match(struct quark_ruleset *,
-			     struct quark_event *);
 int			 quark_queue_set_agg_matrix(struct quark_queue *,
 			     int, int, quark_can_aggregate_fn);
 /* Can aggregate only one value (sits alone) */
@@ -124,6 +114,7 @@ int			 quark_can_aggregate_tty(struct quark_queue *,
 struct cJSON;
 void		 quark_queue_init_bare(struct quark_queue *);
 int		 parse_container_cgroup(const char *, char *, size_t);
+int		 cgroup_is_host(const char *);
 const char	*process_container_id(struct quark_process *);
 void		 process_set_cgroup(struct quark_process *, char **);
 void		 link_container_data(struct quark_queue *,
@@ -611,6 +602,8 @@ struct quark_event {
 #define QUARK_ID_CHANGE_SETUID		(1 << 1)
 #define QUARK_ID_CHANGE_SETGID		(1 << 2)
 	u32				 id_change;
+	u64				 tags;		/* one bit per ruleset tag */
+	const struct quark_ruleset	*ruleset;	/* borrowed ruleset, or NULL */
 };
 
 /*
@@ -724,6 +717,7 @@ struct quark_process {
 	struct quark_container *container;
 	char	*env;
 	size_t	 env_len;
+	enum quark_rule_scope host_scope;	/* cached host or unknown scope */
 };
 
 struct quark_process_iter {
@@ -869,56 +863,6 @@ struct quark_group {
 	RB_ENTRY(quark_group)	 entry;
 	gid_t			 gid;
 	char			*name;
-};
-
-/*
- * post points into pre
- */
-struct quark_wild {
-	char	*pre;		/* user input, like foo*bar */
-	size_t	 pre_len;
-	char	*post;
-	size_t	 post_len;
-};
-
-/* Rule Field */
-struct quark_rule_field {
-	u64		 code;
-	union {
-		u32			 pid;
-		u64			 poison_tag;
-		struct quark_wild	 wild;
-		u32			 id;
-		char			 comm[16];
-	};
-};
-
-struct quark_rule {
-	struct quark_rule_field	*fields;	/* fields that must match */
-	size_t			 n_fields;	/* number of fields */
-	int			 action;	/* QUARK_RA_* */
-	u64			 poison_tag;	/* tag used for SETTING poison */
-	u64			 evals;		/* counter */
-	u64			 hits;		/* counter */
-	u_int			 number;	/* starting from 0 */
-};
-
-struct quark_ruleset {
-	struct quark_rule	*rules;
-	size_t			 n_rules;
-};
-
-struct quark_parser_ctx {
-	struct quark_ruleset	 *ruleset;		/* parser output */
-	struct quark_rule	 *cur_rule;		/* current rule we're processing */
-	FILE			 *in;			/* input file */
-	char			**allocs;		/* arena for parser allocations */
-	size_t			  n_allocs;		/* size of the arena */
-	int			  sentnl;		/* if we sent nl uppon EOF */
-	u_long			  lineno;		/* line number */
-	u_long			  colno;		/* column number */
-	int			  error;		/* if the parser errored out */
-	char			  errorbuf[1024];	/* the parser error */
 };
 
 /*
