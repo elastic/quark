@@ -65,6 +65,31 @@ are not reported.
 A forked child is reported, even if it inherits the queue.
 The exclusion ends when the original process exits; a later process with
 the same PID is reported.
+.Pp
+Repeated opens are suppressed for each access class, process image,
+file lifetime, resolved path and mount namespace.
+The classes are read, write, execute and
+.Dv O_PATH .
+Write includes write mode and
+.Dv O_CREAT ,
+.Dv O_TRUNC
+or
+.Dv O_APPEND .
+.Dv O_PATH
+takes precedence over execute, which takes precedence over write.
+A successful exec starts a new process image.
+If the kernel does not expose its exec ID, suppression can continue across exec.
+Inode numbers with a new generation, hard links with different paths,
+renames to a new path, and different visible bind-mount paths are
+reported again.
+.Pp
+Suppression requires ext2, ext3, ext4, XFS or tmpfs, a nonzero inode generation,
+and a complete absolute path of at most 255 bytes.
+Other identities or paths can report repeats.
+The cache holds at most 16384 entries.
+Eviction and concurrent opens can also cause repeats.
+An open counts as reported only after its event enters the ring buffer.
+If that buffer is full, the next matching open can try again.
 .Sh RETURN VALUES
 Zero on success, -1 on error with
 .Va errno
