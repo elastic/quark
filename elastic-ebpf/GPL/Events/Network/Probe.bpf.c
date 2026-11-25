@@ -180,6 +180,7 @@ SEC("kretprobe/tcp_v4_connect")
 int BPF_KRETPROBE(kretprobe__tcp_v4_connect, int ret)
 {
     struct ebpf_events_state *state;
+    struct sock *sk;
     int r;
 
     preempt_disable();
@@ -188,7 +189,9 @@ int BPF_KRETPROBE(kretprobe__tcp_v4_connect, int ret)
     if (!state)
         goto out;
 
-    r = tcp_connect(state->tcp_v4_connect.sk, ret);
+    sk = state->tcp_v4_connect.sk;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_TCP_V4_CONNECT);
+    r = tcp_connect(sk, ret);
 
 out:
     preempt_enable();
@@ -227,6 +230,7 @@ SEC("kretprobe/tcp_v6_connect")
 int BPF_KRETPROBE(kretprobe__tcp_v6_connect, int ret)
 {
     struct ebpf_events_state *state;
+    struct sock *sk;
     int r;
 
     preempt_disable();
@@ -235,7 +239,9 @@ int BPF_KRETPROBE(kretprobe__tcp_v6_connect, int ret)
     if (!state)
         goto out;
 
-    r = tcp_connect(state->tcp_v6_connect.sk, ret);
+    sk = state->tcp_v6_connect.sk;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_TCP_V6_CONNECT);
+    r = tcp_connect(sk, ret);
 
 out:
     preempt_enable();

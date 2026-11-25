@@ -20,6 +20,7 @@
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 
 #include <linux/fs.h>
@@ -3673,6 +3674,224 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	assert(qev->events == QUARK_EV_EXIT);
 
 	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static void
+assert_no_bpf_state(struct quark_queue *qq, const char *step)
+{
+	const char	*op;
+
+	if ((op = bpf_queue_test_state_present(qq)) != NULL)
+		errx(1, "state map entry leaked after %s (%s)", step, op);
+}
+
+static void
+state_map_tcp_connect(struct quark_queue *qq, int af, const char *step)
+{
+	struct sockaddr_storage		 ss;
+	const struct quark_event	*qev;
+	socklen_t			 sslen;
+	int				 lfd, cfd;
+
+	lfd = local_listen(af, 0, SOCK_STREAM, 0);
+	sslen = sizeof(ss);
+	if (getsockname(lfd, (struct sockaddr *)&ss, &sslen) == -1)
+		err(1, "getsockname");
+	if ((cfd = socket(af, SOCK_STREAM, 0)) == -1)
+		err(1, "socket");
+	if (connect(cfd, (struct sockaddr *)&ss, sslen) == -1)
+		err(1, "connect");
+	assert_no_bpf_state(qq, step);
+	close(cfd);
+	close(lfd);
+
+	qev = drain_for_pid(qq, getpid());
+	assert(qev->events == QUARK_EV_SOCK_CONN_ESTABLISHED);
+	assert(qev->socket != NULL);
+	assert(qev->socket->conn_origin == SOCK_CONN_CONNECT);
+	assert(qev->socket->remote.af == af);
+	assert(qev->socket->remote.port == sockaddr_port(&ss));
+
+	qev = drain_for_pid(qq, getpid());
+	assert(qev->events == QUARK_EV_SOCK_CONN_CLOSED);
+	assert(qev->socket != NULL);
+	assert(qev->socket->remote.af == af);
+	assert(qev->socket->remote.port == sockaddr_port(&ss));
+}
+
+/*
+ * Exercise every operation that stores per-thread state in the shared BPF
+ * state map and verify that no entry for the calling thread remains in the
+ * map, regardless of op.
+ */
+static void
+run_bpf_state_map(struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_file		*qf;
+	struct stat			 st;
+	struct iovec			 iov;
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	char				 newpath[sizeof(path) + 6];
+	char				 gone[sizeof(path) + 5];
+	char				 buf[] = "x";
+	int				 fd, pfd[2];
+
+	if (pipe(pfd) == -1)
+		err(1, "pipe");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* FS_CREATE */
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	assert_no_bpf_state(&qq, "create");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_CREATE, 0, path);
+
+	/* CHMOD */
+	if (chmod(path, 0640) == -1)
+		err(1, "chmod");
+	assert_no_bpf_state(&qq, "chmod");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path);
+
+	/* WRITE: regular file and non-regular file (early return) */
+	if (write(fd, buf, 1) != 1)
+		err(1, "write");
+	assert_no_bpf_state(&qq, "write");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (write(pfd[1], buf, 1) != 1)
+		err(1, "write pipe");
+	assert_no_bpf_state(&qq, "write pipe");
+
+	/* WRITEV: regular file and non-regular file (early return) */
+	iov.iov_base = buf;
+	iov.iov_len = 1;
+	if (writev(fd, &iov, 1) != 1)
+		err(1, "writev");
+	assert_no_bpf_state(&qq, "writev");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (writev(pfd[1], &iov, 1) != 1)
+		err(1, "writev pipe");
+	assert_no_bpf_state(&qq, "writev pipe");
+
+	/* TRUNCATE */
+	if (ftruncate(fd, 0) == -1)
+		err(1, "ftruncate");
+	assert_no_bpf_state(&qq, "ftruncate");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+
+	/* CHOWN */
+	if (chown(path, getuid(), getgid()) == -1)
+		err(1, "chown");
+	assert_no_bpf_state(&qq, "chown");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_OWNER, path);
+
+	/* RENAME: failed (ENOENT) and succeeded */
+	if (snprintf(newpath, sizeof(newpath), "%s.moved", path) >=
+	    (int)sizeof(newpath))
+		errx(1, "newpath too long");
+	if (snprintf(gone, sizeof(gone), "%s.gone", path) >= (int)sizeof(gone))
+		errx(1, "gone too long");
+	if (rename(gone, newpath) != -1 || errno != ENOENT)
+		err(1, "rename %s", gone);
+	assert_no_bpf_state(&qq, "failed rename");
+	if (rename(path, newpath) == -1)
+		err(1, "rename");
+	assert_no_bpf_state(&qq, "rename");
+	qev = drain_for_pid(&qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->inode == st.st_ino);
+	assert(qf->op_mask == QUARK_FILE_OP_MOVE);
+	assert_file_path(qf, newpath);
+	assert(qf->old_path != NULL && strcmp(qf->old_path, path) == 0);
+
+	/* UNLINK: failed (ENOENT) and succeeded */
+	if (unlink(gone) != -1 || errno != ENOENT)
+		err(1, "unlink %s", gone);
+	assert_no_bpf_state(&qq, "failed unlink");
+	if (unlink(newpath) == -1)
+		err(1, "unlink");
+	assert_no_bpf_state(&qq, "unlink");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, newpath);
+
+	/* TCP_V4_CONNECT */
+	state_map_tcp_connect(&qq, AF_INET, "tcp_v4_connect");
+
+	/* TCP_V6_CONNECT */
+	if (have_ipv6())
+		state_map_tcp_connect(&qq, AF_INET6, "tcp_v6_connect");
+	else
+		warnx("%s: no IPv6 support, skipping TCP_V6_CONNECT", __func__);
+
+#ifndef NO_MEMFD
+	/* MEMFD_CREATE */
+	if (qa->flags & QQ_SHM) {
+		const struct quark_shm	*qshm;
+		int			 mfd;
+
+		if ((mfd = memfd_create("t_bpf_state_map", MFD_CLOEXEC)) == -1) {
+			if (errno != ENOTSUP && errno != ENOSYS)
+				err(1, "memfd_create");
+			warn("old kernel, skipping memfd_create");
+		} else {
+			close(mfd);
+			assert_no_bpf_state(&qq, "memfd_create");
+			qev = drain_for_pid(&qq, getpid());
+			assert(qev->events & QUARK_EV_SHM);
+			qshm = qev->shm;
+			assert(qshm != NULL);
+			assert(qshm->kind == QUARK_SHM_MEMFD_CREATE);
+			assert(qshm->memfd_create_flags == MFD_CLOEXEC);
+			assert(!strcmp(qshm->path, "memfd:t_bpf_state_map"));
+		}
+	}
+#endif
+
+	quark_queue_close(&qq);
+	close(pfd[0]);
+	close(pfd[1]);
+	close(fd);
+}
+
+static int
+t_bpf_state_map(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue_attr	 kqa;
+
+	qa->flags |= QQ_FILE | QQ_SOCK_CONN;
+#ifndef NO_MEMFD
+	if (hugetlbfs_registered())
+		qa->flags |= QQ_SHM;
+	else
+		warnx("%s: no hugetlb support, skipping MEMFD_CREATE", __func__);
+#endif
+	run_bpf_state_map(qa);
+
+	/*
+	 * Also test the kprobe fallback when QUARK_BPF_KPROBE is not already
+	 * set, so default runs exercise the seven kprobe-only states too.
+	 */
+	if (getenv("QUARK_BPF_KPROBE") == NULL) {
+		kqa = *qa;
+		if (setenv("QUARK_BPF_KPROBE", "1", 1) == -1)
+			err(1, "setenv");
+		run_bpf_state_map(&kqa);
+		if (unsetenv("QUARK_BPF_KPROBE") == -1)
+			err(1, "unsetenv");
+	}
 
 	return (0);
 }
@@ -7422,6 +7641,7 @@ struct test all_tests[] = {
 	T_EBPF(t_tty_load),
 	T_EBPF(t_tty),
 	T_EBPF(t_sock_conn),
+	T_EBPF(t_bpf_state_map),
 	T_EBPF(t_dns),
 	T_EBPF(t_dns6),
 	T_EBPF(t_dns6_exthdrs),

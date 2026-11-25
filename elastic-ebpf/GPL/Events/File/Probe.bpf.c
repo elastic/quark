@@ -1006,13 +1006,16 @@ SEC("kretprobe/chmod_common")
 int BPF_KRETPROBE(kretprobe__chmod_common, int ret)
 {
     struct ebpf_events_state *state;
+    struct path *path;
 
     preempt_disable();
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHMOD);
     if (!state)
         goto out;
 
-    chmod_common__exit(state->chmod.path, ret);
+    path = state->chmod.path;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_CHMOD);
+    chmod_common__exit(path, ret);
 
 out:
     preempt_enable();
@@ -1076,13 +1079,16 @@ SEC("kretprobe/do_truncate")
 int BPF_KRETPROBE(kretprobe__do_truncate, int ret)
 {
     struct ebpf_events_state *state;
+    struct path *path;
 
     preempt_disable();
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_TRUNCATE);
     if (!state)
         goto out;
 
-    do_truncate__exit(state->truncate.path, ret);
+    path = state->truncate.path;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_TRUNCATE);
+    do_truncate__exit(path, ret);
 
 out:
     preempt_enable();
@@ -1172,13 +1178,16 @@ SEC("kretprobe/vfs_write")
 int BPF_KRETPROBE(kretprobe__vfs_write, ssize_t ret)
 {
     struct ebpf_events_state *state;
+    struct path *path;
 
     preempt_disable();
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_WRITE);
     if (!state)
         goto out;
 
-    vfs_write__exit(state->write.path, ret);
+    path = state->write.path;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_WRITE);
+    vfs_write__exit(path, ret);
 
 out:
     preempt_enable();
@@ -1189,13 +1198,16 @@ SEC("kretprobe/vfs_writev")
 int BPF_KRETPROBE(kretprobe__vfs_writev, ssize_t ret)
 {
     struct ebpf_events_state *state;
+    struct path *path;
 
     preempt_disable();
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_WRITEV);
     if (!state)
         goto out;
 
-    vfs_write__exit(state->writev.path, ret);
+    path = state->writev.path;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_WRITEV);
+    vfs_write__exit(path, ret);
 
 out:
     preempt_enable();
@@ -1244,13 +1256,16 @@ SEC("kretprobe/chown_common")
 int BPF_KRETPROBE(kretprobe__chown_common, int ret)
 {
     struct ebpf_events_state *state;
+    struct path *path;
 
     preempt_disable();
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHOWN);
     if (!state)
         goto out;
 
-    chown_common__exit(state->chown.path, ret);
+    path = state->chown.path;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_CHOWN);
+    chown_common__exit(path, ret);
 
 out:
     preempt_enable();
