@@ -37,6 +37,7 @@ void	quark_error(struct quark_parser_ctx *, const char *fmt, ...);
 int	quark_lex(YYSTYPE *, struct quark_parser_ctx *);
 static int	push_value(struct quark_parser_ctx *, const char *);
 static int	add_values(struct quark_parser_ctx *, u64);
+static int	is_text_field(u64);
 
 #define ABORT(_fmt, ...) do {			\
 	yyerror(ctx, _fmt, ##__VA_ARGS__);	\
@@ -134,9 +135,22 @@ matchbody:	matchlist
 		| ANY
 		;
 
+/*
+ * A word after a whole match is a second value of its field, or a value
+ * after file.exec_change. It is caught here and not in match, so the
+ * reduction of a match needs no lookahead and the values are checked at
+ * their own line and column. rf.code is the code of the last field.
+ */
 matchlist:	match
-		| matchlist match
-		;
+		| matchlist match {
+			$$.rf.code = $2.rf.code;
+		} | matchlist stray {
+			if ($1.rf.code == QUARK_RF_FILE_EXEC_CHANGE)
+				ABORT("unexpected value %s, file.exec_change "
+				    "takes no value", $2.str);
+			ABORT("unexpected value %s, a field takes one value "
+			    "or a { } list", $2.str);
+		} ;
 
 match:		FILE_EXEC_CHANGE {
 			struct quark_rule_field rf;
@@ -147,11 +161,60 @@ match:		FILE_EXEC_CHANGE {
 			rf.code = QUARK_RF_FILE_EXEC_CHANGE;
 			if (quark_rule_match_field(ctx->cur_rule, rf) != 0)
 				ABORT("can't add match field");
-		} | valuefield values {
+			$$.rf.code = QUARK_RF_FILE_EXEC_CHANGE;
+		} | field values {
 			if (ctx->cur_rule == NULL)
 				ABORT("parser bug, cur_rule is NULL");
 			if (add_values(ctx, $1.rf.code) == -1)
 				YYABORT;
+			$$.rf.code = $1.rf.code;
+		} | field '\n' {
+			/*
+			 * Too many tokens can start a value for bison to list
+			 * them, so say what is wrong in the common mistakes.
+			 * Quoting only helps a field that takes text.
+			 */
+			ABORT("missing value");
+		} | field '}' {
+			ABORT("missing value");
+		} | field fieldname {
+			if (is_text_field($1.rf.code))
+				ABORT("missing value before %s, quote it to "
+				    "use it as a value", $2.str);
+			ABORT("missing value before %s", $2.str);
+		} | field ANY {
+			/*
+			 * "every value" is * for a text field and no field for
+			 * a number, but there is no "any poison tag": without
+			 * the field, untagged processes match too.
+			 */
+			if (is_text_field($1.rf.code))
+				ABORT("any matches every event only after on, "
+				    "use * to match every value, or quote it");
+			if ($1.rf.code == QUARK_RF_POISON)
+				ABORT("any matches every event only after on, "
+				    "poison takes a tag number or a { } list "
+				    "of them");
+			/*
+			 * except on takes no any and needs a condition.
+			 * Removing the line is no repair: an except line
+			 * that matches every event suppresses the tag of
+			 * the block, without it every event gets the tag.
+			 */
+			if (ctx->cur_rule != NULL &&
+			    ctx->cur_rule->action == QUARK_RA_EXCEPT)
+				ABORT("any matches every event only after on, "
+				    "except on needs a condition, leave the "
+				    "field out only if another one remains");
+			ABORT("any matches every event only after on, leave "
+			    "the field out to match every value, or write "
+			    "on any if it is the only field");
+		} ;
+
+/* The field whose values follow, for the errors in a list */
+field:		valuefield {
+			ctx->field_code = $1.rf.code;
+			$$ = $1;
 		} ;
 
 valuefield:	PROCESS_PID {
@@ -181,16 +244,82 @@ valuefield:	PROCESS_PID {
 /* One value, or a list of values that may span lines */
 values:		value
 		| '{' optnl valuelist optnl '}'
+		| '{' optnl '}' {
+			ABORT("empty list");
+		} ;
+
+valuelist:	listvalue
+		| valuelist optnl listvalue
 		;
 
-valuelist:	value
-		| valuelist optnl value
-		;
+/*
+ * A field name or any in a list is a value that needs quotes, or the
+ * list lacks its }. A field name is then the next field of this rule, as
+ * in "{ 1 process.uid 0 }", and the } goes before it, or a field of the
+ * next rule, and the } goes before that rule: "drop on } process.exe"
+ * would put drop and on into the list and merge the two rules. The
+ * parser can't tell, so the error names both, each with its condition.
+ * any only starts a rule, as in "on any". Quoting only helps a field
+ * that takes text.
+ */
+listvalue:	value
+		| fieldname {
+			if (is_text_field(ctx->field_code))
+				ABORT("%s is a field name, end the list with "
+				    "} before it if it belongs to this rule, "
+				    "else before the next rule, or quote it to "
+				    "use it as a value", $1.str);
+			ABORT("%s is a field name, end the list with } before "
+			    "it if it belongs to this rule, else before the "
+			    "next rule", $1.str);
+		} | ANY {
+			if (is_text_field(ctx->field_code))
+				ABORT("any is not a value, end the list with } "
+				    "before the next rule, or quote it");
+			ABORT("any is not a value, end the list with } before "
+			    "the next rule");
+		} ;
 
-value:		STRING {
+value:		word {
 			if (push_value(ctx, $1.str) == -1)
 				ABORT("%s", strerror(errno));
 		} ;
+
+/*
+ * A value is one word, a field takes exactly one value or a braced list,
+ * so a word of the language in a value position is just a value. The
+ * lexer sets str for keywords too. A field name, poison included, is not
+ * a value unless quoted, else a forgotten value reads the next field name
+ * as the value, as in "pod.name file.exec_change". any is not a value
+ * unless quoted either, since process.exe any reads as every program but
+ * would match only the one named any.
+ */
+word:		STRING
+		| PASS
+		| DROP
+		| ON
+		| TAG
+		| EXCEPT
+		;
+
+/* None of these starts a field, so after a match it is a stray value */
+stray:		word
+		| ANY
+		;
+
+fieldname:	POISON
+		| PROCESS_PID
+		| PROCESS_PPID
+		| PROCESS_UID
+		| PROCESS_GID
+		| PROCESS_SID
+		| PROCESS_EXE
+		| FILE_PATH
+		| FILE_EXEC_CHANGE
+		| EVENT_SCOPE
+		| POD_NAME
+		| CONTAINER_IMAGE
+		;
 
 optnl:		/* empty */
 		| optnl '\n'
@@ -223,7 +352,10 @@ quark_error(struct quark_parser_ctx *ctx, const char *fmt, ...)
 	va_end(va);
 }
 
-/* Collect one value of the current field, the string is in the arena */
+/*
+ * Collect one value of the current field, the string is in the arena or
+ * is a static keyword string
+ */
 static int
 push_value(struct quark_parser_ctx *ctx, const char *str)
 {
@@ -326,6 +458,21 @@ done:
 	return (r);
 }
 
+/* If the field takes text, where * matches every value */
+static int
+is_text_field(u64 code)
+{
+	switch (code) {
+	case QUARK_RF_EXE:		/* FALLTHROUGH */
+	case QUARK_RF_FILEPATH:		/* FALLTHROUGH */
+	case QUARK_RF_POD_NAME:		/* FALLTHROUGH */
+	case QUARK_RF_CONTAINER_IMAGE:
+		return (1);
+	default:
+		return (0);
+	}
+}
+
 /* Arena allocator so we can free intermediate allocations */
 static char *
 ctx_strdup(struct quark_parser_ctx *ctx, char *s)
@@ -343,6 +490,14 @@ ctx_strdup(struct quark_parser_ctx *ctx, char *s)
 	return (ctx->allocs[ctx->n_allocs - 1]);
 }
 
+/*
+ * Each keyword is a %token in exactly one group of the grammar: word, a
+ * plain value in a value position; fieldname, which starts a field and is
+ * a value only when quoted; or ANY, which is a value only when quoted too.
+ * A keyword in no group is reserved again in value positions, and a field
+ * name in word brings back the silent forgotten value. The keyword cases
+ * of t_rule_parser() cover every keyword, add new ones there too.
+ */
 static struct keyword {
 	const char	*word;
 	int		 token;
@@ -394,7 +549,7 @@ int
 quark_lex(YYSTYPE *lvalp, struct quark_parser_ctx *ctx)
 {
 	char buf[4096], *ebuf, *p;
-	int c, quoted = 0, quotes = 0, escape = 0, nonkw = 0;
+	int c, quoted = 0, quotes = 0, escape = 0, nonkw = 0, split = 0;
 	unsigned long qpos = 0;
 	size_t i;
 
@@ -449,7 +604,13 @@ repeat:
 				ABORT("unterminated quotes in column %lu",
 				    qpos + 1);
 			if (escape) {
-				nonkw = 1;
+				/*
+				 * A word split by a continuation, with text
+				 * before and after it, is not a keyword. A
+				 * word that ends at the continuation, or a
+				 * lone \, may still be one.
+				 */
+				split = p != buf;
 				escape = 0;
 				ctx->colno = ULONG_MAX;
 				ctx->lineno++;
@@ -487,6 +648,9 @@ repeat:
 		*p++ = c;
 		if (p == ebuf)
 			ABORT("too long line");
+		/* An escaped character, like quotes, makes a word a value */
+		if (split || escape)
+			nonkw = 1;
 		escape = 0;
 	}
 
@@ -507,8 +671,11 @@ eow:
 	}
 	if (!nonkw) {
 		for (i = 0; i < (int)nitems(keywords); i++) {
-			if (strcmp(buf, keywords[i].word) == 0)
+			if (strcmp(buf, keywords[i].word) == 0) {
+				/* Read as a value in a value position */
+				lvalp->str = keywords[i].word;
 				return keywords[i].token;
+			}
 		}
 	}
 

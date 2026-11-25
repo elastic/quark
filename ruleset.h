@@ -82,6 +82,7 @@ struct quark_parser_ctx {
 	size_t			  n_allocs;		/* size of the arena */
 	const char		**strs;			/* values of the current field */
 	size_t			  n_strs;		/* number of values */
+	u64			  field_code;		/* field of the values */
 	int			  sentnl;		/* if we sent nl uppon EOF */
 	u_long			  lineno;		/* line number */
 	u_long			  colno;		/* column number */
