@@ -5095,6 +5095,94 @@ t_relations_retained_event(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_queue_get_event(&qq) == NULL);
 	assert(c->retained);
 	assert(c->parent == NULL);
+	assert(qq.stats.retained_processes == 1);
+
+	/*
+	 * Another thread of n exits, the exit of its leader is lost and a fork
+	 * reuses the pid, n is collected all the same, and c with it.
+	 */
+	assert(test_raw_event(&qq,
+	    test_kprobe_raw(RAW_EXIT_THREAD, 100, 103, 1, 101, 100)) == n);
+	assert(test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, 1, 100, 100,
+	    0) != n);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(qq.stats.retained_processes == 0);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * A process relates to at most four others, which are kept after they exit,
+ * but keep nothing themselves, not even their env.
+ */
+static int
+t_relations_bound(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_process	*p, *l[3];
+	struct raw_event	*raw;
+	u32			 e, i;
+
+	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_ENTRY_LEADER;
+	qq.cache_grace_time = 0;
+
+	for (i = 0; i < 3; i++) {
+		e = 100 + i * 10;
+		/* e leads a session on a tty, so it's an entry leader */
+		test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, e, 1, e, e, 0);
+		/* s inherits it and calls setsid */
+		test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, e + 1, e, e, e, 0);
+		test_ids_event(&qq, RAW_ID_CHANGE, e + 1, e, e + 1, e + 1,
+		    QUARK_ID_CHANGE_SETSID);
+		/* g calls setpgid, seen on its next event */
+		test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, e + 2, e + 1, e + 1,
+		    e + 1, 0);
+		test_ids_event(&qq, RAW_ID_CHANGE, e + 2, e + 1, e + 2, e + 1,
+		    QUARK_ID_CHANGE_SETUID);
+		raw = test_ids_raw(RAW_WAKE_UP_NEW_TASK, e + 3, e + 2, e + 2,
+		    e + 1, 0);
+		raw->task.env = strdup("A=1");
+		assert(raw->task.env != NULL);
+		raw->task.env_len = sizeof("A=1");
+		p = test_raw_event(&qq, raw);
+		assert(p->env != NULL);
+		/* The leaf relates to four distinct processes */
+		l[i] = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, e + 4, e + 3,
+		    e + 2, e + 1, 0);
+		assert(l[i]->parent == p);
+		assert(l[i]->group_leader->pid == e + 2);
+		assert(l[i]->session_leader->pid == e + 1);
+		assert(l[i]->entry_leader->pid == e);
+		/* They all exit */
+		test_ids_event(&qq, RAW_EXIT_THREAD, e, 1, e, e, 0);
+		test_ids_event(&qq, RAW_EXIT_THREAD, e + 1, 1, e + 1, e + 1, 0);
+		test_ids_event(&qq, RAW_EXIT_THREAD, e + 2, 1, e + 2, e + 1, 0);
+		test_ids_event(&qq, RAW_EXIT_THREAD, e + 3, 1, e + 2, e + 1, 0);
+	}
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(qq.stats.retained_processes == 12);
+	assert(p->retained);
+	assert(p->parent == NULL);
+	assert(p->env == NULL);
+	for (i = 0; i < 3; i++) {
+		assert(l[i]->parent->retained);
+		assert(l[i]->group_leader->retained);
+		assert(l[i]->session_leader->retained);
+		assert(l[i]->entry_leader->retained);
+	}
+
+	/* The leaves exit, nothing is left */
+	for (i = 0; i < 3; i++) {
+		e = 100 + i * 10;
+		test_ids_event(&qq, RAW_EXIT_THREAD, e + 4, 1, e + 2, e + 1, 0);
+	}
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(qq.stats.retained_processes == 0);
+	for (i = 0; i < 50; i++)
+		assert(quark_process_lookup(&qq, 100 + i) == NULL);
 
 	quark_queue_close(&qq);
 
@@ -8254,6 +8342,7 @@ struct test all_tests[] = {
 	T(t_relations_pid_reuse),
 	T(t_relations_queued),
 	T(t_relations_retained_event),
+	T(t_relations_bound),
 	T(t_relations_release),
 	T(t_relations_ids),
 	T(t_relations_entry_reuse),

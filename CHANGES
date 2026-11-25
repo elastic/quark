@@ -326,7 +326,9 @@ Changes from 0.11 to 0.12
     stays in the cache while one of them points to it, or while queued
     events might still relate to it, regardless of cache_grace_time.
     Past cache_grace_time, quark_process_lookup(3), quark_process_iter(3)
-    and events other than process events don't see it, as before.
+    and events other than process events don't see it, as before. It
+    keeps no relations or env of its own, so at most four are kept per
+    other cached process.
   o proc_ppid only changes on fork and exec, an orphan keeps its
     original parent until it execs, so the exit of a reparented process
     reports the parent it was started by, not the reaper. A relation

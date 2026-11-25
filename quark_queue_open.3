@@ -154,6 +154,13 @@ such a process is only reachable through those relations,
 .Xr quark_process_lookup 3 ,
 .Xr quark_process_iter 3
 and events other than process events don't see it.
+A process kept this way has no relations or
+.Em env
+of its own, so there are at most four of them per other process in the cache,
+see
+.Em retained_processes
+in
+.Xr quark_queue_get_stats 3 .
 .It Em hold_time
 How long to buffer (hold) an event before delivering it to the user via
 .Xr quark_queue_get_event 3 .

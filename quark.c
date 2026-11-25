@@ -805,7 +805,10 @@ process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 	process_free(qp);
 }
 
-/* Past its grace time, kept only for the relations to it */
+/*
+ * Past its grace time, kept only for the relations to it, which don't read its
+ * env.
+ */
 static void
 process_retain(struct quark_queue *qq, struct quark_process *qp)
 {
@@ -814,6 +817,9 @@ process_retain(struct quark_queue *qq, struct quark_process *qp)
 		return;
 	qp->retained = 1;
 	qq->stats.retained_processes++;
+	free(qp->env);
+	qp->env = NULL;
+	qp->env_len = 0;
 }
 
 /*
@@ -3298,6 +3304,9 @@ raw_event_process(struct quark_queue *qq, struct raw_event *src)
 	    (qp->flags & QUARK_F_EXIT) && src->opid != src->pid)) {
 		RB_REMOVE(process_by_pid, &qq->process_by_pid, qp);
 		process_unlink_container(qp);
+		/* Not queued if only a thread exit was seen, it would leak */
+		if (!qp->retained)
+			gc_mark(qq, &qp->gc, GC_PROCESS);
 		if ((qp = process_cache_get(qq, src->pid, 1)) == NULL)
 			return (NULL);
 	}
