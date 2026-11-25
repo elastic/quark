@@ -168,6 +168,97 @@ test_bpf_wire(void)
 }
 
 static void
+test_file_access_wire(void)
+{
+	static const struct {
+		const char *path, *target;
+	} cases[] = {
+		{ "/watched/file", NULL },
+		{ "/watched/link", "../target" },
+		{ "/watched/file", "" },
+		{ NULL, "../target" },
+		{ "", NULL },
+	};
+	struct ebpf_file_access_event *wire;
+	struct ebpf_varlen_field *field;
+	struct quark_queue qq;
+	struct raw_event *raw;
+	const struct quark_event *event;
+	const struct quark_file_access *access;
+	const char *strings[2];
+	char buf[sizeof(*wire) + 2 * sizeof(*field) +
+	    sizeof("/watched/file") + sizeof("../target")];
+	size_t i, j, len;
+	u32 mode;
+
+	for (i = 0; i < nitems(cases); i++) {
+		quark_queue_init_bare(&qq);
+		bzero(buf, sizeof(buf));
+		wire = (struct ebpf_file_access_event *)buf;
+		wire->hdr.type = EBPF_EVENT_FILE_ACCESS;
+		wire->hdr.ts = (1ULL << 40) + 101;
+		wire->pids.tgid = 107;
+		wire->pids.tid = 109;
+		wire->finfo.inode = (2ULL << 40) + 113;
+		wire->finfo.size = (3ULL << 40) + 127;
+		mode = cases[i].target && *cases[i].target ?
+		    S_IFLNK | 0777 : S_IFREG | 0640;
+		wire->finfo.mode = mode;
+		wire->finfo.uid = 131;
+		wire->finfo.gid = 137;
+		wire->open_flags = O_RDWR | O_CREAT | O_APPEND;
+		wire->fmode = 0x80000013U;
+		/* Put the optional field first to check traversal by field size. */
+		strings[0] = cases[i].target;
+		strings[1] = cases[i].path;
+		len = 0;
+		for (j = 0; j < nitems(strings); j++) {
+			if (strings[j] == NULL)
+				continue;
+			field = (struct ebpf_varlen_field *)(wire->vl_fields.data + len);
+			field->type = j ? EBPF_VL_FIELD_PATH :
+			    EBPF_VL_FIELD_SYMLINK_TARGET_PATH;
+			field->size = strlen(strings[j]) + 1;
+			memcpy(field->data, strings[j], field->size);
+			len += sizeof(*field) + field->size;
+			wire->vl_fields.nfields++;
+		}
+		wire->vl_fields.size = len;
+		warnings = 0;
+		assert(bpf_ringbuf_cb(&qq, buf, sizeof(*wire) + len) == 0);
+		/* The queue must own its strings after the ring buffer is reused. */
+		memset(buf, 0xa5, sizeof(buf));
+		if (cases[i].path == NULL || *cases[i].path == '\0') {
+			assert(qq.length == 0 && warnings == 1);
+			assert(quark_queue_get_event(&qq) == NULL);
+			quark_queue_close(&qq);
+			continue;
+		}
+		assert(qq.length == 1 && warnings == 0);
+		raw = RB_ROOT(&qq.raw_event_by_time);
+		assert(raw != NULL && raw->type == RAW_FILE_ACCESS);
+		event = quark_queue_get_event(&qq);
+		assert(event != NULL && event->events == QUARK_EV_FILE_ACCESS);
+		assert(event->process == NULL && event->time == (1ULL << 40) + 101);
+		access = event->file_access;
+		assert(access != NULL && access->pid == 107);
+		assert(access->inode == (2ULL << 40) + 113);
+		assert(access->size == (3ULL << 40) + 127 && access->mode == mode);
+		assert(access->uid == 131 && access->gid == 137);
+		assert(access->open_flags == (O_RDWR | O_CREAT | O_APPEND));
+		assert(access->fmode == 0x80000013U);
+		assert(!strcmp(access->path, cases[i].path));
+		if (cases[i].target != NULL && *cases[i].target != '\0')
+			assert(access->sym_target != NULL &&
+			    !strcmp(access->sym_target, cases[i].target));
+		else
+			assert(access->sym_target == NULL);
+		assert(quark_queue_get_event(&qq) == NULL);
+		quark_queue_close(&qq);
+	}
+}
+
+static void
 test_stats_totals(const struct quark_queue_stats *stats, unsigned int epoch)
 {
 	assert(stats->lost == (12ULL << 32) + 33 + 3 * epoch);
@@ -241,6 +332,7 @@ int
 t_bpf_queue(const struct test *t, struct quark_queue_attr *qa)
 {
 	test_bpf_wire();
+	test_file_access_wire();
 	test_bpf_stats();
 	return (0);
 }
