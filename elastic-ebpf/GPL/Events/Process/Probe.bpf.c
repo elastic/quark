@@ -123,8 +123,9 @@ static __always_inline bool mprotect_file_key__fill(struct ebpf_dedup_file_key *
                                                     const struct inode *inode, u32 tgid)
 {
     struct super_block *sb;
+    bool reuse_safe = false;
 
-    if (ebpf_dedup_file_key__fill(key, inode, tgid))
+    if (ebpf_dedup_file_key__fill(key, inode, tgid, &reuse_safe) && reuse_safe)
         return true;
 
     __builtin_memset(key, 0, sizeof(*key));
