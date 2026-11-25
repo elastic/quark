@@ -27,12 +27,14 @@ you can still lookup them for a little while before they're garbage
 collected.
 At the time of this writing, this is hardcoded to 4 seconds.
 .Pp
-A process that exited is kept for longer while another process is related to
-it, see
+A process that exited can be kept for longer while another process is related
+to it, see
 .Em parent
 in
 .Xr quark_queue_get_event 3 ,
-its own relations are then NULL.
+but past the grace time
+.Nm
+doesn't return it, it's only reachable through those relations.
 If a new process reused its pid,
 .Nm
 returns the new one.

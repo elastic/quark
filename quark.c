@@ -628,6 +628,20 @@ process_cache_get(struct quark_queue *qq, int pid, int alloc)
 	return (qp);
 }
 
+/*
+ * Past its grace time, an exited process kept for the relations to it is only
+ * reachable through them.
+ */
+static struct quark_process *
+process_lookup(struct quark_queue *qq, int pid)
+{
+	struct quark_process	*qp;
+
+	qp = process_cache_get(qq, pid, 0);
+
+	return (qp != NULL && qp->retained ? NULL : qp);
+}
+
 static void
 process_cache_inherit(struct quark_queue *qq, struct quark_process *qp, int ppid)
 {
@@ -2755,7 +2769,7 @@ quark_process_lookup(struct quark_queue *qq, int pid)
 {
 	struct quark_process *qp;
 
-	qp = process_cache_get(qq, pid, 0);
+	qp = process_lookup(qq, pid);
 	if (qp != NULL)
 		link_container_data(qq, qp);
 
@@ -3035,10 +3049,12 @@ quark_process_iter_next(struct quark_process_iter *qi)
 {
 	struct quark_process *qp;
 
-	qp = qi->qp;
-	if (qi->qp != NULL)
-		qi->qp = RB_NEXT(process_by_pid, &qi->qq->process_by_pid,
-		    qi->qp);
+	/* Skip retained ones, see process_lookup() */
+	while ((qp = qi->qp) != NULL) {
+		qi->qp = RB_NEXT(process_by_pid, &qi->qq->process_by_pid, qp);
+		if (!qp->retained)
+			break;
+	}
 	if (qp != NULL)
 		link_container_data(qi->qq, qp);
 
@@ -5498,7 +5514,7 @@ raw_event_sock(struct quark_queue *qq, struct raw_event *raw)
 	qsk->pid_last_use = raw->pid;
 
 	qev->socket = qsk;
-	qev->process = process_cache_get(qq, qsk->pid_origin, 0);
+	qev->process = process_lookup(qq, qsk->pid_origin);
 
 	return (qev);
 }
@@ -5517,7 +5533,7 @@ raw_event_packet(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_PACKET;
-	qev->process = process_cache_get(qq, raw->pid, 0);
+	qev->process = process_lookup(qq, raw->pid);
 
 	/* Steal the packet */
 	qev->packet = raw->packet.quark_packet;
@@ -5542,7 +5558,7 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_FILE;
-	qev->process = process_cache_get(qq, raw->pid, 0);
+	qev->process = process_lookup(qq, raw->pid);
 
 	/*
 	 * File aggregation is basically joining op_mask and then using the last
@@ -5573,7 +5589,7 @@ raw_event_ptrace(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_PTRACE;
-	qev->process = process_cache_get(qq, raw->pid, 0);
+	qev->process = process_lookup(qq, raw->pid);
 	qev->ptrace = raw->ptrace.quark_ptrace;
 
 	return (qev);
@@ -5601,7 +5617,7 @@ raw_event_mprotect(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_MPROTECT;
-	qev->process = process_cache_get(qq, raw->pid, 0);
+	qev->process = process_lookup(qq, raw->pid);
 	qev->mprotect = raw->mprotect.quark_mprotect;
 	/* Steal the path; event_storage_clear() frees it */
 	raw->mprotect.quark_mprotect.path = NULL;
@@ -5617,7 +5633,7 @@ raw_event_module_load(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_MODULE_LOAD;
-	qev->process = process_cache_get(qq, raw->pid, 0);
+	qev->process = process_lookup(qq, raw->pid);
 	/* Steal it */
 	qev->module_load = raw->module_load.quark_module_load;
 	raw->module_load.quark_module_load = NULL;
@@ -5633,7 +5649,7 @@ raw_event_shm(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_SHM;
-	qev->process = process_cache_get(qq, raw->pid, 0);
+	qev->process = process_lookup(qq, raw->pid);
 	/* Steal it */
 	qev->shm = raw->shm.quark_shm;
 	raw->shm.quark_shm = NULL;
@@ -5656,7 +5672,7 @@ raw_event_tty(struct quark_queue *qq, struct raw_event *raw)
 	qev = &qq->event_storage;
 
 	qev->events = QUARK_EV_TTY;
-	qev->process = process_cache_get(qq, raw->pid, 0);
+	qev->process = process_lookup(qq, raw->pid);
 
 	/* Link raw (our head) to the first chunk in tha agg queue */
 	next = TAILQ_FIRST(&raw->agg_queue);

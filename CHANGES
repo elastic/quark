@@ -319,12 +319,14 @@ Changes from 0.11 to 0.12
     asleep since boot.
   o quark_process{} got parent, group_leader, session_leader and
     entry_leader, pointers to the related processes, NULL if unknown.
-    A process that exited stays in the cache while one of them points
-    to it, or while queued events might still relate to it, regardless
-    of cache_grace_time. ECS process.parent and the leaders use them,
-    they used to be looked up by pid and went missing once the related
-    process was collected, for any child that outlived the grace time.
-    ECS same_as_process compares the processes, not their pids.
+    ECS process.parent and the leaders use them, they used to be looked
+    up by pid and went missing once the related process was collected,
+    for any child that outlived the grace time. ECS same_as_process
+    compares the processes, not their pids. A process that exited
+    stays in the cache while one of them points to it, or while queued
+    events might still relate to it, regardless of cache_grace_time.
+    Past cache_grace_time, quark_process_lookup(3), quark_process_iter(3)
+    and events other than process events don't see it, as before.
   o proc_ppid only changes on fork and exec, an orphan keeps its
     original parent until it execs, so the exit of a reparented process
     reports the parent it was started by, not the reaper. A relation

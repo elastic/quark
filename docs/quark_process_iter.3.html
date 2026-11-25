@@ -45,6 +45,10 @@ Initialize and iterate over the internal cache of processes, it can be used on
     metadata in the queue. This includes container metadata that was added after
     <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>
     returned.</p>
+<p class="Pp">Like
+    <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>,
+    it skips a process that exited and is only kept past the grace time for the
+    relations of other processes.</p>
 <section class="Sh">
 <h1 class="Sh" id="EXAMPLES"><a class="permalink" href="#EXAMPLES">EXAMPLES</a></h1>
 <div class="Bd Li">
@@ -81,7 +85,7 @@ while ((qp = quark_process_next(&amp;qi)) != NULL)
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 25, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

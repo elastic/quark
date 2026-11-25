@@ -4875,8 +4875,12 @@ test_ids_event(struct quark_queue *qq, int type, u32 pid, u32 ppid, u32 pgid,
 static int
 t_relations(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue	 qq;
-	struct quark_process	*init, *p, *c;
+	struct quark_queue		 qq;
+	struct quark_process_iter	 qi;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	struct raw_event		*raw;
+	struct quark_process		*init, *p, *c;
 
 	quark_queue_init_bare(&qq);
 	qq.flags |= QQ_ENTRY_LEADER;
@@ -4904,7 +4908,22 @@ t_relations(const struct test *t, struct quark_queue_attr *qa)
 	assert(p->retained);
 	assert(p->parent == NULL);
 	assert(init->refcnt == 0);
-	assert(quark_process_lookup(&qq, 100) == p);
+
+	/* Only reachable through relations, not by lookups or other events */
+	assert(quark_process_lookup(&qq, 100) == NULL);
+	quark_process_iter_init(&qi, &qq);
+	while ((qp = quark_process_iter_next(&qi)) != NULL)
+		assert(qp != p);
+	raw = raw_event_alloc(RAW_PACKET);
+	assert(raw != NULL);
+	raw->pid = 100;
+	raw->packet.quark_packet = calloc(1, sizeof(struct quark_packet));
+	assert(raw->packet.quark_packet != NULL);
+	assert(raw_event_insert(&qq, raw) == 0);
+	qev = quark_queue_get_event(&qq);
+	assert(qev != NULL);
+	assert(qev->events == QUARK_EV_PACKET);
+	assert(qev->process == NULL);
 
 	/* c is reparented to init, only an exec moves it, a setuid doesn't */
 	assert(test_ids_event(&qq, RAW_ID_CHANGE, 101, 1, 100, 100,

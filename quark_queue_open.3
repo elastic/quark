@@ -148,6 +148,12 @@ The relations in
 don't depend on
 .Em cache_grace_time ,
 which can be zero.
+Past
+.Em cache_grace_time
+such a process is only reachable through those relations,
+.Xr quark_process_lookup 3 ,
+.Xr quark_process_iter 3
+and events other than process events don't see it.
 .It Em hold_time
 How long to buffer (hold) an event before delivering it to the user via
 .Xr quark_queue_get_event 3 .

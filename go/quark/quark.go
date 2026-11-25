@@ -590,8 +590,8 @@ func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
 
 // Lookup returns the Process associated with PID in quark's internal cache. It
 // refreshes the process link to container metadata before it returns. A
-// process that exited is kept while another process is related to it, its own
-// relations are then nil.
+// process that exited is returned within the queue's CacheGraceTime, past it
+// a process kept for the relations of others is only reachable through them.
 func (queue *Queue) Lookup(pid int) (Process, bool) {
 	cProcess, _ := C.quark_process_lookup(queue.quarkQueue, C.int(pid))
 
@@ -711,7 +711,8 @@ func (queue *Queue) Block() error {
 }
 
 // Snapshot returns all processes in the cache. It refreshes each process link
-// to container metadata before it copies the process into the snapshot.
+// to container metadata before it copies the process into the snapshot. Like
+// Lookup, it skips processes only kept for the relations of others.
 func (queue *Queue) Snapshot() []Process {
 	var processes []Process
 	var iter C.struct_quark_process_iter
