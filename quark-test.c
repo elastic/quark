@@ -4906,6 +4906,7 @@ t_relations(const struct test *t, struct quark_queue_attr *qa)
 	assert(test_ids_event(&qq, RAW_EXIT_THREAD, 100, 1, 100, 100, 0) == p);
 	assert(quark_queue_get_event(&qq) == NULL);
 	assert(p->retained);
+	assert(qq.stats.retained_processes == 1);
 	assert(p->parent == NULL);
 	assert(init->refcnt == 0);
 
@@ -4943,6 +4944,7 @@ t_relations(const struct test *t, struct quark_queue_attr *qa)
 	assert(c->group_leader == c);
 	assert(c->session_leader == c);
 	assert(quark_process_lookup(&qq, 100) == NULL);
+	assert(qq.stats.retained_processes == 0);
 
 	/* An exit doesn't move c either, then it goes */
 	assert(test_ids_event(&qq, RAW_EXIT_THREAD, 101, 50, 101, 101, 0) == c);

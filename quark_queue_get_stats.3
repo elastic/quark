@@ -24,6 +24,7 @@ struct quark_queue_stats {
 	u64	non_aggregations;
 	u64	lost;
 	u64	garbage_collections;
+	u64	retained_processes;
 	u64	bpf_state_lost;
 	u64	bpf_metadata_lost;
 	u64	bpf_retprobe_missed;
@@ -61,6 +62,17 @@ reading to know if it increased.
 A counter of cached objects (processes, sockets, pods and containers) that were
 deleted after expiring their grace time.
 Containers freed together with their pod are counted individually.
+A retained process, see
+.Em retained_processes ,
+is counted when it is freed.
+.It Em retained_processes
+The number of processes that exited and are kept past their grace time only
+because another process is related to them, see
+.Em parent
+in
+.Xr quark_queue_get_event 3 .
+Each process is related to at most four others, so this is at most four times
+the number of other processes in the cache.
 .It Em bpf_state_lost
 Discarded or rejected BPF invocation frames: bounded-depth or map exhaustion,
 missed-return recovery, task exit with pending state, or ambiguous metadata.

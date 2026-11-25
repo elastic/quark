@@ -385,6 +385,7 @@ type Stats struct {
 	NonAggregations       uint64
 	Lost                  uint64
 	GarbageCollections    uint64
+	RetainedProcesses     uint64 // Exited, kept only for the relations of others.
 	BPFStateLost          uint64
 	BPFMetadataLost       uint64
 	BPFRetprobeMissed     uint64
@@ -741,6 +742,7 @@ func (queue *Queue) Stats() Stats {
 	stats.NonAggregations = uint64(cStats.non_aggregations)
 	stats.Lost = uint64(cStats.lost)
 	stats.GarbageCollections = uint64(cStats.garbage_collections)
+	stats.RetainedProcesses = uint64(cStats.retained_processes)
 	stats.BPFStateLost = uint64(cStats.bpf_state_lost)
 	stats.BPFMetadataLost = uint64(cStats.bpf_metadata_lost)
 	stats.BPFRetprobeMissed = uint64(cStats.bpf_retprobe_missed)

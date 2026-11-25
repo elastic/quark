@@ -962,6 +962,7 @@ struct quark_queue_stats {
 	u64	non_aggregations;
 	u64	lost;
 	u64	garbage_collections;
+	u64	retained_processes; /* exited, kept only for relations */
 	u64	bpf_state_lost; /* discarded/rejected BPF invocation frames */
 	u64	bpf_metadata_lost; /* metadata capture failed for an operation */
 	u64	bpf_retprobe_missed; /* tracefs misses; may overlap state_lost */

@@ -42,7 +42,12 @@
 	u64	non_aggregations;
 	u64	lost;
 	u64	garbage_collections;
+	u64	retained_processes;
+	u64	bpf_state_lost;
+	u64	bpf_metadata_lost;
+	u64	bpf_retprobe_missed;
 	u64	stalls;
+	int	bpf_retprobe_stats_valid;
 	int	backend;
 };</pre>
 </div>
@@ -73,7 +78,34 @@
   <dt id="garbage_collections"><a class="permalink" href="#garbage_collections"><i class="Em">garbage_collections</i></a></dt>
   <dd>A counter of cached objects (processes, sockets, pods and containers) that
       were deleted after expiring their grace time. Containers freed together
-      with their pod are counted individually.</dd>
+      with their pod are counted individually. A retained process, see
+      <i class="Em">retained_processes</i>, is counted when it is freed.</dd>
+  <dt id="retained_processes"><a class="permalink" href="#retained_processes"><i class="Em">retained_processes</i></a></dt>
+  <dd>The number of processes that exited and are kept past their grace time
+      only because another process is related to them, see
+      <a class="permalink" href="#parent"><i class="Em" id="parent">parent</i></a>
+      in
+      <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>.
+      Each process is related to at most four others, so this is at most four
+      times the number of other processes in the cache.</dd>
+  <dt id="bpf_state_lost"><a class="permalink" href="#bpf_state_lost"><i class="Em">bpf_state_lost</i></a></dt>
+  <dd>Discarded or rejected BPF invocation frames: bounded-depth or map
+      exhaustion, missed-return recovery, task exit with pending state, or
+      ambiguous metadata. Includes ignored commands used to track nesting, so it
+      is not an exact count of lost emitted events.</dd>
+  <dt id="bpf_metadata_lost"><a class="permalink" href="#bpf_metadata_lost"><i class="Em">bpf_metadata_lost</i></a></dt>
+  <dd>Operations with a failed copied-attribute read or a successful load
+      without captured program identity. The operation event can still be
+      delivered with the corresponding validity bit clear.</dd>
+  <dt id="bpf_retprobe_missed"><a class="permalink" href="#bpf_retprobe_missed"><i class="Em">bpf_retprobe_missed</i></a></dt>
+  <dd>Tracefs return-probe misses, separate from ring-buffer loss. May overlap
+      recovered frames in <i class="Em">bpf_state_lost</i>; do not sum these as
+      a count of distinct missing events. Older kernels omit
+      return-instance-pool exhaustion from tracefs profiles. These counters can
+      undercount losses and are not proof of complete capture.</dd>
+  <dt id="bpf_retprobe_stats_valid"><a class="permalink" href="#bpf_retprobe_stats_valid"><i class="Em">bpf_retprobe_stats_valid</i></a></dt>
+  <dd>Nonzero if the last tracefs miss-count refresh succeeded with BPF
+      telemetry enabled; otherwise the miss count is unavailable or stale.</dd>
   <dt id="stalls"><a class="permalink" href="#stalls"><i class="Em">stalls</i></a></dt>
   <dd>A counter of perf rings that are stalled due to corrupt records. A stalled
       ring is abandoned and no further events are read from it. Only meaningful
@@ -101,7 +133,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 25, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

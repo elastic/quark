@@ -800,7 +800,20 @@ process_cache_delete(struct quark_queue *qq, struct quark_process *qp)
 	process_unlink_container(qp);
 	gc_unlink(qq, gc);
 	process_unrelate(qq, qp);
+	if (qp->retained)
+		qq->stats.retained_processes--;
 	process_free(qp);
+}
+
+/* Past its grace time, kept only for the relations to it */
+static void
+process_retain(struct quark_queue *qq, struct quark_process *qp)
+{
+	gc_unlink(qq, &qp->gc);
+	if (qp->retained)
+		return;
+	qp->retained = 1;
+	qq->stats.retained_processes++;
 }
 
 /*
@@ -816,8 +829,7 @@ process_collect(struct quark_queue *qq, struct quark_process *qp)
 		process_cache_delete(qq, qp);
 		return (1);
 	}
-	gc_unlink(qq, &qp->gc);
-	qp->retained = 1;
+	process_retain(qq, qp);
 	process_unrelate(qq, qp);
 
 	return (0);
@@ -837,8 +849,7 @@ process_drop(struct quark_queue *qq, struct quark_process *qp)
 		process_cache_delete(qq, qp);
 		return;
 	}
-	gc_unlink(qq, &qp->gc);
-	qp->retained = 1;
+	process_retain(qq, qp);
 }
 
 static int
