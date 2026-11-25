@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Copyright (c) 2026 Elastic NV */
 
-/* Exercise the backend without opening a queue or loading BPF programs. */
+/*
+ * Exercise the backend without opening a queue or loading BPF programs, and
+ * inspect the BPF state of a queue that quark-test.c opened.
+ */
+#include <sys/syscall.h>
+
 #include <assert.h>
+#include <err.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <bpf/btf.h>
 #include <bpf/libbpf.h>
 
 /* Keep the included backend's exported names separate from libquark. */
@@ -37,6 +46,69 @@ static void test_log(int, int, const char *, int, const char *, ...);
 #undef quark_get_bpf_probes
 #undef bpf_queue_open
 #undef queue_ops_bpf
+
+/*
+ * Return the ebpf_events_state_op enumerator name of any entry held in the
+ * BPF state map for the calling thread, or NULL if none exist. State.h is BPF
+ * only, so check the key size against the map and look up every enumerator in
+ * ebpf_events_state_op from the object's BTF directly. This avoids
+ * bpf_map__get_next_key() churn on busy hosts and valgrind 3.22's broken
+ * BPF_MAP_GET_NEXT_KEY syscall check while still covering every existing and
+ * future op.
+ */
+const char *
+bpf_queue_test_state_present(struct quark_queue *qq)
+{
+	struct bpf_queue	*bqq = qq->queue_be;
+	struct bpf_map		*map;
+	const struct btf	*btf;
+	const struct btf_type	*t;
+	const struct btf_enum	*e;
+	struct {
+		u64	pid_tgid;
+		u32	op;
+	} __attribute__((packed))	 key;
+	void			*value;
+	size_t			 value_size;
+	s32			 id;
+	u32			 i;
+	int			 r;
+
+	map = bqq->probes->maps.elastic_ebpf_events_state;
+	assert(bpf_map__key_size(map) == sizeof(key));
+
+	btf = bpf_object__btf(bqq->probes->obj);
+	assert(btf != NULL);
+	id = btf__find_by_name_kind(btf, "ebpf_events_state_op",
+	    BTF_KIND_ENUM);
+	assert(id > 0);
+	t = btf__type_by_id(btf, id);
+	assert(btf_vlen(t) > 0);
+
+	value_size = bpf_map__value_size(map);
+	if ((value = malloc(value_size)) == NULL)
+		err(1, "malloc");
+
+	key.pid_tgid = ((u64)getpid() << 32) | (u32)syscall(SYS_gettid);
+	e = btf_enum(t);
+	for (i = 0; i < btf_vlen(t); i++, e++) {
+		key.op = e->val;
+		r = bpf_map__lookup_elem(map, &key, sizeof(key), value,
+		    value_size, 0);
+		if (r == -ENOENT)
+			continue;
+		if (r != 0) {
+			free(value);
+			errno = -r;
+			err(1, "bpf_map__lookup_elem");
+		}
+		free(value);
+		return (btf__name_by_offset(btf, e->name_off));
+	}
+
+	free(value);
+	return (NULL);
+}
 
 enum stats_failure { STATS_OK, STATS_CPUS, STATS_MAP, STATS_SECOND_PROBE };
 static enum stats_failure stats_failure;
