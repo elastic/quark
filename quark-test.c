@@ -1670,12 +1670,12 @@ suspend_vm(int secs)
 }
 
 /*
- * Process start times are CLOCK_BOOTTIME like event times. The kernel also
- * keeps a CLOCK_MONOTONIC start (task_struct.start_time) and only a host
- * that has slept tells the two apart: a monotonic start of a process
- * forked after a suspend is behind by the total time asleep. In the test
- * initramfs, sleep a few seconds first if the VM never did. Elsewhere only
- * test if the host already slept.
+ * Process start and exit times are CLOCK_BOOTTIME like event times. The kernel
+ * also keeps a CLOCK_MONOTONIC start (task_struct.start_time), perf stamps
+ * with CLOCK_MONOTONIC too, and only a host that has slept tells the two
+ * apart: a monotonic time after a suspend is behind by the total time asleep.
+ * In the test initramfs, sleep a few seconds first if the VM never did.
+ * Elsewhere only test if the host already slept.
  */
 #define SUSPEND_SECS	3
 #define SUSPEND_MIN_NS	(1000ULL * 1000ULL * 1000ULL)
@@ -1700,21 +1700,33 @@ t_suspend(const struct test *t, struct quark_queue_attr *qa)
 		return (0);
 	}
 
+	/* Standalone exit, its event time is the exit time */
+	qa->flags |= QQ_MIN_AGG;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
 	before = ns_clock();
 	child = fork_exec_nop1(0, 0);
-	qev = drain_for_pid(&qq, child);
+	/* A monotonic event time would be behind before by asleep */
+	do {
+		qev = drain_for_pid(&qq, child);
+		assert(qev->time >= before);
+		assert(qev->time <= ns_clock());
+	} while (!(qev->events & QUARK_EV_EXIT));
 	after = ns_clock();
 
-	assert(qev->time >= before);
-	assert(qev->time <= after);
 	qp = qev->process;
 	assert(qp != NULL);
 	assert(qp->flags & QUARK_F_PROC);
 	/* A monotonic start would be behind before by asleep */
 	assert_start_time(&qq, qa, qp, before, after);
+	/*
+	 * A monotonic exit time would be behind the exit event by asleep,
+	 * raw_event_insert() only bumps the event up to 999ns on collisions
+	 */
+	assert(qp->flags & QUARK_F_EXIT);
+	assert(qp->exit_time_event <= qev->time);
+	assert(qev->time - qp->exit_time_event < 1000);
 
 	quark_queue_close(&qq);
 

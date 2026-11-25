@@ -313,3 +313,7 @@ Changes from 0.11 to 0.12
     state from the shared state map after reading it. Previously those
     entries stayed until evicted by the LRU, which could evict live state
     of other probes such as unlink and rename and drop their events.
+  o The KPROBE backend now reports exit_time_event in CLOCK_BOOTTIME
+    like event times and the EBPF backend. It was CLOCK_MONOTONIC, so
+    after a suspend ECS process.end read as earlier by the total time
+    asleep since boot.
