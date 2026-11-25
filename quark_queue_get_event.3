@@ -266,12 +266,13 @@ They follow
 .Em proc_ppid
 and
 .Em proc_entry_leader ,
-which only change on fork and exec, and
+which only change on fork and exec: a reparented process keeps its original
+parent until it execs.
 .Em proc_pgid
 and
-.Em proc_sid ,
-which also change on setsid, the kprobe backend sees no setsid: a reparented
-process keeps its original parent until it execs.
+.Em proc_sid
+are updated on every fork, exec, exit and id change of the process, as
+setpgid has no event.
 A relation that is unknown is resolved on a later event of the process, once
 the related process is known.
 A related process that exited is kept for as long as one of them points to it,

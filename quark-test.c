@@ -4869,8 +4869,8 @@ test_ids_event(struct quark_queue *qq, int type, u32 pid, u32 ppid, u32 pgid,
 }
 
 /*
- * Relations keep exited processes for as long as they point to them, and only
- * change on fork, exec and setsid.
+ * Relations keep exited processes for as long as they point to them, the
+ * parent only changes on fork and exec.
  */
 static int
 t_relations(const struct test *t, struct quark_queue_attr *qa)
@@ -5130,8 +5130,8 @@ t_relations_release(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
- * setsid moves a process to a new session, an orphan keeps its parent. A
- * relation unknown so far is resolved on a later event.
+ * Group and session follow every event, setpgid has none, an orphan keeps its
+ * parent. A relation unknown so far is resolved on a later event.
  */
 static int
 t_relations_ids(const struct test *t, struct quark_queue_attr *qa)
@@ -5152,6 +5152,13 @@ t_relations_ids(const struct test *t, struct quark_queue_attr *qa)
 	assert(c->parent == p);
 	assert(c->group_leader == p);
 	assert(c->session_leader == p);
+
+	/* c calls setpgid, seen on its next event */
+	assert(test_ids_event(&qq, RAW_ID_CHANGE, 101, 100, 101, 100,
+	    QUARK_ID_CHANGE_SETGID) == c);
+	assert(c->group_leader == c);
+	assert(c->session_leader == p);
+	assert(c->proc_pgid == 101);
 
 	/* p exits, c is reparented and calls setsid */
 	assert(test_ids_event(&qq, RAW_EXIT_THREAD, 100, 1, 100, 100, 0) == p);

@@ -3085,7 +3085,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 	char			*exe;
 	char			*args;
 	size_t			 args_len;
-	int			 relink;
+	int			 reparent;
 
 	qp	 = (struct quark_process *)dst->process;
 	raw_task = NULL;
@@ -3152,11 +3152,12 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 
 	if (raw_task != NULL) {
 		/*
-		 * Relations only follow fork, exec and setsid, an orphan keeps
-		 * its parent until it execs. A kprobe thread event is a fork
-		 * of the process itself.
+		 * The parent only follows fork and exec, an orphan keeps its
+		 * parent until it execs. A kprobe thread event is a fork of the
+		 * process itself. Group and session follow every event, as
+		 * setpgid has none, and kprobe has no setsid either.
 		 */
-		relink = (qp->flags & QUARK_F_PROC) == 0 ||
+		reparent = (qp->flags & QUARK_F_PROC) == 0 ||
 		    (src->type == RAW_WAKE_UP_NEW_TASK &&
 		    src->opid != src->pid) || src->type == RAW_EXEC;
 		qp->flags |= QUARK_F_PROC;
@@ -3187,19 +3188,10 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 		qp->proc_ipc_inonum = raw_task->ipc_inonum;
 		qp->proc_mnt_inonum = raw_task->mnt_inonum;
 		qp->proc_net_inonum = raw_task->net_inonum;
-		/*
-		 * setsid keeps the parent, otherwise the ids we have resolve
-		 * what was unknown, the related process might be known now.
-		 */
-		if (relink)
-			process_set_ids(qq, qp, raw_task->ppid, raw_task->pgid,
-			    raw_task->sid);
-		else if (raw_task->id_change & QUARK_ID_CHANGE_SETSID)
-			process_set_ids(qq, qp, qp->proc_ppid, raw_task->pgid,
-			    raw_task->sid);
-		else
-			process_set_ids(qq, qp, qp->proc_ppid, qp->proc_pgid,
-			    qp->proc_sid);
+		/* Also resolves what was unknown, it might be known now */
+		process_set_ids(qq, qp,
+		    reparent ? raw_task->ppid : qp->proc_ppid,
+		    raw_task->pgid, raw_task->sid);
 
 		process_set_cgroup(qp, &raw_task->cgroup);
 		if (raw_task->env != NULL) {
