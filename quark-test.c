@@ -99,6 +99,7 @@ static int	noforkflag;	/* don't fork on each test */
 static int	bflag;		/* run bpf tests */
 static int	kflag;		/* run kprobe tests */
 static int	nflag;		/* run nova tests */
+static int	Rflag;		/* QQ_MNTNS_PATHS on EBPF tests */
 static int	tflag;		/* listen to the tracepipe */
 static int	fancy_tty;
 static int	status_linelen = STATUS_LINELEN_MIN;
@@ -629,7 +630,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n",
 	    program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-1bKktv] [-x test] [tests ...]\n",
+	fprintf(stderr, "usage: %s [-1bKkRtv] [-x test] [tests ...]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "usage: %s -l\n",
 	    program_invocation_short_name);
@@ -2644,8 +2645,12 @@ t_chroot_escape_exec(const struct test *t, struct quark_queue_attr *qa)
 	assert(qp != NULL);
 	assert(qp->exe != NULL);
 	assert(!strcmp(qp->exe, true_path));
+	/* The cwd is the chroot, from the mount namespace with -R */
 	assert(qp->cwd != NULL);
-	assert(!strcmp(qp->cwd, "/"));
+	if (qa->flags & QQ_MNTNS_PATHS)
+		assert(!strcmp(qp->cwd, dir));
+	else
+		assert(!strcmp(qp->cwd, "/"));
 
 	quark_queue_close(&qq);
 
@@ -2816,6 +2821,82 @@ assert_str(const char *what, const char *got, const char *want)
 		errx(1, "%s is %s, want %s", what, got, want);
 }
 
+/* What a process that creates a file and execs must look like */
+struct path_want {
+	pid_t		 pid;
+	const char	*exe;
+	const char	*cwd;
+	const char	*file;
+	const char	*cgroup;	/* not checked if NULL */
+	const char	*cid;
+	int		 seen_exec;
+	int		 seen_file;
+};
+
+/* Drain qq until each process in w had its exec and file create checked. */
+static void
+drain_path_wants(struct quark_queue *qq, struct path_want *w, int n)
+{
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	struct timespec			 start, now;
+	char				 what[64], cid[NAME_MAX];
+	int				 i, done;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	for (;;) {
+		for (done = 1, i = 0; i < n; i++)
+			done = done && w[i].seen_exec && w[i].seen_file;
+		if (done)
+			break;
+		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
+			err(1, "clock_gettime");
+		if (now.tv_sec - start.tv_sec >= 5) {
+			for (i = 0; i < n; i++)
+				warnx("process %d: exec %s, file %s", i,
+				    w[i].seen_exec ? "seen" : "missing",
+				    w[i].seen_file ? "seen" : "missing");
+			errx(1, "missing events");
+		}
+		if ((qev = quark_queue_get_event(qq)) == NULL) {
+			if (quark_queue_block(qq) == -1)
+				err(1, "quark_queue_block");
+			continue;
+		}
+		if ((qp = qev->process) == NULL)
+			continue;
+		for (i = 0; i < n; i++)
+			if (qp->pid == (u32)w[i].pid)
+				break;
+		if (i == n)
+			continue;
+
+		if (qev->events & QUARK_EV_EXEC) {
+			snprintf(what, sizeof(what), "exe of process %d", i);
+			assert_str(what, qp->exe, w[i].exe);
+			snprintf(what, sizeof(what), "cwd of process %d", i);
+			assert_str(what, qp->cwd, w[i].cwd);
+			if (w[i].cgroup != NULL) {
+				snprintf(what, sizeof(what),
+				    "cgroup of process %d", i);
+				assert_str(what, qp->cgroup, w[i].cgroup);
+				if (parse_container_cgroup(qp->cgroup, cid,
+				    sizeof(cid)) == -1)
+					errx(1, "%s: not a container cgroup",
+					    qp->cgroup);
+				assert_str("container id", cid, w[i].cid);
+			}
+			w[i].seen_exec = 1;
+		}
+		if ((qev->events & QUARK_EV_FILE) &&
+		    (qev->file->op_mask & QUARK_FILE_OP_CREATE)) {
+			assert_file_path(qev->file, w[i].file);
+			w[i].seen_file = 1;
+		}
+	}
+}
+
 /*
  * Can the test make a container cgroup? EBPF reports the cgroup of the pids
  * controller, so it must be on down to the container. The test only changes
@@ -2866,39 +2947,30 @@ ctr_cleanup(const char *root, const char *scope, const char *slice)
  * in any path.
  *
  * Paths come from the task's root: the container path, and after the chroot,
- * the path inside the chroot.
- *
- * Only on EBPF: the kprobe backend has no cgroup for new processes.
+ * the path inside the chroot. With QQ_MNTNS_PATHS they come from the root of
+ * the container's mount namespace: the chroot shows.
  */
-static int
-t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
+static void
+container_mntns(const struct test *t, struct quark_queue_attr *qa)
 {
 	struct quark_queue		 qq;
-	const struct quark_event	*qev;
-	const struct quark_process	*qp;
+	struct path_want		 w[2];
 	const char			*true_path;
-	const char			*files[2];
 	const char			*scope_dir, *slice_dir;
 	char				 root[] = "/tmp/quark-test-ctr.XXXXXX";
 	char				 id[65], slice[64], cgroup[160];
 	char				 slice_path[PATH_MAX], scope[PATH_MAX];
 	char				 control[PATH_MAX];
 	char				 procs_path[PATH_MAX];
-	char				 cid[NAME_MAX], want_cid[NAME_MAX];
-	char				 what[64], true_exe[PATH_MAX];
+	char				 cid[NAME_MAX], sub_exe[PATH_MAX];
 	pid_t				 child, pids[2];
-	int				 i, p[2], status, with_cgroup;
+	int				 p[2], status, with_cgroup, mntns;
 	u64				 nonce;
-	int				 seen_exec[2], seen_file[2];
-	struct timespec			 start, now;
 
+	mntns = (qa->flags & QQ_MNTNS_PATHS) != 0;
 	true_path = access("/usr/bin/true", X_OK) == 0 ?
 	    "/usr/bin/true" : "/bin/true";
-	/* EBPF reports the file that runs: true can be a link to a multicall */
-	if (realpath(true_path, true_exe) == NULL)
-		err(1, "realpath %s", true_path);
-	files[0] = "/ctr-file";
-	files[1] = "/sub-file";
+	snprintf(sub_exe, sizeof(sub_exe), "/sub%s", true_path);
 
 	/*
 	 * A slice of this run and a container ID as docker makes it, 64 hex
@@ -2916,7 +2988,7 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	    "/sys/fs/cgroup%s/cgroup.subtree_control", slice);
 	snprintf(procs_path, sizeof(procs_path),
 	    "/sys/fs/cgroup%s/cgroup.procs", cgroup);
-	snprintf(want_cid, sizeof(want_cid), "docker://%s", id);
+	snprintf(cid, sizeof(cid), "docker://%s", id);
 
 	qa->flags |= QQ_FILE;
 	if (quark_queue_open(&qq, qa) != 0)
@@ -2953,15 +3025,9 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	if (child == 0) {
 		close(p[0]);
 		ctr_enter(root, with_cgroup ? procs_path : NULL);
-		/*
-		 * Exec through a link on the container's tmpfs: EBPF must
-		 * report the file that runs, also where true is no link.
-		 */
-		if (symlink(true_path, "/true-link") == -1)
-			err(1, "symlink /true-link");
-		pids[0] = ctr_spawn(NULL, files[0], "/true-link",
+		pids[0] = ctr_spawn(NULL, "/ctr-file", true_path,
 		    "container-exec");
-		pids[1] = ctr_spawn("/sub", files[1], true_path,
+		pids[1] = ctr_spawn("/sub", "/sub-file", true_path,
 		    "container-chroot-exec");
 		if (qwrite(p[1], pids, sizeof(pids)) == -1)
 			err(1, "write pids");
@@ -2978,56 +3044,156 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 		errx(1, "can't read pids of the container processes");
 	close(p[0]);
 
-	bzero(seen_exec, sizeof(seen_exec));
-	bzero(seen_file, sizeof(seen_file));
-	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
-		err(1, "clock_gettime");
-	while (!seen_exec[0] || !seen_exec[1] ||
-	    !seen_file[0] || !seen_file[1]) {
-		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
-			err(1, "clock_gettime");
-		if (now.tv_sec - start.tv_sec >= 5)
-			errx(1, "missing events: exec %d %d, file %d %d",
-			    seen_exec[0], seen_exec[1],
-			    seen_file[0], seen_file[1]);
-		if ((qev = quark_queue_get_event(&qq)) == NULL) {
-			if (quark_queue_block(&qq) == -1)
-				err(1, "quark_queue_block");
-			continue;
-		}
-		if ((qp = qev->process) == NULL)
-			continue;
-		for (i = 0; i < (int)nitems(pids); i++)
-			if (qp->pid == (u32)pids[i])
-				break;
-		if (i == (int)nitems(pids))
-			continue;
-
-		if (qev->events & QUARK_EV_EXEC) {
-			snprintf(what, sizeof(what), "exe of process %d", i);
-			assert_str(what, qp->exe, true_exe);
-			snprintf(what, sizeof(what), "cwd of process %d", i);
-			assert_str(what, qp->cwd, "/");
-			if (with_cgroup) {
-				snprintf(what, sizeof(what),
-				    "cgroup of process %d", i);
-				assert_str(what, qp->cgroup, cgroup);
-				if (parse_container_cgroup(qp->cgroup, cid,
-				    sizeof(cid)) == -1)
-					errx(1, "%s: not a container cgroup",
-					    qp->cgroup);
-				assert_str("container id", cid, want_cid);
-			}
-			seen_exec[i] = 1;
-		}
-		if ((qev->events & QUARK_EV_FILE) &&
-		    (qev->file->op_mask & QUARK_FILE_OP_CREATE)) {
-			assert_file_path(qev->file, files[i]);
-			seen_file[i] = 1;
-		}
+	bzero(w, sizeof(w));
+	w[0].pid = pids[0];
+	w[0].exe = true_path;
+	w[0].cwd = "/";
+	w[0].file = "/ctr-file";
+	w[1].pid = pids[1];
+	w[1].exe = mntns ? sub_exe : true_path;
+	w[1].cwd = mntns ? "/sub" : "/";
+	w[1].file = mntns ? "/sub/sub-file" : "/sub-file";
+	if (with_cgroup) {
+		w[0].cgroup = w[1].cgroup = cgroup;
+		w[0].cid = w[1].cid = cid;
 	}
+	drain_path_wants(&qq, w, nitems(w));
 
 	quark_queue_close(&qq);
+}
+
+/* Both path modes, whatever quark-test -R says */
+static int
+t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue_attr	a;
+
+	a = *qa;
+	a.flags &= ~QQ_MNTNS_PATHS;
+	container_mntns(t, &a);
+	a = *qa;
+	a.flags |= QQ_MNTNS_PATHS;
+	container_mntns(t, &a);
+
+	return (0);
+}
+
+/*
+ * A chroot on the host, by a process that is already there when the queue
+ * opens. The processes scraped from /proc get paths from quark's root, the
+ * full host path, and with QQ_MNTNS_PATHS so do the events.
+ */
+static void
+chroot_paths(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_process	*qp;
+	struct path_want		 w;
+	const char			*true_path;
+	char				 dir[] = "/tmp/quark-test-chr.XXXXXX";
+	char				 real[PATH_MAX], snap_cwd[PATH_MAX];
+	char				 exe[PATH_MAX + 16];
+	char				 file[PATH_MAX + 16];
+	char				 c;
+	pid_t				 child;
+	int				 ready[2], go[2], status, fd, mntns;
+	int				 opened;
+
+	mntns = (qa->flags & QQ_MNTNS_PATHS) != 0;
+	true_path = access("/usr/bin/true", X_OK) == 0 ?
+	    "/usr/bin/true" : "/bin/true";
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	if (realpath(dir, real) == NULL)
+		err(1, "realpath %s", dir);
+	snprintf(exe, sizeof(exe), "%s%s", real, true_path);
+	snprintf(file, sizeof(file), "%s/chroot-file", real);
+	if (pipe(ready) == -1 || pipe(go) == -1 || (child = fork()) == -1) {
+		warn("pipe or fork");
+		ctr_cleanup(dir, NULL, NULL);
+		exit(1);
+	}
+	if (child == 0) {
+		close(ready[0]);
+		close(go[1]);
+		/* What goes into dir goes away with the namespace */
+		if (unshare(CLONE_NEWNS) == -1)
+			err(1, "unshare");
+		if (mount(NULL, "/", "", MS_REC | MS_PRIVATE, NULL) == -1)
+			err(1, "mount private");
+		if (mount("tmpfs", dir, "tmpfs", 0, "mode=0755") == -1)
+			err(1, "mount tmpfs %s", dir);
+		ctr_mirror(dir);
+		if (chroot(dir) == -1 || chdir("/") == -1)
+			err(1, "chroot %s", dir);
+		if (qwrite(ready[1], "r", 1) == -1)
+			err(1, "write ready");
+		if (qread(go[0], &c, 1) != 1)
+			errx(1, "read go");
+		fd = open("/chroot-file",
+		    O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
+		if (fd == -1)
+			err(1, "create /chroot-file");
+		close(fd);
+		execl(true_path, "true", "chroot-paths", (char *)NULL);
+		err(1, "execl %s", true_path);
+	}
+	close(ready[1]);
+	close(go[0]);
+
+	/*
+	 * Let the child go, or stop it on an error, then clean up before any
+	 * check: closing go makes it exit.
+	 */
+	snap_cwd[0] = 0;
+	opened = 0;
+	if (qread(ready[0], &c, 1) == 1) {
+		qa->flags |= QQ_FILE;
+		if (quark_queue_open(&qq, qa) != 0)
+			warn("quark_queue_open");
+		else {
+			opened = 1;
+			qp = quark_process_lookup(&qq, child);
+			if (qp != NULL && qp->cwd != NULL)
+				strlcpy(snap_cwd, qp->cwd, sizeof(snap_cwd));
+			if (qwrite(go[1], "g", 1) == -1)
+				warn("write go");
+		}
+	}
+	close(go[1]);
+	close(ready[0]);
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	ctr_cleanup(dir, NULL, NULL);
+	if (!opened)
+		errx(1, "chroot child isn't ready or the queue didn't open");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "chroot child didn't exit cleanly");
+	assert_str("snapshot cwd", snap_cwd, real);
+
+	bzero(&w, sizeof(w));
+	w.pid = child;
+	w.exe = mntns ? exe : true_path;
+	/* With the flag, live paths match the snapshot */
+	w.cwd = mntns ? snap_cwd : "/";
+	w.file = mntns ? file : "/chroot-file";
+	drain_path_wants(&qq, &w, 1);
+
+	quark_queue_close(&qq);
+}
+
+/* Both path modes, whatever quark-test -R says */
+static int
+t_chroot_paths(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue_attr	a;
+
+	a = *qa;
+	a.flags &= ~QQ_MNTNS_PATHS;
+	chroot_paths(t, &a);
+	a = *qa;
+	a.flags |= QQ_MNTNS_PATHS;
+	chroot_paths(t, &a);
 
 	return (0);
 }
@@ -8015,6 +8181,7 @@ struct test all_tests[] = {
 	T_EBPF(t_detached_mount_exec),
 	T_EBPF(t_chroot_escape_exec),
 	T_EBPF(t_container_mntns),
+	T_EBPF(t_chroot_paths),
 	T_EBPF(t_shmget),
 	T_EBPF(t_memfd_stale_state),
 	T_EBPF(t_mprotect),
@@ -8381,6 +8548,8 @@ run_tests(int argc, char *argv[])
 	quark_queue_default_attr(&bpf_attr);
 	bpf_attr.flags &= ~(QQ_EBPF | QQ_KPROBE | QQ_NOVA);
 	bpf_attr.flags |= QQ_EBPF | QQ_ENTRY_LEADER;
+	if (Rflag)
+		bpf_attr.flags |= QQ_MNTNS_PATHS;
 	bpf_attr.hold_time = 100;
 	bpf_attr.max_env = 32768;
 
@@ -8494,7 +8663,7 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "1bhKklntvVx:")) != -1) {
+	while ((ch = getopt(argc, argv, "1bhKklnRtvVx:")) != -1) {
 		switch (ch) {
 		case '1':
 			noforkflag = 1;
@@ -8520,6 +8689,9 @@ main(int argc, char *argv[])
 			break;	/* NOTREACHED */
 		case 'n':
 			nflag = 1;
+			break;
+		case 'R':
+			Rflag = 1;
 			break;
 		case 't':
 			tflag = 1;

@@ -49,6 +49,12 @@
 
 #define KERNFS_NODE_COMPONENT_MAX_LEN 250
 
+// Build paths from the root of the task's mount namespace instead of the
+// task's root, so that chroot(2) doesn't change them. For a container, that is
+// the path inside the container. Set by userspace before load (quark's
+// QQ_MNTNS_PATHS).
+const volatile bool path_mntns_root = false;
+
 // Map used as a scratch area by the path resolver to store intermediate state
 // (dentry pointers).
 struct {
@@ -112,11 +118,14 @@ ebpf_resolve_path_to_string(char *buf, struct path *path, const struct task_stru
     // PATH_RESOLVER_MAX_COMPONENTS) and store pointers to each dentry in
     // dentry_arr
     for (int i = 0; i < PATH_RESOLVER_MAX_COMPONENTS; i++) {
-        if (done || (curr_dentry == root.dentry && curr_vfsmount == root.mnt)) {
+        if (done || (!path_mntns_root && curr_dentry == root.dentry &&
+                     curr_vfsmount == root.mnt)) {
             // We've reached the task's root if both the current dentry and
             // the current vfsmount match those of the root struct path, or a
-            // disconnected mount root below. Fill in the rest of dentry_arr
-            // with NULLs so the next loop ignores the remaining entries.
+            // parentless mount root below. With path_mntns_root, the task's
+            // root is not a stop and only the latter ends the walk. Fill in
+            // the rest of dentry_arr with NULLs so the next loop ignores the
+            // remaining entries.
             truncated     = false;
             dentry_arr[i] = NULL;
             continue;
@@ -129,12 +138,14 @@ ebpf_resolve_path_to_string(char *buf, struct path *path, const struct task_stru
             // A mount with no parent is either the root of a mount namespace
             // or a lazily unmounted (detached) mount: mnt_parent points back
             // at itself and mnt_mountpoint at its own root, so the jump below
-            // would spin in place until we run out of components. We only get
-            // here without having matched the task's root when the path is
-            // outside of it (chroot escape, fd from another mount namespace,
-            // detached mount), and nothing above us is reachable either way,
-            // so mirror d_path() and stop with an absolute path. Note the
-            // flag at the top so the remaining iterations skip the reads.
+            // would spin in place until we run out of components. Without
+            // path_mntns_root we only get here without having matched the
+            // task's root when the path is outside of it (chroot escape, fd
+            // from another mount namespace, detached mount). With it, this is
+            // where every walk ends: the root of the mount namespace. Nothing
+            // above us is reachable either way, so mirror d_path() and stop
+            // with an absolute path. Note the flag at the top so the
+            // remaining iterations skip the reads.
             if (parent_mnt == mnt) {
                 done          = true;
                 truncated     = false;

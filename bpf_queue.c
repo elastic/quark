@@ -1323,6 +1323,9 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	 */
 	if (!(qq->flags & QQ_BYPASS))
 		p->rodata->env_max = MIN(qq->max_env, UINT32_MAX);
+	/* Paths from the mount namespace root, not the task's root */
+	if (qq->flags & QQ_MNTNS_PATHS)
+		p->rodata->path_mntns_root = 1;
 
 	/*
 	 * Unload everything since it has way more than we want

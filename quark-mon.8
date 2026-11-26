@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDEeFGgHhkLMNnSsTtuv
+.Op Fl BbDEeFGgHhkLMNnRSsTtuv
 .Op Fl C Ar filename
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
@@ -115,6 +115,14 @@ Attempt NOVA as the backend.
 .It Fl P Ar ppid
 Display only events where parent pid is
 .Ar ppid .
+.It Fl R
+Build paths from the root of the process's mount namespace, so that
+.Xr chroot 2
+does not change them.
+See
+.Dv QQ_MNTNS_PATHS
+in
+.Xr quark_queue_open 3 .
 .It Fl S
 Enable socket events (experimental).
 .It Fl s

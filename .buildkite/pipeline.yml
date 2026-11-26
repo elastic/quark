@@ -334,6 +334,17 @@ steps:
       machineType: n2-standard-2
       enableNestedVirtualization: true
 
+  - label: "quark-test on rhel 8 (4.18.0-553, ebpf mntns paths)"
+    key: test_rhel_8_mntns_paths
+    command: "./.buildkite/runtest_distro.sh rhel 8 -b -R"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
   - label: "quark-test on rhel 8.3 (4.18.0-240, no bpf)"
     key: test_rhel_8_3
     command: "./.buildkite/runtest_distro.sh rhel 8.3 -k"
@@ -358,7 +369,7 @@ steps:
 
   - label: "quark-test on rhel 8.5 (4.18.0-348, no file)"
     key: test_rhel_8_5
-    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all -x t_container_mntns"
+    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all -x t_container_mntns -x t_chroot_paths"
     depends_on:
       - make_docker
     agents:
@@ -369,7 +380,7 @@ steps:
 
   - label: "quark-test on rhel 8.6 (4.18.0-372, no file)"
     key: test_rhel_8_6
-    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all -x t_container_mntns"
+    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all -x t_container_mntns -x t_chroot_paths"
     depends_on:
       - make_docker
     agents:
@@ -380,7 +391,7 @@ steps:
 
   - label: "quark-test on rhel 8.7 (4.18.0-425, no file)"
     key: test_rhel_8_7
-    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all -x t_container_mntns"
+    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all -x t_container_mntns -x t_chroot_paths"
     depends_on:
       - make_docker
     agents:
@@ -592,6 +603,17 @@ steps:
   - label: "quark-test on ubuntu 26.04 (current, ebpf kprobe fallback)"
     key: test_ubuntu_26_04_kprobe_fallback
     command: "./.buildkite/runtest_distro.sh ubuntu 26.04 -b -K"
+    depends_on:
+      - make_docker
+    agents:
+      image: family/core-ubuntu-2404
+      provider: gcp
+      machineType: n2-standard-2
+      enableNestedVirtualization: true
+
+  - label: "quark-test on ubuntu 26.04 (current, ebpf mntns paths)"
+    key: test_ubuntu_26_04_mntns_paths
+    command: "./.buildkite/runtest_distro.sh ubuntu 26.04 -b -R"
     depends_on:
       - make_docker
     agents:
