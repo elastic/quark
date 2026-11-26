@@ -2658,23 +2658,6 @@ t_chroot_escape_exec(const struct test *t, struct quark_queue_attr *qa)
 
 #define CGROUP_ROOT_CONTROL	"/sys/fs/cgroup/cgroup.subtree_control"
 
-static int
-cgroup_write(const char *path, const char *val)
-{
-	int	fd, saved;
-
-	if ((fd = open(path, O_WRONLY | O_CLOEXEC)) == -1)
-		return (-1);
-	if (qwrite(fd, val, strlen(val)) == -1) {
-		saved = errno;
-		close(fd);
-		errno = saved;
-		return (-1);
-	}
-
-	return (close(fd));
-}
-
 /* Is word one of the space separated words of the one-line file path? */
 static int
 cgroup_has_word(const char *path, const char *word)
@@ -2746,7 +2729,7 @@ ctr_enter(const char *root, const char *cgroup_procs)
 
 	if (cgroup_procs != NULL) {
 		snprintf(pid, sizeof(pid), "%d", getpid());
-		if (cgroup_write(cgroup_procs, pid) == -1)
+		if (sysfs_write(cgroup_procs, pid) == -1)
 			err(1, "write %s", cgroup_procs);
 	}
 	if (unshare(CLONE_NEWNS) == -1)
@@ -2833,6 +2816,36 @@ assert_str(const char *what, const char *got, const char *want)
 		errx(1, "%s is %s, want %s", what, got, want);
 }
 
+/*
+ * Can the test make a container cgroup? EBPF reports the cgroup of the pids
+ * controller, so it must be on down to the container. The test only changes
+ * the cgroups it makes: the root has it on systemd hosts, and the initramfs
+ * init turns it on. Kernels before 4.5 have no cgroup v2. Without it, the
+ * test still checks the paths, except in the initramfs if the kernel has the
+ * controller: then init failed to turn it on.
+ */
+static int
+ctr_cgroup_usable(const struct test *t)
+{
+	struct statfs	sfs;
+
+	if (statfs("/sys/fs/cgroup", &sfs) == -1 ||
+	    sfs.f_type != CGROUP2_SUPER_MAGIC) {
+		warnx("%s: no cgroup v2, skipping cgroup checks", t->name);
+		return (0);
+	}
+	if (cgroup_has_word(CGROUP_ROOT_CONTROL, "pids"))
+		return (1);
+	if (getenv("QUARK_INITRAMFS") != NULL &&
+	    cgroup_has_word("/sys/fs/cgroup/cgroup.controllers", "pids"))
+		errx(1, "%s: the pids controller is not on at the cgroup root",
+		    t->name);
+	warnx("%s: no pids controller at the cgroup root, skipping cgroup "
+	    "checks", t->name);
+
+	return (0);
+}
+
 /* Remove what a container test made, each argument may be NULL */
 static void
 ctr_cleanup(const char *root, const char *scope, const char *slice)
@@ -2863,7 +2876,6 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
 	const struct quark_process	*qp;
-	struct statfs			 sfs;
 	const char			*true_path;
 	const char			*files[2];
 	const char			*scope_dir, *slice_dir;
@@ -2876,6 +2888,7 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	char				 what[64];
 	pid_t				 child, pids[2];
 	int				 i, p[2], status, with_cgroup;
+	u64				 nonce;
 	int				 seen_exec[2], seen_file[2];
 	struct timespec			 start, now;
 
@@ -2888,9 +2901,11 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	 * A slice of this run and a container ID as docker makes it, 64 hex
 	 * digits. Only the last component of the cgroup names the container.
 	 */
+	nonce = ns_clock();
 	snprintf(id, sizeof(id), "%08x%056llx", (u32)getpid(),
-	    (unsigned long long)ns_clock());
-	snprintf(slice, sizeof(slice), "/quark-test-%d.slice", getpid());
+	    (unsigned long long)nonce);
+	snprintf(slice, sizeof(slice), "/quark-test-%d-%llx.slice", getpid(),
+	    (unsigned long long)nonce);
 	snprintf(cgroup, sizeof(cgroup), "%s/docker-%s.scope", slice, id);
 	snprintf(slice_path, sizeof(slice_path), "/sys/fs/cgroup%s", slice);
 	snprintf(scope, sizeof(scope), "/sys/fs/cgroup%s", cgroup);
@@ -2903,33 +2918,19 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	qa->flags |= QQ_FILE;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
+	/* Probe first, so that an error leaves nothing behind */
+	with_cgroup = ctr_cgroup_usable(t);
 	if (mkdtemp(root) == NULL)
 		err(1, "mkdtemp");
-
-	/*
-	 * EBPF reports the cgroup of the pids controller, so it must be on
-	 * down to the container. The test only changes the cgroups it makes:
-	 * the root has it on systemd hosts, and the initramfs init turns it
-	 * on. Kernels before 4.5 have no cgroup v2. Without it, still check
-	 * the paths.
-	 */
-	with_cgroup = 0;
 	slice_dir = scope_dir = NULL;
-	if (statfs("/sys/fs/cgroup", &sfs) == -1 ||
-	    sfs.f_type != CGROUP2_SUPER_MAGIC)
-		warnx("%s: no cgroup v2, skipping cgroup checks", t->name);
-	else if (!cgroup_has_word(CGROUP_ROOT_CONTROL, "pids"))
-		warnx("%s: no pids controller at the cgroup root, "
-		    "skipping cgroup checks", t->name);
-	else {
-		with_cgroup = 1;
+	if (with_cgroup) {
 		if (mkdir(slice_path, 0755) == -1) {
 			warn("mkdir %s", slice_path);
 			ctr_cleanup(root, NULL, NULL);
 			exit(1);
 		}
 		slice_dir = slice_path;
-		if (cgroup_write(control, "+pids") == -1) {
+		if (sysfs_write(control, "+pids") == -1) {
 			warn("enable pids in %s", slice_path);
 			ctr_cleanup(root, NULL, slice_dir);
 			exit(1);
