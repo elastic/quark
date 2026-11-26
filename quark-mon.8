@@ -158,6 +158,12 @@ and for
 .Dq sh x.sh
 it is
 .Pa /usr/bin/sh .
+A process that already runs when the queue opens gets its
+.Dq process.exe
+from
+.Pa /proc/<pid>/exe
+on both backends: the file that runs, the interpreter for a script, until
+its next exec.
 The EBPF backend resolves the paths of
 .Dq process.exe
 and

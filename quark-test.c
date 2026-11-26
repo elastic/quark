@@ -3033,7 +3033,13 @@ container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	if (child == 0) {
 		close(p[0]);
 		ctr_enter(root, with_cgroup ? procs_path : NULL);
-		pids[0] = ctr_spawn(NULL, "/ctr-file", true_path,
+		/*
+		 * Exec through a link on the container's tmpfs: EBPF must
+		 * report the file that runs, also where true is no link.
+		 */
+		if (symlink(true_path, "/true-link") == -1)
+			err(1, "symlink /true-link");
+		pids[0] = ctr_spawn(NULL, "/ctr-file", "/true-link",
 		    "container-exec");
 		pids[1] = ctr_spawn("/sub", "/sub-file", true_path,
 		    "container-chroot-exec");

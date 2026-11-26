@@ -171,11 +171,14 @@
       <a class="Xr" href="https://linux.die.net/man/2/execve">execve(2)</a> instead, which is not
       resolved and can be relative: for a script it is the script, like
       <span class="Pa">./x.sh</span>, and for &#x201C;sh x.sh&#x201D; it is
-      <span class="Pa">/usr/bin/sh</span>. The EBPF backend resolves the paths
-      of &#x201C;process.exe&#x201D; and &#x201C;file.path&#x201D; from the root
-      of the process, so a path resolved after a
-      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> is relative to it, unless
-      <code class="Fl">-R</code> is given. A process that calls
+      <span class="Pa">/usr/bin/sh</span>. A process that already runs when the
+      queue opens gets its &#x201C;process.exe&#x201D; from
+      <span class="Pa">/proc/&lt;pid&gt;/exe</span> on both backends: the file
+      that runs, the interpreter for a script, until its next exec. The EBPF
+      backend resolves the paths of &#x201C;process.exe&#x201D; and
+      &#x201C;file.path&#x201D; from the root of the process, so a path resolved
+      after a <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> is relative to
+      it, unless <code class="Fl">-R</code> is given. A process that calls
       <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> after its exec keeps the
       &#x201C;process.exe&#x201D; of that exec. See
       <a class="Sx" href="#CONTAINER_SCOPE">CONTAINER SCOPE</a> for the
