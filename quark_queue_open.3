@@ -142,7 +142,8 @@ Without the flag, the paths of the files below the root of a process in a
 are relative to the chroot.
 A file outside of the chroot, like one opened before the
 .Xr chroot 2 ,
-is reported from the root of the mount namespace.
+is reported from the root of the mount namespace, or from the root of its
+mount if that mount is detached.
 The processes found in
 .Pa /proc
 when the queue is opened get paths relative to the caller's root, so the

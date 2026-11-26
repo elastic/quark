@@ -75,7 +75,7 @@ An internal cache of processes is kept that can be looked up via [quark\_process
 
 [*PATHS*](#PATHS)
 
-The EBPF backend builds paths in the kernel, by walking up from the file to the root of the process. After a [chroot(2)](https://linux.die.net/man/2/chroot), a path below the new root is relative to it, and a path outside of it is from the root of the mount namespace. With `QQ_MNTNS_PATHS`, see [quark\_queue\_open(3)](https://elastic.github.io/quark/quark_queue_open.3.html), the walk goes up to the root of the process's mount namespace instead, so a path is the same before and after a [chroot(2)](https://linux.die.net/man/2/chroot), and for a process in a container it is the path inside the container.
+The EBPF backend builds paths in the kernel, by walking up from the file to the root of the process. After a [chroot(2)](https://linux.die.net/man/2/chroot), a path below the new root is relative to it, and a path outside of it is from the root of the mount namespace, or from the root of its mount if that mount is detached. With `QQ_MNTNS_PATHS`, see [quark\_queue\_open(3)](https://elastic.github.io/quark/quark_queue_open.3.html), the walk goes up to the root of the process's mount namespace instead, so a path is the same before and after a [chroot(2)](https://linux.die.net/man/2/chroot), and for a process in a container it is the path inside the container.
 
 [*TRANSPARENCY*](#TRANSPARENCY)
 

@@ -181,7 +181,8 @@
       is relative to it, unless <code class="Fl">-R</code> is given. A file
       outside of the new root, like one opened before the
       <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>, keeps its path from the
-      root of the mount namespace. A process that calls
+      root of the mount namespace, or from the root of its mount if that mount
+      is detached. A process that calls
       <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> after its exec keeps the
       &#x201C;process.exe&#x201D; of that exec. See
       <a class="Sx" href="#CONTAINER_SCOPE">CONTAINER SCOPE</a> for the
@@ -242,11 +243,15 @@ drop on any</pre>
     process cgroup is a container scope of the systemd cgroup driver, like
     <span class="Pa">cri-containerd-&lt;id&gt;.scope</span> or
     <span class="Pa">crio-&lt;id&gt;.scope</span>. This is the kubeadm default
-    since Kubernetes 1.22. The EBPF backend reads the cgroup of the pids
-    controller, so the pids controller must be on down to the container cgroup,
-    in <span class="Pa">cgroup.subtree_control</span> of each cgroup above it.
-    systemd turns it on by default. Without it, the cgroup of the process is a
-    cgroup above the container scope, and the process is not in a container.</p>
+    since Kubernetes 1.22. For live events, the EBPF backend reads the cgroup of
+    the pids controller. With cgroup v2, the pids controller must be on down to
+    the container cgroup, in <span class="Pa">cgroup.subtree_control</span> of
+    each cgroup above it. systemd turns it on by default. Without it, live
+    events have a cgroup above the container scope, and are not in a container.
+    With cgroup v1, the container cgroup must exist in the pids hierarchy. The
+    processes found in <span class="Pa">/proc</span> when the queue opens use
+    the unified cgroup on cgroup v2, so such a process can be in a container
+    while its live events are not.</p>
 <p class="Pp">Kubernetes is not required: a container run by docker or podman
     with the systemd cgroup driver, in
     <span class="Pa">docker-&lt;id&gt;.scope</span> or

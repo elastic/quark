@@ -128,7 +128,8 @@ the root of the process.
 After a
 .Xr chroot 2 ,
 a path below the new root is relative to it, and a path outside of it is
-from the root of the mount namespace.
+from the root of the mount namespace, or from the root of its mount if that
+mount is detached.
 With
 .Dv QQ_MNTNS_PATHS ,
 see

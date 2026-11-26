@@ -135,11 +135,12 @@
             a process in a <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> are
             relative to the chroot. A file outside of the chroot, like one
             opened before the <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>,
-            is reported from the root of the mount namespace. The processes
-            found in <span class="Pa">/proc</span> when the queue is opened get
-            paths relative to the caller's root, so the same process can change
-            paths after its first event. With the flag both are built from the
-            same root, as long as the caller is not itself in a
+            is reported from the root of the mount namespace, or from the root
+            of its mount if that mount is detached. The processes found in
+            <span class="Pa">/proc</span> when the queue is opened get paths
+            relative to the caller's root, so the same process can change paths
+            after its first event. With the flag both are built from the same
+            root, as long as the caller is not itself in a
             <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>. The strings can
             still differ, for example for a path with more components than the
             EBPF backend resolves, which it reports as a relative

@@ -140,7 +140,8 @@ $ ls -1 /tmp | wc -l</pre>
       to the root of the process. After a
       <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>, a path below the new
       root is relative to it, and a path outside of it is from the root of the
-      mount namespace. With <code class="Dv">QQ_MNTNS_PATHS</code>, see
+      mount namespace, or from the root of its mount if that mount is detached.
+      With <code class="Dv">QQ_MNTNS_PATHS</code>, see
       <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>, the
       walk goes up to the root of the process's mount namespace instead, so a
       path is the same before and after a

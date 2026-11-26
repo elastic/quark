@@ -175,7 +175,8 @@ a path below the new root is relative to it, unless
 is given.
 A file outside of the new root, like one opened before the
 .Xr chroot 2 ,
-keeps its path from the root of the mount namespace.
+keeps its path from the root of the mount namespace, or from the root of
+its mount if that mount is detached.
 A process that calls
 .Xr chroot 2
 after its exec keeps the
@@ -258,13 +259,19 @@ cgroup is a container scope of the systemd cgroup driver, like
 or
 .Pa crio-<id>.scope .
 This is the kubeadm default since Kubernetes 1.22.
-The EBPF backend reads the cgroup of the pids controller, so the pids
-controller must be on down to the container cgroup, in
+For live events, the EBPF backend reads the cgroup of the pids controller.
+With cgroup v2, the pids controller must be on down to the container cgroup,
+in
 .Pa cgroup.subtree_control
 of each cgroup above it.
 systemd turns it on by default.
-Without it, the cgroup of the process is a cgroup above the container scope,
-and the process is not in a container.
+Without it, live events have a cgroup above the container scope, and are not
+in a container.
+With cgroup v1, the container cgroup must exist in the pids hierarchy.
+The processes found in
+.Pa /proc
+when the queue opens use the unified cgroup on cgroup v2, so such a process
+can be in a container while its live events are not.
 .Pp
 Kubernetes is not required: a container run by docker or podman with the
 systemd cgroup driver, in
