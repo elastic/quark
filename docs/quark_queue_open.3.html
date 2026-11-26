@@ -121,33 +121,9 @@
           check and does not imply that the protection change was
         committed.</dd>
       <dt id="QQ_MNTNS_PATHS"><a class="permalink" href="#QQ_MNTNS_PATHS"><code class="Dv">QQ_MNTNS_PATHS</code></a></dt>
-      <dd>Build paths from the root of the process's mount namespace, instead of
-          from the process's root. This applies to the executable and working
-          directory of a process and to the paths of file and mprotect events. A
-          path is then the one that the process's mount namespace sees: for a
-          process in a container, the path inside the container.
-          <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> does not change it. A
-          file outside of the mount namespace, like one opened through a file
-          descriptor from another mount namespace, is reported from the root of
-          that other mount namespace, and a file on a detached mount from the
-          root of the detached mount tree, as without the flag.
-        <p class="Pp">Without the flag, the paths of the files below the root of
-            a process in a <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> are
-            relative to the chroot. A file outside of the chroot, like one
-            opened before the <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>,
-            is reported from the root of the mount namespace, or from the root
-            of its mount if that mount is detached. The processes found in
-            <span class="Pa">/proc</span> when the queue is opened get paths
-            relative to the caller's root, so the same process can change paths
-            after its first event. With the flag both are built from the same
-            root, as long as the caller is not itself in a
-            <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>. The strings can
-            still differ, for example for a path with more components than the
-            EBPF backend resolves, which it reports as a relative
-            <span class="Pa">./</span> path.</p>
-        <p class="Pp">Only the EBPF backend implements it, the other backends
-            ignore it.</p>
-      </dd>
+      <dd>Build paths from the root of the mount namespace of the process, so
+          that <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> does not change
+          them. EBPF backend only.</dd>
     </dl>
   </dd>
   <dt id="max_length"><a class="permalink" href="#max_length"><i class="Em">max_length</i></a></dt>

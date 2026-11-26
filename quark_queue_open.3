@@ -124,39 +124,10 @@ Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
 .It Dv QQ_MNTNS_PATHS
-Build paths from the root of the process's mount namespace, instead of from the
-process's root.
-This applies to the executable and working directory of a process and to the
-paths of file and mprotect events.
-A path is then the one that the process's mount namespace sees: for a process
-in a container, the path inside the container.
+Build paths from the root of the mount namespace of the process, so that
 .Xr chroot 2
-does not change it.
-A file outside of the mount namespace, like one opened through a file
-descriptor from another mount namespace, is reported from the root of that
-other mount namespace, and a file on a detached mount from the root of the
-detached mount tree, as without the flag.
-.Pp
-Without the flag, the paths of the files below the root of a process in a
-.Xr chroot 2
-are relative to the chroot.
-A file outside of the chroot, like one opened before the
-.Xr chroot 2 ,
-is reported from the root of the mount namespace, or from the root of its
-mount if that mount is detached.
-The processes found in
-.Pa /proc
-when the queue is opened get paths relative to the caller's root, so the
-same process can change paths after its first event.
-With the flag both are built from the same root, as long as the caller is not
-itself in a
-.Xr chroot 2 .
-The strings can still differ, for example for a path with more components
-than the EBPF backend resolves, which it reports as a relative
-.Pa ./
-path.
-.Pp
-Only the EBPF backend implements it, the other backends ignore it.
+does not change them.
+EBPF backend only.
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.

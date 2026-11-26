@@ -148,8 +148,7 @@
     <var class="Ar">ppid</var></dt>
   <dd>Display only events where parent pid is <var class="Ar">ppid</var>.</dd>
   <dt id="R"><a class="permalink" href="#R"><code class="Fl">-R</code></a></dt>
-  <dd>Build paths from the root of the process's mount namespace, so that
-      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> does not change them. See
+  <dd>Build paths from the root of the mount namespace, see
       <code class="Dv">QQ_MNTNS_PATHS</code> in
       <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</dd>
   <dt id="S"><a class="permalink" href="#S"><code class="Fl">-S</code></a></dt>
@@ -174,17 +173,7 @@
       <span class="Pa">/usr/bin/sh</span>. A process that already runs when the
       queue opens gets its &#x201C;process.exe&#x201D; from
       <span class="Pa">/proc/&lt;pid&gt;/exe</span> on both backends: the file
-      that runs, the interpreter for a script, until its next exec. The EBPF
-      backend resolves the paths of &#x201C;process.exe&#x201D; and
-      &#x201C;file.path&#x201D; from the root of the process, so after a
-      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> a path below the new root
-      is relative to it, unless <code class="Fl">-R</code> is given. A file
-      outside of the new root, like one opened before the
-      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>, keeps its path from the
-      root of the mount namespace, or from the root of its mount if that mount
-      is detached. A process that calls
-      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> after its exec keeps the
-      &#x201C;process.exe&#x201D; of that exec. See
+      that runs, the interpreter for a script, until its next exec. See
       <a class="Sx" href="#CONTAINER_SCOPE">CONTAINER SCOPE</a> for the
       &#x201C;event.scope&#x201D; field. The &#x201C;pod.name&#x201D; field
       matches events from a process in a container that belongs to the named
