@@ -3980,6 +3980,7 @@ t_relations_orphan(const struct test *t, struct quark_queue_attr *qa)
 	int				 fds[2], i, seen;
 	u64				 start;
 
+	qa->flags |= QQ_RELATIONS;
 	qa->cache_grace_time = 100;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
@@ -4065,6 +4066,7 @@ t_relations_grace0(const struct test *t, struct quark_queue_attr *qa)
 	char				*buf, needle[64];
 	size_t				 len;
 
+	qa->flags |= QQ_RELATIONS;
 	qa->cache_grace_time = 0;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
@@ -4883,6 +4885,7 @@ t_relations(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_process		*init, *p, *c;
 
 	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_RELATIONS;
 	qq.flags |= QQ_ENTRY_LEADER;
 	/* No grace time, only relations keep exited processes */
 	qq.cache_grace_time = 0;
@@ -4970,6 +4973,7 @@ t_relations_pid_reuse(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_process	*p, *c, *n, *nc;
 
 	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_RELATIONS;
 	qq.cache_grace_time = 0;
 
 	p = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, 1, 100, 100, 0);
@@ -5014,6 +5018,7 @@ t_relations_queued(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_process	*p;
 
 	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_RELATIONS;
 	qq.cache_grace_time = 0;
 	assert(quark_queue_set_agg_matrix(&qq, RAW_WAKE_UP_NEW_TASK,
 	    RAW_EXIT_THREAD, quark_can_aggregate_single) == 0);
@@ -5058,6 +5063,7 @@ t_relations_retained_event(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_process	*p, *c, *n;
 
 	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_RELATIONS;
 	qq.cache_grace_time = 0;
 
 	p = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, 1, 100, 100, 0);
@@ -5126,6 +5132,7 @@ t_relations_bound(const struct test *t, struct quark_queue_attr *qa)
 	u32			 e, i;
 
 	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_RELATIONS;
 	qq.flags |= QQ_ENTRY_LEADER;
 	qq.cache_grace_time = 0;
 
@@ -5201,6 +5208,7 @@ t_relations_release(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_process	*p, *c, *d;
 
 	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_RELATIONS;
 	qq.cache_grace_time = 0;
 	assert(quark_queue_set_agg_matrix(&qq, RAW_ID_CHANGE, RAW_ID_CHANGE,
 	    quark_can_aggregate_mult) == 0);
@@ -5249,6 +5257,7 @@ t_relations_ids(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_process	*p, *c;
 
 	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_RELATIONS;
 	qq.cache_grace_time = 0;
 
 	/* The fork of c is seen before the fork of p */
@@ -5287,6 +5296,54 @@ t_relations_ids(const struct test *t, struct quark_queue_attr *qa)
 }
 
 /*
+ * Without QQ_RELATIONS nothing points to anything and nothing is kept, the
+ * parent follows the kernel, a reused pid still gets a new process.
+ */
+static int
+t_relations_off(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_process	*p, *c, *n;
+
+	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_ENTRY_LEADER;
+	qq.cache_grace_time = 0;
+
+	p = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 100, 1, 100, 100, 0);
+	c = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 101, 100, 100, 100, 0);
+	assert(c->parent == NULL);
+	assert(c->group_leader == NULL);
+	assert(c->session_leader == NULL);
+	assert(c->entry_leader == NULL);
+	assert(c->proc_entry_leader == 100);
+	assert(p->refcnt == 0);
+
+	/* p exits and goes at once */
+	assert(test_ids_event(&qq, RAW_EXIT_THREAD, 100, 1, 100, 100, 0) == p);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(quark_process_lookup(&qq, 100) == NULL);
+	assert(qq.stats.retained_processes == 0);
+
+	/* c follows its parent on any event */
+	assert(test_ids_event(&qq, RAW_ID_CHANGE, 101, 1, 100, 100,
+	    QUARK_ID_CHANGE_SETUID) == c);
+	assert(c->proc_ppid == 1);
+
+	/* c exits, within its grace time a new process reuses its pid */
+	qq.cache_grace_time = UINT64_MAX;
+	assert(test_ids_event(&qq, RAW_EXIT_THREAD, 101, 1, 100, 100, 0) == c);
+	n = test_ids_event(&qq, RAW_WAKE_UP_NEW_TASK, 101, 1, 101, 101, 0);
+	assert(n != c);
+	assert(c->flags & QUARK_F_EXIT);
+	assert((n->flags & QUARK_F_EXIT) == 0);
+	assert(quark_process_lookup(&qq, 101) == n);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
  * An inherited entry leader is the one of the parent, even if its pid belongs
  * to the process itself by now.
  */
@@ -5300,6 +5357,7 @@ t_relations_entry_reuse(const struct test *t, struct quark_queue_attr *qa)
 	size_t				 len;
 
 	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_RELATIONS;
 	qq.flags |= QQ_ENTRY_LEADER;
 	qq.cache_grace_time = 0;
 
@@ -8346,6 +8404,7 @@ struct test all_tests[] = {
 	T(t_relations_release),
 	T(t_relations_ids),
 	T(t_relations_entry_reuse),
+	T(t_relations_off),
 	T_EBPF(t_namespace),
 	T_KPROBE(t_namespace),
 	T_EBPF(t_cache_grace),

@@ -27,7 +27,9 @@ you can still lookup them for a little while before they're garbage
 collected.
 At the time of this writing, this is hardcoded to 4 seconds.
 .Pp
-A process that exited can be kept for longer while another process is related
+With
+.Dv QQ_RELATIONS ,
+a process that exited can be kept for longer while another process is related
 to it, see
 .Em parent
 in

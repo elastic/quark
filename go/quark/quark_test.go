@@ -50,8 +50,7 @@ func TestQuark(t *testing.T) {
 
 	t.Run("Relations", func(t *testing.T) {
 		attr := DefaultQueueAttr()
-		attr.Flags |= QQ_ENTRY_LEADER
-		attr.Relations = true
+		attr.Flags |= QQ_ENTRY_LEADER | QQ_RELATIONS
 		queue, err := OpenQueue(attr)
 		require.NoError(t, err)
 

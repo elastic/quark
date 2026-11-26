@@ -67,7 +67,9 @@ A retained process, see
 is counted when it is freed.
 .It Em retained_processes
 The number of processes that exited and are kept past their grace time only
-because another process is related to them, see
+because another process is related to them, with
+.Dv QQ_RELATIONS ,
+see
 .Em parent
 in
 .Xr quark_queue_get_event 3 .

@@ -685,15 +685,16 @@ process_unlink_container(struct quark_process *qp)
 }
 
 /*
- * Queue an exited process for collection, events queued up to its exit might
- * still relate to it by pid, with all, every event queued now.
+ * Queue an exited process for collection, with QQ_RELATIONS events queued up
+ * to its exit might still relate to it by pid, with all, every event queued
+ * now.
  */
 static void
 process_gc_mark(struct quark_queue *qq, struct quark_process *qp, int all)
 {
 	struct raw_event	*max;
 
-	qp->gc_until = qp->exit_time_event;
+	qp->gc_until = (qq->flags & QQ_RELATIONS) ? qp->exit_time_event : 0;
 	if (all && (max = RB_MAX(raw_event_by_time,
 	    &qq->raw_event_by_time)) != NULL && max->time > qp->gc_until)
 		qp->gc_until = max->time;
@@ -763,8 +764,8 @@ process_leader(struct quark_queue *qq, struct quark_process *qp, u32 id,
 }
 
 /*
- * Set the ids of the relations, a relation is only resolved again if its id
- * changed or it's unknown.
+ * Set the ids of the relations, with QQ_RELATIONS a relation is only resolved
+ * again if its id changed or it's unknown.
  */
 static void
 process_set_ids(struct quark_queue *qq, struct quark_process *qp,
@@ -772,6 +773,12 @@ process_set_ids(struct quark_queue *qq, struct quark_process *qp,
 {
 	struct quark_process	*parent;
 
+	if ((qq->flags & QQ_RELATIONS) == 0) {
+		qp->proc_ppid = ppid;
+		qp->proc_pgid = pgid;
+		qp->proc_sid = sid;
+		return;
+	}
 	if (qp->parent == NULL || qp->proc_ppid != ppid)
 		process_relate(qq, qp, &qp->parent,
 		    process_cache_get(qq, ppid, 0));
@@ -2171,7 +2178,10 @@ entry_leader_eval(struct quark_queue *qq, struct quark_process *qp)
 	/*
 	 * Fetch the parent
 	 */
-	parent = qp->parent;
+	if (qq->flags & QQ_RELATIONS)
+		parent = qp->parent;
+	else
+		parent = process_cache_get(qq, qp->proc_ppid, 0);
 	if (parent == NULL || parent->proc_entry_leader_type == QUARK_ELT_UNKNOWN)
 		return (-1);
 
@@ -2262,6 +2272,8 @@ entry_leader_compute(struct quark_queue *qq, struct quark_process *qp)
 
 	if ((r = entry_leader_eval(qq, qp)) == -1)
 		return (-1);
+	if ((qq->flags & QQ_RELATIONS) == 0)
+		return (0);
 	if (r == 1)
 		leader = qp->parent->entry_leader;
 	else if (qp->proc_entry_leader == qp->pid)
@@ -3188,12 +3200,14 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 
 	if (raw_task != NULL) {
 		/*
-		 * The parent only follows fork and exec, an orphan keeps its
-		 * parent until it execs. A kprobe thread event is a fork of the
-		 * process itself. Group and session follow every event, as
-		 * setpgid has none, and kprobe has no setsid either.
+		 * With QQ_RELATIONS the parent only follows fork and exec, an
+		 * orphan keeps its parent until it execs. A kprobe thread event
+		 * is a fork of the process itself. Group and session follow
+		 * every event, as setpgid has none, and kprobe has no setsid
+		 * either.
 		 */
-		reparent = (qp->flags & QUARK_F_PROC) == 0 ||
+		reparent = (qq->flags & QQ_RELATIONS) == 0 ||
+		    (qp->flags & QUARK_F_PROC) == 0 ||
 		    (src->type == RAW_WAKE_UP_NEW_TASK &&
 		    src->opid != src->pid) || src->type == RAW_EXEC;
 		qp->flags |= QUARK_F_PROC;
@@ -4965,7 +4979,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	if (qa->flags & QQ_BYPASS) {
 		if ((qa->flags &
 		    (QQ_KPROBE|QQ_NOVA|QQ_ENTRY_LEADER|
-		    QQ_MIN_AGG|QQ_THREAD_EVENTS)) ||
+		    QQ_MIN_AGG|QQ_THREAD_EVENTS|QQ_RELATIONS)) ||
 		    !(qa->flags & QQ_EBPF) ||
 		    qa->kubefd != -1)
 			return (errno = EINVAL, -1);
@@ -5115,9 +5129,11 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 		/*
 		 * Link parents and leaders
 		 */
-		RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
-			process_set_ids(qq, qp, qp->proc_ppid, qp->proc_pgid,
-			    qp->proc_sid);
+		if (qq->flags & QQ_RELATIONS) {
+			RB_FOREACH(qp, process_by_pid, &qq->process_by_pid) {
+				process_set_ids(qq, qp, qp->proc_ppid,
+				    qp->proc_pgid, qp->proc_sid);
+			}
 		}
 
 		/*

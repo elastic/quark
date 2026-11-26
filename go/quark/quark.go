@@ -147,7 +147,7 @@ type Process struct {
 	Cgroup    string
 	PoisonTag uint64         // Set by matching poison rules, zero if none matched
 	Container *ContainerInfo // nil if the process is not in a container
-	// Relations, nil if unknown or without QueueAttr.Relations. They are
+	// Relations, nil if unknown or without QQ_RELATIONS. They are
 	// one level deep, the relations of a relation are nil, and a process
 	// related more than once is copied once, Snapshot shares the copies
 	// across all processes. A process can be its own leader. EntryLeader
@@ -289,7 +289,7 @@ type Queue struct {
 	quarkQueue *C.struct_quark_queue   // pointer to the queue structure
 	ruleset    *C.struct_quark_ruleset // active ruleset, nil if none
 	epollFd    int
-	relations  bool // fill Process relations, see QueueAttr.Relations
+	relations  bool // fill Process relations, the queue has QQ_RELATIONS
 }
 
 const (
@@ -308,6 +308,11 @@ const (
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
 	QQ_MPROTECT      = int(C.QQ_MPROTECT)
+	// QQ_RELATIONS keeps the parent and leaders of each process, and fills
+	// Process.Parent, GroupLeader, SessionLeader and EntryLeader in
+	// GetEvent, Lookup and Snapshot. Each related process is copied, about
+	// one Process conversion per relation.
+	QQ_RELATIONS = int(C.QQ_RELATIONS)
 
 	// Event.events
 	QUARK_EV_FORK                  = uint64(C.QUARK_EV_FORK)
@@ -371,10 +376,6 @@ type QueueAttr struct {
 	// the queue by OpenQueue. Empty means no rules. Processes matched
 	// by poison rules carry the tag in Process.PoisonTag.
 	RuleText string
-	// Relations fills Process.Parent, GroupLeader, SessionLeader and
-	// EntryLeader in GetEvent, Lookup and Snapshot. Each related process
-	// is copied, which costs about one Process conversion per relation.
-	Relations bool
 }
 
 // Documented in https://elastic.github.io/quark/quark_queue_get_stats.3.html.
@@ -495,7 +496,7 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	}
 
 	queue.epollFd = int(C.quark_queue_get_epollfd(queue.quarkQueue))
-	queue.relations = attr.Relations
+	queue.relations = attr.Flags&QQ_RELATIONS != 0
 
 	return &queue, nil
 }
@@ -892,7 +893,7 @@ func processFromC(cProcess *C.struct_quark_process) Process {
 }
 
 // relationsFromC fills the relations of process, one level deep, if the queue
-// has Relations. copies holds the copy of each related process, nil makes one
+// has QQ_RELATIONS. copies holds the copy of each related process, nil makes one
 // when needed. Container metadata is linked through the process pointer, as
 // Lookup does through the pid, which might belong to another process by now.
 func (queue *Queue) relationsFromC(process *Process,

@@ -204,7 +204,7 @@ struct quark_process {
 	char	*cwd;
 	/* QUARK_F_CGROUP */
 	char	*cgroup;
-	/* Relations, NULL if unknown */
+	/* Relations, NULL if unknown or without QQ_RELATIONS */
 	struct quark_process	*parent;
 	struct quark_process	*group_leader;
 	struct quark_process	*session_leader;
@@ -259,15 +259,22 @@ and
 .Em entry_leader
 point to the related processes, NULL if unknown, a process can be its own
 leader.
+They require
+.Dv QQ_RELATIONS ,
+and
 .Em entry_leader
-requires
+also
 .Dv QQ_ENTRY_LEADER .
 They follow
 .Em proc_ppid
 and
 .Em proc_entry_leader ,
-which only change on fork and exec: a reparented process keeps its original
-parent until it execs.
+which then only change on fork and exec: a reparented process keeps its
+original parent until it execs.
+Without
+.Dv QQ_RELATIONS ,
+.Em proc_ppid
+is the current parent as of the last event of the process.
 .Em proc_pgid
 and
 .Em proc_sid
