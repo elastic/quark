@@ -2656,7 +2656,6 @@ t_chroot_escape_exec(const struct test *t, struct quark_queue_attr *qa)
 #define CGROUP2_SUPER_MAGIC	0x63677270
 #endif
 
-#define CTR_SLICE		"/sys/fs/cgroup/quark-test.slice"
 #define CGROUP_ROOT_CONTROL	"/sys/fs/cgroup/cgroup.subtree_control"
 
 static int
@@ -2834,6 +2833,18 @@ assert_str(const char *what, const char *got, const char *want)
 		errx(1, "%s is %s, want %s", what, got, want);
 }
 
+/* Remove what a container test made, each argument may be NULL */
+static void
+ctr_cleanup(const char *root, const char *scope, const char *slice)
+{
+	if (root != NULL && rmdir(root) == -1)
+		warn("rmdir %s", root);
+	if (scope != NULL && rmdir(scope) == -1)
+		warn("rmdir %s", scope);
+	if (slice != NULL && rmdir(slice) == -1)
+		warn("rmdir %s", slice);
+}
+
 /*
  * A process in a container, as docker or containerd set one up: a container
  * cgroup, a mount namespace and a root filesystem of its own. Then a chroot
@@ -2855,13 +2866,16 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	struct statfs			 sfs;
 	const char			*true_path;
 	const char			*files[2];
+	const char			*scope_dir, *slice_dir;
 	char				 root[] = "/tmp/quark-test-ctr.XXXXXX";
-	char				 id[65], cgroup[128], scope[256];
-	char				 procs_path[PATH_MAX], cid[NAME_MAX];
-	char				 want_cid[NAME_MAX], what[64];
+	char				 id[65], slice[64], cgroup[160];
+	char				 slice_path[PATH_MAX], scope[PATH_MAX];
+	char				 control[PATH_MAX];
+	char				 procs_path[PATH_MAX];
+	char				 cid[NAME_MAX], want_cid[NAME_MAX];
+	char				 what[64];
 	pid_t				 child, pids[2];
 	int				 i, p[2], status, with_cgroup;
-	int				 root_pids;
 	int				 seen_exec[2], seen_file[2];
 	struct timespec			 start, now;
 
@@ -2870,54 +2884,68 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	files[0] = "/ctr-file";
 	files[1] = "/sub-file";
 
-	/* A container ID as docker makes it, 64 hex digits */
+	/*
+	 * A slice of this run and a container ID as docker makes it, 64 hex
+	 * digits. Only the last component of the cgroup names the container.
+	 */
 	snprintf(id, sizeof(id), "%08x%056llx", (u32)getpid(),
 	    (unsigned long long)ns_clock());
-	snprintf(cgroup, sizeof(cgroup), "/quark-test.slice/docker-%s.scope",
-	    id);
+	snprintf(slice, sizeof(slice), "/quark-test-%d.slice", getpid());
+	snprintf(cgroup, sizeof(cgroup), "%s/docker-%s.scope", slice, id);
+	snprintf(slice_path, sizeof(slice_path), "/sys/fs/cgroup%s", slice);
 	snprintf(scope, sizeof(scope), "/sys/fs/cgroup%s", cgroup);
-	snprintf(procs_path, sizeof(procs_path), "%s/cgroup.procs", scope);
+	snprintf(control, sizeof(control),
+	    "/sys/fs/cgroup%s/cgroup.subtree_control", slice);
+	snprintf(procs_path, sizeof(procs_path),
+	    "/sys/fs/cgroup%s/cgroup.procs", cgroup);
 	snprintf(want_cid, sizeof(want_cid), "docker://%s", id);
-
-	/*
-	 * EBPF reports the cgroup of the pids controller, so it must be on
-	 * down to the container. Kernels before 4.5 have no cgroup v2; still
-	 * check the paths there.
-	 */
-	with_cgroup = 0;
-	root_pids = 0;
-	if (statfs("/sys/fs/cgroup", &sfs) == -1 ||
-	    sfs.f_type != CGROUP2_SUPER_MAGIC)
-		warnx("%s: no cgroup v2, skipping cgroup checks", t->name);
-	else if (!cgroup_has_word("/sys/fs/cgroup/cgroup.controllers", "pids"))
-		warnx("%s: no pids controller, skipping cgroup checks",
-		    t->name);
-	else {
-		with_cgroup = 1;
-		if (!cgroup_has_word(CGROUP_ROOT_CONTROL, "pids")) {
-			if (cgroup_write(CGROUP_ROOT_CONTROL, "+pids") == -1)
-				err(1, "enable pids in /sys/fs/cgroup");
-			root_pids = 1;
-		}
-		if (mkdir(CTR_SLICE, 0755) == -1 && errno != EEXIST)
-			err(1, "mkdir %s", CTR_SLICE);
-		if (cgroup_write(CTR_SLICE "/cgroup.subtree_control",
-		    "+pids") == -1)
-			err(1, "enable pids in %s", CTR_SLICE);
-		if (mkdir(scope, 0755) == -1)
-			err(1, "mkdir %s", scope);
-	}
-	if (mkdtemp(root) == NULL)
-		err(1, "mkdtemp");
-	if (pipe(p) == -1)
-		err(1, "pipe");
 
 	qa->flags |= QQ_FILE;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
+	if (mkdtemp(root) == NULL)
+		err(1, "mkdtemp");
 
-	if ((child = fork()) == -1)
-		err(1, "fork");
+	/*
+	 * EBPF reports the cgroup of the pids controller, so it must be on
+	 * down to the container. The test only changes the cgroups it makes:
+	 * the root has it on systemd hosts, and the initramfs init turns it
+	 * on. Kernels before 4.5 have no cgroup v2. Without it, still check
+	 * the paths.
+	 */
+	with_cgroup = 0;
+	slice_dir = scope_dir = NULL;
+	if (statfs("/sys/fs/cgroup", &sfs) == -1 ||
+	    sfs.f_type != CGROUP2_SUPER_MAGIC)
+		warnx("%s: no cgroup v2, skipping cgroup checks", t->name);
+	else if (!cgroup_has_word(CGROUP_ROOT_CONTROL, "pids"))
+		warnx("%s: no pids controller at the cgroup root, "
+		    "skipping cgroup checks", t->name);
+	else {
+		with_cgroup = 1;
+		if (mkdir(slice_path, 0755) == -1) {
+			warn("mkdir %s", slice_path);
+			ctr_cleanup(root, NULL, NULL);
+			exit(1);
+		}
+		slice_dir = slice_path;
+		if (cgroup_write(control, "+pids") == -1) {
+			warn("enable pids in %s", slice_path);
+			ctr_cleanup(root, NULL, slice_dir);
+			exit(1);
+		}
+		if (mkdir(scope, 0755) == -1) {
+			warn("mkdir %s", scope);
+			ctr_cleanup(root, NULL, slice_dir);
+			exit(1);
+		}
+		scope_dir = scope;
+	}
+	if (pipe(p) == -1 || (child = fork()) == -1) {
+		warn("pipe or fork");
+		ctr_cleanup(root, scope_dir, slice_dir);
+		exit(1);
+	}
 	if (child == 0) {
 		close(p[0]);
 		ctr_enter(root, with_cgroup ? procs_path : NULL);
@@ -2932,23 +2960,13 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	close(p[1]);
 	if (waitpid(child, &status, 0) == -1)
 		err(1, "waitpid");
+	/* Clean up before any check, the events are queued already */
+	ctr_cleanup(root, scope_dir, slice_dir);
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		errx(1, "container child didn't exit cleanly");
 	if (qread(p[0], pids, sizeof(pids)) != sizeof(pids))
 		errx(1, "can't read pids of the container processes");
 	close(p[0]);
-
-	/* Clean up first, the events are queued already */
-	if (rmdir(root) == -1)
-		err(1, "rmdir %s", root);
-	if (with_cgroup) {
-		if (rmdir(scope) == -1)
-			warn("rmdir %s", scope);
-		/* Another run may still use it */
-		(void)rmdir(CTR_SLICE);
-		if (root_pids)
-			(void)cgroup_write(CGROUP_ROOT_CONTROL, "-pids");
-	}
 
 	bzero(seen_exec, sizeof(seen_exec));
 	bzero(seen_file, sizeof(seen_file));
@@ -3004,7 +3022,6 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
-#undef CTR_SLICE
 #undef CGROUP_ROOT_CONTROL
 
 static int
