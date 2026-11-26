@@ -223,9 +223,9 @@ LIBBPF_EXTRA_CFLAGS+= -Wno-address
 endif
 
 # BPFPROBES (kernel side)
-BPFPROBES_DEPS:= bpf_probes.c
+BPFPROBES_DEPS:= bpf_probes.c $(EEBPF_FILES)
 ifndef SYSLIB
-BPFPROBES_DEPS+= $(LIBBPF_DEPS) $(EEBPF_FILES) include
+BPFPROBES_DEPS+= $(LIBBPF_DEPS) include
 endif
 
 # NOVA
