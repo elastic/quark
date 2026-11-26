@@ -121,9 +121,8 @@
           check and does not imply that the protection change was
         committed.</dd>
       <dt id="QQ_MNTNS_PATHS"><a class="permalink" href="#QQ_MNTNS_PATHS"><code class="Dv">QQ_MNTNS_PATHS</code></a></dt>
-      <dd>Build paths from the root of the mount namespace of the process, so
-          that <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> does not change
-          them. EBPF backend only.</dd>
+      <dd>Build paths from the root of the mount namespace of the process, not
+          from its root directory. EBPF backend only.</dd>
     </dl>
   </dd>
   <dt id="max_length"><a class="permalink" href="#max_length"><i class="Em">max_length</i></a></dt>
