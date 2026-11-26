@@ -318,8 +318,5 @@ Changes from 0.11 to 0.12
     after a suspend ECS process.end read as earlier by the total time
     asleep since boot.
   o New queue flag QQ_MNTNS_PATHS (-R in quark-mon). The EBPF backend
-    then builds paths from the root of the process's mount namespace,
-    not from its root: a chroot(2) no longer changes the executable,
-    working directory, file and mprotect paths of a process, and for a
-    container they are the paths inside the container. Without the
-    flag nothing changes. The KPROBE backend ignores the flag.
+    then builds paths from the root of the mount namespace of the
+    process, so that chroot(2) does not change them. Off by default.

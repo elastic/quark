@@ -123,21 +123,14 @@ The table is initialized by scraping
 Process lookup and iteration try to link each returned process to matching
 container metadata that is currently in the queue.
 .It Em PATHS
-The EBPF backend builds paths in the kernel, by walking up from the file to
-the root of the process.
-After a
-.Xr chroot 2 ,
-a path below the new root is relative to it, and a path outside of it is
-from the root of the mount namespace, or from the root of its mount if that
-mount is detached.
+The EBPF backend builds paths from the root of the process.
 With
 .Dv QQ_MNTNS_PATHS ,
 see
 .Xr quark_queue_open 3 ,
-the walk goes up to the root of the process's mount namespace instead, so
-a path is the same before and after a
-.Xr chroot 2 ,
-and for a process in a container it is the path inside the container.
+it builds them from the root of the mount namespace of the process, so that
+.Xr chroot 2
+does not change them.
 .It Em TRANSPARENCY
 .Nm
 tries to be as transparent as possible about what it knows, there are counters

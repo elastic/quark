@@ -136,17 +136,12 @@ $ ls -1 /tmp | wc -l</pre>
       to link each returned process to matching container metadata that is
       currently in the queue.</dd>
   <dt id="PATHS"><a class="permalink" href="#PATHS"><i class="Em">PATHS</i></a></dt>
-  <dd>The EBPF backend builds paths in the kernel, by walking up from the file
-      to the root of the process. After a
-      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>, a path below the new
-      root is relative to it, and a path outside of it is from the root of the
-      mount namespace, or from the root of its mount if that mount is detached.
-      With <code class="Dv">QQ_MNTNS_PATHS</code>, see
-      <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>, the
-      walk goes up to the root of the process's mount namespace instead, so a
-      path is the same before and after a
-      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>, and for a process in a
-      container it is the path inside the container.</dd>
+  <dd>The EBPF backend builds paths from the root of the process. With
+      <code class="Dv">QQ_MNTNS_PATHS</code>, see
+      <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>, it
+      builds them from the root of the mount namespace of the process, so that
+      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> does not change
+    them.</dd>
   <dt id="TRANSPARENCY"><a class="permalink" href="#TRANSPARENCY"><i class="Em">TRANSPARENCY</i></a></dt>
   <dd><code class="Nm">quark</code> tries to be as transparent as possible about
       what it knows, there are counters for lost events, and each piece of

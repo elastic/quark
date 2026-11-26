@@ -135,32 +135,16 @@ The
 field matches the executable of the process, the
 .Em exe
 of
-.Xr quark_event_dump 3 ,
-as of its last exec.
-With the EBPF backend it is the file that runs, with symlinks resolved: for
-a script, the interpreter and not the script.
-A
+.Xr quark_event_dump 3 .
+For a script, it is the interpreter: a
 .Dq #!/bin/sh
 script matches
 .Dq process.exe /usr/bin/dash
 where
 .Pa /bin/sh
-links to dash, and never its own path.
+links to dash.
 The kprobe backend reports the path given to
-.Xr execve 2
-instead, which is not resolved and can be relative: for a script it is the
-script, like
-.Pa ./x.sh ,
-and for
-.Dq sh x.sh
-it is
-.Pa /usr/bin/sh .
-A process that already runs when the queue opens gets its
-.Dq process.exe
-from
-.Pa /proc/<pid>/exe
-on both backends: the file that runs, the interpreter for a script, until
-its next exec.
+.Xr execve 2 .
 See
 .Sx CONTAINER SCOPE
 for the
@@ -238,19 +222,6 @@ cgroup is a container scope of the systemd cgroup driver, like
 or
 .Pa crio-<id>.scope .
 This is the kubeadm default since Kubernetes 1.22.
-For live events, the EBPF backend reads the cgroup of the pids controller.
-With cgroup v2, the pids controller must be on down to the container cgroup,
-in
-.Pa cgroup.subtree_control
-of each cgroup above it.
-systemd turns it on by default.
-Without it, live events have a cgroup above the container scope, and are not
-in a container.
-With cgroup v1, the container cgroup must exist in the pids hierarchy.
-The processes found in
-.Pa /proc
-when the queue opens use the unified cgroup on cgroup v2, so such a process
-can be in a container while its live events are not.
 .Pp
 Kubernetes is not required: a container run by docker or podman with the
 systemd cgroup driver, in
@@ -258,19 +229,13 @@ systemd cgroup driver, in
 or
 .Pa libpod-<id>.scope ,
 matches as well.
-So do the processes of the runtime that set up the container once they
-are in its cgroup, like runc init.
 To match only Kubernetes containers, add
-.Dq pod.name *
-to the rule, as in:
+.Dq pod.name
+to the rule:
 .Bd -literal -offset indent
 pass on event.scope container pod.name *
 drop on any
 .Ed
-.Pp
-.Dq pod.name
-needs the pod metadata of the container, so this also drops the events of
-a Kubernetes container until its metadata arrives.
 .Pp
 The following are not recognized as containers, and the rules above drop
 their events:
