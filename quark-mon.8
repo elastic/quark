@@ -168,11 +168,14 @@ The EBPF backend resolves the paths of
 .Dq process.exe
 and
 .Dq file.path
-from the root of the process, so a path resolved after a
+from the root of the process, so after a
 .Xr chroot 2
-is relative to it, unless
+a path below the new root is relative to it, unless
 .Fl R
 is given.
+A file outside of the new root, like one opened before the
+.Xr chroot 2 ,
+keeps its path from the root of the mount namespace.
 A process that calls
 .Xr chroot 2
 after its exec keeps the
@@ -255,6 +258,13 @@ cgroup is a container scope of the systemd cgroup driver, like
 or
 .Pa crio-<id>.scope .
 This is the kubeadm default since Kubernetes 1.22.
+The EBPF backend reads the cgroup of the pids controller, so the pids
+controller must be on down to the container cgroup, in
+.Pa cgroup.subtree_control
+of each cgroup above it.
+systemd turns it on by default.
+Without it, the cgroup of the process is a cgroup above the container scope,
+and the process is not in a container.
 .Pp
 Kubernetes is not required: a container run by docker or podman with the
 systemd cgroup driver, in

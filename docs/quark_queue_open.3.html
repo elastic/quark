@@ -131,16 +131,19 @@
           descriptor from another mount namespace, is reported from the root of
           that other mount namespace, and a file on a detached mount from the
           root of the detached mount tree, as without the flag.
-        <p class="Pp">Without the flag, the paths of a process in a
-            <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> are relative to the
-            chroot, but the processes found in <span class="Pa">/proc</span>
-            when the queue is opened get paths relative to the caller's root, so
-            the same process can change paths after its first event. With the
-            flag both are built from the same root, as long as the caller is not
-            itself in a <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>. The
-            strings can still differ, for example for a path with more
-            components than the EBPF backend resolves, which it reports as a
-            relative <span class="Pa">./</span> path.</p>
+        <p class="Pp">Without the flag, the paths of the files below the root of
+            a process in a <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> are
+            relative to the chroot. A file outside of the chroot, like one
+            opened before the <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>,
+            is reported from the root of the mount namespace. The processes
+            found in <span class="Pa">/proc</span> when the queue is opened get
+            paths relative to the caller's root, so the same process can change
+            paths after its first event. With the flag both are built from the
+            same root, as long as the caller is not itself in a
+            <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>. The strings can
+            still differ, for example for a path with more components than the
+            EBPF backend resolves, which it reports as a relative
+            <span class="Pa">./</span> path.</p>
         <p class="Pp">Only the EBPF backend implements it, the other backends
             ignore it.</p>
       </dd>

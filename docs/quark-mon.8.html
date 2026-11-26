@@ -176,9 +176,12 @@
       <span class="Pa">/proc/&lt;pid&gt;/exe</span> on both backends: the file
       that runs, the interpreter for a script, until its next exec. The EBPF
       backend resolves the paths of &#x201C;process.exe&#x201D; and
-      &#x201C;file.path&#x201D; from the root of the process, so a path resolved
-      after a <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> is relative to
-      it, unless <code class="Fl">-R</code> is given. A process that calls
+      &#x201C;file.path&#x201D; from the root of the process, so after a
+      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> a path below the new root
+      is relative to it, unless <code class="Fl">-R</code> is given. A file
+      outside of the new root, like one opened before the
+      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>, keeps its path from the
+      root of the mount namespace. A process that calls
       <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> after its exec keeps the
       &#x201C;process.exe&#x201D; of that exec. See
       <a class="Sx" href="#CONTAINER_SCOPE">CONTAINER SCOPE</a> for the
@@ -239,7 +242,11 @@ drop on any</pre>
     process cgroup is a container scope of the systemd cgroup driver, like
     <span class="Pa">cri-containerd-&lt;id&gt;.scope</span> or
     <span class="Pa">crio-&lt;id&gt;.scope</span>. This is the kubeadm default
-    since Kubernetes 1.22.</p>
+    since Kubernetes 1.22. The EBPF backend reads the cgroup of the pids
+    controller, so the pids controller must be on down to the container cgroup,
+    in <span class="Pa">cgroup.subtree_control</span> of each cgroup above it.
+    systemd turns it on by default. Without it, the cgroup of the process is a
+    cgroup above the container scope, and the process is not in a container.</p>
 <p class="Pp">Kubernetes is not required: a container run by docker or podman
     with the systemd cgroup driver, in
     <span class="Pa">docker-&lt;id&gt;.scope</span> or
