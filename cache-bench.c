@@ -12,18 +12,22 @@
  * processes of the workload are re-executions of this binary, so it needs
  * nothing else, and also runs in the initramfs of krun.sh.
  *
- * To compare with a tree without relations, build it there with NO_RELATIONS,
- * as:
+ * The queue flags and what the consumer does with each event can be set as a
+ * given library user does, and -t runs a steady mix for minutes, printing a
+ * line per minute, to see memory over time.
+ *
+ * It also builds against a tree without process relations, to compare. Build
+ * a copy in that tree, so it gets the quark.h of that tree, as:
  *
  *	git worktree add ../quark-main main
  *	git -C ../quark-main submodule update --init
  *	make -C ../quark-main libquark_big.a
- *	cc -O2 -D_GNU_SOURCE -DNO_RELATIONS -I../quark-main \
- *	    -I../quark-main/include -o cache-bench-main cache-bench.c \
+ *	cp cache-bench.c ../quark-main/
+ *	cc -O2 -D_GNU_SOURCE -I../quark-main -I../quark-main/include \
+ *	    -o cache-bench-main ../quark-main/cache-bench.c \
  *	    ../quark-main/libquark_big.a
  *
- * Run it as root, with -k for the kprobe backend and -g 0 for no grace time,
- * the output of each run is what to compare.
+ * Run it as root, the output of each run is what to compare.
  */
 
 #include <sys/prctl.h>
@@ -49,6 +53,7 @@
 #include "quark.h"
 
 #define ENV_SELF	"CACHE_BENCH_SELF"
+#define ENV_DIR		"CACHE_BENCH_DIR"
 #define PIDFD		100	/* long-lived processes report their pid here */
 #define BIGARG		16384	/* args of the worst case, near ARGV_MAX */
 
@@ -71,7 +76,32 @@ static const struct scenario scenarios[] = {
 	{ "login",	500,  3, 2, "a session leader exits, two jobs stay" },
 	{ "worst",	200,  6, 1,
 	  "a leaf keeps four distinct exited relations, 16 KiB args each" },
+	{ "files",	500,  1, 0,
+	  "a process creates, writes, renames and unlinks ten files" },
 	{ "command",	1,    0, 0, "the command after --" },
+	{ "mix",	1,    0, 0,
+	  "with -t, each second 20 churn, 5 pipeline, 2 files, a daemon "
+	  "and a login,\n#           the oldest beyond 50 daemons and 25 "
+	  "logins are killed" },
+};
+
+#define MIX_DAEMONS	50
+#define MIX_LOGINS	25
+
+static const struct {
+	const char	*name;
+	int		 flag;
+} qflags[] = {
+	{ "min_agg",		QQ_MIN_AGG },
+	{ "sock_conn",		QQ_SOCK_CONN },
+	{ "dns",		QQ_DNS },
+	{ "file",		QQ_FILE },
+	{ "shm",		QQ_SHM },
+	{ "tty",		QQ_TTY },
+	{ "ptrace",		QQ_PTRACE },
+	{ "module_load",	QQ_MODULE_LOAD },
+	{ "mprotect",		QQ_MPROTECT },
+	{ "getpid",		QQ_GETPID },
 };
 
 struct sample {
@@ -183,6 +213,31 @@ wait_all(void)
 		;
 }
 
+static void
+files(void)
+{
+	const char	*dir;
+	char		 a[PATH_MAX], b[PATH_MAX], buf[4096];
+	int		 fd, i;
+
+	if ((dir = getenv(ENV_DIR)) == NULL)
+		errx(1, "%s not set", ENV_DIR);
+	memset(buf, 'x', sizeof(buf));
+	for (i = 0; i < 10; i++) {
+		snprintf(a, sizeof(a), "%s/a%d.%d", dir, getpid(), i);
+		snprintf(b, sizeof(b), "%s/b%d.%d", dir, getpid(), i);
+		if ((fd = open(a, O_WRONLY | O_CREAT | O_TRUNC, 0644)) == -1)
+			err(1, "open %s", a);
+		if (write(fd, buf, sizeof(buf)) != sizeof(buf))
+			err(1, "write %s", a);
+		close(fd);
+		if (rename(a, b) == -1)
+			err(1, "rename %s", a);
+		if (unlink(b) == -1)
+			err(1, "unlink %s", b);
+	}
+}
+
 /*
  * The processes of the workload, deterministic: a process exits after the
  * ones it relates to exec'd. The worst case is a chain where each stage
@@ -219,6 +274,8 @@ role(const char *name)
 	} else if (!strcmp(name, "login"))
 		/* As a shell, the jobs exec before it exits */
 		spawn_jobs(self, 2);
+	else if (!strcmp(name, "files"))
+		files();
 	else if (!strcmp(name, "sshd"))
 		wait1(spawn(self, "entry", SP_SETSID | SP_BIG));
 	else if (!strcmp(name, "entry"))
@@ -259,6 +316,98 @@ copy_file(const char *from, const char *to)
 	close(out);
 }
 
+static void
+reap(void)
+{
+	while (waitpid(-1, NULL, WNOHANG) > 0)
+		;
+}
+
+/* One unit of a scenario, its long-lived processes go in live */
+static void
+unit(const char *name, const char *self, const char *sshd, int pids, int n,
+    pid_t *live)
+{
+	pid_t	pid;
+	int	i;
+
+	if (!strcmp(name, "churn"))
+		wait1(spawn(self, "noop", 0));
+	else if (!strcmp(name, "pipeline"))
+		wait1(spawn(self, "shell", 0));
+	else if (!strcmp(name, "daemon"))
+		wait1(spawn(self, "launcher", 0));
+	else if (!strcmp(name, "login"))
+		wait1(spawn(self, "login", SP_SETSID));
+	else if (!strcmp(name, "worst"))
+		wait1(spawn(sshd, "sshd", 0));
+	else if (!strcmp(name, "files"))
+		wait1(spawn(self, "files", 0));
+	else if (!strcmp(name, "command")) {
+		if ((pid = fork()) == -1)
+			err(1, "fork");
+		if (pid == 0) {
+			close(PIDFD);
+			execvp(command[0], command);
+			err(1, "execvp %s", command[0]);
+		}
+		wait1(pid);
+	}
+	for (i = 0; i < n; i++)
+		if (read_pid(pids, &live[i]) == -1)
+			errx(1, "lost a pid");
+}
+
+static u64	now_ms(void);
+
+/*
+ * A steady mix until the consumer says stop, one round a second, the oldest
+ * long-lived processes are killed to keep their number.
+ */
+static void
+mix(const char *self, int percent, int pids, int ctl)
+{
+	struct pollfd	pfd;
+	pid_t		daemons[MIX_DAEMONS], logins[MIX_LOGINS][2];
+	u64		start, now;
+	int		i, nd, nl, round;
+
+	bzero(daemons, sizeof(daemons));
+	bzero(logins, sizeof(logins));
+	pfd.fd = ctl;
+	pfd.events = POLLIN;
+	for (round = 0; poll(&pfd, 1, 0) == 0; round++) {
+		start = now_ms();
+		for (i = 0; i < 20 * percent / 100; i++)
+			unit("churn", self, NULL, pids, 0, NULL);
+		for (i = 0; i < 5 * percent / 100; i++)
+			unit("pipeline", self, NULL, pids, 0, NULL);
+		for (i = 0; i < 2 * percent / 100; i++)
+			unit("files", self, NULL, pids, 0, NULL);
+		nd = round % MIX_DAEMONS;
+		if (daemons[nd] != 0)
+			kill(daemons[nd], SIGKILL);
+		unit("daemon", self, NULL, pids, 1, &daemons[nd]);
+		nl = round % MIX_LOGINS;
+		if (logins[nl][0] != 0) {
+			kill(logins[nl][0], SIGKILL);
+			kill(logins[nl][1], SIGKILL);
+		}
+		unit("login", self, NULL, pids, 2, logins[nl]);
+		reap();
+		if ((now = now_ms()) < start + 1000)
+			usleep((start + 1000 - now) * 1000);
+	}
+	for (i = 0; i < MIX_DAEMONS; i++)
+		if (daemons[i] != 0)
+			kill(daemons[i], SIGKILL);
+	for (i = 0; i < MIX_LOGINS; i++)
+		if (logins[i][0] != 0) {
+			kill(logins[i][0], SIGKILL);
+			kill(logins[i][1], SIGKILL);
+		}
+}
+
 /*
  * Runs the scenario, waits for the consumer to tear it down, then kills what
  * stayed and exits.
@@ -268,8 +417,8 @@ generator(const struct scenario *sc, int units, int ctl, int st)
 {
 	const char	*self;
 	char		 tmpdir[] = "/tmp/cache-bench.XXXXXX", sshd[PATH_MAX];
-	pid_t		*live, pid;
-	int		 pids[2], i, j, nlive;
+	pid_t		*live;
+	int		 pids[2], i, nlive;
 	char		 c;
 
 	if (prctl(PR_SET_CHILD_SUBREAPER, 1) == -1)
@@ -282,51 +431,33 @@ generator(const struct scenario *sc, int units, int ctl, int st)
 	close(pids[1]);
 	if ((live = calloc(units * sc->live + 1, sizeof(*live))) == NULL)
 		err(1, "calloc");
-	if (!strcmp(sc->name, "worst")) {
-		if (mkdtemp(tmpdir) == NULL)
-			err(1, "mkdtemp");
-		snprintf(sshd, sizeof(sshd), "%s/sshd", tmpdir);
+	if (mkdtemp(tmpdir) == NULL)
+		err(1, "mkdtemp");
+	if (setenv(ENV_DIR, tmpdir, 1) == -1)
+		err(1, "setenv");
+	snprintf(sshd, sizeof(sshd), "%s/sshd", tmpdir);
+	if (!strcmp(sc->name, "worst"))
 		copy_file(self, sshd);
-	}
 	if (read(ctl, &c, 1) != 1)
 		exit(1);
 
 	nlive = 0;
-	for (i = 0; i < units; i++) {
-		if (!strcmp(sc->name, "churn"))
-			wait1(spawn(self, "noop", 0));
-		else if (!strcmp(sc->name, "pipeline"))
-			wait1(spawn(self, "shell", 0));
-		else if (!strcmp(sc->name, "daemon"))
-			wait1(spawn(self, "launcher", 0));
-		else if (!strcmp(sc->name, "login"))
-			wait1(spawn(self, "login", SP_SETSID));
-		else if (!strcmp(sc->name, "worst"))
-			wait1(spawn(sshd, "sshd", 0));
-		else if (!strcmp(sc->name, "command")) {
-			if ((pid = fork()) == -1)
-				err(1, "fork");
-			if (pid == 0) {
-				close(PIDFD);
-				execvp(command[0], command);
-				err(1, "execvp %s", command[0]);
-			}
-			wait1(pid);
+	if (!strcmp(sc->name, "mix"))
+		mix(self, units, pids[0], ctl);
+	else {
+		for (i = 0; i < units; i++) {
+			unit(sc->name, self, sshd, pids[0], sc->live,
+			    &live[nlive]);
+			nlive += sc->live;
 		}
-		for (j = 0; j < sc->live; j++)
-			if (read_pid(pids[0], &live[nlive++]) == -1)
-				errx(1, "lost a pid");
+		if (write(st, "r", 1) != 1 || read(ctl, &c, 1) != 1)
+			exit(1);
 	}
-
-	if (write(st, "r", 1) != 1 || read(ctl, &c, 1) != 1)
-		exit(1);
 	for (i = 0; i < nlive; i++)
 		kill(live[i], SIGKILL);
 	wait_all();
-	if (!strcmp(sc->name, "worst")) {
-		unlink(sshd);
-		rmdir(tmpdir);
-	}
+	unlink(sshd);
+	rmdir(tmpdir);
 	exit(0);
 }
 
@@ -424,10 +555,10 @@ take(struct quark_queue *qq, struct sample *s)
 	s->raw = stats.insertions;
 	s->lost = stats.lost;
 	s->missed = bpf_missed();
-#ifdef NO_RELATIONS
-	s->retained = 0;
-#else
+#ifdef QQ_RELATIONS
 	s->retained = stats.retained_processes;
+#else
+	s->retained = 0;
 #endif
 	getrusage(RUSAGE_SELF, &ru);
 	s->cpu = ((u64)ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000000000 +
@@ -437,8 +568,30 @@ take(struct quark_queue *qq, struct sample *s)
 struct counts {
 	u64	pevents;	/* process events with a parent pid */
 	u64	parents;	/* of which the parent is known */
-	int	ecs;
+	int	ecs;		/* render each event as ECS */
+	int	lookups;	/* get each event's parent and entry leader */
 };
+
+/* Through the relations with QQ_RELATIONS, otherwise looked up by pid */
+static const struct quark_process *
+parent_of(struct quark_queue *qq, const struct quark_process *qp)
+{
+#ifdef QQ_RELATIONS
+	if (qq->flags & QQ_RELATIONS)
+		return (qp->parent);
+#endif
+	return (quark_process_lookup(qq, qp->proc_ppid));
+}
+
+static const struct quark_process *
+entry_leader_of(struct quark_queue *qq, const struct quark_process *qp)
+{
+#ifdef QQ_RELATIONS
+	if (qq->flags & QQ_RELATIONS)
+		return (qp->entry_leader);
+#endif
+	return (quark_process_lookup(qq, qp->proc_entry_leader));
+}
 
 /*
  * Get events until fd says something, or until deadline if fd is -1. Returns
@@ -448,26 +601,28 @@ static int
 drain(struct quark_queue *qq, struct counts *d, int fd, u64 deadline)
 {
 	const struct quark_event	*qev;
-	const struct quark_process	*qp;
+	const struct quark_process	*qp, *parent;
 	struct pollfd			 pfd;
 	char				*buf, c;
 	size_t				 len;
+	int				 pev;
 
 	for (;;) {
 		if ((qev = quark_queue_get_event(qq)) != NULL) {
 			qp = qev->process;
-			if (qp != NULL && (qp->flags & QUARK_F_PROC) &&
+			pev = qp != NULL && (qp->flags & QUARK_F_PROC) &&
 			    qp->proc_ppid != 0 &&
 			    (qev->events & (QUARK_EV_FORK | QUARK_EV_EXEC |
-			    QUARK_EV_EXIT))) {
-				d->pevents++;
-#ifdef NO_RELATIONS
-				if (quark_process_lookup(qq,
-				    qp->proc_ppid) != NULL)
-#else
-				if (qp->parent != NULL)
-#endif
-					d->parents++;
+			    QUARK_EV_EXIT));
+			if (pev || (qp != NULL && d->lookups)) {
+				parent = parent_of(qq, qp);
+				if (pev) {
+					d->pevents++;
+					if (parent != NULL)
+						d->parents++;
+				}
+				if (d->lookups)
+					(void)entry_leader_of(qq, qp);
 			}
 			if (d->ecs && quark_event_to_ecs(qq, qev, &buf,
 			    &len) == 0)
@@ -495,9 +650,15 @@ settle(struct quark_queue *qq, struct counts *d, struct quark_queue_attr *qa)
 
 #define DIFF(_a, _b)	((long long)(_a) - (long long)(_b))
 
+#ifdef QQ_RELATIONS
+#define RELATIONS	QQ_RELATIONS
+#else
+#define RELATIONS	0
+#endif
+
 static void
 run(const struct scenario *sc, int units, struct quark_queue_attr *qa,
-    int ecs)
+    struct counts *opts)
 {
 	struct quark_queue	 qq;
 	struct sample		 base, live, end;
@@ -521,11 +682,9 @@ run(const struct scenario *sc, int units, struct quark_queue_attr *qa,
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
-	bzero(&d, sizeof(d));
-	d.ecs = ecs;
+	d = *opts;
 	drain(&qq, &d, -1, now_ms() + 1000);
-	bzero(&d, sizeof(d));
-	d.ecs = ecs;
+	d = *opts;
 	/* Peak RSS of the scenario, see proc(5) */
 	if ((fd = open("/proc/self/clear_refs", O_WRONLY)) != -1) {
 		if (write(fd, "5", 1) != 1)
@@ -550,13 +709,12 @@ run(const struct scenario *sc, int units, struct quark_queue_attr *qa,
 	close(ctl[1]);
 	close(st[0]);
 
-#ifdef NO_RELATIONS
-	snprintf(retained, sizeof(retained), "%8s %6s", "-", "-");
-#else
-	snprintf(retained, sizeof(retained), "%8llu %6llu",
-	    (unsigned long long)live.retained,
-	    (unsigned long long)end.retained);
-#endif
+	if (qa->flags & RELATIONS)
+		snprintf(retained, sizeof(retained), "%8llu %6llu",
+		    (unsigned long long)live.retained,
+		    (unsigned long long)end.retained);
+	else
+		snprintf(retained, sizeof(retained), "%8s %6s", "-", "-");
 	printf("%-9s %6d %7llu %5llu %6llu %7llu %6.1f %7llu %s %8lld %8lld "
 	    "%8lld %8lld\n",
 	    sc->name, units * sc->procs,
@@ -574,11 +732,108 @@ run(const struct scenario *sc, int units, struct quark_queue_attr *qa,
 }
 
 static void
+soak_line(struct quark_queue_attr *qa, const char *when, struct sample *base,
+    struct sample *prev, struct sample *cur, struct counts *d, int interval)
+{
+	char	retained[16];
+
+	if (qa->flags & RELATIONS)
+		snprintf(retained, sizeof(retained), "%8llu",
+		    (unsigned long long)cur->retained);
+	else
+		snprintf(retained, sizeof(retained), "%8s", "-");
+	printf("%-9s %5s %7llu %7llu %6.1f %7llu %s %8lld %8lld %6llu %6llu\n",
+	    "mix", when,
+	    interval ? (unsigned long long)(cur->raw - prev->raw) / 60 : 0,
+	    cur->raw > prev->raw ? (unsigned long long)((cur->cpu -
+	    prev->cpu) / (cur->raw - prev->raw)) : 0,
+	    d->pevents ? 100.0 * d->parents / d->pevents : 0.0,
+	    (unsigned long long)cur->cached, retained,
+	    DIFF(cur->heap, base->heap) / 1024, DIFF(cur->rss, base->rss),
+	    (unsigned long long)(cur->lost - base->lost),
+	    (unsigned long long)(cur->missed - base->missed));
+	fflush(stdout);
+}
+
+/* The mix for some minutes, a line per minute, then one once it ended */
+static void
+soak(int minutes, int percent, struct quark_queue_attr *qa,
+    struct counts *opts)
+{
+	struct quark_queue	 qq;
+	struct sample		 base, prev, cur;
+	struct counts		 d;
+	const struct scenario	*sc;
+	int			 ctl[2], st[2], m;
+	pid_t			 gen;
+	u64			 start;
+	char			 when[16];
+
+	sc = &scenarios[(sizeof(scenarios) / sizeof(scenarios[0])) - 1];
+	if (pipe2(ctl, O_CLOEXEC) == -1 || pipe2(st, O_CLOEXEC) == -1)
+		err(1, "pipe2");
+	if ((gen = fork()) == -1)
+		err(1, "fork");
+	if (gen == 0) {
+		close(ctl[1]);
+		close(st[0]);
+		generator(sc, percent, ctl[0], st[1]);
+	}
+	close(ctl[0]);
+	close(st[1]);
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	d = *opts;
+	drain(&qq, &d, -1, now_ms() + 1000);
+	d = *opts;
+	take(&qq, &base);
+	prev = base;
+	if (write(ctl[1], "g", 1) != 1)
+		err(1, "write");
+	start = now_ms();
+	for (m = 1; m <= minutes; m++) {
+		drain(&qq, &d, -1, start + (u64)m * 60000);
+		take(&qq, &cur);
+		snprintf(when, sizeof(when), "%d", m);
+		soak_line(qa, when, &base, &prev, &cur, &d, 1);
+		prev = cur;
+	}
+	if (write(ctl[1], "t", 1) != 1)
+		err(1, "write");
+	drain(&qq, &d, st[0], 0);
+	wait1(gen);
+	settle(&qq, &d, qa);
+	take(&qq, &cur);
+	soak_line(qa, "end", &base, &base, &cur, &d, 0);
+	quark_queue_close(&qq);
+	close(ctl[1]);
+	close(st[0]);
+}
+
+static void
 usage(void)
 {
-	fprintf(stderr, "usage: cache-bench [-Ek] [-g grace_ms] [-s scenario]"
-	    " [-x percent] [-- command [arg ...]]\n");
+	fprintf(stderr, "usage: cache-bench [-EkLR] [-f flag,...] "
+	    "[-g grace_ms] [-s scenario] [-t minutes]\n"
+	    "%17s[-x percent] [-- command [arg ...]]\n", "");
 	exit(1);
+}
+
+static void
+parse_flags(struct quark_queue_attr *qa, char *list)
+{
+	char	*name;
+	size_t	 i;
+
+	while ((name = strsep(&list, ",")) != NULL) {
+		for (i = 0; i < sizeof(qflags) / sizeof(qflags[0]); i++)
+			if (!strcmp(name, qflags[i].name))
+				break;
+		if (i == sizeof(qflags) / sizeof(qflags[0]))
+			errx(1, "unknown flag %s", name);
+		qa->flags |= qflags[i].flag;
+	}
 }
 
 int
@@ -586,23 +841,29 @@ main(int argc, char *argv[])
 {
 	struct quark_queue_attr	 qa;
 	struct utsname		 un;
+	struct counts		 opts;
 	const struct scenario	*sc;
 	char			 self[PATH_MAX];
-	const char		*only[8], *backend;
+	const char		*only[8], *backend, *relations;
 	ssize_t			 n;
-	int			 ch, i, j, nonly, ecs, percent;
+	size_t			 k;
+	int			 ch, i, j, nonly, percent, minutes;
 
 	if (argc >= 3 && !strcmp(argv[1], "-X"))
 		return (role(argv[2]));
 
 	quark_queue_default_attr(&qa);
 	qa.flags |= QQ_ENTRY_LEADER;
-	nonly = ecs = 0;
+	bzero(&opts, sizeof(opts));
+	nonly = minutes = 0;
 	percent = 100;
-	while ((ch = getopt(argc, argv, "Eg:ks:x:")) != -1) {
+	while ((ch = getopt(argc, argv, "Ef:g:kLRs:t:x:")) != -1) {
 		switch (ch) {
 		case 'E':
-			ecs = 1;
+			opts.ecs = 1;
+			break;
+		case 'f':
+			parse_flags(&qa, optarg);
 			break;
 		case 'g':
 			qa.cache_grace_time = atoi(optarg);
@@ -611,10 +872,22 @@ main(int argc, char *argv[])
 			qa.flags &= ~(QQ_EBPF | QQ_NOVA);
 			qa.flags |= QQ_KPROBE;
 			break;
+		case 'L':
+			opts.lookups = 1;
+			break;
+		case 'R':
+			if (RELATIONS == 0)
+				errx(1, "built without QQ_RELATIONS");
+			qa.flags |= RELATIONS;
+			break;
 		case 's':
 			if (nonly == (int)(sizeof(only) / sizeof(only[0])))
 				usage();
 			only[nonly++] = optarg;
+			break;
+		case 't':
+			if ((minutes = atoi(optarg)) <= 0)
+				usage();
 			break;
 		case 'x':
 			if ((percent = atoi(optarg)) <= 0)
@@ -640,16 +913,19 @@ main(int argc, char *argv[])
 		backend = "kprobe";
 	else
 		backend = getenv("QUARK_BPF_KPROBE") ? "ebpf-kprobe" : "ebpf";
+	if (RELATIONS == 0)
+		relations = "unsupported";
+	else
+		relations = (qa.flags & RELATIONS) ? "on" : "off";
 
-	printf("# cache-bench %s, %s %s, %s, grace %d ms, hold %d ms, "
-	    "ecs %s, scale %d%%\n",
-#ifdef NO_RELATIONS
-	    "without relations",
-#else
-	    "with relations",
-#endif
-	    un.release, un.machine, backend, qa.cache_grace_time,
-	    qa.hold_time, ecs ? "yes" : "no", percent);
+	printf("# cache-bench, relations %s, %s %s, %s, grace %d ms, "
+	    "hold %d ms\n# flags entry_leader", relations, un.release,
+	    un.machine, backend, qa.cache_grace_time, qa.hold_time);
+	for (k = 0; k < sizeof(qflags) / sizeof(qflags[0]); k++)
+		if (qa.flags & qflags[k].flag)
+			printf(",%s", qflags[k].name);
+	printf(", lookups %s, ecs %s, scale %d%%\n",
+	    opts.lookups ? "yes" : "no", opts.ecs ? "yes" : "no", percent);
 	printf("#\n"
 	    "# procs: processes the workload starts\n"
 	    "# raw: raw events, lost: lost ones\n"
@@ -664,19 +940,32 @@ main(int argc, char *argv[])
 	    "# heap, rss: KiB more than before the workload, while it lives\n"
 	    "# heap=: KiB more than before, once it ended\n"
 	    "# peak: peak rss during the scenario, KiB more than before\n"
+	    "# with -t, a line per minute, raw/s and ns/raw for that minute, "
+	    "the rest so far\n"
 	    "#\n");
 	for (i = 0; i < (int)(sizeof(scenarios) / sizeof(scenarios[0])); i++)
 		printf("# %-9s %s\n", scenarios[i].name, scenarios[i].what);
 	printf("#\n");
+	fflush(stdout);
+
+	if (minutes > 0) {
+		printf("%-9s %5s %7s %7s %6s %7s %8s %8s %8s %6s %6s\n",
+		    "#scenario", "min", "raw/s", "ns/raw", "parent", "cached",
+		    "retained", "heap", "rss", "lost", "missed");
+		fflush(stdout);
+		soak(minutes, percent, &qa, &opts);
+		return (0);
+	}
 	printf("%-9s %6s %7s %5s %6s %7s %6s %7s %8s %6s %8s %8s %8s %8s\n",
 	    "#scenario", "procs", "raw", "lost", "missed", "ns/raw", "parent",
-	    "cached",
-	    "retained", "after", "heap", "heap=", "rss", "peak");
+	    "cached", "retained", "after", "heap", "heap=", "rss", "peak");
 	fflush(stdout);
 
 	for (i = 0; i < (int)(sizeof(scenarios) / sizeof(scenarios[0]));
 	    i++) {
 		sc = &scenarios[i];
+		if (!strcmp(sc->name, "mix"))
+			continue;
 		if (nonly > 0) {
 			for (j = 0; j < nonly; j++)
 				if (!strcmp(only[j], sc->name))
@@ -687,10 +976,10 @@ main(int argc, char *argv[])
 		if (!strcmp(sc->name, "command")) {
 			if (command == NULL)
 				continue;
-			run(sc, 1, &qa, ecs);
+			run(sc, 1, &qa, &opts);
 		} else
 			run(sc, sc->count * percent / 100 > 0 ?
-			    sc->count * percent / 100 : 1, &qa, ecs);
+			    sc->count * percent / 100 : 1, &qa, &opts);
 	}
 
 	return (0);
