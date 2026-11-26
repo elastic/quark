@@ -19,6 +19,7 @@
 
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -55,6 +56,26 @@ display_banner(char *argv[])
 		putchar('`');
 		printf(" on %s %s\n", uts.release, uts.machine);
 	}
+}
+
+/*
+ * Give the children of the cgroup root a pids controller of their own, as
+ * systemd does on a host. The EBPF backend reports the cgroup of the pids
+ * controller, so without it every new cgroup reports as the root.
+ */
+static void
+cgroup_pids_up(void)
+{
+	int	fd;
+
+	if ((fd = open("/sys/fs/cgroup/cgroup.subtree_control",
+	    O_WRONLY)) == -1) {
+		warn("open cgroup.subtree_control");
+		return;
+	}
+	if (write(fd, "+pids", 5) != 5)
+		warn("enable the pids controller");
+	close(fd);
 }
 
 static void
@@ -151,7 +172,8 @@ main(int argc, char *argv[])
 				warn("mount /sys/fs/cgroup");
 			else
 				err(1, "mount /sys/fs/cgroup");
-		}
+		} else
+			cgroup_pids_up();
 
 		net_up();
 

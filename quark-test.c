@@ -2652,6 +2652,388 @@ t_chroot_escape_exec(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+#ifndef CGROUP2_SUPER_MAGIC
+#define CGROUP2_SUPER_MAGIC	0x63677270
+#endif
+
+#define CGROUP_ROOT_CONTROL	"/sys/fs/cgroup/cgroup.subtree_control"
+
+/* Is word one of the space separated words of the one-line file path? */
+static int
+cgroup_has_word(const char *path, const char *word)
+{
+	char	 buf[1024], *p, *w;
+
+	if (readlineat(AT_FDCWD, path, buf, sizeof(buf)) == -1)
+		err(1, "readlineat %s", path);
+	for (p = buf; (w = strsep(&p, " ")) != NULL;)
+		if (!strcmp(w, word))
+			return (1);
+
+	return (0);
+}
+
+/*
+ * Give root the top level directories a program needs to run, as the image
+ * of a container would: bind mounts of the host directories, read-only, and
+ * the same symlinks for a merged /usr. The initramfs only has /bin and /etc.
+ */
+static void
+ctr_mirror(const char *root)
+{
+	const char	*dirs[] = { "bin", "etc", "lib", "lib64", "usr" };
+	struct stat	 st;
+	char		 src[PATH_MAX], dst[PATH_MAX], target[PATH_MAX];
+	ssize_t		 n;
+	size_t		 i;
+
+	for (i = 0; i < nitems(dirs); i++) {
+		snprintf(src, sizeof(src), "/%s", dirs[i]);
+		snprintf(dst, sizeof(dst), "%s/%s", root, dirs[i]);
+		if (lstat(src, &st) == -1) {
+			if (errno == ENOENT)
+				continue;
+			err(1, "lstat %s", src);
+		}
+		if (S_ISLNK(st.st_mode)) {
+			if ((n = readlink(src, target, sizeof(target))) == -1)
+				err(1, "readlink %s", src);
+			if (n == sizeof(target))
+				errx(1, "readlink %s: truncated", src);
+			target[n] = 0;
+			if (symlink(target, dst) == -1)
+				err(1, "symlink %s", dst);
+			continue;
+		}
+		if (!S_ISDIR(st.st_mode))
+			continue;
+		if (mkdir(dst, 0755) == -1)
+			err(1, "mkdir %s", dst);
+		if (mount(src, dst, "", MS_BIND | MS_REC, NULL) == -1)
+			err(1, "bind mount %s", src);
+		if (mount(NULL, dst, "", MS_BIND | MS_REMOUNT | MS_RDONLY,
+		    NULL) == -1)
+			err(1, "remount %s read-only", dst);
+	}
+}
+
+/*
+ * Make the calling process a container: move it into cgroup_procs, unless
+ * NULL, and give it a mount namespace with a tmpfs root at root, holding a
+ * copy of itself at /sub for a chroot.
+ */
+static void
+ctr_enter(const char *root, const char *cgroup_procs)
+{
+	char	pid[32], old[PATH_MAX], sub[PATH_MAX];
+
+	if (cgroup_procs != NULL) {
+		snprintf(pid, sizeof(pid), "%d", getpid());
+		if (sysfs_write(cgroup_procs, pid) == -1)
+			err(1, "write %s", cgroup_procs);
+	}
+	if (unshare(CLONE_NEWNS) == -1)
+		err(1, "unshare");
+	if (mount(NULL, "/", "", MS_REC | MS_PRIVATE, NULL) == -1)
+		err(1, "mount private");
+	if (mount("tmpfs", root, "tmpfs", 0, "mode=0755") == -1)
+		err(1, "mount tmpfs %s", root);
+	ctr_mirror(root);
+	snprintf(sub, sizeof(sub), "%s/sub", root);
+	if (mkdir(sub, 0755) == -1)
+		err(1, "mkdir %s", sub);
+	ctr_mirror(sub);
+
+	/*
+	 * Runtimes pivot_root(2) into the container's root. The initramfs
+	 * root has no parent mount, which pivot_root(2) needs, so there do
+	 * what switch_root(8) and runc --no-pivot do: move the new root over
+	 * / and chroot into it. Both leave the tmpfs mounted on the root of
+	 * the namespace, so paths come out the same.
+	 */
+	snprintf(old, sizeof(old), "%s/.old", root);
+	if (mkdir(old, 0700) == -1)
+		err(1, "mkdir %s", old);
+	if (syscall(SYS_pivot_root, root, old) == 0) {
+		if (chdir("/") == -1)
+			err(1, "chdir /");
+		if (umount2("/.old", MNT_DETACH) == -1)
+			err(1, "umount /.old");
+		if (rmdir("/.old") == -1)
+			err(1, "rmdir /.old");
+	} else if (errno == EINVAL) {
+		if (rmdir(old) == -1)
+			err(1, "rmdir %s", old);
+		if (chdir(root) == -1)
+			err(1, "chdir %s", root);
+		if (mount(".", "/", "", MS_MOVE, NULL) == -1)
+			err(1, "move %s to /", root);
+		if (chroot(".") == -1)
+			err(1, "chroot");
+	} else
+		err(1, "pivot_root %s", root);
+	if (chdir("/") == -1)
+		err(1, "chdir /");
+}
+
+/*
+ * Fork a process that chroots into dir, unless NULL, creates file and execs
+ * true. Return its pid once it exited.
+ */
+static pid_t
+ctr_spawn(const char *dir, const char *file, const char *true_path,
+    const char *marker)
+{
+	pid_t	child;
+	int	fd, status;
+
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0) {
+		if (dir != NULL && (chroot(dir) == -1 || chdir("/") == -1))
+			err(1, "chroot %s", dir);
+		fd = open(file, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
+		if (fd == -1)
+			err(1, "create %s", file);
+		close(fd);
+		execl(true_path, "true", marker, (char *)NULL);
+		err(1, "execl %s", true_path);
+	}
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "%s child didn't exit cleanly", marker);
+
+	return (child);
+}
+
+static void
+assert_str(const char *what, const char *got, const char *want)
+{
+	if (got == NULL)
+		errx(1, "%s is NULL, want %s", what, want);
+	if (strcmp(got, want) != 0)
+		errx(1, "%s is %s, want %s", what, got, want);
+}
+
+/*
+ * Can the test make a container cgroup? EBPF reports the cgroup of the pids
+ * controller, so it must be on down to the container. The test only changes
+ * the cgroups it makes: the root has it on systemd hosts, and the initramfs
+ * init turns it on. Kernels before 4.5 have no cgroup v2. Without it, the
+ * test still checks the paths, except in the initramfs if the kernel has the
+ * controller: then init failed to turn it on.
+ */
+static int
+ctr_cgroup_usable(const struct test *t)
+{
+	struct statfs	sfs;
+
+	if (statfs("/sys/fs/cgroup", &sfs) == -1 ||
+	    sfs.f_type != CGROUP2_SUPER_MAGIC) {
+		warnx("%s: no cgroup v2, skipping cgroup checks", t->name);
+		return (0);
+	}
+	if (cgroup_has_word(CGROUP_ROOT_CONTROL, "pids"))
+		return (1);
+	if (getenv("QUARK_INITRAMFS") != NULL &&
+	    cgroup_has_word("/sys/fs/cgroup/cgroup.controllers", "pids"))
+		errx(1, "%s: the pids controller is not on at the cgroup root",
+		    t->name);
+	warnx("%s: no pids controller at the cgroup root, skipping cgroup "
+	    "checks", t->name);
+
+	return (0);
+}
+
+/* Remove what a container test made, each argument may be NULL */
+static void
+ctr_cleanup(const char *root, const char *scope, const char *slice)
+{
+	if (root != NULL && rmdir(root) == -1)
+		warn("rmdir %s", root);
+	if (scope != NULL && rmdir(scope) == -1)
+		warn("rmdir %s", scope);
+	if (slice != NULL && rmdir(slice) == -1)
+		warn("rmdir %s", slice);
+}
+
+/*
+ * A process in a container, as docker or containerd set one up: a container
+ * cgroup, a mount namespace and a root filesystem of its own. Then a chroot
+ * inside the container, which runtimes allow by default (CAP_SYS_CHROOT).
+ * The container's root is a tmpfs on a host directory, which must not show
+ * in any path.
+ *
+ * Paths come from the task's root: the container path, and after the chroot,
+ * the path inside the chroot.
+ *
+ * Only on EBPF: the kprobe backend has no cgroup for new processes.
+ */
+static int
+t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_process	*qp;
+	const char			*true_path;
+	const char			*files[2];
+	const char			*scope_dir, *slice_dir;
+	char				 root[] = "/tmp/quark-test-ctr.XXXXXX";
+	char				 id[65], slice[64], cgroup[160];
+	char				 slice_path[PATH_MAX], scope[PATH_MAX];
+	char				 control[PATH_MAX];
+	char				 procs_path[PATH_MAX];
+	char				 cid[NAME_MAX], want_cid[NAME_MAX];
+	char				 what[64], true_exe[PATH_MAX];
+	pid_t				 child, pids[2];
+	int				 i, p[2], status, with_cgroup;
+	u64				 nonce;
+	int				 seen_exec[2], seen_file[2];
+	struct timespec			 start, now;
+
+	true_path = access("/usr/bin/true", X_OK) == 0 ?
+	    "/usr/bin/true" : "/bin/true";
+	/* EBPF reports the file that runs: true can be a link to a multicall */
+	if (realpath(true_path, true_exe) == NULL)
+		err(1, "realpath %s", true_path);
+	files[0] = "/ctr-file";
+	files[1] = "/sub-file";
+
+	/*
+	 * A slice of this run and a container ID as docker makes it, 64 hex
+	 * digits. Only the last component of the cgroup names the container.
+	 */
+	nonce = ns_clock();
+	snprintf(id, sizeof(id), "%08x%056llx", (u32)getpid(),
+	    (unsigned long long)nonce);
+	snprintf(slice, sizeof(slice), "/quark-test-%d-%llx.slice", getpid(),
+	    (unsigned long long)nonce);
+	snprintf(cgroup, sizeof(cgroup), "%s/docker-%s.scope", slice, id);
+	snprintf(slice_path, sizeof(slice_path), "/sys/fs/cgroup%s", slice);
+	snprintf(scope, sizeof(scope), "/sys/fs/cgroup%s", cgroup);
+	snprintf(control, sizeof(control),
+	    "/sys/fs/cgroup%s/cgroup.subtree_control", slice);
+	snprintf(procs_path, sizeof(procs_path),
+	    "/sys/fs/cgroup%s/cgroup.procs", cgroup);
+	snprintf(want_cid, sizeof(want_cid), "docker://%s", id);
+
+	qa->flags |= QQ_FILE;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	/* Probe first, so that an error leaves nothing behind */
+	with_cgroup = ctr_cgroup_usable(t);
+	if (mkdtemp(root) == NULL)
+		err(1, "mkdtemp");
+	slice_dir = scope_dir = NULL;
+	if (with_cgroup) {
+		if (mkdir(slice_path, 0755) == -1) {
+			warn("mkdir %s", slice_path);
+			ctr_cleanup(root, NULL, NULL);
+			exit(1);
+		}
+		slice_dir = slice_path;
+		if (sysfs_write(control, "+pids") == -1) {
+			warn("enable pids in %s", slice_path);
+			ctr_cleanup(root, NULL, slice_dir);
+			exit(1);
+		}
+		if (mkdir(scope, 0755) == -1) {
+			warn("mkdir %s", scope);
+			ctr_cleanup(root, NULL, slice_dir);
+			exit(1);
+		}
+		scope_dir = scope;
+	}
+	if (pipe(p) == -1 || (child = fork()) == -1) {
+		warn("pipe or fork");
+		ctr_cleanup(root, scope_dir, slice_dir);
+		exit(1);
+	}
+	if (child == 0) {
+		close(p[0]);
+		ctr_enter(root, with_cgroup ? procs_path : NULL);
+		/*
+		 * Exec through a link on the container's tmpfs: EBPF must
+		 * report the file that runs, also where true is no link.
+		 */
+		if (symlink(true_path, "/true-link") == -1)
+			err(1, "symlink /true-link");
+		pids[0] = ctr_spawn(NULL, files[0], "/true-link",
+		    "container-exec");
+		pids[1] = ctr_spawn("/sub", files[1], true_path,
+		    "container-chroot-exec");
+		if (qwrite(p[1], pids, sizeof(pids)) == -1)
+			err(1, "write pids");
+		exit(0);
+	}
+	close(p[1]);
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	/* Clean up before any check, the events are queued already */
+	ctr_cleanup(root, scope_dir, slice_dir);
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "container child didn't exit cleanly");
+	if (qread(p[0], pids, sizeof(pids)) != sizeof(pids))
+		errx(1, "can't read pids of the container processes");
+	close(p[0]);
+
+	bzero(seen_exec, sizeof(seen_exec));
+	bzero(seen_file, sizeof(seen_file));
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	while (!seen_exec[0] || !seen_exec[1] ||
+	    !seen_file[0] || !seen_file[1]) {
+		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
+			err(1, "clock_gettime");
+		if (now.tv_sec - start.tv_sec >= 5)
+			errx(1, "missing events: exec %d %d, file %d %d",
+			    seen_exec[0], seen_exec[1],
+			    seen_file[0], seen_file[1]);
+		if ((qev = quark_queue_get_event(&qq)) == NULL) {
+			if (quark_queue_block(&qq) == -1)
+				err(1, "quark_queue_block");
+			continue;
+		}
+		if ((qp = qev->process) == NULL)
+			continue;
+		for (i = 0; i < (int)nitems(pids); i++)
+			if (qp->pid == (u32)pids[i])
+				break;
+		if (i == (int)nitems(pids))
+			continue;
+
+		if (qev->events & QUARK_EV_EXEC) {
+			snprintf(what, sizeof(what), "exe of process %d", i);
+			assert_str(what, qp->exe, true_exe);
+			snprintf(what, sizeof(what), "cwd of process %d", i);
+			assert_str(what, qp->cwd, "/");
+			if (with_cgroup) {
+				snprintf(what, sizeof(what),
+				    "cgroup of process %d", i);
+				assert_str(what, qp->cgroup, cgroup);
+				if (parse_container_cgroup(qp->cgroup, cid,
+				    sizeof(cid)) == -1)
+					errx(1, "%s: not a container cgroup",
+					    qp->cgroup);
+				assert_str("container id", cid, want_cid);
+			}
+			seen_exec[i] = 1;
+		}
+		if ((qev->events & QUARK_EV_FILE) &&
+		    (qev->file->op_mask & QUARK_FILE_OP_CREATE)) {
+			assert_file_path(qev->file, files[i]);
+			seen_file[i] = 1;
+		}
+	}
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+#undef CGROUP_ROOT_CONTROL
+
 static int
 t_shmget(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -7632,6 +8014,7 @@ struct test all_tests[] = {
 	T_EBPF(t_memfd_exec),
 	T_EBPF(t_detached_mount_exec),
 	T_EBPF(t_chroot_escape_exec),
+	T_EBPF(t_container_mntns),
 	T_EBPF(t_shmget),
 	T_EBPF(t_memfd_stale_state),
 	T_EBPF(t_mprotect),
