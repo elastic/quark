@@ -73,6 +73,10 @@ The library tries to give as much context for an event as possible. Depending on
 
 An internal cache of processes is kept that can be looked up via [quark\_process\_lookup(3)](https://elastic.github.io/quark/quark_process_lookup.3.html). This cache keeps soon-to-be-purged elements for a little while so that you can still lookup a process that just exited. The table is initialized by scraping /proc. Process lookup and iteration try to link each returned process to matching container metadata that is currently in the queue.
 
+[*PATHS*](#PATHS)
+
+The EBPF backend builds paths from the root directory of the process, which [chroot(2)](https://linux.die.net/man/2/chroot) changes. With `QQ_MNTNS_PATHS`, see [quark\_queue\_open(3)](https://elastic.github.io/quark/quark_queue_open.3.html), it builds them from the root of its mount namespace, which [chroot(2)](https://linux.die.net/man/2/chroot) does not change.
+
 [*TRANSPARENCY*](#TRANSPARENCY)
 
 quark tries to be as transparent as possible about what it knows, there are counters for lost events, and each piece of information of a `quark_event` is guarded by a flag, meaning the user might get incomplete events in the case of lost events, it's the user responsability to decide what to do with it.

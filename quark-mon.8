@@ -6,7 +6,7 @@
 .Nd monitor and print quark events
 .Sh SYNOPSIS
 .Nm quark-mon
-.Op Fl BbDEeFGgHhkLMNnSsTtuv
+.Op Fl BbDEeFGgHhkLMNnRSsTtuv
 .Op Fl C Ar filename
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
@@ -115,6 +115,11 @@ Attempt NOVA as the backend.
 .It Fl P Ar ppid
 Display only events where parent pid is
 .Ar ppid .
+.It Fl R
+Build paths from the root of the mount namespace, see
+.Dv QQ_MNTNS_PATHS
+in
+.Xr quark_queue_open 3 .
 .It Fl S
 Enable socket events (experimental).
 .It Fl s
@@ -125,6 +130,21 @@ Read rules from
 use
 .Em -
 for stdin.
+The
+.Dq process.exe
+field matches the executable of the process, the
+.Em exe
+of
+.Xr quark_event_dump 3 .
+For a script, it is the interpreter: a
+.Dq #!/bin/sh
+script matches
+.Dq process.exe /usr/bin/dash
+where
+.Pa /bin/sh
+links to dash.
+The kprobe backend reports the path given to
+.Xr execve 2 .
 See
 .Sx CONTAINER SCOPE
 for the
@@ -189,8 +209,8 @@ may be passed, there is no fallback between backends.
 .Sh CONTAINER SCOPE
 The
 .Dq event.scope container
-rule field matches events from a process in a Kubernetes container.
-To keep only container events on a Kubernetes node, use:
+rule field matches events from a process in a container.
+To keep only container events, use:
 .Bd -literal -offset indent
 pass on event.scope container
 drop on any
@@ -202,6 +222,21 @@ cgroup is a container scope of the systemd cgroup driver, like
 or
 .Pa crio-<id>.scope .
 This is the kubeadm default since Kubernetes 1.22.
+.Pp
+Kubernetes is not required: a container run by docker or podman with the
+systemd cgroup driver, in
+.Pa docker-<id>.scope
+or
+.Pa libpod-<id>.scope ,
+matches as well.
+To match only Kubernetes containers, add
+.Dq pod.name
+to the rule:
+.Bd -literal -offset indent
+pass on event.scope container pod.name *
+drop on any
+.Ed
+.Pp
 The following are not recognized as containers, and the rules above drop
 their events:
 .Bl -bullet
@@ -215,7 +250,6 @@ A process in a nested cgroup of a container, like
 An event without a process, or from a process with an unknown cgroup.
 .El
 .Pp
-Containers outside Kubernetes are not a supported use case.
 The field is only supported by the EBPF backend.
 The kprobe backend does not report the cgroup of new processes, so it
 rejects the field, and so does the NOVA backend.

@@ -6,7 +6,7 @@
 .Nd quark's test utility
 .Sh SYNOPSIS
 .Nm quark-test
-.Op Fl 1bKktv
+.Op Fl 1bKkRtv
 .Op Fl x Ar test
 .Op Ar tests ...
 .Nm quark-test
@@ -55,6 +55,12 @@ see
 Prints all available tests on stdout.
 .It Fl n
 Run only NOVA tests.
+.It Fl R
+Run the EBPF tests with
+.Dv QQ_MNTNS_PATHS ,
+see
+.Xr quark_queue_open 3 .
+Tests that check both path modes ignore it.
 .It Fl t
 Print out the contents of
 .Pa /sys/kernel/tracing/trace_pipe

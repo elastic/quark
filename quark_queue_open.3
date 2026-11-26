@@ -123,6 +123,10 @@ Enable EBPF-only executable mprotect attempt events.
 Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
+.It Dv QQ_MNTNS_PATHS
+Build paths from the root of the mount namespace of the process, not from its
+root directory.
+EBPF backend only.
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.
