@@ -133,8 +133,9 @@ in a container, the path inside the container.
 .Xr chroot 2
 does not change it.
 A file outside of the mount namespace, like one opened through a file
-descriptor from another mount namespace or on a detached mount, is reported
-from the root of its own mount, as without the flag.
+descriptor from another mount namespace, is reported from the root of that
+other mount namespace, and a file on a detached mount from the root of the
+detached mount tree, as without the flag.
 .Pp
 Without the flag, the paths of a process in a
 .Xr chroot 2
@@ -142,8 +143,13 @@ are relative to the chroot, but the processes found in
 .Pa /proc
 when the queue is opened get paths relative to the caller's root, so the
 same process can change paths after its first event.
-With the flag both agree, as long as the caller is not itself in a
+With the flag both are built from the same root, as long as the caller is not
+itself in a
 .Xr chroot 2 .
+The strings can still differ, for example for a path with more components
+than the EBPF backend resolves, which it reports as a relative
+.Pa ./
+path.
 .Pp
 Only the EBPF backend implements it, the other backends ignore it.
 .El

@@ -138,29 +138,40 @@ The
 field matches the executable of the process, the
 .Em exe
 of
-.Xr quark_event_dump 3 .
-For a script, it is the interpreter and not the script: a
+.Xr quark_event_dump 3 ,
+as of its last exec.
+With the EBPF backend it is the file that runs, with symlinks resolved: for
+a script, the interpreter and not the script.
+A
 .Dq #!/bin/sh
 script matches
 .Dq process.exe /usr/bin/dash
 where
 .Pa /bin/sh
 links to dash, and never its own path.
-The EBPF backend reports the file that runs, with symlinks resolved.
 The kprobe backend reports the path given to
-.Xr execve 2 ,
-which is not resolved and can be relative, like
-.Pa ./x.sh
-or
+.Xr execve 2
+instead, which is not resolved and can be relative: for a script it is the
+script, like
+.Pa ./x.sh ,
+and for
+.Dq sh x.sh
+it is
 .Pa /usr/bin/sh .
-After a
-.Xr chroot 2 ,
+The EBPF backend resolves the paths of
 .Dq process.exe
 and
 .Dq file.path
-match paths relative to it, unless
+from the root of the process, so a path resolved after a
+.Xr chroot 2
+is relative to it, unless
 .Fl R
 is given.
+A process that calls
+.Xr chroot 2
+after its exec keeps the
+.Dq process.exe
+of that exec.
 See
 .Sx CONTAINER SCOPE
 for the

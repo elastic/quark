@@ -2594,6 +2594,7 @@ t_chroot_escape_exec(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_process	*qp;
 	const char			*true_path;
 	char				 dir[] = "/tmp/quark-test-chroot.XXXXXX";
+	char				 real[PATH_MAX];
 	pid_t				 child;
 	int				 status;
 
@@ -2601,6 +2602,9 @@ t_chroot_escape_exec(const struct test *t, struct quark_queue_attr *qa)
 	    "/usr/bin/true" : "/bin/true";
 	if (mkdtemp(dir) == NULL)
 		err(1, "mkdtemp");
+	/* What the probe reports, /tmp can be a link */
+	if (realpath(dir, real) == NULL)
+		err(1, "realpath %s", dir);
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
@@ -2648,7 +2652,7 @@ t_chroot_escape_exec(const struct test *t, struct quark_queue_attr *qa)
 	/* The cwd is the chroot, from the mount namespace with -R */
 	assert(qp->cwd != NULL);
 	if (qa->flags & QQ_MNTNS_PATHS)
-		assert(!strcmp(qp->cwd, dir));
+		assert(!strcmp(qp->cwd, real));
 	else
 		assert(!strcmp(qp->cwd, "/"));
 
@@ -2962,7 +2966,8 @@ container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	char				 slice_path[PATH_MAX], scope[PATH_MAX];
 	char				 control[PATH_MAX];
 	char				 procs_path[PATH_MAX];
-	char				 cid[NAME_MAX], sub_exe[PATH_MAX];
+	char				 cid[NAME_MAX], true_exe[PATH_MAX];
+	char				 sub_exe[PATH_MAX + 8];
 	pid_t				 child, pids[2];
 	int				 p[2], status, with_cgroup, mntns;
 	u64				 nonce;
@@ -2970,7 +2975,10 @@ container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	mntns = (qa->flags & QQ_MNTNS_PATHS) != 0;
 	true_path = access("/usr/bin/true", X_OK) == 0 ?
 	    "/usr/bin/true" : "/bin/true";
-	snprintf(sub_exe, sizeof(sub_exe), "/sub%s", true_path);
+	/* EBPF reports the file that runs: true can be a link to a multicall */
+	if (realpath(true_path, true_exe) == NULL)
+		err(1, "realpath %s", true_path);
+	snprintf(sub_exe, sizeof(sub_exe), "/sub%s", true_exe);
 
 	/*
 	 * A slice of this run and a container ID as docker makes it, 64 hex
@@ -3046,11 +3054,11 @@ container_mntns(const struct test *t, struct quark_queue_attr *qa)
 
 	bzero(w, sizeof(w));
 	w[0].pid = pids[0];
-	w[0].exe = true_path;
+	w[0].exe = true_exe;
 	w[0].cwd = "/";
 	w[0].file = "/ctr-file";
 	w[1].pid = pids[1];
-	w[1].exe = mntns ? sub_exe : true_path;
+	w[1].exe = mntns ? sub_exe : true_exe;
 	w[1].cwd = mntns ? "/sub" : "/";
 	w[1].file = mntns ? "/sub/sub-file" : "/sub-file";
 	if (with_cgroup) {
@@ -3092,7 +3100,8 @@ chroot_paths(const struct test *t, struct quark_queue_attr *qa)
 	const char			*true_path;
 	char				 dir[] = "/tmp/quark-test-chr.XXXXXX";
 	char				 real[PATH_MAX], snap_cwd[PATH_MAX];
-	char				 exe[PATH_MAX + 16];
+	char				 true_exe[PATH_MAX];
+	char				 exe[2 * PATH_MAX];
 	char				 file[PATH_MAX + 16];
 	char				 c;
 	pid_t				 child;
@@ -3102,11 +3111,14 @@ chroot_paths(const struct test *t, struct quark_queue_attr *qa)
 	mntns = (qa->flags & QQ_MNTNS_PATHS) != 0;
 	true_path = access("/usr/bin/true", X_OK) == 0 ?
 	    "/usr/bin/true" : "/bin/true";
+	/* EBPF reports the file that runs: true can be a link to a multicall */
+	if (realpath(true_path, true_exe) == NULL)
+		err(1, "realpath %s", true_path);
 	if (mkdtemp(dir) == NULL)
 		err(1, "mkdtemp");
 	if (realpath(dir, real) == NULL)
 		err(1, "realpath %s", dir);
-	snprintf(exe, sizeof(exe), "%s%s", real, true_path);
+	snprintf(exe, sizeof(exe), "%s%s", real, true_exe);
 	snprintf(file, sizeof(file), "%s/chroot-file", real);
 	if (pipe(ready) == -1 || pipe(go) == -1 || (child = fork()) == -1) {
 		warn("pipe or fork");
@@ -3173,7 +3185,7 @@ chroot_paths(const struct test *t, struct quark_queue_attr *qa)
 
 	bzero(&w, sizeof(w));
 	w.pid = child;
-	w.exe = mntns ? exe : true_path;
+	w.exe = mntns ? exe : true_exe;
 	/* With the flag, live paths match the snapshot */
 	w.cwd = mntns ? snap_cwd : "/";
 	w.file = mntns ? file : "/chroot-file";
