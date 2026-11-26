@@ -624,6 +624,7 @@ docs/%.html: %
 	$(Q)sed -i 's/exec\.3\.html/https:\/\/linux.die.net\/man\/3\/exec/g' $@
 	$(Q)sed -i 's/execve\.2\.html/https:\/\/linux.die.net\/man\/2\/execve/g' $@
 	$(Q)sed -i 's/exit\.3\.html/https:\/\/linux.die.net\/man\/3\/exit/g' $@
+	$(Q)sed -i 's/chroot\.2\.html/https:\/\/linux.die.net\/man\/2\/chroot/g' $@
 
 README.md: docs/quark.7.html
 	$(if $(shell which $(HTML2MARKDOWN) 2>/dev/null),,		\

@@ -25,7 +25,7 @@
 <table class="Nm">
   <tr>
     <td><code class="Nm">quark-mon</code></td>
-    <td>[<code class="Fl">-BbDEeFGgHhkLMNnSsTtuv</code>]
+    <td>[<code class="Fl">-BbDEeFGgHhkLMNnRSsTtuv</code>]
       [<code class="Fl">-C</code> <var class="Ar">filename</var>]
       [<code class="Fl">-K</code> <var class="Ar">kubeconfig</var>]
       [<code class="Fl">-l</code> <var class="Ar">maxlength</var>]
@@ -147,6 +147,11 @@
   <dt id="P"><a class="permalink" href="#P"><code class="Fl">-P</code></a>
     <var class="Ar">ppid</var></dt>
   <dd>Display only events where parent pid is <var class="Ar">ppid</var>.</dd>
+  <dt id="R"><a class="permalink" href="#R"><code class="Fl">-R</code></a></dt>
+  <dd>Build paths from the root of the process's mount namespace, so that
+      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a> does not change them. See
+      <code class="Dv">QQ_MNTNS_PATHS</code> in
+      <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</dd>
   <dt id="S"><a class="permalink" href="#S"><code class="Fl">-S</code></a></dt>
   <dd>Enable socket events (experimental).</dd>
   <dt id="s"><a class="permalink" href="#s"><code class="Fl">-s</code></a></dt>
@@ -154,11 +159,26 @@
   <dt id="r"><a class="permalink" href="#r"><code class="Fl">-r</code></a>
     <var class="Ar">rulefile</var></dt>
   <dd>Read rules from <var class="Ar">rulefile</var>, use <i class="Em">-</i>
-      for stdin. See <a class="Sx" href="#CONTAINER_SCOPE">CONTAINER SCOPE</a>
-      for the &#x201C;event.scope&#x201D; field. The &#x201C;pod.name&#x201D;
-      field matches events from a process in a container that belongs to the
-      named Kubernetes pod. A single &#x2018;*&#x2019; wildcard is accepted, as
-      in &#x201C;pod.name nginx-*&#x201D;. The &#x201C;container.image&#x201D;
+      for stdin. The &#x201C;process.exe&#x201D; field matches the executable of
+      the process, the
+      <a class="permalink" href="#exe"><i class="Em" id="exe">exe</i></a> of
+      <a class="Xr" href="quark_event_dump.3.html">quark_event_dump(3)</a>. For
+      a script, it is the interpreter and not the script: a
+      &#x201C;#!/bin/sh&#x201D; script matches &#x201C;process.exe
+      /usr/bin/dash&#x201D; where <span class="Pa">/bin/sh</span> links to dash,
+      and never its own path. The EBPF backend reports the file that runs, with
+      symlinks resolved. The kprobe backend reports the path given to
+      <a class="Xr" href="https://linux.die.net/man/2/execve">execve(2)</a>, which is not resolved
+      and can be relative, like <span class="Pa">./x.sh</span> or
+      <span class="Pa">/usr/bin/sh</span>. After a
+      <a class="Xr" href="https://linux.die.net/man/2/chroot">chroot(2)</a>,
+      &#x201C;process.exe&#x201D; and &#x201C;file.path&#x201D; match paths
+      relative to it, unless <code class="Fl">-R</code> is given. See
+      <a class="Sx" href="#CONTAINER_SCOPE">CONTAINER SCOPE</a> for the
+      &#x201C;event.scope&#x201D; field. The &#x201C;pod.name&#x201D; field
+      matches events from a process in a container that belongs to the named
+      Kubernetes pod. A single &#x2018;*&#x2019; wildcard is accepted, as in
+      &#x201C;pod.name nginx-*&#x201D;. The &#x201C;container.image&#x201D;
       field matches events from a process in a container whose image reference
       matches the given string. The image reference is compared exactly as
       Kubernetes reports it, or as given to the container API, as in
@@ -202,8 +222,8 @@
 <h1 class="Sh" id="CONTAINER_SCOPE"><a class="permalink" href="#CONTAINER_SCOPE">CONTAINER
   SCOPE</a></h1>
 <p class="Pp">The &#x201C;event.scope container&#x201D; rule field matches
-    events from a process in a Kubernetes container. To keep only container
-    events on a Kubernetes node, use:</p>
+    events from a process in a container. To keep only container events,
+  use:</p>
 <div class="Bd Pp Bd-indent Li">
 <pre>pass on event.scope container
 drop on any</pre>
@@ -212,8 +232,23 @@ drop on any</pre>
     process cgroup is a container scope of the systemd cgroup driver, like
     <span class="Pa">cri-containerd-&lt;id&gt;.scope</span> or
     <span class="Pa">crio-&lt;id&gt;.scope</span>. This is the kubeadm default
-    since Kubernetes 1.22. The following are not recognized as containers, and
-    the rules above drop their events:</p>
+    since Kubernetes 1.22.</p>
+<p class="Pp">Kubernetes is not required: a container run by docker or podman
+    with the systemd cgroup driver, in
+    <span class="Pa">docker-&lt;id&gt;.scope</span> or
+    <span class="Pa">libpod-&lt;id&gt;.scope</span>, matches as well. So do the
+    processes of the runtime that set up the container once they are in its
+    cgroup, like runc init. To match only Kubernetes containers, add
+    &#x201C;pod.name *&#x201D; to the rule, as in:</p>
+<div class="Bd Pp Bd-indent Li">
+<pre>pass on event.scope container pod.name *
+drop on any</pre>
+</div>
+<p class="Pp">&#x201C;pod.name&#x201D; needs the pod metadata of the container,
+    so this also drops the events of a Kubernetes container until its metadata
+    arrives.</p>
+<p class="Pp">The following are not recognized as containers, and the rules
+    above drop their events:</p>
 <ul class="Bl-bullet">
   <li>All containers on a node that uses the cgroupfs driver, like
       <span class="Pa">/kubepods/burstable/pod&lt;uid&gt;/&lt;id&gt;</span>.</li>
@@ -221,10 +256,9 @@ drop on any</pre>
       <span class="Pa">cri-containerd-&lt;id&gt;.scope/init.scope</span>.</li>
   <li>An event without a process, or from a process with an unknown cgroup.</li>
 </ul>
-<p class="Pp">Containers outside Kubernetes are not a supported use case. The
-    field is only supported by the EBPF backend. The kprobe backend does not
-    report the cgroup of new processes, so it rejects the field, and so does the
-    NOVA backend.</p>
+<p class="Pp">The field is only supported by the EBPF backend. The kprobe
+    backend does not report the cgroup of new processes, so it rejects the
+    field, and so does the NOVA backend.</p>
 </section>
 <section class="Sh">
 <h1 class="Sh" id="EXIT_STATUS"><a class="permalink" href="#EXIT_STATUS">EXIT
@@ -283,7 +317,7 @@ drop on any</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">October 30, 2026</td>
+    <td class="foot-date">November 26, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
