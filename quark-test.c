@@ -2885,7 +2885,7 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 	char				 control[PATH_MAX];
 	char				 procs_path[PATH_MAX];
 	char				 cid[NAME_MAX], want_cid[NAME_MAX];
-	char				 what[64];
+	char				 what[64], true_exe[PATH_MAX];
 	pid_t				 child, pids[2];
 	int				 i, p[2], status, with_cgroup;
 	u64				 nonce;
@@ -2894,6 +2894,9 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 
 	true_path = access("/usr/bin/true", X_OK) == 0 ?
 	    "/usr/bin/true" : "/bin/true";
+	/* EBPF reports the file that runs: true can be a link to a multicall */
+	if (realpath(true_path, true_exe) == NULL)
+		err(1, "realpath %s", true_path);
 	files[0] = "/ctr-file";
 	files[1] = "/sub-file";
 
@@ -2996,7 +2999,7 @@ t_container_mntns(const struct test *t, struct quark_queue_attr *qa)
 
 		if (qev->events & QUARK_EV_EXEC) {
 			snprintf(what, sizeof(what), "exe of process %d", i);
-			assert_str(what, qp->exe, true_path);
+			assert_str(what, qp->exe, true_exe);
 			snprintf(what, sizeof(what), "cwd of process %d", i);
 			assert_str(what, qp->cwd, "/");
 			if (with_cgroup) {
