@@ -398,6 +398,7 @@ struct raw_packet {
 #define QUARK_FILE_OP_MODIFY	(1 << 1)
 #define QUARK_FILE_OP_REMOVE	(1 << 2)
 #define QUARK_FILE_OP_MOVE	(1 << 3)
+#define QUARK_FILE_OP_LINK	(1 << 4)	/* old_path is the linked file */
 
 #define QUARK_FILE_CH_CONTENT	(1 << 0)
 #define QUARK_FILE_CH_PERMS	(1 << 1)
@@ -1001,9 +1002,13 @@ struct quark_queue_attr {
 #define QQ_FE_CHMOD		(1 << 2)
 #define QQ_FE_CHOWN		(1 << 3)
 #define QQ_FE_OPEN_WRITE	(1 << 4)	/* each open for write */
+#define QQ_FE_LINK		(1 << 5)	/* hard links, link(2), linkat(2) */
 #define QQ_FE_ALL		(QQ_FE_WRITE|QQ_FE_TRUNCATE|QQ_FE_CHMOD|QQ_FE_CHOWN|\
-				 QQ_FE_OPEN_WRITE)
+				 QQ_FE_OPEN_WRITE|QQ_FE_LINK)
 #define QQ_FE_DEFAULT		(QQ_FE_WRITE|QQ_FE_TRUNCATE|QQ_FE_CHMOD|QQ_FE_CHOWN)
+/* Drift detection: an open for write instead of each write */
+#define QQ_FE_DRIFT		(QQ_FE_OPEN_WRITE|QQ_FE_TRUNCATE|QQ_FE_CHMOD|\
+				 QQ_FE_CHOWN|QQ_FE_LINK)
 	int			 file_events;		/* QQ_FE_*, 0 is QQ_FE_DEFAULT */
 };
 

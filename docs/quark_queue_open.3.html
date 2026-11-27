@@ -149,8 +149,8 @@
         <a class="Xr" href="quark.7.html">quark(7)</a>.</p>
   </dd>
   <dt id="file_events"><a class="permalink" href="#file_events"><i class="Em">file_events</i></a></dt>
-  <dd>Which modify events the file events of <code class="Dv">QQ_FILE</code>
-      collect, a bitmask of:
+  <dd>Which modify and link events the file events of
+      <code class="Dv">QQ_FILE</code> collect, a bitmask of:
     <dl class="Bl-tag">
       <dt id="QQ_FE_WRITE"><a class="permalink" href="#QQ_FE_WRITE"><code class="Dv">QQ_FE_WRITE</code></a></dt>
       <dd>Each
@@ -186,6 +186,16 @@
           <a class="Lk" href="https://man7.org/linux/man-pages/man2/fallocate.2.html">fallocate(2)</a>
           or io_uring. The open that creates the file gives the create event
           only.</dd>
+      <dt id="QQ_FE_LINK"><a class="permalink" href="#QQ_FE_LINK"><code class="Dv">QQ_FE_LINK</code></a></dt>
+      <dd>A hard link made by <a class="Xr" href="link.2.html">link(2)</a> or
+          <a class="Xr" href="linkat.2.html">linkat(2)</a>, also of a file
+          opened with <code class="Dv">O_TMPFILE</code>. The event has the
+          operation <code class="Dv">QUARK_FILE_OP_LINK</code>,
+          <a class="permalink" href="#path"><i class="Em" id="path">path</i></a>
+          is the new name and
+          <a class="permalink" href="#old_path"><i class="Em" id="old_path">old_path</i></a>
+          the file that was linked. It never aggregates with other file
+        events.</dd>
     </dl>
     <p class="Pp"><a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>
         sets it to zero, which means <code class="Dv">QQ_FE_DEFAULT</code>:
@@ -194,10 +204,15 @@
         <code class="Dv">QQ_FE_CHMOD</code> and
         <code class="Dv">QQ_FE_CHOWN</code>. There is no way to select no class
         at all. <code class="Dv">QQ_FE_ALL</code> is all the classes there are.
-        Create, remove and move events are always collected. A class that is not
-        selected does not load its probes, except
-        <code class="Dv">QQ_FE_OPEN_WRITE</code>, which shares a probe with the
-        create events and is turned off in it.
+        <code class="Dv">QQ_FE_DRIFT</code> selects the file events for drift
+        detection: <code class="Dv">QQ_FE_OPEN_WRITE</code> instead of
+        <code class="Dv">QQ_FE_WRITE</code>, plus
+        <code class="Dv">QQ_FE_TRUNCATE</code>,
+        <code class="Dv">QQ_FE_CHMOD</code>, <code class="Dv">QQ_FE_CHOWN</code>
+        and <code class="Dv">QQ_FE_LINK</code>. Create, remove and move events
+        are always collected. A class that is not selected does not load its
+        probes, except <code class="Dv">QQ_FE_OPEN_WRITE</code>, which shares a
+        probe with the create events and is turned off in it.
         <code class="Nm">quark_queue_open</code> fails with
         <code class="Er">EINVAL</code> if <i class="Em">file_events</i> has an
         unknown bit, or if it is not zero and <code class="Dv">QQ_FILE</code> or

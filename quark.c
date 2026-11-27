@@ -2201,6 +2201,9 @@ file_op_mask_str(u32 op_mask, char *buf, size_t len)
 		case QUARK_FILE_OP_MODIFY:
 			s = "MODIFY";
 			break;
+		case QUARK_FILE_OP_LINK:
+			s = "LINK";
+			break;
 		default:
 			s = "INVALID";
 			break;
@@ -5133,6 +5136,9 @@ quark_can_aggregate_file(struct quark_queue *qq,
 	 * make it possible to hide stuff.
 	 */
 	if (pf->op_mask & (QUARK_FILE_OP_REMOVE|QUARK_FILE_OP_MOVE))
+		return (0);
+	/* A link has two paths, and nothing to merge with */
+	if ((pf->op_mask | cf->op_mask) & QUARK_FILE_OP_LINK)
 		return (0);
 	if ((pf->op_mask & (QUARK_FILE_OP_CREATE|QUARK_FILE_OP_MODIFY)) &&
 	    (cf->op_mask & (QUARK_FILE_OP_MODIFY|QUARK_FILE_OP_REMOVE)))

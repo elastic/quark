@@ -513,7 +513,8 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 	case EBPF_EVENT_FILE_CREATE: /* FALLTHROUGH */
 	case EBPF_EVENT_FILE_DELETE: /* FALLTHROUGH */
 	case EBPF_EVENT_FILE_MODIFY: /* FALLTHROUGH */
-	case EBPF_EVENT_FILE_RENAME: {
+	case EBPF_EVENT_FILE_RENAME: /* FALLTHROUGH */
+	case EBPF_EVENT_FILE_LINK: {
 		struct ebpf_file_info		*info;
 		const char			*path, *old_path, *sym_target;
 		struct ebpf_varlen_fields_start *vl;
@@ -588,6 +589,16 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			vl = &rename->vl_fields;
 			raw->pid = rename->pids.tgid;
 			op_mask = QUARK_FILE_OP_MOVE;
+			break;
+		}
+		case EBPF_EVENT_FILE_LINK: {
+			/* Same layout as a rename */
+			struct ebpf_file_rename_event *link =
+			    (struct ebpf_file_rename_event *)ev;
+			info = &link->finfo;
+			vl = &link->vl_fields;
+			raw->pid = link->pids.tgid;
+			op_mask = QUARK_FILE_OP_LINK;
 			break;
 		}
 		default:
@@ -1388,6 +1399,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		    (btf_number_of_params(btf, "do_filp_open") == -1);
 		int renameat2_renamed =
 		    (btf_number_of_params(btf, "do_renameat2") == -1);
+		int linkat_renamed =
+		    (btf_number_of_params(btf, "do_linkat") == -1);
 
 		if (use_fentry) {
 			if (renameat2_renamed) {
@@ -1432,6 +1445,17 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 				bpf_program__set_autoload(p->progs.fexit__do_file_open_root, 1);
 				if (use_fsnotify)
 					bpf_program__set_autoload(p->progs.fentry__do_file_open_root, 1);
+			}
+			if (fe & QQ_FE_LINK) {
+				if (linkat_renamed) {
+					bpf_program__set_autoload(p->progs.fentry__filename_linkat, 1);
+					bpf_program__set_autoload(p->progs.fexit__filename_linkat, 1);
+				} else {
+					bpf_program__set_autoload(p->progs.fentry__do_linkat, 1);
+					bpf_program__set_autoload(p->progs.fexit__do_linkat, 1);
+				}
+				bpf_program__set_autoload(p->progs.fentry__vfs_link, 1);
+				bpf_program__set_autoload(p->progs.fexit__vfs_link, 1);
 			}
 		} else {
 			if (use_fsnotify) {
@@ -1485,6 +1509,17 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 				if (use_fsnotify)
 					bpf_program__set_autoload(p->progs.kprobe__do_file_open_root, 1);
 			}
+			if (fe & QQ_FE_LINK) {
+				if (linkat_renamed) {
+					bpf_program__set_autoload(p->progs.kprobe__filename_linkat, 1);
+					bpf_program__set_autoload(p->progs.kretprobe__filename_linkat, 1);
+				} else {
+					bpf_program__set_autoload(p->progs.kprobe__do_linkat, 1);
+					bpf_program__set_autoload(p->progs.kretprobe__do_linkat, 1);
+				}
+				bpf_program__set_autoload(p->progs.kprobe__vfs_link, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__vfs_link, 1);
+			}
 		}
 		/*
 		 * Open for write shares the do_filp_open() probe with file
@@ -1525,6 +1560,18 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 		if (use_fentry && (fe & QQ_FE_OPEN_WRITE) && relo_ret(btf,
 		    &p->rodata->ret__do_file_open_root__, "do_file_open_root") == -1)
 			goto fail;
+		/* vfs_link(), idmap or mnt_userns moved the dentries over time */
+		if (fe & QQ_FE_LINK) {
+			if (relo_ret(btf, &p->rodata->ret__vfs_link__,
+			    "vfs_link") == -1)
+				goto fail;
+			if (relo_param(btf, &p->rodata->arg__vfs_link__old_dentry__,
+			    "vfs_link", "old_dentry") == -1)
+				goto fail;
+			if (relo_param(btf, &p->rodata->arg__vfs_link__new_dentry__,
+			    "vfs_link", "new_dentry") == -1)
+				goto fail;
+		}
 	}
 
 	if (qq->flags & QQ_DNS) {

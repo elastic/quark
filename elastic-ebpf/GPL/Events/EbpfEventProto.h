@@ -48,6 +48,7 @@ enum ebpf_event_type {
     EBPF_EVENT_PROCESS_GETPID               = (1 << 21),
     EBPF_EVENT_PROCESS_MPROTECT             = (1 << 22),
     EBPF_EVENT_PROCESS_BPF                  = (1 << 23),
+    EBPF_EVENT_FILE_LINK                    = (1 << 24),
 };
 
 struct ebpf_event_header {
@@ -201,6 +202,7 @@ struct ebpf_file_create_event {
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 
+// reused by link events: old_path is the existing file, new_path the new name
 struct ebpf_file_rename_event {
     struct ebpf_event_header hdr;
     struct ebpf_pid_info pids;
