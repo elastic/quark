@@ -317,3 +317,14 @@ Changes from 0.11 to 0.12
     like event times and the EBPF backend. It was CLOCK_MONOTONIC, so
     after a suspend ECS process.end read as earlier by the total time
     asleep since boot.
+  o ECS credentials moved out of process.user to where ECS
+    defines them. process.user only holds id and name now, the rest are
+    its siblings:
+      process.user.group.*        -> process.group.*
+      process.user.real_user.*    -> process.real_user.*
+      process.user.real_group.*   -> process.real_group.*
+      process.user.saved_user.*   -> process.saved_user.*
+      process.user.saved_group.*  -> process.saved_group.*
+    The same applies under process.parent, process.group_leader,
+    process.session_leader and process.entry_leader, so
+    process.parent.user.group.id is now process.parent.group.id.

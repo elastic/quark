@@ -56,6 +56,19 @@ Drop priviledges to nobody and chroot to /var/empty, useful to show how quark
 can run without priviledges.
 .It Fl E
 Output ECS JSON to stdout (experimental).
+.Em process.user
+and
+.Em process.group
+hold the effective ids, the real and saved ones are in
+.Em process.real_user ,
+.Em process.real_group ,
+.Em process.saved_user
+and
+.Em process.saved_group .
+The same goes for
+.Em process.parent
+and the leaders of
+.Fl e .
 .It Fl e
 Include
 .Em proc_entry_leader

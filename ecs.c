@@ -350,85 +350,85 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h,
 		s_gr = quark_group_lookup(qq, qp->proc_sgid);
 
 
+	/*
+	 * NOTE process.user.id and process.group.id are effective, not real.
+	 */
+
+	/* process.user.* */
 	hanson_add_object(h, "user", first);
 	{
 		int	user_first = 1;
 
-		/*
-		 * NOTE process.user.id and process.user.group.id are
-		 * effective, not real.
-		 */
 		hanson_add_key_value_int(h, "id", qp->proc_euid,
 		    &user_first);
 		if (e_pw != NULL)
 			hanson_add_key_value(h, "name", e_pw->name,
 			    &user_first);
+	}
+	hanson_close_object(h);
 
-		/* process.user.group.* */
-		hanson_add_object(h, "group", &user_first);
-		{
-			int	group_first = 1;
+	/* process.group.* */
+	hanson_add_object(h, "group", first);
+	{
+		int	group_first = 1;
 
-			hanson_add_key_value_int(h, "id", qp->proc_egid,
+		hanson_add_key_value_int(h, "id", qp->proc_egid,
+		    &group_first);
+		if (e_gr != NULL)
+			hanson_add_key_value(h, "name", e_gr->name,
 			    &group_first);
-			if (e_gr != NULL)
-				hanson_add_key_value(h, "name", e_gr->name,
-				    &group_first);
-		}
-		hanson_close_object(h);
+	}
+	hanson_close_object(h);
 
-		/* process.real_user.*/
-		hanson_add_object(h, "real_user", &user_first);
-		{
-			int	real_first = 1;
+	/* process.real_user.* */
+	hanson_add_object(h, "real_user", first);
+	{
+		int	real_first = 1;
 
-			hanson_add_key_value_int(h, "id", qp->proc_uid,
+		hanson_add_key_value_int(h, "id", qp->proc_uid,
+		    &real_first);
+		if (r_pw != NULL)
+			hanson_add_key_value(h, "name", r_pw->name,
 			    &real_first);
-			if (r_pw != NULL)
-				hanson_add_key_value(h, "name", r_pw->name,
-				    &real_first);
-		}
-		hanson_close_object(h);
+	}
+	hanson_close_object(h);
 
-		/* process.real_group.* */
-		hanson_add_object(h, "real_group", &user_first);
-		{
-			int	real_group_first = 1;
+	/* process.real_group.* */
+	hanson_add_object(h, "real_group", first);
+	{
+		int	real_group_first = 1;
 
-			hanson_add_key_value_int(h, "id", qp->proc_gid,
+		hanson_add_key_value_int(h, "id", qp->proc_gid,
+		    &real_group_first);
+		if (r_gr != NULL)
+			hanson_add_key_value(h, "name", r_gr->name,
 			    &real_group_first);
-			if (r_gr != NULL)
-				hanson_add_key_value(h, "name", r_gr->name,
-				    &real_group_first);
-		}
-		hanson_close_object(h);
+	}
+	hanson_close_object(h);
 
-		/* process.saved_user.*/
-		hanson_add_object(h, "saved_user", &user_first);
-		{
-			int	saved_first = 1;
+	/* process.saved_user.* */
+	hanson_add_object(h, "saved_user", first);
+	{
+		int	saved_first = 1;
 
-			hanson_add_key_value_int(h, "id", qp->proc_suid,
+		hanson_add_key_value_int(h, "id", qp->proc_suid,
+		    &saved_first);
+		if (s_pw != NULL)
+			hanson_add_key_value(h, "name", s_pw->name,
 			    &saved_first);
-			if (s_pw != NULL)
-				hanson_add_key_value(h, "name", s_pw->name,
-				    &saved_first);
+	}
+	hanson_close_object(h);
 
-		}
-		hanson_close_object(h);
+	/* process.saved_group.* */
+	hanson_add_object(h, "saved_group", first);
+	{
+		int	saved_group_first = 1;
 
-		/* process.saved_group.* */
-		hanson_add_object(h, "saved_group", &user_first);
-		{
-			int	saved_group_first = 1;
-
-			hanson_add_key_value_int(h, "id", qp->proc_sgid,
+		hanson_add_key_value_int(h, "id", qp->proc_sgid,
+		    &saved_group_first);
+		if (s_gr != NULL)
+			hanson_add_key_value(h, "name", s_gr->name,
 			    &saved_group_first);
-			if (s_gr != NULL)
-				hanson_add_key_value(h, "name", s_gr->name,
-				    &saved_group_first);
-		}
-		hanson_close_object(h);
 	}
 	hanson_close_object(h);
 
