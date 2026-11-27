@@ -39,6 +39,9 @@ DECL_FUNC_ARG(vfs_truncate, path);
 DECL_FUNC_RET(vfs_truncate);
 /* do_file_open_root */
 DECL_FUNC_RET(do_file_open_root);
+/* notify_change */
+DECL_FUNC_ARG(notify_change, dentry);
+DECL_FUNC_RET(notify_change);
 
 // Send a modify event when an existing regular file is opened for write. Set
 // by userspace, the open probes are shared with file creation.
@@ -387,9 +390,8 @@ out:
 //
 // EBPF_EVENT_FILE_MODIFY is sent as a struct ebpf_file_modify_event with
 // `change_type`, the other types as a struct ebpf_file_create_event. The
-// layouts only differ by change_type before mntns and old_mode after comm, so
-// mntns and comm are written `shift` bytes further for a modify event, and the
-// variable length fields `shift` + 2 bytes further. `shift` is computed
+// layouts only differ by change_type before mntns, so the fields from mntns on
+// are written `shift` bytes further for a modify event. `shift` is computed
 // without a branch: with a branch the verifier walks the path resolvers once
 // per layout.
 //
@@ -422,12 +424,10 @@ __noinline int prepare_and_send_file_event(u64 file,
     _Static_assert(MODIFY_OFF(change_type) == CREATE_OFF(mntns) &&
                        MODIFY_OFF(mntns) == CREATE_OFF(mntns) + 4 &&
                        MODIFY_OFF(comm) == CREATE_OFF(comm) + 4 &&
-                       MODIFY_OFF(old_mode) == CREATE_OFF(vl_fields) + 4 &&
-                       sizeof(((struct ebpf_file_modify_event *)0)->old_mode) == 2 &&
-                       MODIFY_OFF(vl_fields) == CREATE_OFF(vl_fields) + 6 &&
+                       MODIFY_OFF(vl_fields) == CREATE_OFF(vl_fields) + 4 &&
                        sizeof(struct ebpf_file_modify_event) ==
-                           sizeof(struct ebpf_file_create_event) + 6,
-                   "the layouts differ by more than change_type and old_mode");
+                           sizeof(struct ebpf_file_create_event) + 4,
+                   "the layouts differ by more than the 4 bytes of change_type");
 #undef CREATE_OFF
 #undef MODIFY_OFF
     shift = (type & EBPF_EVENT_FILE_MODIFY) >> 8; // 4 for a modify event, else 0
@@ -454,10 +454,7 @@ __noinline int prepare_and_send_file_event(u64 file,
     ebpf_ns__fill(&ns, task);
     *(u32 *)tail = ns.mnt_inonum;
     bpf_get_current_comm(tail + TAIL_OFF(comm), TASK_COMM_LEN);
-    // old_mode of a modify event, no chmod here. A create event has its
-    // variable length fields here, initialized below.
-    *(u16 *)(tail + TAIL_OFF(vl_fields)) = 0;
-    vl_fields = (struct ebpf_varlen_fields_start *)(tail + TAIL_OFF(vl_fields) + (shift >> 1));
+    vl_fields = (struct ebpf_varlen_fields_start *)(tail + TAIL_OFF(vl_fields));
 
     // Variable length fields
     ebpf_vl_fields__init(vl_fields);
@@ -484,8 +481,7 @@ __noinline int prepare_and_send_file_event(u64 file,
     if (!devshm_only || (size >= (long)sizeof(DEVSHM_STRING) - 1 &&
                          is_equal_prefix(field->data, DEVSHM_STRING, sizeof(DEVSHM_STRING) - 1)))
         ebpf_ringbuf_write(&ringbuf, event,
-                           (sizeof(struct ebpf_file_create_event) + shift + (shift >> 1) +
-                            vl_fields->size) &
+                           (sizeof(struct ebpf_file_create_event) + shift + vl_fields->size) &
                                (EVENT_BUFFER_SIZE - 1),
                            0);
 
@@ -1382,8 +1378,13 @@ int BPF_KRETPROBE(kretprobe__vfs_link, int ret)
     return r;
 }
 
-static void file_modify_event__emit(enum ebpf_file_change_type typ, struct path *path,
-                                    umode_t old_mode)
+// old_mode and new_mode are those of a chmod, 0 for the other changes. A
+// non-zero new_mode replaces the inode mode: it was read under the inode lock
+// of the chmod, another chmod since can have changed the inode.
+static void file_modify_event__emit(enum ebpf_file_change_type typ,
+                                    struct path *path,
+                                    umode_t old_mode,
+                                    umode_t new_mode)
 {
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
@@ -1396,7 +1397,6 @@ static void file_modify_event__emit(enum ebpf_file_change_type typ, struct path 
     event->hdr.type    = EBPF_EVENT_FILE_MODIFY;
     event->hdr.ts      = bpf_ktime_get_boot_ns();
     event->change_type = typ;
-    event->old_mode    = old_mode;
     ebpf_pid_info__fill(&event->pids, task);
     ebpf_cred_info__fill(&event->creds, task);
     struct ebpf_namespace_info ns;
@@ -1405,6 +1405,8 @@ static void file_modify_event__emit(enum ebpf_file_change_type typ, struct path 
     bpf_get_current_comm(event->comm, TASK_COMM_LEN);
     struct dentry *d = BPF_CORE_READ(path, dentry);
     ebpf_file_info__fill(&event->finfo, d);
+    if (new_mode != 0)
+        event->finfo.mode = new_mode;
 
     switch (event->finfo.type) {
     case EBPF_FILE_TYPE_FILE:
@@ -1434,6 +1436,17 @@ static void file_modify_event__emit(enum ebpf_file_change_type typ, struct path 
     size  = ebpf_resolve_pids_ss_cgroup_path_to_string(field->data, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
+    // old_mode of a chmod, a variable length field so that the fixed part of
+    // the event keeps the layout that earlier readers parse
+    if (old_mode != 0) {
+        u16 m = old_mode;
+
+        // after strings of any length, the field can start at an odd address
+        field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_OLD_MODE);
+        __builtin_memcpy(field->data, &m, sizeof(m));
+        ebpf_vl_field__set_size(&event->vl_fields, field, sizeof(m));
+    }
+
     ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
 
 out:
@@ -1453,10 +1466,118 @@ static int chmod_common__enter(const struct path *path, umode_t mode)
 
     state.chmod.path = (struct path *)path;
     state.chmod.mode = mode;
-    // Read before chmod_common() takes the inode lock: a chmod of the same
-    // file by another task in between makes it stale.
+    // Read before chmod_common() takes the inode lock, notify_change__enter()
+    // reads it again under the lock.
     state.chmod.old_mode = BPF_CORE_READ(path, dentry, d_inode, i_mode);
     ebpf_events_state__set(EBPF_EVENTS_STATE_CHMOD, &state);
+
+    return 0;
+}
+
+// chmod_common() calls notify_change() under the inode lock: the mode read
+// at its entry is the one the chmod changes, and the mode at its successful
+// return the one it set. A chmod of the same file by another task, before the
+// lock or after it, can't make them stale. Only for the dentry of the chmod:
+// overlayfs calls notify_change() again for the upper file, inside the first
+// one. A retry after a broken delegation calls it again, the last one wins.
+static int notify_change__enter(struct dentry *dentry)
+{
+    struct ebpf_events_state *state;
+    struct path *path;
+
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHMOD);
+    if (!state)
+        return 0;
+    // kprobe: count the calls inside the chmod's one, its return is the
+    // one that brings the count back to zero
+    if (state->chmod.nc_depth > 0) {
+        state->chmod.nc_depth++;
+        return 0;
+    }
+    // a local: CO-RE can't relocate a field of our own state
+    path = state->chmod.path;
+    if (BPF_CORE_READ(path, dentry) != dentry)
+        return 0;
+    state->chmod.old_mode = BPF_CORE_READ(dentry, d_inode, i_mode);
+    state->chmod.new_mode = 0;
+    state->chmod.locked   = 1;
+    state->chmod.nc_depth = 1;
+
+    return 0;
+}
+
+static void notify_change__set_new_mode(struct ebpf_events_state *state, int ret)
+{
+    struct path *path = state->chmod.path;
+
+    if (ret == 0)
+        state->chmod.new_mode = BPF_CORE_READ(path, dentry, d_inode, i_mode);
+}
+
+SEC("fentry/notify_change")
+int BPF_PROG(fentry__notify_change)
+{
+    struct dentry *dentry;
+
+    dentry = FUNC_ARG_READ(___type(dentry), notify_change, dentry);
+    preempt_disable();
+    notify_change__enter(dentry);
+    preempt_enable();
+
+    return 0;
+}
+
+// The fexit has the dentry, no need to count the calls.
+SEC("fexit/notify_change")
+int BPF_PROG(fexit__notify_change)
+{
+    struct ebpf_events_state *state;
+    struct dentry *dentry;
+    struct path *path;
+    int ret;
+
+    dentry = FUNC_ARG_READ(___type(dentry), notify_change, dentry);
+    ret    = FUNC_RET_READ(___type(ret), notify_change);
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHMOD);
+    if (state) {
+        path = state->chmod.path;
+        if (BPF_CORE_READ(path, dentry) == dentry) {
+            state->chmod.nc_depth = 0;
+            notify_change__set_new_mode(state, ret);
+        }
+    }
+    preempt_enable();
+
+    return 0;
+}
+
+SEC("kprobe/notify_change")
+int BPF_KPROBE(kprobe__notify_change)
+{
+    struct dentry *dentry;
+
+    if (FUNC_ARG_READ_PTREGS(dentry, notify_change, dentry)) {
+        bpf_printk("kprobe__notify_change: error reading dentry\n");
+        return 0;
+    }
+    preempt_disable();
+    notify_change__enter(dentry);
+    preempt_enable();
+
+    return 0;
+}
+
+SEC("kretprobe/notify_change")
+int BPF_KRETPROBE(kretprobe__notify_change, int ret)
+{
+    struct ebpf_events_state *state;
+
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHMOD);
+    if (state && state->chmod.nc_depth > 0 && --state->chmod.nc_depth == 0)
+        notify_change__set_new_mode(state, ret);
+    preempt_enable();
 
     return 0;
 }
@@ -1485,7 +1606,22 @@ int BPF_KPROBE(kprobe__chmod_common, const struct path *path, umode_t mode)
     return r;
 }
 
-static void chmod_common__exit(struct path *path, int ret, umode_t old_mode)
+// The mode the chmod set, read at the return of notify_change() under the
+// inode lock. If the kprobe fallback missed that return, a kretprobe of a
+// nested call or its own, the mode chmod_common() computes from the requested
+// one and the mode under the lock: it only differs from the inode when the
+// kernel clears the set-group-ID bit. 0 when unknown, the inode mode is sent.
+static umode_t chmod_common__new_mode(struct ebpf_events_state *state)
+{
+    if (state->chmod.new_mode != 0)
+        return state->chmod.new_mode;
+    if (state->chmod.locked)
+        return (state->chmod.mode & 07777) | (state->chmod.old_mode & ~07777);
+
+    return 0;
+}
+
+static void chmod_common__exit(struct path *path, int ret, umode_t old_mode, umode_t new_mode)
 {
     if (ret)
         goto out;
@@ -1493,7 +1629,7 @@ static void chmod_common__exit(struct path *path, int ret, umode_t old_mode)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    file_modify_event__emit(EBPF_FILE_CHANGE_TYPE_PERMISSIONS, path, old_mode);
+    file_modify_event__emit(EBPF_FILE_CHANGE_TYPE_PERMISSIONS, path, old_mode, new_mode);
 
 out:
     return;
@@ -1503,17 +1639,18 @@ SEC("fexit/chmod_common")
 int BPF_PROG(fexit__chmod_common, const struct path *path, umode_t mode, int ret)
 {
     struct ebpf_events_state *state;
-    umode_t old_mode = 0;
+    umode_t old_mode = 0, new_mode = 0;
 
     preempt_disable();
-    // No state if the entry probe was not there yet, the old mode is then
+    // No state if the entry probe was not there yet, the modes are then
     // unknown (0).
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHMOD);
     if (state) {
         old_mode = state->chmod.old_mode;
+        new_mode = chmod_common__new_mode(state);
         ebpf_events_state__del(EBPF_EVENTS_STATE_CHMOD);
     }
-    chmod_common__exit((struct path *)path, ret, old_mode);
+    chmod_common__exit((struct path *)path, ret, old_mode, new_mode);
     preempt_enable();
     return 0;
 }
@@ -1523,7 +1660,7 @@ int BPF_KRETPROBE(kretprobe__chmod_common, int ret)
 {
     struct ebpf_events_state *state;
     struct path *path;
-    umode_t old_mode;
+    umode_t old_mode, new_mode;
 
     preempt_disable();
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHMOD);
@@ -1532,8 +1669,9 @@ int BPF_KRETPROBE(kretprobe__chmod_common, int ret)
 
     path     = state->chmod.path;
     old_mode = state->chmod.old_mode;
+    new_mode = chmod_common__new_mode(state);
     ebpf_events_state__del(EBPF_EVENTS_STATE_CHMOD);
-    chmod_common__exit(path, ret, old_mode);
+    chmod_common__exit(path, ret, old_mode, new_mode);
 
 out:
     preempt_enable();
@@ -1580,7 +1718,7 @@ static void do_truncate__exit(struct path *path, int ret)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    file_modify_event__emit(EBPF_FILE_CHANGE_TYPE_CONTENT, path, 0);
+    file_modify_event__emit(EBPF_FILE_CHANGE_TYPE_CONTENT, path, 0, 0);
 
 out:
     return;
@@ -1736,7 +1874,7 @@ static void vfs_write__exit(struct path *path, ssize_t ret)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    file_modify_event__emit(EBPF_FILE_CHANGE_TYPE_CONTENT, path, 0);
+    file_modify_event__emit(EBPF_FILE_CHANGE_TYPE_CONTENT, path, 0, 0);
 
 out:
     return;
@@ -1830,7 +1968,7 @@ static void chown_common__exit(struct path *path, int ret)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    file_modify_event__emit(EBPF_FILE_CHANGE_TYPE_OWNER, path, 0);
+    file_modify_event__emit(EBPF_FILE_CHANGE_TYPE_OWNER, path, 0, 0);
 
 out:
     return;

@@ -2593,6 +2593,9 @@ test_overlay_open(struct test_overlay *ov, const struct test *t)
 		err(1, "open %s", lower_file);
 	if (write(fd, "0123456789", 10) != 10)
 		err(1, "write %s", lower_file);
+	/* Not left to the umask, the tests check the mode */
+	if (fchmod(fd, 0644) == -1)
+		err(1, "fchmod %s", lower_file);
 	close(fd);
 	if ((fd = open(ov->plain, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
 		err(1, "open %s", ov->plain);
@@ -3488,7 +3491,8 @@ drain_file_mode(struct quark_queue *qq, u64 inode, u32 op_mask,
 
 /*
  * A chmod carries the mode from before it in old_mode, other changes have
- * none. An aggregated group keeps the old_mode of its first chmod.
+ * none. An aggregated group keeps the old_mode of its first chmod, and does
+ * not take a chmod that would hide a change of an executable.
  */
 static int
 t_file_chmod_old_mode(const struct test *t, struct quark_queue_attr *qa)
@@ -3497,7 +3501,8 @@ t_file_chmod_old_mode(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue_attr		 qa_agg;
 	struct stat			 st;
 	char				 path[] = "/tmp/quark-test.XXXXXX";
-	int				 fd;
+	pid_t				 child;
+	int				 fd, status;
 
 	qa->flags |= QQ_FILE;
 	qa_agg = *qa;
@@ -3581,9 +3586,84 @@ t_file_chmod_old_mode(const struct test *t, struct quark_queue_attr *qa)
 
 	quark_queue_close(&qq);
 
+	/*
+	 * Default aggregation, the group headed by a write: 0644->0600, then
+	 * another process makes it 0755, then 0755->0644 changes an
+	 * executable. Compared with the first chmod of the group, not with the
+	 * head, the last chmod must not merge.
+	 */
+	if (fchmod(fd, 0644) == -1)
+		err(1, "fchmod");
+	if (quark_queue_open(&qq, &qa_agg) != 0)
+		err(1, "quark_queue_open");
+
+	assert(write(fd, "3", 1) == 1);
+	if (chmod(path, 0600) == -1)
+		err(1, "chmod");
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0)
+		_exit(chmod(path, 0755) == -1);
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child chmod failed");
+	if (chmod(path, 0644) == -1)
+		err(1, "chmod");
+
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT | QUARK_FILE_CH_PERMS, path,
+	    S_IFREG | 0600, S_IFREG | 0644);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0644, S_IFREG | 0755);
+
+	quark_queue_close(&qq);
+
 	close(fd);
 	if (unlink(path) == -1)
 		err(1, "unlink");
+
+	return (0);
+}
+
+/*
+ * A chmod on overlayfs of a file of the lower layer copies it up and calls
+ * notify_change() again for the upper file, inside the one of the overlay.
+ * It gives one MODIFY + PERMS with the modes of the overlay file: the inner
+ * call must not count as the chmod's.
+ */
+static int
+t_file_chmod_overlay(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_file		*qf;
+	struct test_overlay		 ov;
+
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	qa->file_events = QQ_FE_CHMOD;
+
+	if (test_overlay_open(&ov, t) == -1)
+		return (0);
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if (chmod(ov.file, 0755) == -1)
+		err(1, "chmod %s", ov.file);
+	assert_no_bpf_state(&qq, "overlay chmod");
+	qev = drain_for_pid(&qq, getpid());
+	if (qev->events != QUARK_EV_FILE || (qf = qev->file) == NULL ||
+	    qf->op_mask != QUARK_FILE_OP_MODIFY ||
+	    qf->change_mask != QUARK_FILE_CH_PERMS)
+		errx(1, "overlay chmod: not a MODIFY + PERMS event");
+	assert_file_path(qf, ov.file);
+	if (qf->mode != (S_IFREG | 0755) || qf->old_mode != (S_IFREG | 0644))
+		errx(1, "overlay chmod: mode 0%o old_mode 0%o, want 0%o 0%o",
+		    qf->mode, qf->old_mode, S_IFREG | 0755, S_IFREG | 0644);
+	test_overlay_sentinel(&qq, &ov);
+
+	quark_queue_close(&qq);
+	test_overlay_close(&ov);
 
 	return (0);
 }
@@ -9147,6 +9227,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_truncate),
 	T_EBPF(t_file_truncate_overlay),
 	T_EBPF(t_file_chmod_old_mode),
+	T_EBPF(t_file_chmod_overlay),
 	T_EBPF(t_file_executable_ops),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),

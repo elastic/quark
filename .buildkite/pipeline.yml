@@ -358,7 +358,7 @@ steps:
 
   - label: "quark-test on rhel 8.5 (4.18.0-348, no file)"
     key: test_rhel_8_5
-    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_file_link -x t_file_tmpfile_link -x t_file_link_overlay -x t_file_events_mask -x t_file_truncate -x t_file_truncate_overlay -x t_file_chmod_old_mode -x t_file_executable_ops -x t_probe_all" -x t_file_open_write -x t_file_open_write_paths -x t_file_open_by_handle -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
+    command: "./.buildkite/runtest_distro.sh rhel 8.5 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_file_link -x t_file_tmpfile_link -x t_file_link_overlay -x t_file_events_mask -x t_file_truncate -x t_file_truncate_overlay -x t_file_chmod_old_mode -x t_file_chmod_overlay -x t_file_executable_ops -x t_file_open_write -x t_file_open_write_paths -x t_file_open_by_handle -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
     depends_on:
       - make_docker
     agents:
@@ -369,7 +369,7 @@ steps:
 
   - label: "quark-test on rhel 8.6 (4.18.0-372, no file)"
     key: test_rhel_8_6
-    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_file_link -x t_file_tmpfile_link -x t_file_link_overlay -x t_file_events_mask -x t_file_truncate -x t_file_truncate_overlay -x t_file_chmod_old_mode -x t_file_executable_ops -x t_probe_all" -x t_file_open_write -x t_file_open_write_paths -x t_file_open_by_handle -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
+    command: "./.buildkite/runtest_distro.sh rhel 8.6 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_file_link -x t_file_tmpfile_link -x t_file_link_overlay -x t_file_events_mask -x t_file_truncate -x t_file_truncate_overlay -x t_file_chmod_old_mode -x t_file_chmod_overlay -x t_file_executable_ops -x t_file_open_write -x t_file_open_write_paths -x t_file_open_by_handle -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
     depends_on:
       - make_docker
     agents:
@@ -380,7 +380,7 @@ steps:
 
   - label: "quark-test on rhel 8.7 (4.18.0-425, no file)"
     key: test_rhel_8_7
-    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_file_link -x t_file_tmpfile_link -x t_file_link_overlay -x t_file_events_mask -x t_file_truncate -x t_file_truncate_overlay -x t_file_chmod_old_mode -x t_file_executable_ops -x t_probe_all" -x t_file_open_write -x t_file_open_write_paths -x t_file_open_by_handle -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
+    command: "./.buildkite/runtest_distro.sh rhel 8.7 -x t_file_bypass -x t_file -x t_file_hardlink -x t_file_bad_unlink_rename -x t_file_rename -x t_file_link -x t_file_tmpfile_link -x t_file_link_overlay -x t_file_events_mask -x t_file_truncate -x t_file_truncate_overlay -x t_file_chmod_old_mode -x t_file_chmod_overlay -x t_file_executable_ops -x t_file_open_write -x t_file_open_write_paths -x t_file_open_by_handle -x t_memfd -x t_shm_open -x t_bpf_state_map -x t_rule_path -x t_rule_path2 -x t_rule_exec_change -x t_probe_all"
     depends_on:
       - make_docker
     agents:

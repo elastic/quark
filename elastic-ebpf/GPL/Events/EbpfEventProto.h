@@ -76,6 +76,7 @@ enum ebpf_varlen_field_type {
     EBPF_VL_FIELD_MOD_VERSION,
     EBPF_VL_FIELD_MOD_SRCVERSION,
     EBPF_VL_FIELD_DNS_BODY,
+    EBPF_VL_FIELD_OLD_MODE, // uint16_t, i_mode before a chmod
 };
 
 // Convenience macro to iterate all the variable length fields in an event
@@ -232,9 +233,9 @@ struct ebpf_file_modify_event {
     enum ebpf_file_change_type change_type;
     uint32_t mntns;
     char comm[TASK_COMM_LEN];
-    uint16_t old_mode; // i_mode before a chmod, 0 for other changes
 
-    // Variable length fields: path, symlink_target_path, pids_ss_cgroup_path
+    // Variable length fields: path, symlink_target_path, pids_ss_cgroup_path,
+    // and old_mode for a chmod
     struct ebpf_varlen_fields_start vl_fields;
 } __attribute__((packed));
 

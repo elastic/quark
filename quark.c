@@ -5106,11 +5106,30 @@ quark_can_aggregate_fork_exec(struct quark_queue *qq,
 	return (1);
 }
 
+/*
+ * The first chmod of the group that p heads, NULL if it has none yet.
+ * raw_event_file() reports its old_mode.
+ */
+static struct quark_file *
+agg_first_chmod(struct raw_event *p)
+{
+	struct raw_event	*agg;
+
+	if (p->file.quark_file->change_mask & QUARK_FILE_CH_PERMS)
+		return (p->file.quark_file);
+	TAILQ_FOREACH(agg, &p->agg_queue, agg_entry) {
+		if (agg->file.quark_file->change_mask & QUARK_FILE_CH_PERMS)
+			return (agg->file.quark_file);
+	}
+
+	return (NULL);
+}
+
 int
 quark_can_aggregate_file(struct quark_queue *qq,
     struct raw_event *p, struct raw_event *c)
 {
-	struct quark_file	*pf, *cf;
+	struct quark_file	*pf, *cf, *ff;
 
 	pf = p->file.quark_file;
 	cf = c->file.quark_file;
@@ -5134,18 +5153,24 @@ quark_can_aggregate_file(struct quark_queue *qq,
 	    !!(cf->mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
 		return (0);
 	/*
-	 * raw_event_file() keeps the old_mode of the first chmod. The rule
-	 * above leaves the head as the only chmod of a group that can change
-	 * the executable state, so a later chmod with an old_mode of the other
-	 * state would be lost: 0644->0755 then 0755->0750 would only read as
-	 * the file becoming executable, not as an executable being changed.
+	 * raw_event_file() keeps the old_mode of the first chmod of the
+	 * group, a later chmod with an old_mode of the other executable state
+	 * would be lost: 0644->0755 then 0755->0750 would only read as the file
+	 * becoming executable, not as an executable being changed. Compare
+	 * with the first chmod, which is not always the head: an open for
+	 * write can head the group, and another task can chmod the file
+	 * between two chmods of this one. An old_mode of zero is unknown: it
+	 * only merges with another unknown one, or a known transition after it
+	 * would be lost.
 	 */
-	if ((pf->change_mask & QUARK_FILE_CH_PERMS) &&
-	    (cf->change_mask & QUARK_FILE_CH_PERMS) &&
-	    pf->old_mode != 0 && cf->old_mode != 0 &&
-	    !!(pf->old_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) !=
-	    !!(cf->old_mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
-		return (0);
+	if ((cf->change_mask & QUARK_FILE_CH_PERMS) &&
+	    (ff = agg_first_chmod(p)) != NULL) {
+		if ((ff->old_mode == 0) != (cf->old_mode == 0))
+			return (0);
+		if (!!(ff->old_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) !=
+		    !!(cf->old_mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
+			return (0);
+	}
 	/*
 	 * Maybe we should escape uid/gid and other mode changes, which can still
 	 * make it possible to hide stuff.

@@ -173,7 +173,33 @@ A file truncated by
 or by an open with
 .Dv O_TRUNC .
 .It Dv QQ_FE_CHMOD
-A change of the file mode.
+A change of the file mode, with the change
+.Dv QUARK_FILE_CH_PERMS .
+.Em mode
+is the mode the change set and
+.Em old_mode
+the mode before it, both normally read under the inode lock of the change.
+If the kprobe fallback misses the return of that change,
+.Em mode
+is the requested mode applied to
+.Em old_mode ,
+which can keep a set-group-ID bit that the kernel cleared.
+.Em old_mode
+is zero for the other changes, and when it is unknown.
+An aggregated event has the
+.Em mode
+of its last event and the
+.Em old_mode
+of its first chmod.
+Events whose mode differs in executable state do not aggregate, nor
+chmods whose
+.Em old_mode
+differs in executable state from the one of the first chmod, or is
+unknown when the other is known, so a change of an executable file is
+not hidden by a later chmod.
+ECS has no field for the mode before a change: the ECS output has
+.Em mode
+only.
 .It Dv QQ_FE_CHOWN
 A change of the file owner or group.
 .It Dv QQ_FE_OPEN_WRITE

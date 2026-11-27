@@ -167,7 +167,23 @@
           <a class="Lk" href="https://man7.org/linux/man-pages/man2/ftruncate.2.html">ftruncate(2)</a>
           or by an open with <code class="Dv">O_TRUNC</code>.</dd>
       <dt id="QQ_FE_CHMOD"><a class="permalink" href="#QQ_FE_CHMOD"><code class="Dv">QQ_FE_CHMOD</code></a></dt>
-      <dd>A change of the file mode.</dd>
+      <dd>A change of the file mode, with the change
+          <code class="Dv">QUARK_FILE_CH_PERMS</code>. <i class="Em">mode</i> is
+          the mode the change set and <i class="Em">old_mode</i> the mode before
+          it, both normally read under the inode lock of the change. If the
+          kprobe fallback misses the return of that change,
+          <i class="Em">mode</i> is the requested mode applied to
+          <i class="Em">old_mode</i>, which can keep a set-group-ID bit that the
+          kernel cleared. <i class="Em">old_mode</i> is zero for the other
+          changes, and when it is unknown. An aggregated event has the
+          <i class="Em">mode</i> of its last event and the
+          <i class="Em">old_mode</i> of its first chmod. Events whose mode
+          differs in executable state do not aggregate, nor chmods whose
+          <i class="Em">old_mode</i> differs in executable state from the one of
+          the first chmod, or is unknown when the other is known, so a change of
+          an executable file is not hidden by a later chmod. ECS has no field
+          for the mode before a change: the ECS output has
+          <i class="Em">mode</i> only.</dd>
       <dt id="QQ_FE_CHOWN"><a class="permalink" href="#QQ_FE_CHOWN"><code class="Dv">QQ_FE_CHOWN</code></a></dt>
       <dd>A change of the file owner or group.</dd>
       <dt id="QQ_FE_OPEN_WRITE"><a class="permalink" href="#QQ_FE_OPEN_WRITE"><code class="Dv">QQ_FE_OPEN_WRITE</code></a></dt>

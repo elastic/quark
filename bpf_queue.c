@@ -562,7 +562,6 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			vl = &modify->vl_fields;
 			raw->pid = modify->pids.tgid;
 			op_mask = QUARK_FILE_OP_MODIFY;
-			old_mode = modify->old_mode;
 			switch (modify->change_type) {
 			case EBPF_FILE_CHANGE_TYPE_CONTENT:
 				change_mask = QUARK_FILE_CH_CONTENT;
@@ -642,6 +641,18 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 				break;
 			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH: /* ignored */
 				break;
+			case EBPF_VL_FIELD_OLD_MODE: {
+				u16	m;
+
+				if (field->size != sizeof(m)) {
+					qwarnx("bad old_mode size %u",
+					    field->size);
+					goto bad;
+				}
+				memcpy(&m, field->data, sizeof(m));
+				old_mode = m;
+				break;
+			}
 			default:
 				qwarnx("unhandled field type %d", field->type);
 				goto bad;
@@ -1436,6 +1447,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			/* File event classes */
 			if (fe & QQ_FE_CHMOD) {
 				bpf_program__set_autoload(p->progs.fentry__chmod_common, 1);
+				bpf_program__set_autoload(p->progs.fentry__notify_change, 1);
+				bpf_program__set_autoload(p->progs.fexit__notify_change, 1);
 				bpf_program__set_autoload(p->progs.fexit__chmod_common, 1);
 			}
 			if (fe & QQ_FE_CHOWN)
@@ -1495,6 +1508,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			/* File event classes */
 			if (fe & QQ_FE_CHMOD) {
 				bpf_program__set_autoload(p->progs.kprobe__chmod_common, 1);
+				bpf_program__set_autoload(p->progs.kprobe__notify_change, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__notify_change, 1);
 				bpf_program__set_autoload(p->progs.kretprobe__chmod_common, 1);
 			}
 			if (fe & QQ_FE_CHOWN) {
@@ -1569,6 +1584,15 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 				goto fail;
 			if (relo_param(btf, &p->rodata->arg__vfs_truncate__path__,
 			    "vfs_truncate", "path") == -1)
+				goto fail;
+		}
+		/* notify_change(), idmap or mnt_userns came before the dentry */
+		if (fe & QQ_FE_CHMOD) {
+			if (relo_param(btf, &p->rodata->arg__notify_change__dentry__,
+			    "notify_change", "dentry") == -1)
+				goto fail;
+			if (relo_ret(btf, &p->rodata->ret__notify_change__,
+			    "notify_change") == -1)
 				goto fail;
 		}
 		/* do_file_open_root(), the kretprobe needs no relocation */
