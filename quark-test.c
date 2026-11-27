@@ -46,6 +46,7 @@
 #include <ifaddrs.h>
 #include <limits.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2540,6 +2541,93 @@ t_file_tmpfile_link(const struct test *t, struct quark_queue_attr *qa)
 static void test_fs_tmpfs(struct test_fs *);
 
 /*
+ * An overlayfs on a private tmpfs. Its lower layer has "file", ten bytes made
+ * before the mount, so it is in the lower layer only. "plain" is on the tmpfs,
+ * outside the overlay: its REMOVE, test_overlay_sentinel(), must be the next
+ * event after the one an operation on the overlay gives.
+ */
+struct test_overlay {
+	struct test_fs	fs;
+	char		merged[128];
+	char		file[128];
+	char		plain[128];
+	ino_t		plain_ino;
+};
+
+/* -1 if overlayfs can't be mounted here, the test skips */
+static int
+test_overlay_open(struct test_overlay *ov, const struct test *t)
+{
+	struct stat	 st;
+	char		 lower[128], upper[128], work[128], lower_file[128];
+	char		 opts[512];
+	int		 fd;
+
+	/* test_fs_tmpfs() needs it for its mounts */
+	if (geteuid() != 0) {
+		warnx("%s: not root, skipping", t->name);
+		return (-1);
+	}
+	test_fs_tmpfs(&ov->fs);
+	if (snprintf(lower, sizeof(lower), "%s/lower", ov->fs.dir) >=
+	    (int)sizeof(lower) ||
+	    snprintf(upper, sizeof(upper), "%s/upper", ov->fs.dir) >=
+	    (int)sizeof(upper) ||
+	    snprintf(work, sizeof(work), "%s/work", ov->fs.dir) >=
+	    (int)sizeof(work) ||
+	    snprintf(ov->merged, sizeof(ov->merged), "%s/merged", ov->fs.dir) >=
+	    (int)sizeof(ov->merged) ||
+	    snprintf(lower_file, sizeof(lower_file), "%s/file", lower) >=
+	    (int)sizeof(lower_file) ||
+	    snprintf(ov->file, sizeof(ov->file), "%s/file", ov->merged) >=
+	    (int)sizeof(ov->file) ||
+	    snprintf(ov->plain, sizeof(ov->plain), "%s/plain", ov->fs.dir) >=
+	    (int)sizeof(ov->plain) ||
+	    snprintf(opts, sizeof(opts), "lowerdir=%s,upperdir=%s,workdir=%s",
+	    lower, upper, work) >= (int)sizeof(opts))
+		errx(1, "snprintf");
+	if (mkdir(lower, 0755) == -1 || mkdir(upper, 0755) == -1 ||
+	    mkdir(work, 0755) == -1 || mkdir(ov->merged, 0755) == -1)
+		err(1, "mkdir");
+	if ((fd = open(lower_file, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
+		err(1, "open %s", lower_file);
+	if (write(fd, "0123456789", 10) != 10)
+		err(1, "write %s", lower_file);
+	close(fd);
+	if ((fd = open(ov->plain, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
+		err(1, "open %s", ov->plain);
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	ov->plain_ino = st.st_ino;
+	close(fd);
+	if (mount("overlay", ov->merged, "overlay", 0, opts) == -1) {
+		if (errno != ENODEV && errno != EINVAL && errno != EPERM)
+			err(1, "mount overlay");
+		warn("%s: mount overlay, skipping", t->name);
+		test_fs_close(&ov->fs);
+		return (-1);
+	}
+
+	return (0);
+}
+
+static void
+test_overlay_sentinel(struct quark_queue *qq, struct test_overlay *ov)
+{
+	if (unlink(ov->plain) == -1)
+		err(1, "unlink %s", ov->plain);
+	drain_file_event(qq, ov->plain_ino, QUARK_FILE_OP_REMOVE, 0, ov->plain);
+}
+
+static void
+test_overlay_close(struct test_overlay *ov)
+{
+	if (umount(ov->merged) == -1)
+		err(1, "umount overlay");
+	test_fs_close(&ov->fs);
+}
+
+/*
  * A link on overlayfs of a file of the lower layer copies the file up and
  * links in the upper layer, a vfs_link inside the first one. It gives one LINK
  * with both paths in the overlay mount.
@@ -2550,91 +2638,35 @@ t_file_link_overlay(const struct test *t, struct quark_queue_attr *qa)
 	struct quark_queue		 qq;
 	const struct quark_event	*qev;
 	const struct quark_file		*qf;
-	struct test_fs			 fs;
-	struct stat			 pst;
-	char				 lower[sizeof(fs.dir) + 8];
-	char				 upper[sizeof(fs.dir) + 8];
-	char				 work[sizeof(fs.dir) + 8];
-	char				 merged[sizeof(fs.dir) + 8];
-	char				 lower_file[sizeof(lower) + 8];
-	char				 file[sizeof(merged) + 8];
-	char				 linked[sizeof(merged) + 8];
-	char				 plain[sizeof(fs.dir) + 8];
-	char				 opts[256];
-	int				 fd;
+	struct test_overlay		 ov;
+	char				 linked[sizeof(ov.merged) + 8];
 
 	qa->flags |= QQ_FILE | QQ_MIN_AGG;
 	qa->file_events = QQ_FE_DEFAULT | QQ_FE_LINK;
 
-	/* test_fs_tmpfs() needs it for its mounts */
-	if (geteuid() != 0) {
-		warnx("%s: not root, skipping", t->name);
+	if (test_overlay_open(&ov, t) == -1)
 		return (0);
-	}
-	test_fs_tmpfs(&fs);
-	if (snprintf(lower, sizeof(lower), "%s/lower", fs.dir) >=
-	    (int)sizeof(lower) ||
-	    snprintf(upper, sizeof(upper), "%s/upper", fs.dir) >=
-	    (int)sizeof(upper) ||
-	    snprintf(work, sizeof(work), "%s/work", fs.dir) >=
-	    (int)sizeof(work) ||
-	    snprintf(merged, sizeof(merged), "%s/merged", fs.dir) >=
-	    (int)sizeof(merged) ||
-	    snprintf(lower_file, sizeof(lower_file), "%s/file", lower) >=
-	    (int)sizeof(lower_file) ||
-	    snprintf(file, sizeof(file), "%s/file", merged) >=
-	    (int)sizeof(file) ||
-	    snprintf(linked, sizeof(linked), "%s/linked", merged) >=
-	    (int)sizeof(linked) ||
-	    snprintf(plain, sizeof(plain), "%s/plain", fs.dir) >=
-	    (int)sizeof(plain) ||
-	    snprintf(opts, sizeof(opts), "lowerdir=%s,upperdir=%s,workdir=%s",
-	    lower, upper, work) >= (int)sizeof(opts))
+	if (snprintf(linked, sizeof(linked), "%s/linked", ov.merged) >=
+	    (int)sizeof(linked))
 		errx(1, "snprintf");
-	if (mkdir(lower, 0755) == -1 || mkdir(upper, 0755) == -1 ||
-	    mkdir(work, 0755) == -1 || mkdir(merged, 0755) == -1)
-		err(1, "mkdir");
-	/* Made before the mount and the queue: in the lower layer only */
-	if ((fd = open(lower_file, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
-		err(1, "open %s", lower_file);
-	close(fd);
-	if ((fd = open(plain, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
-		err(1, "open %s", plain);
-	if (fstat(fd, &pst) == -1)
-		err(1, "fstat");
-	close(fd);
-	if (mount("overlay", merged, "overlay", 0, opts) == -1) {
-		if (errno != ENODEV && errno != EINVAL && errno != EPERM)
-			err(1, "mount overlay");
-		warn("%s: mount overlay, skipping", t->name);
-		test_fs_close(&fs);
-		return (0);
-	}
-
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
-	if (link(file, linked) == -1)
-		err(1, "link %s", file);
+	if (link(ov.file, linked) == -1)
+		err(1, "link %s", ov.file);
 	assert_no_bpf_state(&qq, "overlay link");
 	qev = drain_for_pid(&qq, getpid());
 	if (qev->events != QUARK_EV_FILE || (qf = qev->file) == NULL ||
 	    qf->op_mask != QUARK_FILE_OP_LINK)
 		errx(1, "overlay link: not a LINK event");
 	assert_file_path(qf, linked);
-	if (qf->old_path == NULL || strcmp(qf->old_path, file) != 0)
+	if (qf->old_path == NULL || strcmp(qf->old_path, ov.file) != 0)
 		errx(1, "overlay link old_path is %s, want %s",
-		    qf->old_path ? qf->old_path : "NULL", file);
-	/* A second LINK would show before the REMOVE of the plain file */
-	if (unlink(plain) == -1)
-		err(1, "unlink");
-	drain_file_event(&qq, pst.st_ino, QUARK_FILE_OP_REMOVE, 0, plain);
+		    qf->old_path ? qf->old_path : "NULL", ov.file);
+	test_overlay_sentinel(&qq, &ov);
 
 	quark_queue_close(&qq);
-
-	if (umount(merged) == -1)
-		err(1, "umount overlay");
-	test_fs_close(&fs);
+	test_overlay_close(&ov);
 
 	return (0);
 }
@@ -3281,6 +3313,144 @@ t_file_open_by_handle(const struct test *t, struct quark_queue_attr *qa)
 	close(mount_fd);
 	if (unlink(path) == -1)
 		err(1, "unlink");
+
+	return (0);
+}
+
+/*
+ * Each way to truncate an existing file gives exactly one MODIFY + CONTENT
+ * event with the size after the truncate. truncate(2) reaches do_truncate()
+ * without a file, the vfs_truncate() probe reports it. The other three pass
+ * a file to do_truncate() and must not pass vfs_truncate().
+ */
+static int
+t_file_truncate(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_file		*qf;
+	struct stat			 st;
+	struct rlimit			 rl, orig_rl;
+	void				(*old_xfsz)(int);
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	int				 fd, fd2;
+
+	/* No write events, the refills below must not count */
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	qa->file_events = QQ_FE_TRUNCATE;
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	assert(write(fd, "0123456789", 10) == 10);
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* truncate(2) by path */
+	if (truncate(path, 7) == -1)
+		err(1, "truncate");
+	qf = drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (qf->size != 7)
+		errx(1, "truncate: size is %llu, want 7",
+		    (unsigned long long)qf->size);
+
+	/* ftruncate(2) */
+	if (ftruncate(fd, 5) == -1)
+		err(1, "ftruncate");
+	qf = drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (qf->size != 5)
+		errx(1, "ftruncate: size is %llu, want 5",
+		    (unsigned long long)qf->size);
+
+	/* open(2) with O_WRONLY|O_TRUNC */
+	if ((fd2 = open(path, O_WRONLY | O_TRUNC)) == -1)
+		err(1, "open O_WRONLY|O_TRUNC");
+	close(fd2);
+	qf = drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (qf->size != 0)
+		errx(1, "O_WRONLY|O_TRUNC: size is %llu, want 0",
+		    (unsigned long long)qf->size);
+
+	/* open(2) with O_RDONLY|O_TRUNC, Linux truncates too */
+	assert(pwrite(fd, "012", 3, 0) == 3);
+	if ((fd2 = open(path, O_RDONLY | O_TRUNC)) == -1)
+		err(1, "open O_RDONLY|O_TRUNC");
+	close(fd2);
+	qf = drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (qf->size != 0)
+		errx(1, "O_RDONLY|O_TRUNC: size is %llu, want 0",
+		    (unsigned long long)qf->size);
+
+	/*
+	 * A failed truncate(2) gives nothing. Growing the file past
+	 * RLIMIT_FSIZE fails with EFBIG inside do_truncate().
+	 */
+	if (getrlimit(RLIMIT_FSIZE, &orig_rl) == -1)
+		err(1, "getrlimit");
+	rl = orig_rl;
+	rl.rlim_cur = 1;
+	if (setrlimit(RLIMIT_FSIZE, &rl) == -1)
+		err(1, "setrlimit");
+	old_xfsz = signal(SIGXFSZ, SIG_IGN);
+	if (truncate(path, 4096) != -1 || errno != EFBIG)
+		err(1, "truncate past RLIMIT_FSIZE");
+	signal(SIGXFSZ, old_xfsz);
+	if (setrlimit(RLIMIT_FSIZE, &orig_rl) == -1)
+		err(1, "setrlimit");
+
+	/* Nothing else may come before the remove */
+	close(fd);
+	if (unlink(path) == -1)
+		err(1, "unlink");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, path);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * truncate(2) of a file of the lower layer of an overlayfs copies it up and
+ * changes the size in the upper layer through notify_change(), inside the
+ * vfs_truncate() of the overlay. It gives one MODIFY + CONTENT with the path
+ * in the overlay mount.
+ */
+static int
+t_file_truncate_overlay(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_file		*qf;
+	struct test_overlay		 ov;
+
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	qa->file_events = QQ_FE_TRUNCATE;
+
+	if (test_overlay_open(&ov, t) == -1)
+		return (0);
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if (truncate(ov.file, 3) == -1)
+		err(1, "truncate %s", ov.file);
+	assert_no_bpf_state(&qq, "overlay truncate");
+	qev = drain_for_pid(&qq, getpid());
+	if (qev->events != QUARK_EV_FILE || (qf = qev->file) == NULL ||
+	    qf->op_mask != QUARK_FILE_OP_MODIFY ||
+	    qf->change_mask != QUARK_FILE_CH_CONTENT)
+		errx(1, "overlay truncate: not a MODIFY + CONTENT event");
+	assert_file_path(qf, ov.file);
+	if (qf->size != 3)
+		errx(1, "overlay truncate size %llu, want 3", qf->size);
+	test_overlay_sentinel(&qq, &ov);
+
+	quark_queue_close(&qq);
+	test_overlay_close(&ov);
 
 	return (0);
 }
@@ -4832,6 +5002,16 @@ run_bpf_state_map(struct quark_queue_attr *qa)
 	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
 	    QUARK_FILE_CH_CONTENT, path);
 
+	/* VFS_TRUNCATE: failed (EISDIR) and succeeded */
+	if (truncate("/tmp", 0) != -1 || errno != EISDIR)
+		err(1, "truncate /tmp");
+	assert_no_bpf_state(&qq, "failed truncate");
+	if (truncate(path, 0) == -1)
+		err(1, "truncate");
+	assert_no_bpf_state(&qq, "truncate");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+
 	/* CHOWN */
 	if (chown(path, getuid(), getgid()) == -1)
 		err(1, "chown");
@@ -4924,7 +5104,7 @@ t_bpf_state_map(const struct test *t, struct quark_queue_attr *qa)
 
 	/*
 	 * Also test the kprobe fallback when QUARK_BPF_KPROBE is not already
-	 * set, so default runs exercise the seven kprobe-only states too.
+	 * set, so default runs exercise the eight kprobe-only states too.
 	 */
 	if (getenv("QUARK_BPF_KPROBE") == NULL) {
 		kqa = *qa;
@@ -8726,6 +8906,8 @@ struct test all_tests[] = {
 	T_EBPF(t_file_open_write),
 	T_EBPF(t_file_open_write_paths),
 	T_EBPF(t_file_open_by_handle),
+	T_EBPF(t_file_truncate),
+	T_EBPF(t_file_truncate_overlay),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),

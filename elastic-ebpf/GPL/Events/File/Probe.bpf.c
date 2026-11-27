@@ -34,6 +34,9 @@ DECL_FUNC_RET(vfs_link);
 /* do_truncate */
 DECL_FUNC_ARG(do_truncate, filp);
 DECL_FUNC_RET(do_truncate);
+/* vfs_truncate */
+DECL_FUNC_ARG(vfs_truncate, path);
+DECL_FUNC_RET(vfs_truncate);
 /* do_file_open_root */
 DECL_FUNC_RET(do_file_open_root);
 
@@ -1505,6 +1508,14 @@ int BPF_KPROBE(kprobe__do_truncate)
         goto out;
     }
 
+    // truncate(2) by path has no file, vfs_truncate() reports it. Delete
+    // the entry a missed kretprobe may have left, the kretprobe of this call
+    // would report that earlier file.
+    if (filp == NULL) {
+        ebpf_events_state__del(EBPF_EVENTS_STATE_TRUNCATE);
+        goto out;
+    }
+
     state.truncate.path = path_from_file(filp);
     ebpf_events_state__set(EBPF_EVENTS_STATE_TRUNCATE, &state);
 
@@ -1535,10 +1546,14 @@ int BPF_PROG(fexit__do_truncate)
 
     preempt_disable();
     filp = FUNC_ARG_READ(___type(filp), do_truncate, filp);
+    // truncate(2) by path has no file, vfs_truncate() reports it.
+    if (filp == NULL)
+        goto out;
     ret = FUNC_RET_READ(___type(ret), do_truncate);
     do_truncate__exit(path_from_file(filp), ret);
-    preempt_enable();
 
+out:
+    preempt_enable();
     return 0;
 }
 
@@ -1555,6 +1570,69 @@ int BPF_KRETPROBE(kretprobe__do_truncate, int ret)
 
     path = state->truncate.path;
     ebpf_events_state__del(EBPF_EVENTS_STATE_TRUNCATE);
+    do_truncate__exit(path, ret);
+
+out:
+    preempt_enable();
+    return 0;
+}
+
+/*
+ * truncate(2) by path. vfs_truncate() calls do_truncate() without a file, so
+ * the do_truncate() probes can't build the path. The result is read as int:
+ * 0 and -errno are in the low 32 bits on little-endian (x86_64, arm64).
+ */
+SEC("kprobe/vfs_truncate")
+int BPF_KPROBE(kprobe__vfs_truncate)
+{
+    struct ebpf_events_state state = {};
+    struct path *path;
+
+    preempt_disable();
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+
+    if (FUNC_ARG_READ_PTREGS(path, vfs_truncate, path)) {
+        bpf_printk("kprobe__vfs_truncate: error reading path\n");
+        goto out;
+    }
+
+    state.vfs_truncate.path = path;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_VFS_TRUNCATE, &state);
+
+out:
+    preempt_enable();
+    return 0;
+}
+
+SEC("fexit/vfs_truncate")
+int BPF_PROG(fexit__vfs_truncate)
+{
+    struct path *path;
+    int ret;
+
+    preempt_disable();
+    path = FUNC_ARG_READ(___type(path), vfs_truncate, path);
+    ret  = FUNC_RET_READ(___type(ret), vfs_truncate);
+    do_truncate__exit(path, ret);
+    preempt_enable();
+
+    return 0;
+}
+
+SEC("kretprobe/vfs_truncate")
+int BPF_KRETPROBE(kretprobe__vfs_truncate, int ret)
+{
+    struct ebpf_events_state *state;
+    struct path *path;
+
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_VFS_TRUNCATE);
+    if (!state)
+        goto out;
+
+    path = state->vfs_truncate.path;
+    ebpf_events_state__del(EBPF_EVENTS_STATE_VFS_TRUNCATE);
     do_truncate__exit(path, ret);
 
 out:

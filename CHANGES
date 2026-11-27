@@ -353,3 +353,10 @@ Changes from 0.11 to 0.12
     quark-mon(8) -f takes drift.
   o Remove, rename and link events read the symlink target of a symlink
     only: for a FIFO or a device, the inode holds another pointer there.
+  o QQ_FILE now reports truncate(2) by path as QUARK_FILE_OP_MODIFY with
+    QUARK_FILE_CH_CONTENT, like ftruncate(2) and an open with O_TRUNC.
+    It gave no event before: the EBPF backend took the path from the file
+    passed to do_truncate(), and truncate(2) passes none. A new probe on
+    vfs_truncate() reports it, in the QQ_FE_TRUNCATE class. Kernel
+    callers of vfs_truncate(), like ksmbd and cachefiles, are reported
+    too, attributed to the task that runs them.
