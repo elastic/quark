@@ -124,11 +124,51 @@ usage(void)
 	    program_invocation_short_name);
 	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
 	    "[-l maxlength] [-m maxnodes]\n", ' ');
-	fprintf(stderr, "%16c [-P ppid] "
+	fprintf(stderr, "%16c [-f classes] [-P ppid] "
 	    "[-r rulefile ]\n", ' ');
 	fprintf(stderr, "usage: %s -V\n", program_invocation_short_name);
 
 	exit(1);
+}
+
+/*
+ * Parse a comma separated list of file event classes, as in "write,chmod",
+ * into a mask of QQ_FE_*.
+ */
+static int
+parse_file_events(const char *arg)
+{
+	struct {
+		const char	*name;
+		int		 fe;
+	} classes[] = {
+		{ "default",	QQ_FE_DEFAULT },
+		{ "write",	QQ_FE_WRITE },
+		{ "truncate",	QQ_FE_TRUNCATE },
+		{ "chmod",	QQ_FE_CHMOD },
+		{ "chown",	QQ_FE_CHOWN },
+	};
+	char	*list, *name, *last;
+	int	 fe, i;
+
+	if ((list = strdup(arg)) == NULL)
+		err(1, "strdup");
+	fe = 0;
+	for (name = strtok_r(list, ",", &last); name != NULL;
+	     name = strtok_r(NULL, ",", &last)) {
+		for (i = 0; i < (int)(sizeof(classes) / sizeof(classes[0])); i++) {
+			if (!strcmp(name, classes[i].name))
+				break;
+		}
+		if (i == (int)(sizeof(classes) / sizeof(classes[0])))
+			errx(1, "invalid file event class: %s", name);
+		fe |= classes[i].fe;
+	}
+	free(list);
+	if (fe == 0)
+		errx(1, "no file event class");
+
+	return (fe);
 }
 
 static void
@@ -188,7 +228,7 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DEeFf:GgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -216,6 +256,10 @@ main(int argc, char *argv[])
 			break;
 		case 'F':
 			qa.flags |= QQ_FILE;
+			break;
+		case 'f':
+			qa.flags |= QQ_FILE;
+			qa.file_events = parse_file_events(optarg);
 			break;
 		case 'G':
 			qa.flags |= QQ_GETPID;

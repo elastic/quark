@@ -8,6 +8,7 @@
 .Nm quark-mon
 .Op Fl BbDEeFGgHhkLMNnSsTtuv
 .Op Fl C Ar filename
+.Op Fl f Ar classes
 .Op Fl K Ar kubeconfig
 .Op Fl l Ar maxlength
 .Op Fl m Ar maxnodes
@@ -67,6 +68,22 @@ Entry leader is how the process entered the system, it is disabled by default as
 it is Elastic/ECS specific.
 .It Fl F
 Enable file events (experimental).
+.It Fl f Ar classes
+Enable file events, and collect only the modify events of
+.Ar classes ,
+a comma separated list of:
+.Cm write ,
+.Cm truncate ,
+.Cm chmod ,
+.Cm chown
+and
+.Cm default ,
+the four of them.
+Create, remove and move events are always collected.
+See
+.Em file_events
+in
+.Xr quark_queue_open 3 .
 .It Fl G
 Enables a getpid probe, only for benchmarking,
 .Em don't

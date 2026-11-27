@@ -994,6 +994,14 @@ struct quark_queue_attr {
 	size_t			 max_env;		/* max process environment in bytes */
 	int			 kubefd;		/* quark-kube-talker pipe, -1 disables */
 	struct quark_ruleset	*ruleset;		/* active ruleset */
+/* File event classes, which modify events QQ_FILE collects */
+#define QQ_FE_WRITE		(1 << 0)	/* each write(2), writev(2) */
+#define QQ_FE_TRUNCATE		(1 << 1)
+#define QQ_FE_CHMOD		(1 << 2)
+#define QQ_FE_CHOWN		(1 << 3)
+#define QQ_FE_ALL		(QQ_FE_WRITE|QQ_FE_TRUNCATE|QQ_FE_CHMOD|QQ_FE_CHOWN)
+#define QQ_FE_DEFAULT		(QQ_FE_WRITE|QQ_FE_TRUNCATE|QQ_FE_CHMOD|QQ_FE_CHOWN)
+	int			 file_events;		/* QQ_FE_*, 0 is QQ_FE_DEFAULT */
 };
 
 /*
@@ -1021,6 +1029,7 @@ struct quark_queue {
 	u64				 cache_grace_time;	/* in ns */
 	int				 hold_time;		/* in ms */
 	size_t				 max_env;		/* max process environment in bytes */
+	int				 file_events;		/* QQ_FE_*, never 0 */
 	struct quark_kube		*qkube;			/* NULL if disabled */
 	int				 epollfd;
 	/* Backend related state */

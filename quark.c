@@ -4751,6 +4751,17 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	    qa->hold_time < 10)
 		return (errno = EINVAL, -1);
 
+	/*
+	 * File event classes only exist in the EBPF backend, and only mean
+	 * something with file events on.
+	 */
+	if (qa->file_events != 0) {
+		if ((qa->file_events & ~QQ_FE_ALL) ||
+		    !(qa->flags & QQ_FILE) ||
+		    !(qa->flags & QQ_EBPF))
+			return (errno = EINVAL, -1);
+	}
+
 	if (quark_init() == -1)
 		return (-1);
 
@@ -4761,6 +4772,7 @@ quark_queue_open(struct quark_queue *qq, struct quark_queue_attr *qa)
 	qq->cache_grace_time = MS_TO_NS(qa->cache_grace_time);
 	qq->hold_time = qa->hold_time;
 	qq->max_env = qa->max_env;
+	qq->file_events = qa->file_events != 0 ? qa->file_events : QQ_FE_DEFAULT;
 	qq->ruleset = qa->ruleset;
 	qq->length = 0;
 	qq->epollfd = -1;

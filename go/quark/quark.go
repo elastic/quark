@@ -299,6 +299,14 @@ const (
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
 	QQ_MPROTECT      = int(C.QQ_MPROTECT)
 
+	// QueueAttr.FileEvents
+	QQ_FE_WRITE    = int(C.QQ_FE_WRITE)
+	QQ_FE_TRUNCATE = int(C.QQ_FE_TRUNCATE)
+	QQ_FE_CHMOD    = int(C.QQ_FE_CHMOD)
+	QQ_FE_CHOWN    = int(C.QQ_FE_CHOWN)
+	QQ_FE_ALL      = int(C.QQ_FE_ALL)
+	QQ_FE_DEFAULT  = int(C.QQ_FE_DEFAULT)
+
 	// Event.events
 	QUARK_EV_FORK                  = uint64(C.QUARK_EV_FORK)
 	QUARK_EV_EXEC                  = uint64(C.QUARK_EV_EXEC)
@@ -361,6 +369,10 @@ type QueueAttr struct {
 	// the queue by OpenQueue. Empty means no rules. Processes matched
 	// by poison rules carry the tag in Process.PoisonTag.
 	RuleText string
+	// FileEvents is a mask of QQ_FE_*, the modify events that QQ_FILE
+	// collects. Zero means QQ_FE_DEFAULT. Non-zero requires QQ_FILE
+	// and QQ_EBPF.
+	FileEvents int
 }
 
 // Documented in https://elastic.github.io/quark/quark_queue_get_stats.3.html.
@@ -406,6 +418,7 @@ func DefaultQueueAttr() QueueAttr {
 		MaxLength:      int(attr.max_length),
 		CacheGraceTime: int(attr.cache_grace_time),
 		HoldTime:       int(attr.hold_time),
+		FileEvents:     int(attr.file_events),
 	}
 }
 
@@ -446,6 +459,11 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	var queue Queue
 	var cattr C.struct_quark_queue_attr
 
+	// C.int would drop the bits above 31, check them before
+	if attr.FileEvents&^QQ_FE_ALL != 0 {
+		return nil, syscall.EINVAL
+	}
+
 	C.quark_queue_default_attr(&cattr)
 
 	if attr.RuleText != "" {
@@ -470,6 +488,7 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	cattr.max_length = C.int(attr.MaxLength)
 	cattr.cache_grace_time = C.int(attr.CacheGraceTime)
 	cattr.hold_time = C.int(attr.HoldTime)
+	cattr.file_events = C.int(attr.FileEvents)
 	ok, err := C.quark_queue_open(queue.quarkQueue, &cattr)
 	if ok == -1 {
 		C.free(unsafe.Pointer(queue.quarkQueue))
