@@ -521,7 +521,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		size_t				 path_len, sym_target_len, old_path_len;
 		size_t				 alloc_len, tmp_len;
 		struct quark_file		*file;
-		u32				 op_mask, change_mask, dummy;
+		u32				 op_mask, change_mask, old_mode, dummy;
 
 		if ((raw = raw_event_alloc(RAW_FILE)) == NULL)
 			goto bad;
@@ -535,6 +535,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		vl = NULL;
 		op_mask = 0;
 		change_mask = 0;
+		old_mode = 0;
 		switch (ev->type) {
 		case EBPF_EVENT_FILE_CREATE: {
 			struct ebpf_file_create_event *create =
@@ -640,6 +641,18 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 				break;
 			case EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH: /* ignored */
 				break;
+			case EBPF_VL_FIELD_OLD_MODE: {
+				u16	m;
+
+				if (field->size != sizeof(m)) {
+					qwarnx("bad old_mode size %u",
+					    field->size);
+					goto bad;
+				}
+				memcpy(&m, field->data, sizeof(m));
+				old_mode = m;
+				break;
+			}
 			default:
 				qwarnx("unhandled field type %d", field->type);
 				goto bad;
@@ -693,6 +706,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		file->gid = info->gid;
 		file->op_mask = op_mask;
 		file->change_mask = change_mask;
+		file->old_mode = old_mode;
 
 		break;
 	}
@@ -1431,8 +1445,12 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.fexit__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.fexit__vfs_unlink, 1);
 			/* File event classes */
-			if (fe & QQ_FE_CHMOD)
+			if (fe & QQ_FE_CHMOD) {
+				bpf_program__set_autoload(p->progs.fentry__chmod_common, 1);
+				bpf_program__set_autoload(p->progs.fentry__notify_change, 1);
+				bpf_program__set_autoload(p->progs.fexit__notify_change, 1);
 				bpf_program__set_autoload(p->progs.fexit__chmod_common, 1);
+			}
 			if (fe & QQ_FE_CHOWN)
 				bpf_program__set_autoload(p->progs.fexit__chown_common, 1);
 			if (fe & QQ_FE_TRUNCATE) {
@@ -1490,6 +1508,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			/* File event classes */
 			if (fe & QQ_FE_CHMOD) {
 				bpf_program__set_autoload(p->progs.kprobe__chmod_common, 1);
+				bpf_program__set_autoload(p->progs.kprobe__notify_change, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__notify_change, 1);
 				bpf_program__set_autoload(p->progs.kretprobe__chmod_common, 1);
 			}
 			if (fe & QQ_FE_CHOWN) {
@@ -1564,6 +1584,15 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 				goto fail;
 			if (relo_param(btf, &p->rodata->arg__vfs_truncate__path__,
 			    "vfs_truncate", "path") == -1)
+				goto fail;
+		}
+		/* notify_change(), idmap or mnt_userns came before the dentry */
+		if (fe & QQ_FE_CHMOD) {
+			if (relo_param(btf, &p->rodata->arg__notify_change__dentry__,
+			    "notify_change", "dentry") == -1)
+				goto fail;
+			if (relo_ret(btf, &p->rodata->ret__notify_change__,
+			    "notify_change") == -1)
 				goto fail;
 		}
 		/* do_file_open_root(), the kretprobe needs no relocation */

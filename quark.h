@@ -420,6 +420,7 @@ struct quark_file {
 	u32		 gid;
 	u32		 op_mask;	/* mask of QUARK_FILE_OP_* */
 	u32		 change_mask;	/* mask of QUARK_FILE_CH_* */
+	u32		 old_mode;	/* mode before a chmod, 0 if unknown */
 	char		 storage[];	/* paths point here */
 };
 

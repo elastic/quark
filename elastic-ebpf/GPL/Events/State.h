@@ -80,6 +80,10 @@ struct ebpf_events_tcp_connect_state {
 struct ebpf_events_chmod_state {
     struct path *path;
     umode_t mode;
+    umode_t old_mode; // from notify_change() entry, under the inode lock
+    umode_t new_mode; // from its successful return, 0 if not seen
+    u32 nc_depth;     // notify_change() calls inside the chmod's one, its own counted
+    u8 locked;        // old_mode was read, at the entry of the chmod's call
 };
 
 struct ebpf_events_truncate_state {

@@ -194,6 +194,7 @@ type File struct {
 	Gid        uint32
 	OpMask     uint32
 	ChangeMask uint32
+	OldMode    uint32 // Mode before a chmod, 0 if unknown
 }
 
 type Ptrace struct {
@@ -982,6 +983,7 @@ func fileFromC(cFile *C.struct_quark_file) File {
 	file.Gid = uint32(cFile.gid)
 	file.OpMask = uint32(cFile.op_mask)
 	file.ChangeMask = uint32(cFile.change_mask)
+	file.OldMode = uint32(cFile.old_mode)
 
 	return file
 }

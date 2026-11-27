@@ -2420,6 +2420,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 			    file->sym_target);
 		PF(fl, "mode=0%o uid=%d gid=%d size=%llu inode=%llu\n",
 		    file->mode, file->uid, file->gid, file->size, file->inode);
+		if (file->old_mode != 0)
+			PF(fl, "old_mode=0%o\n", file->old_mode);
 		PF(fl, "atime=%llu mtime=%llu ctime=%llu\n",
 		    file->atime, file->mtime, file->ctime);
 	}
@@ -5104,11 +5106,30 @@ quark_can_aggregate_fork_exec(struct quark_queue *qq,
 	return (1);
 }
 
+/*
+ * The first chmod of the group that p heads, NULL if it has none yet.
+ * raw_event_file() reports its old_mode.
+ */
+static struct quark_file *
+agg_first_chmod(struct raw_event *p)
+{
+	struct raw_event	*agg;
+
+	if (p->file.quark_file->change_mask & QUARK_FILE_CH_PERMS)
+		return (p->file.quark_file);
+	TAILQ_FOREACH(agg, &p->agg_queue, agg_entry) {
+		if (agg->file.quark_file->change_mask & QUARK_FILE_CH_PERMS)
+			return (agg->file.quark_file);
+	}
+
+	return (NULL);
+}
+
 int
 quark_can_aggregate_file(struct quark_queue *qq,
     struct raw_event *p, struct raw_event *c)
 {
-	struct quark_file	*pf, *cf;
+	struct quark_file	*pf, *cf, *ff;
 
 	pf = p->file.quark_file;
 	cf = c->file.quark_file;
@@ -5131,6 +5152,25 @@ quark_can_aggregate_file(struct quark_queue *qq,
 	if (!!(pf->mode & (S_IXUSR | S_IXGRP | S_IXOTH)) !=
 	    !!(cf->mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
 		return (0);
+	/*
+	 * raw_event_file() keeps the old_mode of the first chmod of the
+	 * group, a later chmod with an old_mode of the other executable state
+	 * would be lost: 0644->0755 then 0755->0750 would only read as the file
+	 * becoming executable, not as an executable being changed. Compare
+	 * with the first chmod, which is not always the head: an open for
+	 * write can head the group, and another task can chmod the file
+	 * between two chmods of this one. An old_mode of zero is unknown: it
+	 * only merges with another unknown one, or a known transition after it
+	 * would be lost.
+	 */
+	if ((cf->change_mask & QUARK_FILE_CH_PERMS) &&
+	    (ff = agg_first_chmod(p)) != NULL) {
+		if ((ff->old_mode == 0) != (cf->old_mode == 0))
+			return (0);
+		if (!!(ff->old_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) !=
+		    !!(cf->old_mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
+			return (0);
+	}
 	/*
 	 * Maybe we should escape uid/gid and other mode changes, which can still
 	 * make it possible to hide stuff.
@@ -5378,7 +5418,8 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
 	struct raw_event	*agg;
-	u32			 op_mask, change_mask;
+	u32			 op_mask, change_mask, old_mode;
+	int			 chmod_seen;
 
 	if (raw->file.quark_file == NULL) {
 		qwarnx("quark_file is null");
@@ -5393,19 +5434,28 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 
 	/*
 	 * File aggregation is basically joining op_mask and then using the last
-	 * raw_event.
+	 * raw_event. old_mode is the mode before the group's first chmod, the
+	 * last event only has the mode before the last one.
 	 */
 	op_mask = raw->file.quark_file->op_mask;
 	change_mask = raw->file.quark_file->change_mask;
+	old_mode = raw->file.quark_file->old_mode;
+	chmod_seen = !!(change_mask & QUARK_FILE_CH_PERMS);
 	TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
 		op_mask |= agg->file.quark_file->op_mask;
 		change_mask |= agg->file.quark_file->change_mask;
+		if (!chmod_seen &&
+		    (agg->file.quark_file->change_mask & QUARK_FILE_CH_PERMS)) {
+			old_mode = agg->file.quark_file->old_mode;
+			chmod_seen = 1;
+		}
 		raw = agg;
 	}
 
 	/* Steal the file */
 	raw->file.quark_file->op_mask = op_mask;
 	raw->file.quark_file->change_mask = change_mask;
+	raw->file.quark_file->old_mode = old_mode;
 	qev->file = raw->file.quark_file;
 	raw->file.quark_file = NULL;
 

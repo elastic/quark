@@ -360,3 +360,19 @@ Changes from 0.11 to 0.12
     vfs_truncate() reports it, in the QQ_FE_TRUNCATE class. Kernel
     callers of vfs_truncate(), like ksmbd and cachefiles, are reported
     too, attributed to the task that runs them.
+  o quark_file{} got old_mode, the mode of the file before a chmod, so a
+    consumer can tell a chmod that removes the execute bits from one
+    that adds them. It is zero for the other changes, and when unknown.
+    An aggregated event keeps the old_mode of its first chmod, and a
+    chmod whose old_mode differs in executable state from the one of the
+    first chmod of the event, or is unknown when the other is known, is
+    not merged into it. The EBPF backend reads it, and the mode the
+    chmod set, in new probes on notify_change(), under the inode lock of
+    the chmod; if a probe missed part of it, old_mode is zero and the
+    mode is read after the lock. The wire file modify event carries it
+    in a new variable length field, EBPF_VL_FIELD_OLD_MODE, so its fixed
+    part is unchanged for QQ_BYPASS consumers, which must skip variable
+    length fields of unknown types. With QQ_FE_CHMOD the notify_change()
+    probes run on every setattr, a state lookup when no chmod runs.
+    quark_queue_open(3) documents it, quark_event_dump(3) prints it, and
+    the Go File got OldMode. ECS has no field for it.

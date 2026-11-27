@@ -2593,6 +2593,9 @@ test_overlay_open(struct test_overlay *ov, const struct test *t)
 		err(1, "open %s", lower_file);
 	if (write(fd, "0123456789", 10) != 10)
 		err(1, "write %s", lower_file);
+	/* Not left to the umask, the tests check the mode */
+	if (fchmod(fd, 0644) == -1)
+		err(1, "fchmod %s", lower_file);
 	close(fd);
 	if ((fd = open(ov->plain, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
 		err(1, "open %s", ov->plain);
@@ -3455,6 +3458,321 @@ t_file_truncate_overlay(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Drain the next file event of this process and check it, including the mode
+ * and the mode before a chmod.
+ */
+static void
+drain_file_mode(struct quark_queue *qq, u64 inode, u32 op_mask,
+    u32 change_mask, const char *path, u32 mode, u32 old_mode)
+{
+	const struct quark_event	*qev;
+	const struct quark_file		*qf;
+
+	qev = drain_for_pid(qq, getpid());
+	assert(qev->events == QUARK_EV_FILE);
+	qf = qev->file;
+	assert(qf != NULL);
+	assert(qf->inode == inode);
+	if (qf->op_mask != op_mask)
+		errx(1, "file event op_mask is 0x%x, want 0x%x (path %s)",
+		    qf->op_mask, op_mask, qf->path);
+	if (qf->change_mask != change_mask)
+		errx(1, "file event change_mask is 0x%x, want 0x%x (path %s)",
+		    qf->change_mask, change_mask, qf->path);
+	assert_file_path(qf, path);
+	if (qf->mode != mode)
+		errx(1, "file event mode is 0%o, want 0%o (path %s)",
+		    qf->mode, mode, qf->path);
+	if (qf->old_mode != old_mode)
+		errx(1, "file event old_mode is 0%o, want 0%o (path %s)",
+		    qf->old_mode, old_mode, qf->path);
+}
+
+/*
+ * A chmod carries the mode from before it in old_mode, other changes have
+ * none. An aggregated group keeps the old_mode of its first chmod, and does
+ * not take a chmod that would hide a change of an executable.
+ */
+static int
+t_file_chmod_old_mode(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct quark_queue_attr		 qa_agg;
+	struct stat			 st;
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	pid_t				 child;
+	int				 fd, status;
+
+	qa->flags |= QQ_FILE;
+	qa_agg = *qa;
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fchmod(fd, 0644) == -1)
+		err(1, "fchmod");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+
+	/* One event per operation */
+	qa->flags |= QQ_MIN_AGG;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	assert(write(fd, "1", 1) == 1);
+	if (chmod(path, 0755) == -1)
+		err(1, "chmod");
+	if (chmod(path, 0644) == -1)
+		err(1, "chmod");
+	if (fchmod(fd, 0755) == -1)
+		err(1, "fchmod");
+	if (chmod(path, 0700) == -1)
+		err(1, "chmod");
+
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path, S_IFREG | 0644, 0);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0755, S_IFREG | 0644);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0644, S_IFREG | 0755);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0755, S_IFREG | 0644);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0700, S_IFREG | 0755);
+
+	quark_queue_close(&qq);
+
+	/*
+	 * Default aggregation: a write and two chmods that keep the file
+	 * executable merge into one event, with the old_mode of the first
+	 * chmod and the mode of the last.
+	 */
+	if (fchmod(fd, 0755) == -1)
+		err(1, "fchmod");
+	if (quark_queue_open(&qq, &qa_agg) != 0)
+		err(1, "quark_queue_open");
+
+	assert(write(fd, "2", 1) == 1);
+	if (chmod(path, 0750) == -1)
+		err(1, "chmod");
+	if (chmod(path, 0700) == -1)
+		err(1, "chmod");
+
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT | QUARK_FILE_CH_PERMS, path,
+	    S_IFREG | 0700, S_IFREG | 0755);
+
+	quark_queue_close(&qq);
+
+	/*
+	 * Default aggregation: 0644->0755 then 0755->0750 must not merge,
+	 * both new modes are executable but only the second chmod changes an
+	 * executable file.
+	 */
+	if (fchmod(fd, 0644) == -1)
+		err(1, "fchmod");
+	if (quark_queue_open(&qq, &qa_agg) != 0)
+		err(1, "quark_queue_open");
+
+	if (chmod(path, 0755) == -1)
+		err(1, "chmod");
+	if (chmod(path, 0750) == -1)
+		err(1, "chmod");
+
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0755, S_IFREG | 0644);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0750, S_IFREG | 0755);
+
+	quark_queue_close(&qq);
+
+	/*
+	 * Default aggregation, the group headed by a write: 0644->0600, then
+	 * another process makes it 0755, then 0755->0644 changes an
+	 * executable. Compared with the first chmod of the group, not with the
+	 * head, the last chmod must not merge.
+	 */
+	if (fchmod(fd, 0644) == -1)
+		err(1, "fchmod");
+	if (quark_queue_open(&qq, &qa_agg) != 0)
+		err(1, "quark_queue_open");
+
+	assert(write(fd, "3", 1) == 1);
+	if (chmod(path, 0600) == -1)
+		err(1, "chmod");
+	if ((child = fork()) == -1)
+		err(1, "fork");
+	if (child == 0)
+		_exit(chmod(path, 0755) == -1);
+	if (waitpid(child, &status, 0) == -1)
+		err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		errx(1, "child chmod failed");
+	if (chmod(path, 0644) == -1)
+		err(1, "chmod");
+
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT | QUARK_FILE_CH_PERMS, path,
+	    S_IFREG | 0600, S_IFREG | 0644);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0644, S_IFREG | 0755);
+
+	quark_queue_close(&qq);
+
+	close(fd);
+	if (unlink(path) == -1)
+		err(1, "unlink");
+
+	return (0);
+}
+
+/*
+ * A chmod on overlayfs of a file of the lower layer copies it up and calls
+ * notify_change() again for the upper file, inside the one of the overlay.
+ * It gives one MODIFY + PERMS with the modes of the overlay file: the inner
+ * call must not count as the chmod's.
+ */
+static int
+t_file_chmod_overlay(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_file		*qf;
+	struct test_overlay		 ov;
+
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	qa->file_events = QQ_FE_CHMOD;
+
+	if (test_overlay_open(&ov, t) == -1)
+		return (0);
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if (chmod(ov.file, 0755) == -1)
+		err(1, "chmod %s", ov.file);
+	assert_no_bpf_state(&qq, "overlay chmod");
+	qev = drain_for_pid(&qq, getpid());
+	if (qev->events != QUARK_EV_FILE || (qf = qev->file) == NULL ||
+	    qf->op_mask != QUARK_FILE_OP_MODIFY ||
+	    qf->change_mask != QUARK_FILE_CH_PERMS)
+		errx(1, "overlay chmod: not a MODIFY + PERMS event");
+	assert_file_path(qf, ov.file);
+	if (qf->mode != (S_IFREG | 0755) || qf->old_mode != (S_IFREG | 0644))
+		errx(1, "overlay chmod: mode 0%o old_mode 0%o, want 0%o 0%o",
+		    qf->mode, qf->old_mode, S_IFREG | 0755, S_IFREG | 0644);
+	test_overlay_sentinel(&qq, &ov);
+
+	quark_queue_close(&qq);
+	test_overlay_close(&ov);
+
+	return (0);
+}
+
+/*
+ * File events on an executable file, with the classes of QQ_FE_DRIFT. Each
+ * event carries the mode bits that tell a change to an executable from the
+ * creation of one: the mode, and for a chmod the mode before it.
+ */
+static int
+t_file_executable_ops(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	struct stat			 st;
+	char				 dir[] = "/tmp/quark-test.XXXXXX";
+	char				 path[PATH_MAX], new_path[PATH_MAX];
+	char				 link_path[PATH_MAX];
+	mode_t				 omask;
+	int				 fd;
+
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	qa->file_events = QQ_FE_DRIFT;
+
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	if (snprintf(path, sizeof(path), "%s/exe", dir) >=
+	    (int)sizeof(path))
+		errx(1, "path too long");
+	if (snprintf(new_path, sizeof(new_path), "%s/exe.moved", dir) >=
+	    (int)sizeof(new_path))
+		errx(1, "new_path too long");
+	if (snprintf(link_path, sizeof(link_path), "%s/exe.link", dir) >=
+	    (int)sizeof(link_path))
+		errx(1, "link_path too long");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* create with an execute bit */
+	omask = umask(022);
+	fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0755);
+	(void)umask(omask);
+	if (fd == -1)
+		err(1, "open");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	/* ftruncate of an executable */
+	if (ftruncate(fd, 0) == -1)
+		err(1, "ftruncate");
+	close(fd);
+	/* open for write of an executable */
+	if ((fd = open(path, O_WRONLY)) == -1)
+		err(1, "open");
+	close(fd);
+	/* truncate(2) by path of an executable */
+	if (truncate(path, 0) == -1)
+		err(1, "truncate");
+	/* hard link to an executable */
+	if (link(path, link_path) == -1)
+		err(1, "link");
+	if (unlink(link_path) == -1)
+		err(1, "unlink");
+	/* chmod that keeps the execute bit */
+	if (chmod(path, 0775) == -1)
+		err(1, "chmod");
+	/* chmod that removes it */
+	if (chmod(path, 0644) == -1)
+		err(1, "chmod");
+	/* chmod that adds it */
+	if (chmod(path, 0744) == -1)
+		err(1, "chmod");
+	/* rename of an executable */
+	if (rename(path, new_path) == -1)
+		err(1, "rename");
+	if (unlink(new_path) == -1)
+		err(1, "unlink");
+
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_CREATE, 0, path,
+	    S_IFREG | 0755, 0);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path, S_IFREG | 0755, 0);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_OPEN_WRITE, path, S_IFREG | 0755, 0);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path, S_IFREG | 0755, 0);
+	/* The new name, with the mode of the executable */
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_LINK, 0, link_path,
+	    S_IFREG | 0755, 0);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, link_path,
+	    S_IFREG | 0755, 0);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0775, S_IFREG | 0755);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0644, S_IFREG | 0775);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_PERMS, path, S_IFREG | 0744, S_IFREG | 0644);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_MOVE, 0, new_path,
+	    S_IFREG | 0744, 0);
+	drain_file_mode(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, new_path,
+	    S_IFREG | 0744, 0);
+
+	quark_queue_close(&qq);
+
+	if (rmdir(dir) == -1)
+		err(1, "rmdir");
+
+	return (0);
+}
+
 static int
 t_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -3498,8 +3816,50 @@ t_bypass(const struct test *t, struct quark_queue_attr *qa)
 /*
  * Bypass delivers the raw events of the file event classes: an open for write
  * of an existing file is an EBPF_EVENT_FILE_MODIFY with
- * EBPF_FILE_CHANGE_TYPE_OPEN_WRITE, and a hard link an EBPF_EVENT_FILE_LINK.
+ * EBPF_FILE_CHANGE_TYPE_OPEN_WRITE, a hard link an EBPF_EVENT_FILE_LINK, and a
+ * chmod a MODIFY with EBPF_FILE_CHANGE_TYPE_PERMISSIONS that has the path and
+ * the mode before it in EBPF_VL_FIELD_OLD_MODE.
  */
+#define BYPASS_SAW_OPEN_WRITE	(1 << 0)
+#define BYPASS_SAW_LINK		(1 << 1)
+#define BYPASS_SAW_CHMOD	(1 << 2)
+
+/* The path and old_mode fields of a chmod, as a QQ_BYPASS reader sees them */
+static void
+bypass_check_chmod(const struct ebpf_file_modify_event *fm, const char *path,
+    u32 old_mode)
+{
+	struct ebpf_varlen_field	*field;
+	u16				 m;
+	u32				 i;
+	int				 saw_path = 0, saw_old_mode = 0;
+
+	FOR_EACH_VARLEN_FIELD_PTR(&fm->vl_fields, field, i) {
+		switch (field->type) {
+		case EBPF_VL_FIELD_PATH:
+			if (strcmp(field->data, path) != 0)
+				errx(1, "bypass chmod path %s, want %s",
+				    field->data, path);
+			saw_path = 1;
+			break;
+		case EBPF_VL_FIELD_OLD_MODE:
+			if (field->size != sizeof(m))
+				errx(1, "bypass old_mode size %u", field->size);
+			memcpy(&m, field->data, sizeof(m));
+			if (m != old_mode)
+				errx(1, "bypass old_mode 0%o, want 0%o", m,
+				    old_mode);
+			saw_old_mode = 1;
+			break;
+		default:
+			break;
+		}
+	}
+	if (!saw_path || !saw_old_mode)
+		errx(1, "bypass chmod: path %d old_mode %d", saw_path,
+		    saw_old_mode);
+}
+
 static int
 t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -3512,12 +3872,11 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 	struct stat				 st;
 	char					 path[] = "/tmp/quark-test.XXXXXX";
 	char					 link_path[sizeof(path) + 5];
-	u64					 wanted;
-	int					 fd;
+	int					 fd, wanted;
 
 	qa->flags &= ~QQ_ENTRY_LEADER;
 	qa->flags |= QQ_BYPASS | QQ_FILE;
-	qa->file_events = QQ_FE_OPEN_WRITE | QQ_FE_LINK;
+	qa->file_events = QQ_FE_OPEN_WRITE | QQ_FE_LINK | QQ_FE_CHMOD;
 
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
@@ -3536,13 +3895,15 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 	close(fd);
 	if (link(path, link_path) == -1)
 		err(1, "link");
+	if (chmod(path, 0755) == -1)
+		err(1, "chmod");
 
-	wanted = EBPF_EVENT_FILE_MODIFY | EBPF_EVENT_FILE_LINK;
+	wanted = BYPASS_SAW_OPEN_WRITE | BYPASS_SAW_LINK | BYPASS_SAW_CHMOD;
 	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
 		err(1, "clock_gettime");
 	for (now = start; wanted != 0; (void)clock_gettime(CLOCK_MONOTONIC, &now)) {
 		if ((now.tv_sec - start.tv_sec) >= 5)
-			errx(1, "bypass: missing events 0x%llx", wanted);
+			errx(1, "bypass: missing events 0x%x", wanted);
 		qev = drain_for_pid(&qq, -1);
 		assert(qev->events == QUARK_EV_BYPASS);
 		assert(qev->bypass != NULL);
@@ -3553,21 +3914,28 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 			if (fm->pids.tgid != (u32)getpid() ||
 			    fm->finfo.inode != st.st_ino)
 				continue;
-			if (fm->change_type != EBPF_FILE_CHANGE_TYPE_OPEN_WRITE)
-				errx(1, "change_type %d, want %d",
-				    fm->change_type,
-				    EBPF_FILE_CHANGE_TYPE_OPEN_WRITE);
+			switch (fm->change_type) {
+			case EBPF_FILE_CHANGE_TYPE_OPEN_WRITE:
+				wanted &= ~BYPASS_SAW_OPEN_WRITE;
+				break;
+			case EBPF_FILE_CHANGE_TYPE_PERMISSIONS:
+				bypass_check_chmod(fm, path, st.st_mode);
+				wanted &= ~BYPASS_SAW_CHMOD;
+				break;
+			default:
+				errx(1, "change_type %d", fm->change_type);
+			}
 			break;
 		case EBPF_EVENT_FILE_LINK:
 			fl = (const struct ebpf_file_rename_event *)eh;
 			if (fl->pids.tgid != (u32)getpid() ||
 			    fl->finfo.inode != st.st_ino)
 				continue;
+			wanted &= ~BYPASS_SAW_LINK;
 			break;
 		default:
-			continue;
+			break;
 		}
-		wanted &= ~eh->type;
 	}
 
 	quark_queue_close(&qq);
@@ -8908,6 +9276,9 @@ struct test all_tests[] = {
 	T_EBPF(t_file_open_by_handle),
 	T_EBPF(t_file_truncate),
 	T_EBPF(t_file_truncate_overlay),
+	T_EBPF(t_file_chmod_old_mode),
+	T_EBPF(t_file_chmod_overlay),
+	T_EBPF(t_file_executable_ops),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
