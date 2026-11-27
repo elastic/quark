@@ -45,6 +45,7 @@ func TestQuark(t *testing.T) {
 		require.Equal(t, fetchPid, pid1.Pid)
 		require.NotEmpty(t, pid1.Comm)
 		require.NotEmpty(t, pid1.Cwd)
+		require.Len(t, pid1.Proc.EntityID, 16)
 	})
 
 	t.Run("GetEvent", func(t *testing.T) {

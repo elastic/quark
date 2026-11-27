@@ -317,3 +317,6 @@ Changes from 0.11 to 0.12
     like event times and the EBPF backend. It was CLOCK_MONOTONIC, so
     after a suspend ECS process.end read as earlier by the total time
     asleep since boot.
+  o The Go bindings (go/quark) learned Proc.EntityID, mirroring
+    quark_process.proc_entity_id, which is now documented in
+    quark_queue_get_event(3). It is the ECS process.entity_id.
