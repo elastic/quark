@@ -341,3 +341,15 @@ Changes from 0.11 to 0.12
   o The open probe takes a file as a memfd only when it is anonymous, not
     for any name that starts with memfd:, so the open for write of a
     regular file named memfd:something is reported.
+  o QQ_FILE got hard link events, a new file operation
+    QUARK_FILE_OP_LINK with the new name in path and the linked file in
+    old_path, from link(2) and linkat(2), also of an O_TMPFILE file. They
+    are collected with the new file event class QQ_FE_LINK, which is not
+    in QQ_FE_DEFAULT, and never aggregate. ECS reports them as
+    file-linked, quark-mon(8) -f takes link.
+  o New file event class preset QQ_FE_DRIFT, for drift detection:
+    QQ_FE_OPEN_WRITE instead of QQ_FE_WRITE, plus
+    QQ_FE_TRUNCATE, QQ_FE_CHMOD, QQ_FE_CHOWN and QQ_FE_LINK.
+    quark-mon(8) -f takes drift.
+  o Remove, rename and link events read the symlink target of a symlink
+    only: for a FIFO or a device, the inode holds another pointer there.

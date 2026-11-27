@@ -143,11 +143,13 @@ parse_file_events(const char *arg)
 		int		 fe;
 	} classes[] = {
 		{ "default",	QQ_FE_DEFAULT },
+		{ "drift",	QQ_FE_DRIFT },
 		{ "write",	QQ_FE_WRITE },
 		{ "truncate",	QQ_FE_TRUNCATE },
 		{ "chmod",	QQ_FE_CHMOD },
 		{ "chown",	QQ_FE_CHOWN },
 		{ "open_write",	QQ_FE_OPEN_WRITE },
+		{ "link",	QQ_FE_LINK },
 	};
 	char	*list, *name, *last;
 	int	 fe, i;

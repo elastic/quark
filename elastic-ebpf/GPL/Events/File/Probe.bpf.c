@@ -27,6 +27,10 @@ DECL_FUNC_ARG(vfs_rename, old_dentry);
 DECL_FUNC_ARG(vfs_rename, new_dentry);
 DECL_FUNC_RET(vfs_rename);
 DECL_FUNC_ARG_EXISTS(vfs_rename, rd);
+/* vfs_link */
+DECL_FUNC_ARG(vfs_link, old_dentry);
+DECL_FUNC_ARG(vfs_link, new_dentry);
+DECL_FUNC_RET(vfs_link);
 /* do_truncate */
 DECL_FUNC_ARG(do_truncate, filp);
 DECL_FUNC_RET(do_truncate);
@@ -185,6 +189,20 @@ static int mnt_want_write__enter(struct vfsmount *mnt)
         goto out;
     }
 
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_LINK);
+    if (state) {
+        // The mount is the one of the new name, a link across mounts fails
+        // with EXDEV before vfs_link. Taken from each call outside vfs_link,
+        // so a retry of do_linkat (ESTALE, broken delegation), which looks
+        // both names up again, takes the mount of its new lookup. The calls
+        // of overlayfs are inside vfs_link, where depth is not 0.
+        if (state->link.step == LINK_STATE_PATHS_SET && state->link.depth > 0)
+            goto out;
+        state->link.mnt  = mnt;
+        state->link.step = LINK_STATE_MOUNT_SET;
+        goto out;
+    }
+
 out:
     return 0;
 }
@@ -256,10 +274,12 @@ static int vfs_unlink__exit(int ret)
     size  = ebpf_resolve_path_to_string(field->data, &p, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
-    // symlink_target_path
+    // symlink_target_path, of a symlink only, see two_path_event__emit()
     field      = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
-    char *link = BPF_CORE_READ(p.dentry, d_inode, i_link);
-    size       = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
+    char *link = NULL;
+    if (S_ISLNK(event->finfo.mode))
+        link = BPF_CORE_READ(p.dentry, d_inode, i_link);
+    size = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // pids ss cgroup path
@@ -781,10 +801,12 @@ int BPF_KPROBE(kprobe__filename_renameat2)
     return r;
 }
 
-/* Same as do_unlinkat__exit(), see comment there. */
+/* Same as do_unlinkat__exit(), see comment there. The 16 KiB scratch entry
+ * goes too, do_renameat2__enter() sets it again. */
 static int do_renameat2__exit()
 {
     ebpf_events_state__del(EBPF_EVENTS_STATE_RENAME);
+    ebpf_events_scratch_space__del(EBPF_EVENTS_STATE_RENAME);
     return 0;
 }
 
@@ -836,13 +858,14 @@ int BPF_KRETPROBE(kretprobe__filename_renameat2)
     return r;
 }
 
-// Resolve (mnt, dentry) into the rename scratch space's new_path.
+// Resolve (mnt, dentry) into new_path of the scratch space of `op`, the
+// rename or the link state.
 //
-// Global function, see ebpf_ptr_to_scalar(): vfs_rename__enter() resolves two
+// Global function, see ebpf_ptr_to_scalar(): resolve_two_paths() resolves two
 // paths and the verifier would walk the resolver once per call otherwise. It
 // always writes new_path, a buffer picked by argument would be two verifier
 // states again; the caller moves the first result to old_path.
-__noinline int vfs_rename__resolve_path(u64 mnt, u64 dentry)
+__noinline int scratch__resolve_path(u64 op, u64 mnt, u64 dentry)
 {
     struct ebpf_events_scratch_space *ss;
     struct task_struct *task;
@@ -851,7 +874,7 @@ __noinline int vfs_rename__resolve_path(u64 mnt, u64 dentry)
 
     // For the resolver's per-cpu scratch, see prepare_and_send_file_event().
     preempt_disable();
-    ss = ebpf_events_scratch_space__get(EBPF_EVENTS_STATE_RENAME);
+    ss = ebpf_events_scratch_space__get((enum ebpf_events_state_op)op);
     if (!ss)
         goto out;
 
@@ -866,11 +889,41 @@ out:
     return r;
 }
 
-// Runs with preemption enabled, see vfs_rename__resolve_path(); the state and
-// scratch maps are keyed by task, only the resolver's scratch is per-cpu.
-static int vfs_rename__enter(struct dentry *old_dentry, struct dentry *new_dentry)
+// Resolve the old and the new dentry of a rename or a link into old_path and
+// new_path of the scratch space of `op`. Runs with preemption enabled, see
+// scratch__resolve_path(); the state and scratch maps are keyed by task, only
+// the resolver's scratch is per-cpu.
+static int resolve_two_paths(enum ebpf_events_state_op op,
+                             u64 mnt,
+                             struct dentry *old_dentry,
+                             struct dentry *new_dentry)
 {
     struct ebpf_events_scratch_space *ss;
+
+    if (scratch__resolve_path(op, mnt, ebpf_ptr_to_scalar(old_dentry)))
+        return -1;
+
+    // The resolver runs with preemption enabled, so this task may have been
+    // scheduled out and the LRU maps may have recycled its entries for
+    // another task, which the verifier can't see: a map value pointer taken
+    // before the call would then write into that task's entry. Look the
+    // entries up again after each call and write through them with
+    // preemption disabled, the window the code had before the resolver
+    // became a global function. A missing entry means the state is gone and
+    // the exit hook will find nothing either.
+    preempt_disable();
+    ss = ebpf_events_scratch_space__get(op);
+    if (ss)
+        bpf_probe_read_kernel(ss->rename.old_path, PATH_MAX, ss->rename.new_path);
+    preempt_enable();
+    if (!ss)
+        return -1;
+
+    return scratch__resolve_path(op, mnt, ebpf_ptr_to_scalar(new_dentry));
+}
+
+static int vfs_rename__enter(struct dentry *old_dentry, struct dentry *new_dentry)
+{
     struct ebpf_events_state *state;
 
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_RENAME);
@@ -882,28 +935,10 @@ static int vfs_rename__enter(struct dentry *old_dentry, struct dentry *new_dentr
     // mnt was read back from the state map, so the verifier already sees a
     // scalar; the dentries come from the probe context and need the detour.
     u64 mnt = (u64)state->rename.mnt;
-    if (vfs_rename__resolve_path(mnt, ebpf_ptr_to_scalar(old_dentry)))
+    if (resolve_two_paths(EBPF_EVENTS_STATE_RENAME, mnt, old_dentry, new_dentry))
         goto out;
 
-    // The resolver runs with preemption enabled, so this task may have been
-    // scheduled out and the LRU maps may have recycled its entries for
-    // another task, which the verifier can't see: a map value pointer taken
-    // before the call would then write into that task's entry. Look the
-    // entries up again after each call and write through them with
-    // preemption disabled, the window the code had before the resolver
-    // became a global function. A missing entry means the state is gone and
-    // the exit hook will find nothing either.
-    preempt_disable();
-    ss = ebpf_events_scratch_space__get(EBPF_EVENTS_STATE_RENAME);
-    if (ss)
-        bpf_probe_read_kernel(ss->rename.old_path, PATH_MAX, ss->rename.new_path);
-    preempt_enable();
-    if (!ss)
-        goto out;
-
-    if (vfs_rename__resolve_path(mnt, ebpf_ptr_to_scalar(new_dentry)))
-        goto out;
-
+    // Looked up again, see resolve_two_paths().
     preempt_disable();
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_RENAME);
     if (state) {
@@ -964,20 +999,15 @@ out:
     return r;
 }
 
-static int vfs_rename__exit(int ret)
+// Send a rename or a link event, with the old and the new path from the
+// scratch space of `op` and the file data of `de`.
+static void two_path_event__emit(enum ebpf_event_type type,
+                                 enum ebpf_events_state_op op,
+                                 struct dentry *de)
 {
-    if (ret)
-        goto out;
-
-    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_RENAME);
-    if (!state || state->rename.step != RENAME_STATE_PATHS_SET) {
-        // Omit logging as this happens in the happy path.
-        goto out;
-    }
-
-    struct ebpf_events_scratch_space *ss = ebpf_events_scratch_space__get(EBPF_EVENTS_STATE_RENAME);
+    struct ebpf_events_scratch_space *ss = ebpf_events_scratch_space__get(op);
     if (!ss) {
-        bpf_printk("vfs_rename__exit: scratch space missing\n");
+        bpf_printk("two_path_event__emit: scratch space missing\n");
         goto out;
     }
 
@@ -986,10 +1016,8 @@ static int vfs_rename__exit(int ret)
         goto out;
 
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    // NOTE: this temp variable is necessary to keep the verifier happy
-    struct dentry *de = (struct dentry *)state->rename.de;
 
-    event->hdr.type    = EBPF_EVENT_FILE_RENAME;
+    event->hdr.type    = type;
     event->hdr.ts      = bpf_ktime_get_boot_ns();
     ebpf_pid_info__fill(&event->pids, task);
     ebpf_cred_info__fill(&event->creds, task);
@@ -1014,10 +1042,14 @@ static int vfs_rename__exit(int ret)
     size  = read_kernel_str_or_empty_str(field->data, PATH_MAX, ss->rename.new_path);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
-    // symlink_target_path
+    // symlink_target_path, of a symlink only: i_link shares a union with
+    // i_pipe and i_cdev, a FIFO or a device would give a pointer to another
+    // structure. The mode is the one ebpf_file_info__fill() read.
     field      = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
-    char *link = BPF_CORE_READ(de, d_inode, i_link);
-    size       = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
+    char *link = NULL;
+    if (S_ISLNK(event->finfo.mode))
+        link = BPF_CORE_READ(de, d_inode, i_link);
+    size = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // pids ss cgroup path
@@ -1026,6 +1058,25 @@ static int vfs_rename__exit(int ret)
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+
+out:
+    return;
+}
+
+static int vfs_rename__exit(int ret)
+{
+    if (ret)
+        goto out;
+
+    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_RENAME);
+    if (!state || state->rename.step != RENAME_STATE_PATHS_SET) {
+        // Omit logging as this happens in the happy path.
+        goto out;
+    }
+
+    // NOTE: this temp variable is necessary to keep the verifier happy
+    struct dentry *de = (struct dentry *)state->rename.de;
+    two_path_event__emit(EBPF_EVENT_FILE_RENAME, EBPF_EVENTS_STATE_RENAME, de);
 
     // Certain filesystems (eg. overlayfs) call vfs_rename twice during the same
     // execution context.
@@ -1056,6 +1107,266 @@ int BPF_KRETPROBE(kretprobe__vfs_rename, int ret)
 
     preempt_disable();
     r = vfs_rename__exit(ret);
+    preempt_enable();
+
+    return r;
+}
+
+static int do_linkat__enter()
+{
+    struct ebpf_events_state state = {};
+    state.link.step                = LINK_STATE_INIT;
+
+    if (ebpf_events_is_trusted_pid())
+        goto out;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_LINK, &state);
+
+    u32 zero = 0;
+    struct ebpf_events_scratch_space *ss =
+        bpf_map_lookup_elem(&elastic_ebpf_events_init_buffer, &zero);
+    if (!ss)
+        goto out;
+    ebpf_events_scratch_space__set(EBPF_EVENTS_STATE_LINK, ss);
+
+out:
+    return 0;
+}
+
+SEC("fentry/do_linkat")
+int BPF_PROG(fentry__do_linkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_linkat__enter();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kprobe/do_linkat")
+int BPF_KPROBE(kprobe__do_linkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_linkat__enter();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("fentry/filename_linkat")
+int BPF_PROG(fentry__filename_linkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_linkat__enter();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kprobe/filename_linkat")
+int BPF_KPROBE(kprobe__filename_linkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_linkat__enter();
+    preempt_enable();
+
+    return r;
+}
+
+/*
+ * Same as do_renameat2__exit(), see comment there. link(2) also raises
+ * fsnotify(FS_CREATE), and on 4.18 that state is only reaped by the open
+ * probe, so the next open of this thread would be reported as a create.
+ *
+ * Known gaps, shared with unlink and rename: a missed kretprobe here (kprobe
+ * fallback, maxactive) leaves the LINK state behind, and a later vfs_link of
+ * this thread outside do_linkat, as an overlayfs copy-up (ovl_do_link), would
+ * then send a false LINK. A vfs_link enter or exit missed on one side only
+ * (recursion protection) breaks the depth count, and the event can be sent
+ * by an inner call, before the outer one is done.
+ */
+static int do_linkat__exit()
+{
+    ebpf_events_state__del(EBPF_EVENTS_STATE_LINK);
+    ebpf_events_scratch_space__del(EBPF_EVENTS_STATE_LINK);
+    ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
+    return 0;
+}
+
+SEC("fexit/do_linkat")
+int BPF_PROG(fexit__do_linkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_linkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/do_linkat")
+int BPF_KRETPROBE(kretprobe__do_linkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_linkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("fexit/filename_linkat")
+int BPF_PROG(fexit__filename_linkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_linkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/filename_linkat")
+int BPF_KRETPROBE(kretprobe__filename_linkat)
+{
+    int r;
+
+    preempt_disable();
+    r = do_linkat__exit();
+    preempt_enable();
+
+    return r;
+}
+
+// Runs with preemption enabled, see resolve_two_paths().
+static int vfs_link__enter(struct dentry *old_dentry, struct dentry *new_dentry)
+{
+    struct ebpf_events_state *state;
+    u64 mnt;
+
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_LINK);
+    if (!state) {
+        preempt_enable();
+        goto out;
+    }
+    // A vfs_link inside the first one (overlayfs links in the upper layer,
+    // and may copy up with a link): the paths are known, only count the call.
+    if (state->link.step == LINK_STATE_PATHS_SET && state->link.depth > 0) {
+        state->link.depth++;
+        preempt_enable();
+        goto out;
+    }
+    // Resolve on the first call, and again on a retry after a failed one
+    // (stale NFS handle, broken delegation): do_linkat looked the names up
+    // again, and the dentry of the first try may be gone.
+    if (state->link.step != LINK_STATE_MOUNT_SET && state->link.step != LINK_STATE_PATHS_SET) {
+        preempt_enable();
+        goto out;
+    }
+    mnt = (u64)state->link.mnt;
+    preempt_enable();
+
+    if (resolve_two_paths(EBPF_EVENTS_STATE_LINK, mnt, old_dentry, new_dentry))
+        goto out;
+
+    // Looked up again, see resolve_two_paths().
+    preempt_disable();
+    state = ebpf_events_state__get(EBPF_EVENTS_STATE_LINK);
+    if (state) {
+        state->link.step  = LINK_STATE_PATHS_SET;
+        state->link.de    = old_dentry;
+        state->link.depth = 1;
+    }
+    preempt_enable();
+
+out:
+    return 0;
+}
+
+SEC("fentry/vfs_link")
+int BPF_PROG(fentry__vfs_link)
+{
+    struct dentry *old_dentry, *new_dentry;
+
+    old_dentry = FUNC_ARG_READ(___type(old_dentry), vfs_link, old_dentry);
+    new_dentry = FUNC_ARG_READ(___type(new_dentry), vfs_link, new_dentry);
+
+    return vfs_link__enter(old_dentry, new_dentry);
+}
+
+SEC("kprobe/vfs_link")
+int BPF_KPROBE(kprobe__vfs_link)
+{
+    struct dentry *old_dentry, *new_dentry;
+
+    if (FUNC_ARG_READ_PTREGS(old_dentry, vfs_link, old_dentry)) {
+        bpf_printk("kprobe__vfs_link: error reading old_dentry\n");
+        return 0;
+    }
+    if (FUNC_ARG_READ_PTREGS(new_dentry, vfs_link, new_dentry)) {
+        bpf_printk("kprobe__vfs_link: error reading new_dentry\n");
+        return 0;
+    }
+
+    return vfs_link__enter(old_dentry, new_dentry);
+}
+
+// The event is sent when the outermost vfs_link returns 0. The state stays
+// after a failure, for a retry of do_linkat (stale NFS handle, broken
+// delegation), and do_linkat__exit() deletes it in the end.
+static int vfs_link__exit(int ret)
+{
+    struct ebpf_events_state *state = ebpf_events_state__get(EBPF_EVENTS_STATE_LINK);
+    if (!state || state->link.step != LINK_STATE_PATHS_SET) {
+        // Omit logging as this happens in the happy path.
+        goto out;
+    }
+    if (state->link.depth > 0)
+        state->link.depth--;
+    if (state->link.depth > 0 || ret != 0)
+        goto out;
+
+    // NOTE: this temp variable is necessary to keep the verifier happy
+    struct dentry *de = (struct dentry *)state->link.de;
+    two_path_event__emit(EBPF_EVENT_FILE_LINK, EBPF_EVENTS_STATE_LINK, de);
+
+    ebpf_events_state__del(EBPF_EVENTS_STATE_LINK);
+
+out:
+    return 0;
+}
+
+SEC("fexit/vfs_link")
+int BPF_PROG(fexit__vfs_link)
+{
+    int ret, r;
+
+    preempt_disable();
+    ret = FUNC_RET_READ(___type(ret), vfs_link);
+    r = vfs_link__exit(ret);
+    preempt_enable();
+
+    return r;
+}
+
+SEC("kretprobe/vfs_link")
+int BPF_KRETPROBE(kretprobe__vfs_link, int ret)
+{
+    int r;
+
+    preempt_disable();
+    r = vfs_link__exit(ret);
     preempt_enable();
 
     return r;

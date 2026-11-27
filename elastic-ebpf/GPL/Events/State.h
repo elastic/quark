@@ -23,6 +23,7 @@ enum ebpf_events_state_op {
     EBPF_EVENTS_STATE_CHOWN          = 9,
     EBPF_EVENTS_STATE_FS_CREATE      = 10,
     EBPF_EVENTS_STATE_MEMFD_CREATE   = 11,
+    EBPF_EVENTS_STATE_LINK           = 12,
 };
 
 struct ebpf_events_key {
@@ -55,6 +56,20 @@ struct ebpf_events_rename_state {
     enum ebpf_events_rename_state_step step;
     struct vfsmount *mnt;
     struct dentry *de;
+};
+
+enum ebpf_events_link_state_step {
+    LINK_STATE_INIT      = 0,
+    LINK_STATE_MOUNT_SET = 1,
+    LINK_STATE_PATHS_SET = 2,
+};
+
+struct ebpf_events_link_state {
+    enum ebpf_events_link_state_step step;
+    struct vfsmount *mnt;
+    struct dentry *de;
+    // vfs_link() calls in progress, overlayfs nests one in the other
+    u32 depth;
 };
 
 struct ebpf_events_tcp_connect_state {
@@ -95,6 +110,7 @@ struct ebpf_events_state {
     union {
         struct ebpf_events_unlink_state unlink;
         struct ebpf_events_rename_state rename;
+        struct ebpf_events_link_state link;
         struct ebpf_events_tcp_connect_state tcp_v4_connect;
         struct ebpf_events_tcp_connect_state tcp_v6_connect;
         struct ebpf_events_chmod_state chmod;
@@ -148,6 +164,7 @@ struct ebpf_events_rename_scratch_space {
     char new_path[BUF];
 };
 
+// The link state uses the rename layout, under its own key.
 struct ebpf_events_scratch_space {
     union {
         struct ebpf_events_rename_scratch_space rename;
@@ -183,6 +200,12 @@ static long ebpf_events_scratch_space__set(enum ebpf_events_state_op op,
 {
     struct ebpf_events_key key = ebpf_events_state__key(op);
     return bpf_map_update_elem(&elastic_ebpf_events_scratch_space, &key, ss, BPF_ANY);
+}
+
+static long ebpf_events_scratch_space__del(enum ebpf_events_state_op op)
+{
+    struct ebpf_events_key key = ebpf_events_state__key(op);
+    return bpf_map_delete_elem(&elastic_ebpf_events_scratch_space, &key);
 }
 
 /* Trusted Apps - list of trusted pids */

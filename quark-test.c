@@ -2093,6 +2093,15 @@ t_file(const struct test *t, struct quark_queue_attr *qa)
 }
 
 static void
+assert_no_bpf_state(struct quark_queue *qq, const char *step)
+{
+	const char	*op;
+
+	if ((op = bpf_queue_test_state_present(qq)) != NULL)
+		errx(1, "state map entry leaked after %s (%s)", step, op);
+}
+
+static void
 assert_file_path(const struct quark_file *qf, const char *want)
 {
 	if (qf->path == NULL)
@@ -2101,7 +2110,7 @@ assert_file_path(const struct quark_file *qf, const char *want)
 		errx(1, "file event path is %s, want %s", qf->path, want);
 }
 
-static void
+static const struct quark_file *
 drain_file_event(struct quark_queue *qq, u64 inode, u32 op_mask,
     u32 change_mask, const char *path)
 {
@@ -2120,6 +2129,8 @@ drain_file_event(struct quark_queue *qq, u64 inode, u32 op_mask,
 		errx(1, "file event change_mask is 0x%x, want 0x%x (path %s)",
 		    qf->change_mask, change_mask, qf->path);
 	assert_file_path(qf, path);
+
+	return (qf);
 }
 
 /*
@@ -2309,6 +2320,325 @@ t_file_rename(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+static void
+drain_link_event(struct quark_queue *qq, u64 inode, const char *path,
+    const char *old_path)
+{
+	const struct quark_file	*qf;
+
+	qf = drain_file_event(qq, inode, QUARK_FILE_OP_LINK, 0, path);
+	if (qf->old_path == NULL)
+		errx(1, "link event has no old_path, want %s", old_path);
+	if (old_path != NULL && strcmp(qf->old_path, old_path) != 0)
+		errx(1, "link event old_path is %s, want %s", qf->old_path,
+		    old_path);
+}
+
+/*
+ * link(2) and linkat(2) give a LINK event each, with the new name in path and
+ * the linked file in old_path, and a symlink target only for a symlink. A
+ * failed link gives nothing, leaves no probe state and does not hide a later
+ * unlink(2) or rename(2). Without QQ_FE_LINK there is no event.
+ */
+static int
+t_file_link(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_file		*qf;
+	struct stat			 st;
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	char				 dir[] = "/tmp/quark-test-dir.XXXXXX";
+	char				 link1[sizeof(path) + 6];
+	char				 link2[sizeof(path) + 6];
+	char				 moved[sizeof(path) + 6];
+	char				 dirlink[sizeof(dir) + 5];
+	char				 devlink[64];
+	struct stat			 devst;
+	int				 fd, devfd, dev_target;
+
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	qa->file_events = QQ_FE_DEFAULT | QQ_FE_LINK;
+
+	/* Created before the queue, so their creates don't show */
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	if (snprintf(link1, sizeof(link1), "%s.link1", path) >=
+	    (int)sizeof(link1) ||
+	    snprintf(link2, sizeof(link2), "%s.link2", path) >=
+	    (int)sizeof(link2) ||
+	    snprintf(moved, sizeof(moved), "%s.moved", path) >=
+	    (int)sizeof(moved) ||
+	    snprintf(dirlink, sizeof(dirlink), "%s.link", dir) >=
+	    (int)sizeof(dirlink))
+		errx(1, "snprintf");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if (link(path, link1) == -1)
+		err(1, "link");
+	assert_no_bpf_state(&qq, "link");
+	drain_link_event(&qq, st.st_ino, link1, path);
+
+	/*
+	 * On 4.18 link(2) raises fsnotify(FS_CREATE), which the create probe
+	 * keys off: a read only open must not turn into a create. The next
+	 * event must be the linkat(2).
+	 */
+	if ((fd = open(link1, O_RDONLY)) == -1)
+		err(1, "open");
+	close(fd);
+
+	if (linkat(AT_FDCWD, path, AT_FDCWD, link2, 0) == -1)
+		err(1, "linkat");
+	assert_no_bpf_state(&qq, "linkat");
+	drain_link_event(&qq, st.st_ino, link2, path);
+
+	/* EEXIST, before vfs_link() */
+	if (link(path, link1) != -1 || errno != EEXIST)
+		err(1, "link %s", link1);
+	assert_no_bpf_state(&qq, "failed link");
+	/* EPERM from vfs_link(), a directory can't be linked */
+	if (link(dir, dirlink) != -1 || errno != EPERM)
+		err(1, "link %s", dir);
+	assert_no_bpf_state(&qq, "failed vfs_link");
+
+	/* Nothing from the failed links, and they hide nothing */
+	if (unlink(link2) == -1)
+		err(1, "unlink");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, link2);
+	if (rename(link1, moved) == -1)
+		err(1, "rename");
+	qf = drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MOVE, 0, moved);
+	assert(qf->old_path != NULL && !strcmp(qf->old_path, link1));
+	if (unlink(moved) == -1)
+		err(1, "unlink");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, moved);
+
+	/*
+	 * An open character device: i_link shares a union with i_cdev, the
+	 * LINK and the REMOVE must not take that pointer for a symlink target.
+	 * The link is in /dev, which can be a bind mount or read only.
+	 */
+	if ((devfd = open("/dev/null", O_RDONLY)) == -1)
+		err(1, "open /dev/null");
+	if (fstat(devfd, &devst) == -1)
+		err(1, "fstat /dev/null");
+	(void)snprintf(devlink, sizeof(devlink), "/dev/quark-test-null.%d",
+	    getpid());
+	if (link("/dev/null", devlink) == -1) {
+		if (errno != EXDEV && errno != EROFS && errno != EPERM)
+			err(1, "link %s", devlink);
+		warn("%s: link %s, skipping the device case", t->name, devlink);
+	} else {
+		qf = drain_file_event(&qq, devst.st_ino, QUARK_FILE_OP_LINK, 0,
+		    devlink);
+		dev_target = qf->sym_target != NULL;
+		if (unlink(devlink) == -1)
+			err(1, "unlink %s", devlink);
+		qf = drain_file_event(&qq, devst.st_ino, QUARK_FILE_OP_REMOVE, 0,
+		    devlink);
+		if (dev_target || qf->sym_target != NULL)
+			errx(1, "link or remove of a device has a symlink "
+			    "target");
+	}
+	close(devfd);
+
+	quark_queue_close(&qq);
+
+	/* Without the class, the remove is the first event */
+	qa->file_events = QQ_FE_DEFAULT;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+	if (link(path, link1) == -1)
+		err(1, "link");
+	if (unlink(link1) == -1)
+		err(1, "unlink");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, link1);
+	quark_queue_close(&qq);
+
+	if (unlink(path) == -1)
+		err(1, "unlink");
+	if (rmdir(dir) == -1)
+		err(1, "rmdir");
+
+	return (0);
+}
+
+/*
+ * A file made with O_TMPFILE has no name until linkat(2) gives it one, the
+ * LINK event is the first event of the file.
+ */
+static int
+t_file_tmpfile_link(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_file		*qf;
+	struct stat			 st;
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	char				 fdpath[64];
+	int				 fd;
+
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	qa->file_events = QQ_FE_DEFAULT | QQ_FE_LINK;
+
+	/* A free name for the link */
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	close(fd);
+	if (unlink(path) == -1)
+		err(1, "unlink");
+
+	if ((fd = open("/tmp", O_TMPFILE | O_RDWR, 0600)) == -1) {
+		if (errno == EOPNOTSUPP || errno == EISDIR) {
+			warnx("%s: no O_TMPFILE on /tmp, skipping", t->name);
+			return (0);
+		}
+		err(1, "open O_TMPFILE");
+	}
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* AT_EMPTY_PATH needs CAP_DAC_READ_SEARCH, else go through /proc */
+	if (linkat(fd, "", AT_FDCWD, path, AT_EMPTY_PATH) == -1) {
+		if (errno != ENOENT)
+			err(1, "linkat AT_EMPTY_PATH");
+		(void)snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", fd);
+		if (linkat(AT_FDCWD, fdpath, AT_FDCWD, path,
+		    AT_SYMLINK_FOLLOW) == -1)
+			err(1, "linkat %s", fdpath);
+	}
+	close(fd);
+	assert_no_bpf_state(&qq, "tmpfile link");
+
+	/* The old path is the name the kernel gave the tmpfile, d_tmpfile() */
+	qf = drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_LINK, 0, path);
+	(void)snprintf(fdpath, sizeof(fdpath), "/tmp/#%llu",
+	    (unsigned long long)st.st_ino);
+	if (qf->old_path == NULL || strcmp(qf->old_path, fdpath) != 0)
+		errx(1, "tmpfile link old_path is %s, want %s",
+		    qf->old_path ? qf->old_path : "NULL", fdpath);
+	assert(qf->mode == st.st_mode);
+
+	if (unlink(path) == -1)
+		err(1, "unlink");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, path);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+static void test_fs_tmpfs(struct test_fs *);
+
+/*
+ * A link on overlayfs of a file of the lower layer copies the file up and
+ * links in the upper layer, a vfs_link inside the first one. It gives one LINK
+ * with both paths in the overlay mount.
+ */
+static int
+t_file_link_overlay(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_file		*qf;
+	struct test_fs			 fs;
+	struct stat			 pst;
+	char				 lower[sizeof(fs.dir) + 8];
+	char				 upper[sizeof(fs.dir) + 8];
+	char				 work[sizeof(fs.dir) + 8];
+	char				 merged[sizeof(fs.dir) + 8];
+	char				 lower_file[sizeof(lower) + 8];
+	char				 file[sizeof(merged) + 8];
+	char				 linked[sizeof(merged) + 8];
+	char				 plain[sizeof(fs.dir) + 8];
+	char				 opts[256];
+	int				 fd;
+
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	qa->file_events = QQ_FE_DEFAULT | QQ_FE_LINK;
+
+	/* test_fs_tmpfs() needs it for its mounts */
+	if (geteuid() != 0) {
+		warnx("%s: not root, skipping", t->name);
+		return (0);
+	}
+	test_fs_tmpfs(&fs);
+	if (snprintf(lower, sizeof(lower), "%s/lower", fs.dir) >=
+	    (int)sizeof(lower) ||
+	    snprintf(upper, sizeof(upper), "%s/upper", fs.dir) >=
+	    (int)sizeof(upper) ||
+	    snprintf(work, sizeof(work), "%s/work", fs.dir) >=
+	    (int)sizeof(work) ||
+	    snprintf(merged, sizeof(merged), "%s/merged", fs.dir) >=
+	    (int)sizeof(merged) ||
+	    snprintf(lower_file, sizeof(lower_file), "%s/file", lower) >=
+	    (int)sizeof(lower_file) ||
+	    snprintf(file, sizeof(file), "%s/file", merged) >=
+	    (int)sizeof(file) ||
+	    snprintf(linked, sizeof(linked), "%s/linked", merged) >=
+	    (int)sizeof(linked) ||
+	    snprintf(plain, sizeof(plain), "%s/plain", fs.dir) >=
+	    (int)sizeof(plain) ||
+	    snprintf(opts, sizeof(opts), "lowerdir=%s,upperdir=%s,workdir=%s",
+	    lower, upper, work) >= (int)sizeof(opts))
+		errx(1, "snprintf");
+	if (mkdir(lower, 0755) == -1 || mkdir(upper, 0755) == -1 ||
+	    mkdir(work, 0755) == -1 || mkdir(merged, 0755) == -1)
+		err(1, "mkdir");
+	/* Made before the mount and the queue: in the lower layer only */
+	if ((fd = open(lower_file, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
+		err(1, "open %s", lower_file);
+	close(fd);
+	if ((fd = open(plain, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
+		err(1, "open %s", plain);
+	if (fstat(fd, &pst) == -1)
+		err(1, "fstat");
+	close(fd);
+	if (mount("overlay", merged, "overlay", 0, opts) == -1) {
+		if (errno != ENODEV && errno != EINVAL && errno != EPERM)
+			err(1, "mount overlay");
+		warn("%s: mount overlay, skipping", t->name);
+		test_fs_close(&fs);
+		return (0);
+	}
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if (link(file, linked) == -1)
+		err(1, "link %s", file);
+	assert_no_bpf_state(&qq, "overlay link");
+	qev = drain_for_pid(&qq, getpid());
+	if (qev->events != QUARK_EV_FILE || (qf = qev->file) == NULL ||
+	    qf->op_mask != QUARK_FILE_OP_LINK)
+		errx(1, "overlay link: not a LINK event");
+	assert_file_path(qf, linked);
+	if (qf->old_path == NULL || strcmp(qf->old_path, file) != 0)
+		errx(1, "overlay link old_path is %s, want %s",
+		    qf->old_path ? qf->old_path : "NULL", file);
+	/* A second LINK would show before the REMOVE of the plain file */
+	if (unlink(plain) == -1)
+		err(1, "unlink");
+	drain_file_event(&qq, pst.st_ino, QUARK_FILE_OP_REMOVE, 0, plain);
+
+	quark_queue_close(&qq);
+
+	if (umount(merged) == -1)
+		err(1, "umount overlay");
+	test_fs_close(&fs);
+
+	return (0);
+}
+
 #define FE_SAW_WRITE1	(1 << 0)	/* write(2), size 1 */
 #define FE_SAW_TRUNCATE	(1 << 1)
 #define FE_SAW_CHMOD	(1 << 2)
@@ -2316,13 +2646,14 @@ t_file_rename(const struct test *t, struct quark_queue_attr *qa)
 #define FE_SAW_CREATE	(1 << 4)
 #define FE_SAW_OPEN_WRITE (1 << 5)
 #define FE_SAW_WRITE2	(1 << 6)	/* writev(2), size 2 */
+#define FE_SAW_LINK	(1 << 7)
 #define FE_SAW_WRITE	(FE_SAW_WRITE1|FE_SAW_WRITE2)
 
 /*
- * Create a file, run one write, writev, truncate, chmod, chown and open for
- * write on it, then remove it. Return which operations gave an event, as a
- * mask of FE_SAW_*. With QQ_MIN_AGG every probe event is a quark event of its
- * own, and the size tells the write (one byte) and the writev (two bytes)
+ * Create a file, run one write, writev, truncate, chmod, chown, open for write
+ * and hard link on it, then remove it. Return which operations gave an event,
+ * as a mask of FE_SAW_*. With QQ_MIN_AGG every probe event is a quark event of
+ * its own, and the size tells the write (one byte) and the writev (two bytes)
  * from the truncate (zero bytes), so that each probe must send its own event.
  */
 static int
@@ -2334,6 +2665,7 @@ file_events_mask_run(struct quark_queue_attr *qa)
 	struct stat			 st;
 	struct iovec			 iov;
 	char				 path[] = "/tmp/quark-test.XXXXXX";
+	char				 lpath[PATH_MAX];
 	int				 fd, fd2, saw;
 
 	if (quark_queue_open(&qq, qa) != 0)
@@ -2356,6 +2688,12 @@ file_events_mask_run(struct quark_queue_attr *qa)
 	if ((fd2 = open(path, O_WRONLY)) == -1)
 		err(1, "open");
 	close(fd2);
+	/* The remove of the link is the first REMOVE, after all the others */
+	snprintf(lpath, sizeof(lpath), "%s.link", path);
+	if (link(path, lpath) == -1)
+		err(1, "link");
+	if (unlink(lpath) == -1)
+		err(1, "unlink");
 	close(fd);
 	if (unlink(path) == -1)
 		err(1, "unlink");
@@ -2373,6 +2711,10 @@ file_events_mask_run(struct quark_queue_attr *qa)
 			break;
 		if (qf->op_mask == QUARK_FILE_OP_CREATE) {
 			saw |= FE_SAW_CREATE;
+			continue;
+		}
+		if (qf->op_mask == QUARK_FILE_OP_LINK) {
+			saw |= FE_SAW_LINK;
 			continue;
 		}
 		if (qf->op_mask != QUARK_FILE_OP_MODIFY)
@@ -2436,12 +2778,16 @@ t_file_events_mask(const struct test *t, struct quark_queue_attr *qa)
 		{ QQ_FE_CHMOD,		FE_SAW_CHMOD },
 		{ QQ_FE_CHOWN,		FE_SAW_CHOWN },
 		{ QQ_FE_OPEN_WRITE,	FE_SAW_OPEN_WRITE },
+		{ QQ_FE_LINK,		FE_SAW_LINK },
 		{ QQ_FE_TRUNCATE | QQ_FE_CHMOD | QQ_FE_CHOWN,
 					FE_SAW_TRUNCATE | FE_SAW_CHMOD |
 					FE_SAW_CHOWN },
+		{ QQ_FE_DRIFT,		FE_SAW_TRUNCATE | FE_SAW_CHMOD |
+					FE_SAW_CHOWN | FE_SAW_OPEN_WRITE |
+					FE_SAW_LINK },
 		{ QQ_FE_ALL,		FE_SAW_WRITE | FE_SAW_TRUNCATE |
 					FE_SAW_CHMOD | FE_SAW_CHOWN |
-					FE_SAW_OPEN_WRITE },
+					FE_SAW_OPEN_WRITE | FE_SAW_LINK },
 	};
 
 	qa->flags |= QQ_FILE;
@@ -2982,7 +3328,7 @@ t_bypass(const struct test *t, struct quark_queue_attr *qa)
 /*
  * Bypass delivers the raw events of the file event classes: an open for write
  * of an existing file is an EBPF_EVENT_FILE_MODIFY with
- * EBPF_FILE_CHANGE_TYPE_OPEN_WRITE.
+ * EBPF_FILE_CHANGE_TYPE_OPEN_WRITE, and a hard link an EBPF_EVENT_FILE_LINK.
  */
 static int
 t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
@@ -2991,20 +3337,26 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 	const struct quark_event		*qev;
 	const struct ebpf_event_header		*eh;
 	const struct ebpf_file_modify_event	*fm;
+	const struct ebpf_file_rename_event	*fl;
 	struct timespec				 start, now;
 	struct stat				 st;
 	char					 path[] = "/tmp/quark-test.XXXXXX";
-	int					 fd, found;
+	char					 link_path[sizeof(path) + 5];
+	u64					 wanted;
+	int					 fd;
 
 	qa->flags &= ~QQ_ENTRY_LEADER;
 	qa->flags |= QQ_BYPASS | QQ_FILE;
-	qa->file_events = QQ_FE_OPEN_WRITE;
+	qa->file_events = QQ_FE_OPEN_WRITE | QQ_FE_LINK;
 
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
 	if (fstat(fd, &st) == -1)
 		err(1, "fstat");
 	close(fd);
+	if (snprintf(link_path, sizeof(link_path), "%s.link", path) >=
+	    (int)sizeof(link_path))
+		errx(1, "snprintf");
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
@@ -3012,31 +3364,44 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 	if ((fd = open(path, O_WRONLY)) == -1)
 		err(1, "open %s", path);
 	close(fd);
+	if (link(path, link_path) == -1)
+		err(1, "link");
 
+	wanted = EBPF_EVENT_FILE_MODIFY | EBPF_EVENT_FILE_LINK;
 	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
 		err(1, "clock_gettime");
-	for (found = 0, now = start; !found;
-	    (void)clock_gettime(CLOCK_MONOTONIC, &now)) {
+	for (now = start; wanted != 0; (void)clock_gettime(CLOCK_MONOTONIC, &now)) {
 		if ((now.tv_sec - start.tv_sec) >= 5)
-			errx(1, "no open for write event in bypass");
+			errx(1, "bypass: missing events 0x%llx", wanted);
 		qev = drain_for_pid(&qq, -1);
 		assert(qev->events == QUARK_EV_BYPASS);
 		assert(qev->bypass != NULL);
 		eh = qev->bypass;
-		if (eh->type != EBPF_EVENT_FILE_MODIFY)
+		switch (eh->type) {
+		case EBPF_EVENT_FILE_MODIFY:
+			fm = (const struct ebpf_file_modify_event *)eh;
+			if (fm->pids.tgid != (u32)getpid() ||
+			    fm->finfo.inode != st.st_ino)
+				continue;
+			if (fm->change_type != EBPF_FILE_CHANGE_TYPE_OPEN_WRITE)
+				errx(1, "change_type %d, want %d",
+				    fm->change_type,
+				    EBPF_FILE_CHANGE_TYPE_OPEN_WRITE);
+			break;
+		case EBPF_EVENT_FILE_LINK:
+			fl = (const struct ebpf_file_rename_event *)eh;
+			if (fl->pids.tgid != (u32)getpid() ||
+			    fl->finfo.inode != st.st_ino)
+				continue;
+			break;
+		default:
 			continue;
-		fm = (const struct ebpf_file_modify_event *)eh;
-		if (fm->pids.tgid != (u32)getpid() ||
-		    fm->finfo.inode != st.st_ino)
-			continue;
-		if (fm->change_type != EBPF_FILE_CHANGE_TYPE_OPEN_WRITE)
-			errx(1, "change_type %d, want %d", fm->change_type,
-			    EBPF_FILE_CHANGE_TYPE_OPEN_WRITE);
-		found = 1;
+		}
+		wanted &= ~eh->type;
 	}
 
 	quark_queue_close(&qq);
-	if (unlink(path) == -1)
+	if (unlink(link_path) == -1 || unlink(path) == -1)
 		err(1, "unlink");
 
 	return (0);
@@ -4362,15 +4727,6 @@ t_sock_conn(const struct test *t, struct quark_queue_attr *qa)
 	quark_queue_close(&qq);
 
 	return (0);
-}
-
-static void
-assert_no_bpf_state(struct quark_queue *qq, const char *step)
-{
-	const char	*op;
-
-	if ((op = bpf_queue_test_state_present(qq)) != NULL)
-		errx(1, "state map entry leaked after %s (%s)", step, op);
 }
 
 static void
@@ -8363,6 +8719,9 @@ struct test all_tests[] = {
 	T_EBPF(t_file_hardlink),
 	T_EBPF(t_file_bad_unlink_rename),
 	T_EBPF(t_file_rename),
+	T_EBPF(t_file_link),
+	T_EBPF(t_file_tmpfile_link),
+	T_EBPF(t_file_link_overlay),
 	T_EBPF(t_file_events_mask),
 	T_EBPF(t_file_open_write),
 	T_EBPF(t_file_open_write_paths),

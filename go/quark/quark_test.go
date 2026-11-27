@@ -388,6 +388,44 @@ func TestFileEvents(t *testing.T) {
 	queue.Close()
 }
 
+func TestFileLink(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("skipping: quark tests must be run as root")
+	}
+	dir := t.TempDir()
+	path := dir + "/file"
+	link := dir + "/link"
+	require.NoError(t, os.WriteFile(path, []byte("x"), 0644))
+	var st syscall.Stat_t
+	require.NoError(t, syscall.Stat(path, &st))
+
+	attr := DefaultQueueAttr()
+	attr.Flags |= QQ_FILE
+	attr.FileEvents = QQ_FE_LINK
+	queue, err := OpenQueue(attr)
+	require.NoError(t, err)
+	defer queue.Close()
+
+	require.NoError(t, os.Link(path, link))
+
+	var file *File
+	start := time.Now()
+	for file == nil && time.Since(start) < 5*time.Second {
+		qev, ok := queue.GetEvent()
+		if !ok {
+			queue.Block()
+			continue
+		}
+		if qev.File != nil && qev.File.OpMask == QUARK_FILE_OP_LINK &&
+			qev.File.Path == link {
+			file = qev.File
+		}
+	}
+	require.NotNil(t, file, "no link event")
+	require.Equal(t, path, file.OldPath)
+	require.Equal(t, st.Ino, file.Inode)
+}
+
 func testStats(t *testing.T, attr QueueAttr) {
 	queue, err := OpenQueue(attr)
 	require.NoError(t, err)

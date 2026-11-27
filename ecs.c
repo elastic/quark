@@ -170,6 +170,8 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 			strlcat(buf, "-written", sizeof(buf));
 		if (mask & QUARK_FILE_OP_MOVE)
 			strlcat(buf, "-renamed", sizeof(buf));
+		if (mask & QUARK_FILE_OP_LINK)
+			strlcat(buf, "-linked", sizeof(buf));
 		if (mask & QUARK_FILE_OP_REMOVE)
 			strlcat(buf, "-deleted", sizeof(buf));
 

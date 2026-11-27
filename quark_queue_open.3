@@ -153,7 +153,7 @@ decreases the more loaded it is.
 Details are described in
 .Xr quark 7 .
 .It Em file_events
-Which modify events the file events of
+Which modify and link events the file events of
 .Dv QQ_FILE
 collect, a bitmask of:
 .Bl -tag -width QQ_FE_TRUNCATE
@@ -196,6 +196,20 @@ makes, like a shared
 .Lk https://man7.org/linux/man-pages/man2/fallocate.2.html fallocate(2)
 or io_uring.
 The open that creates the file gives the create event only.
+.It Dv QQ_FE_LINK
+A hard link made by
+.Lk https://man7.org/linux/man-pages/man2/link.2.html link(2)
+or
+.Lk https://man7.org/linux/man-pages/man2/linkat.2.html linkat(2) ,
+also of a file opened with
+.Dv O_TMPFILE .
+The event has the operation
+.Dv QUARK_FILE_OP_LINK ,
+.Em path
+is the new name and
+.Em old_path
+the file that was linked.
+It never aggregates with other file events.
 .El
 .Pp
 .Xr quark_queue_default_attr 3
@@ -209,6 +223,17 @@ and
 There is no way to select no class at all.
 .Dv QQ_FE_ALL
 is all the classes there are.
+.Dv QQ_FE_DRIFT
+selects the file events for drift detection:
+.Dv QQ_FE_OPEN_WRITE
+instead of
+.Dv QQ_FE_WRITE ,
+plus
+.Dv QQ_FE_TRUNCATE ,
+.Dv QQ_FE_CHMOD ,
+.Dv QQ_FE_CHOWN
+and
+.Dv QQ_FE_LINK .
 Create, remove and move events are always collected.
 A class that is not selected does not load its probes, except
 .Dv QQ_FE_OPEN_WRITE ,

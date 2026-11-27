@@ -69,17 +69,21 @@ it is Elastic/ECS specific.
 .It Fl F
 Enable file events (experimental).
 .It Fl f Ar classes
-Enable file events, and collect only the modify events of
+Enable file events, and collect only the modify and link events of
 .Ar classes ,
 a comma separated list of:
 .Cm write ,
 .Cm truncate ,
 .Cm chmod ,
 .Cm chown ,
-.Cm open_write
-and
+.Cm open_write ,
+.Cm link ,
 .Cm default ,
-the first four.
+the first four, and
+.Cm drift ,
+all but
+.Cm write ,
+for drift detection.
 Create, remove and move events are always collected.
 See
 .Em file_events

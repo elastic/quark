@@ -106,12 +106,14 @@
   <dd>Enable file events (experimental).</dd>
   <dt id="f"><a class="permalink" href="#f"><code class="Fl">-f</code></a>
     <var class="Ar">classes</var></dt>
-  <dd>Enable file events, and collect only the modify events of
+  <dd>Enable file events, and collect only the modify and link events of
       <var class="Ar">classes</var>, a comma separated list of:
       <code class="Cm">write</code>, <code class="Cm">truncate</code>,
       <code class="Cm">chmod</code>, <code class="Cm">chown</code>,
-      <code class="Cm">open_write</code> and <code class="Cm">default</code>,
-      the first four. Create, remove and move events are always collected. See
+      <code class="Cm">open_write</code>, <code class="Cm">link</code>,
+      <code class="Cm">default</code>, the first four, and
+      <code class="Cm">drift</code>, all but <code class="Cm">write</code>, for
+      drift detection. Create, remove and move events are always collected. See
       <a class="permalink" href="#file_events"><i class="Em" id="file_events">file_events</i></a>
       in
     <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>.</dd>
