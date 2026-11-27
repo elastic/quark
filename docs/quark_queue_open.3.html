@@ -153,16 +153,19 @@
       <code class="Dv">QQ_FILE</code> collect, a bitmask of:
     <dl class="Bl-tag">
       <dt id="QQ_FE_WRITE"><a class="permalink" href="#QQ_FE_WRITE"><code class="Dv">QQ_FE_WRITE</code></a></dt>
-      <dd>Each successful <a class="Xr" href="write.2.html">write(2)</a>,
-          <a class="Xr" href="pwrite.2.html">pwrite(2)</a>,
-          <a class="Xr" href="writev.2.html">writev(2)</a> and
-          <a class="Xr" href="pwritev.2.html">pwritev(2)</a> to a regular file.
-          This is the most frequent file event.</dd>
+      <dd>Each
+          <a class="Lk" href="https://man7.org/linux/man-pages/man2/write.2.html">write(2)</a>,
+          <a class="Lk" href="https://man7.org/linux/man-pages/man2/pwrite.2.html">pwrite(2)</a>,
+          <a class="Lk" href="https://man7.org/linux/man-pages/man2/writev.2.html">writev(2)</a>
+          and
+          <a class="Lk" href="https://man7.org/linux/man-pages/man2/pwritev.2.html">pwritev(2)</a>
+          that writes at least one byte to a regular file. This is the most
+          frequent file event.</dd>
       <dt id="QQ_FE_TRUNCATE"><a class="permalink" href="#QQ_FE_TRUNCATE"><code class="Dv">QQ_FE_TRUNCATE</code></a></dt>
       <dd>A file truncated by
-          <a class="Xr" href="truncate.2.html">truncate(2)</a>,
-          <a class="Xr" href="ftruncate.2.html">ftruncate(2)</a> or by an open
-          with <code class="Dv">O_TRUNC</code>.</dd>
+          <a class="Lk" href="https://man7.org/linux/man-pages/man2/truncate.2.html">truncate(2)</a>,
+          <a class="Lk" href="https://man7.org/linux/man-pages/man2/ftruncate.2.html">ftruncate(2)</a>
+          or by an open with <code class="Dv">O_TRUNC</code>.</dd>
       <dt id="QQ_FE_CHMOD"><a class="permalink" href="#QQ_FE_CHMOD"><code class="Dv">QQ_FE_CHMOD</code></a></dt>
       <dd>A change of the file mode.</dd>
       <dt id="QQ_FE_CHOWN"><a class="permalink" href="#QQ_FE_CHOWN"><code class="Dv">QQ_FE_CHOWN</code></a></dt>
@@ -185,10 +188,12 @@
           or io_uring. The open that creates the file gives the create event
           only.</dd>
       <dt id="QQ_FE_LINK"><a class="permalink" href="#QQ_FE_LINK"><code class="Dv">QQ_FE_LINK</code></a></dt>
-      <dd>A hard link made by <a class="Xr" href="link.2.html">link(2)</a> or
-          <a class="Xr" href="linkat.2.html">linkat(2)</a>, also of a file
-          opened with <code class="Dv">O_TMPFILE</code>. The event has the
-          operation <code class="Dv">QUARK_FILE_OP_LINK</code>,
+      <dd>A hard link made by
+          <a class="Lk" href="https://man7.org/linux/man-pages/man2/link.2.html">link(2)</a>
+          or
+          <a class="Lk" href="https://man7.org/linux/man-pages/man2/linkat.2.html">linkat(2)</a>,
+          also of a file opened with <code class="Dv">O_TMPFILE</code>. The
+          event has the operation <code class="Dv">QUARK_FILE_OP_LINK</code>,
           <a class="permalink" href="#path"><i class="Em" id="path">path</i></a>
           is the new name and
           <a class="permalink" href="#old_path"><i class="Em" id="old_path">old_path</i></a>

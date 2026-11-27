@@ -1508,9 +1508,13 @@ int BPF_KPROBE(kprobe__do_truncate)
         goto out;
     }
 
-    // truncate(2) by path has no file, vfs_truncate() reports it.
-    if (filp == NULL)
+    // truncate(2) by path has no file, vfs_truncate() reports it. Delete
+    // the entry a missed kretprobe may have left, the kretprobe of this call
+    // would report that earlier file.
+    if (filp == NULL) {
+        ebpf_events_state__del(EBPF_EVENTS_STATE_TRUNCATE);
         goto out;
+    }
 
     state.truncate.path = path_from_file(filp);
     ebpf_events_state__set(EBPF_EVENTS_STATE_TRUNCATE, &state);
