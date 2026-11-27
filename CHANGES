@@ -317,3 +317,10 @@ Changes from 0.11 to 0.12
     like event times and the EBPF backend. It was CLOCK_MONOTONIC, so
     after a suspend ECS process.end read as earlier by the total time
     asleep since boot.
+  o quark_queue_attr{} got a file_events member, a mask of QQ_FE_*
+    that selects which modify events QQ_FILE collects: QQ_FE_WRITE,
+    QQ_FE_TRUNCATE, QQ_FE_CHMOD and QQ_FE_CHOWN. Zero, what
+    quark_queue_default_attr(3) sets, means QQ_FE_DEFAULT, all four, as
+    before. A class that is not selected does not load its probes, so
+    leaving out QQ_FE_WRITE removes the per write events. The Go
+    QueueAttr got FileEvents, and quark-mon(8) got -f.

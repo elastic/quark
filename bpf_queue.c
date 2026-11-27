@@ -1376,6 +1376,7 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 	}
 
 	if (qq->flags & QQ_FILE) {
+		int fe = qq->file_events;
 		int use_fsnotify =
 		    (btf_number_of_params_of_ptr(btf, "inode_operations", "atomic_open") == 6);
 		int unlink_renamed =
@@ -1405,34 +1406,30 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.fentry__mnt_want_write, 1);
 			bpf_program__set_autoload(p->progs.fentry__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.fentry__vfs_unlink, 1);
-			bpf_program__set_autoload(p->progs.fexit__chmod_common, 1);
-			bpf_program__set_autoload(p->progs.fexit__chown_common, 1);
 			if (filp_open_renamed)
 				bpf_program__set_autoload(p->progs.fexit__do_file_open, 1);
 			else
 				bpf_program__set_autoload(p->progs.fexit__do_filp_open, 1);
-			bpf_program__set_autoload(p->progs.fexit__do_truncate, 1);
 			bpf_program__set_autoload(p->progs.fexit__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.fexit__vfs_unlink, 1);
-			bpf_program__set_autoload(p->progs.fexit__vfs_write, 1);
-			bpf_program__set_autoload(p->progs.fexit__vfs_writev, 1);
+			/* File event classes */
+			if (fe & QQ_FE_CHMOD)
+				bpf_program__set_autoload(p->progs.fexit__chmod_common, 1);
+			if (fe & QQ_FE_CHOWN)
+				bpf_program__set_autoload(p->progs.fexit__chown_common, 1);
+			if (fe & QQ_FE_TRUNCATE)
+				bpf_program__set_autoload(p->progs.fexit__do_truncate, 1);
+			if (fe & QQ_FE_WRITE) {
+				bpf_program__set_autoload(p->progs.fexit__vfs_write, 1);
+				bpf_program__set_autoload(p->progs.fexit__vfs_writev, 1);
+			}
 		} else {
-			bpf_program__set_autoload(p->progs.kprobe__chmod_common, 1);
-			bpf_program__set_autoload(p->progs.kretprobe__chmod_common, 1);
-			bpf_program__set_autoload(p->progs.kprobe__chown_common, 1);
-			bpf_program__set_autoload(p->progs.kretprobe__chown_common, 1);
-			bpf_program__set_autoload(p->progs.kprobe__do_truncate, 1);
-			bpf_program__set_autoload(p->progs.kretprobe__do_truncate, 1);
 			if (use_fsnotify)
 				bpf_program__set_autoload(p->progs.kprobe__fsnotify, 1);
-			bpf_program__set_autoload(p->progs.kprobe__vfs_writev, 1);
-			bpf_program__set_autoload(p->progs.kretprobe__vfs_writev, 1);
 			bpf_program__set_autoload(p->progs.kprobe__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.kprobe__vfs_unlink, 1);
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_unlink, 1);
-			bpf_program__set_autoload(p->progs.kprobe__vfs_write, 1);
-			bpf_program__set_autoload(p->progs.kretprobe__vfs_write, 1);
 			if (renameat2_renamed) {
 				bpf_program__set_autoload(p->progs.kprobe__filename_renameat2, 1);
 				bpf_program__set_autoload(p->progs.kretprobe__filename_renameat2, 1);
@@ -1452,6 +1449,25 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 				bpf_program__set_autoload(p->progs.kretprobe__do_file_open, 1);
 			else
 				bpf_program__set_autoload(p->progs.kretprobe__do_filp_open, 1);
+			/* File event classes */
+			if (fe & QQ_FE_CHMOD) {
+				bpf_program__set_autoload(p->progs.kprobe__chmod_common, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__chmod_common, 1);
+			}
+			if (fe & QQ_FE_CHOWN) {
+				bpf_program__set_autoload(p->progs.kprobe__chown_common, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__chown_common, 1);
+			}
+			if (fe & QQ_FE_TRUNCATE) {
+				bpf_program__set_autoload(p->progs.kprobe__do_truncate, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__do_truncate, 1);
+			}
+			if (fe & QQ_FE_WRITE) {
+				bpf_program__set_autoload(p->progs.kprobe__vfs_write, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__vfs_write, 1);
+				bpf_program__set_autoload(p->progs.kprobe__vfs_writev, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__vfs_writev, 1);
+			}
 		}
 
 		/* vfs_unlink() */
@@ -1474,11 +1490,14 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 				goto fail;
 		}
 		/* do_truncate() */
-		if (relo_ret(btf, &p->rodata->ret__do_truncate__, "do_truncate") == -1)
-			goto fail;
-		if (relo_param(btf, &p->rodata->arg__do_truncate__filp__,
-		    "do_truncate", "filp") == -1)
-			goto fail;
+		if (fe & QQ_FE_TRUNCATE) {
+			if (relo_ret(btf, &p->rodata->ret__do_truncate__,
+			    "do_truncate") == -1)
+				goto fail;
+			if (relo_param(btf, &p->rodata->arg__do_truncate__filp__,
+			    "do_truncate", "filp") == -1)
+				goto fail;
+		}
 	}
 
 	if (qq->flags & QQ_DNS) {

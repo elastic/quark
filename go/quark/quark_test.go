@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -357,6 +358,30 @@ func TestRuleText(t *testing.T) {
 	attr.RuleText = "this is not a valid rule"
 	_, err = OpenQueue(attr)
 	require.ErrorContains(t, err, "can't parse ruleset")
+}
+
+func TestFileEvents(t *testing.T) {
+	// The EINVAL cases fail before anything is loaded, no root needed.
+	// File event classes need file events on
+	attr := DefaultQueueAttr()
+	require.Zero(t, attr.FileEvents)
+	attr.FileEvents = QQ_FE_WRITE
+	_, err := OpenQueue(attr)
+	require.ErrorIs(t, err, syscall.EINVAL)
+
+	// Unknown class
+	attr.Flags |= QQ_FILE
+	attr.FileEvents = ^QQ_FE_ALL
+	_, err = OpenQueue(attr)
+	require.ErrorIs(t, err, syscall.EINVAL)
+
+	if os.Geteuid() != 0 {
+		t.Skip("skipping the open, needs root")
+	}
+	attr.FileEvents = QQ_FE_CHMOD | QQ_FE_CHOWN
+	queue, err := OpenQueue(attr)
+	require.NoError(t, err)
+	queue.Close()
 }
 
 func testStats(t *testing.T, attr QueueAttr) {

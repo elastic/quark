@@ -81,6 +81,7 @@ struct quark_queue_attr {
 	int	 cache_grace_time;	/* in milliseconds */
 	int	 hold_time;		/* in milliseconds */
 	...
+	int	 file_events;
 };
 .Ed
 .Bl -tag -width "max_length"
@@ -151,6 +152,51 @@ decreases the more loaded it is.
 .Pp
 Details are described in
 .Xr quark 7 .
+.It Em file_events
+Which modify events the file events of
+.Dv QQ_FILE
+collect, a bitmask of:
+.Bl -tag -width QQ_FE_TRUNCATE
+.It Dv QQ_FE_WRITE
+Each successful
+.Xr write 2 ,
+.Xr pwrite 2 ,
+.Xr writev 2
+and
+.Xr pwritev 2
+to a regular file.
+This is the most frequent file event.
+.It Dv QQ_FE_TRUNCATE
+A file truncated by
+.Xr ftruncate 2
+or by an open with
+.Dv O_TRUNC .
+.It Dv QQ_FE_CHMOD
+A change of the file mode.
+.It Dv QQ_FE_CHOWN
+A change of the file owner or group.
+.El
+.Pp
+.Xr quark_queue_default_attr 3
+sets it to zero, which means
+.Dv QQ_FE_DEFAULT :
+all of the above.
+There is no way to select no class at all.
+.Dv QQ_FE_ALL
+is all the classes there are, and may grow beyond
+.Dv QQ_FE_DEFAULT .
+Create, remove and move events are always collected.
+A class that is not selected does not load its probes.
+.Nm
+fails with
+.Er EINVAL
+if
+.Em file_events
+has an unknown bit, or if it is not zero and
+.Dv QQ_FILE
+or
+.Dv QQ_EBPF
+is not set: the other backends have no file events.
 .El
 .Sh RETURN VALUES
 Zero on success, -1 otherwise and

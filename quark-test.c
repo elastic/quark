@@ -1229,6 +1229,7 @@ t_probe(const struct test *t, struct quark_queue_attr *qa)
 /*
  * Open a queue with all the flags that select BPF programs, so that all the
  * programs load. No other test sets QQ_PTRACE, QQ_MODULE_LOAD or QQ_GETPID.
+ * QQ_FE_ALL loads the programs of every file event class.
  */
 static int
 t_probe_all(const struct test *t, struct quark_queue_attr *qa)
@@ -1237,6 +1238,7 @@ t_probe_all(const struct test *t, struct quark_queue_attr *qa)
 
 	qa->flags |= QQ_SOCK_CONN | QQ_DNS | QQ_FILE | QQ_SHM | QQ_TTY |
 	    QQ_PTRACE | QQ_MODULE_LOAD | QQ_GETPID | QQ_MPROTECT;
+	qa->file_events = QQ_FE_ALL;
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "%s: quark_queue_open", t->name);
 	quark_queue_close(&qq);
@@ -2296,6 +2298,164 @@ t_file_rename(const struct test *t, struct quark_queue_attr *qa)
 		err(1, "unlink");
 
 	quark_queue_close(&qq);
+
+	return (0);
+}
+
+#define FE_SAW_WRITE	(1 << 0)
+#define FE_SAW_TRUNCATE	(1 << 1)
+#define FE_SAW_CHMOD	(1 << 2)
+#define FE_SAW_CHOWN	(1 << 3)
+#define FE_SAW_CREATE	(1 << 4)
+
+/*
+ * Create a file, run one write, writev, truncate, chmod and chown on it, then
+ * remove it. Return which operations gave an event, as a mask of FE_SAW_*.
+ * With QQ_MIN_AGG every probe event is a quark event of its own, and the size
+ * tells the writes (one and two bytes) from the truncate (zero bytes).
+ */
+static int
+file_events_mask_run(struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_event	*qev;
+	const struct quark_file		*qf;
+	struct stat			 st;
+	struct iovec			 iov;
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	int				 fd, saw;
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	assert(write(fd, "1", 1) == 1);
+	iov.iov_base = "2";
+	iov.iov_len = 1;
+	assert(writev(fd, &iov, 1) == 1);
+	if (ftruncate(fd, 0) == -1)
+		err(1, "ftruncate");
+	if (fchmod(fd, 0640) == -1)
+		err(1, "fchmod");
+	if (fchown(fd, getuid(), getgid()) == -1)
+		err(1, "fchown");
+	close(fd);
+	if (unlink(path) == -1)
+		err(1, "unlink");
+
+	saw = 0;
+	for (;;) {
+		qev = drain_for_pid(&qq, getpid());
+		if (qev->events != QUARK_EV_FILE)
+			continue;
+		qf = qev->file;
+		assert(qf != NULL);
+		if (qf->inode != st.st_ino)
+			continue;
+		if (qf->op_mask == QUARK_FILE_OP_REMOVE)
+			break;
+		if (qf->op_mask == QUARK_FILE_OP_CREATE) {
+			saw |= FE_SAW_CREATE;
+			continue;
+		}
+		if (qf->op_mask != QUARK_FILE_OP_MODIFY)
+			errx(1, "unexpected file op_mask 0x%x", qf->op_mask);
+		switch (qf->change_mask) {
+		case QUARK_FILE_CH_CONTENT:
+			saw |= qf->size > 0 ? FE_SAW_WRITE : FE_SAW_TRUNCATE;
+			break;
+		case QUARK_FILE_CH_PERMS:
+			saw |= FE_SAW_CHMOD;
+			break;
+		case QUARK_FILE_CH_OWNER:
+			saw |= FE_SAW_CHOWN;
+			break;
+		default:
+			errx(1, "unexpected file change_mask 0x%x",
+			    qf->change_mask);
+		}
+	}
+
+	quark_queue_close(&qq);
+
+	return (saw);
+}
+
+/*
+ * Each file event class alone collects only its own modify events, and
+ * file_events is rejected when it can't be honoured.
+ */
+static int
+t_file_events_mask(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue_attr	 bad;
+	struct quark_queue	 qq;
+	int			 i, kprobe, saw;
+	struct {
+		int	fe;
+		int	want;
+	} cases[] = {
+		{ 0,			FE_SAW_WRITE | FE_SAW_TRUNCATE |
+					FE_SAW_CHMOD | FE_SAW_CHOWN },
+		{ QQ_FE_DEFAULT,	FE_SAW_WRITE | FE_SAW_TRUNCATE |
+					FE_SAW_CHMOD | FE_SAW_CHOWN },
+		{ QQ_FE_WRITE,		FE_SAW_WRITE },
+		{ QQ_FE_TRUNCATE,	FE_SAW_TRUNCATE },
+		{ QQ_FE_CHMOD,		FE_SAW_CHMOD },
+		{ QQ_FE_CHOWN,		FE_SAW_CHOWN },
+		{ QQ_FE_TRUNCATE | QQ_FE_CHMOD | QQ_FE_CHOWN,
+					FE_SAW_TRUNCATE | FE_SAW_CHMOD |
+					FE_SAW_CHOWN },
+	};
+
+	qa->flags |= QQ_FILE;
+
+	/* Unknown class */
+	bad = *qa;
+	bad.file_events = ~QQ_FE_ALL;
+	if (quark_queue_open(&qq, &bad) != -1 || errno != EINVAL)
+		errx(1, "unknown file_events class not rejected");
+	/* Classes without file events */
+	bad = *qa;
+	bad.flags &= ~QQ_FILE;
+	bad.file_events = QQ_FE_WRITE;
+	if (quark_queue_open(&qq, &bad) != -1 || errno != EINVAL)
+		errx(1, "file_events without QQ_FILE not rejected");
+	/* Classes on a backend without file events */
+	bad = *qa;
+	bad.flags &= ~QQ_EBPF;
+	bad.flags |= QQ_KPROBE;
+	bad.file_events = QQ_FE_WRITE;
+	if (quark_queue_open(&qq, &bad) != -1 || errno != EINVAL)
+		errx(1, "file_events with QQ_KPROBE not rejected");
+
+	/*
+	 * Run the cases with fentry, then with the kprobe fallback, unless
+	 * QUARK_BPF_KPROBE already selects it. Create and remove are always
+	 * collected.
+	 */
+	qa->flags |= QQ_MIN_AGG;
+	for (kprobe = 0; kprobe < 2; kprobe++) {
+		if (kprobe) {
+			if (getenv("QUARK_BPF_KPROBE") != NULL)
+				break;
+			if (setenv("QUARK_BPF_KPROBE", "1", 1) == -1)
+				err(1, "setenv");
+		}
+		for (i = 0; i < (int)nitems(cases); i++) {
+			qa->file_events = cases[i].fe;
+			saw = file_events_mask_run(qa);
+			if (saw != (cases[i].want | FE_SAW_CREATE))
+				errx(1, "file_events 0x%x%s: saw 0x%x, want 0x%x",
+				    cases[i].fe, kprobe ? " (kprobe)" : "", saw,
+				    cases[i].want | FE_SAW_CREATE);
+		}
+		if (kprobe && unsetenv("QUARK_BPF_KPROBE") == -1)
+			err(1, "unsetenv");
+	}
 
 	return (0);
 }
@@ -7626,6 +7786,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_hardlink),
 	T_EBPF(t_file_bad_unlink_rename),
 	T_EBPF(t_file_rename),
+	T_EBPF(t_file_events_mask),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),
