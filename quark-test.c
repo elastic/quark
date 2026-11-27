@@ -1474,7 +1474,7 @@ assert_ecs_entity_id(const cJSON *obj, const struct quark_process *qp)
 
 	pid = cJSON_GetObjectItemCaseSensitive(obj, "pid");
 	entity_id = cJSON_GetObjectItemCaseSensitive(obj, "entity_id");
-	assert(cJSON_IsNumber(pid) && (u32)pid->valueint == qp->pid);
+	assert(cJSON_IsNumber(pid) && pid->valuedouble == qp->pid);
 	assert(cJSON_IsString(entity_id) &&
 	    !strcmp(entity_id->valuestring, qp->proc_entity_id));
 }
