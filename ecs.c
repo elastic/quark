@@ -308,18 +308,6 @@ ecs_entry_leader_type(int type)
 	}
 }
 
-/*
- * ECS ids are keywords, send them as strings.
- */
-static void
-ecs_id(struct hanson *h, const char *k, u32 id, int *first)
-{
-	char	buf[16];
-
-	snprintf(buf, sizeof(buf), "%u", id);
-	hanson_add_key_value(h, k, buf, first);
-}
-
 static int
 ecs_process_user(struct quark_queue *qq, struct hanson *h,
     const struct quark_process *qp, int *first)
@@ -371,7 +359,8 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h,
 	{
 		int	user_first = 1;
 
-		ecs_id(h, "id", qp->proc_euid, &user_first);
+		hanson_add_key_value_int(h, "id", qp->proc_euid,
+		    &user_first);
 		if (e_pw != NULL)
 			hanson_add_key_value(h, "name", e_pw->name,
 			    &user_first);
@@ -383,7 +372,8 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h,
 	{
 		int	group_first = 1;
 
-		ecs_id(h, "id", qp->proc_egid, &group_first);
+		hanson_add_key_value_int(h, "id", qp->proc_egid,
+		    &group_first);
 		if (e_gr != NULL)
 			hanson_add_key_value(h, "name", e_gr->name,
 			    &group_first);
@@ -395,7 +385,8 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h,
 	{
 		int	real_first = 1;
 
-		ecs_id(h, "id", qp->proc_uid, &real_first);
+		hanson_add_key_value_int(h, "id", qp->proc_uid,
+		    &real_first);
 		if (r_pw != NULL)
 			hanson_add_key_value(h, "name", r_pw->name,
 			    &real_first);
@@ -407,7 +398,8 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h,
 	{
 		int	real_group_first = 1;
 
-		ecs_id(h, "id", qp->proc_gid, &real_group_first);
+		hanson_add_key_value_int(h, "id", qp->proc_gid,
+		    &real_group_first);
 		if (r_gr != NULL)
 			hanson_add_key_value(h, "name", r_gr->name,
 			    &real_group_first);
@@ -419,7 +411,8 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h,
 	{
 		int	saved_first = 1;
 
-		ecs_id(h, "id", qp->proc_suid, &saved_first);
+		hanson_add_key_value_int(h, "id", qp->proc_suid,
+		    &saved_first);
 		if (s_pw != NULL)
 			hanson_add_key_value(h, "name", s_pw->name,
 			    &saved_first);
@@ -431,7 +424,8 @@ ecs_process_user(struct quark_queue *qq, struct hanson *h,
 	{
 		int	saved_group_first = 1;
 
-		ecs_id(h, "id", qp->proc_sgid, &saved_group_first);
+		hanson_add_key_value_int(h, "id", qp->proc_sgid,
+		    &saved_group_first);
 		if (s_gr != NULL)
 			hanson_add_key_value(h, "name", s_gr->name,
 			    &saved_group_first);

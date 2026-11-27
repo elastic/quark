@@ -328,8 +328,3 @@ Changes from 0.11 to 0.12
     The same applies under process.parent, process.group_leader,
     process.session_leader and process.entry_leader, so
     process.parent.user.group.id is now process.parent.group.id.
-  o ECS user and group ids are now JSON strings instead of
-    numbers, as ECS defines them as keywords: process.user.id is "0", not
-    0. This covers {user,group,real_user,real_group,saved_user,
-    saved_group}.id under process, process.parent and the process leaders.
-    Consumers that decode them as numbers must accept a string.
