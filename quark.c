@@ -515,7 +515,14 @@ event_storage_clear(struct quark_queue *qq)
 static struct gc_queue *
 gc_queue(struct quark_queue *qq, enum gc_type type)
 {
-	return (type == GC_PROCESS ? &qq->process_gc : &qq->event_gc);
+	switch (type) {
+	case GC_PROCESS:
+		return (&qq->process_gc);
+	case GC_RELEASED:
+		return (&qq->release_gc);
+	default:
+		return (&qq->event_gc);
+	}
 }
 
 static void
@@ -562,6 +569,13 @@ gc_collect(struct quark_queue *qq)
 		    (min != NULL && min->time <= qp->gc_until))
 			break;
 		/* A retained process counts when freed */
+		n += process_collect(qq, qp);
+	}
+	/* Past their grace time already, these only wait for queued events */
+	while ((gc = TAILQ_FIRST(&qq->release_gc)) != NULL) {
+		qp = (struct quark_process *)gc;
+		if (min != NULL && min->time <= qp->gc_until)
+			break;
 		n += process_collect(qq, qp);
 	}
 	while ((gc = TAILQ_FIRST(&qq->event_gc)) != NULL) {
@@ -686,33 +700,31 @@ process_unlink_container(struct quark_process *qp)
 
 /*
  * Queue an exited process for collection, with QQ_RELATIONS events queued up
- * to its exit might still relate to it by pid, with all, every event queued
- * now.
+ * to its exit might still relate to it by pid.
  */
 static void
-process_gc_mark(struct quark_queue *qq, struct quark_process *qp, int all)
+process_gc_mark(struct quark_queue *qq, struct quark_process *qp)
 {
-	struct raw_event	*max;
-
 	qp->gc_until = (qq->flags & QQ_RELATIONS) ? qp->exit_time_event : 0;
-	if (all && (max = RB_MAX(raw_event_by_time,
-	    &qq->raw_event_by_time)) != NULL && max->time > qp->gc_until)
-		qp->gc_until = max->time;
 	gc_mark(qq, &qp->gc, GC_PROCESS);
 }
 
 /*
  * The last relation to a retained process frees it, unless queued events might
  * still relate to it, as a fork from before a setsid aggregated ahead of it,
- * then gc collects it, as it does if it's queued for gc already.
+ * then gc collects it once they're gone, without another grace time.
  */
 static void
 process_unref(struct quark_queue *qq, struct quark_process *qp)
 {
+	struct raw_event	*max;
+
 	if (--qp->refcnt != 0 || !qp->retained)
 		return;
-	if (!RB_EMPTY(&qq->raw_event_by_time) || qp->gc.gc_time != 0) {
-		process_gc_mark(qq, qp, 1);
+	if ((max = RB_MAX(raw_event_by_time,
+	    &qq->raw_event_by_time)) != NULL) {
+		qp->gc_until = max->time;
+		gc_mark(qq, &qp->gc, GC_RELEASED);
 		return;
 	}
 	qq->stats.garbage_collections++;
@@ -3296,7 +3308,7 @@ raw_event_process1(struct quark_queue *qq, struct raw_event *src,
 	 */
 	if (src->type == RAW_EXIT_THREAD &&
 	    (src->tid == 0 || src->tid == src->pid))
-		process_gc_mark(qq, qp, 0);
+		process_gc_mark(qq, qp);
 }
 
 static struct quark_event *
@@ -4906,6 +4918,7 @@ quark_queue_init_trees(struct quark_queue *qq)
 	RB_INIT(&qq->pod_by_uid);
 	TAILQ_INIT(&qq->event_gc);
 	TAILQ_INIT(&qq->process_gc);
+	TAILQ_INIT(&qq->release_gc);
 }
 
 static int
@@ -5223,6 +5236,8 @@ quark_queue_close(struct quark_queue *qq)
 	while ((qp = RB_ROOT(&qq->process_by_pid)) != NULL)
 		process_drop(qq, qp);
 	while ((gc = TAILQ_FIRST(&qq->process_gc)) != NULL)
+		process_drop(qq, (struct quark_process *)gc);
+	while ((gc = TAILQ_FIRST(&qq->release_gc)) != NULL)
 		process_drop(qq, (struct quark_process *)gc);
 	/* Clean up all cached sockets */
 	while ((qsk = RB_ROOT(&qq->socket_by_src_dst)) != NULL)

@@ -647,6 +647,7 @@ enum {
 enum gc_type {
 	GC_INVALID,
 	GC_PROCESS,
+	GC_RELEASED,
 	GC_SOCKET,
 	GC_POD,
 	GC_CONTAINER,
@@ -1016,6 +1017,7 @@ struct quark_queue {
 	struct process_by_pid		 process_by_pid;
 	struct gc_queue			 event_gc;
 	struct gc_queue			 process_gc;	/* in exit order */
+	struct gc_queue			 release_gc;	/* retained, nothing points to */
 	struct socket_by_src_dst	 socket_by_src_dst;
 	struct passwd_by_uid		 passwd_by_uid;
 	struct group_by_gid		 group_by_gid;

@@ -5199,7 +5199,7 @@ t_relations_bound(const struct test *t, struct quark_queue_attr *qa)
 /*
  * A setsid aggregated into an earlier event of the same process releases the
  * old session leader ahead of a fork that still relates to it, it's kept until
- * queued events are gone.
+ * queued events are gone, without another grace time.
  */
 static int
 t_relations_release(const struct test *t, struct quark_queue_attr *qa)
@@ -5240,6 +5240,21 @@ t_relations_release(const struct test *t, struct quark_queue_attr *qa)
 	assert(quark_queue_get_event(&qq) == NULL);
 	assert(p->retained);
 	assert(p->refcnt == 2);
+
+	/* d calls setsid ahead of another fork, p waits for it, not a grace */
+	qq.cache_grace_time = UINT64_MAX;
+	assert(raw_event_insert(&qq, test_ids_raw(RAW_ID_CHANGE, 103, 102, 103,
+	    103, QUARK_ID_CHANGE_SETSID)) == 0);
+	assert(raw_event_insert(&qq,
+	    test_ids_raw(RAW_WAKE_UP_NEW_TASK, 104, 1, 104, 104, 0)) == 0);
+	assert(quark_queue_get_event(&qq)->process == d);
+	assert(d->session_leader == d);
+	assert(p->refcnt == 0);
+	/* p and 101, the parent of c */
+	assert(qq.stats.retained_processes == 2);
+	assert(quark_queue_get_event(&qq)->process->pid == 104);
+	assert(quark_queue_get_event(&qq) == NULL);
+	assert(qq.stats.retained_processes == 1);
 
 	quark_queue_close(&qq);
 
