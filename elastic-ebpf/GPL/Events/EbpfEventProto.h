@@ -219,6 +219,7 @@ enum ebpf_file_change_type {
     EBPF_FILE_CHANGE_TYPE_PERMISSIONS = 2,
     EBPF_FILE_CHANGE_TYPE_OWNER       = 3,
     EBPF_FILE_CHANGE_TYPE_XATTRS      = 4,
+    EBPF_FILE_CHANGE_TYPE_OPEN_WRITE  = 5, // regular file opened for write
 };
 
 struct ebpf_file_modify_event {

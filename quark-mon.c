@@ -147,6 +147,7 @@ parse_file_events(const char *arg)
 		{ "truncate",	QQ_FE_TRUNCATE },
 		{ "chmod",	QQ_FE_CHMOD },
 		{ "chown",	QQ_FE_CHOWN },
+		{ "open_write",	QQ_FE_OPEN_WRITE },
 	};
 	char	*list, *name, *last;
 	int	 fe, i;

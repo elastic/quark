@@ -2214,6 +2214,44 @@ file_op_mask_str(u32 op_mask, char *buf, size_t len)
 }
 
 static void
+file_change_mask_str(u32 change_mask, char *buf, size_t len)
+{
+	int		 ch, first;
+	const char	*s;
+
+	*buf = 0;
+	first = 1;
+	while ((ch = ffs(change_mask)) != 0) {
+		ch = (1 << (ch - 1));
+		switch (ch) {
+		case QUARK_FILE_CH_CONTENT:
+			s = "CONTENT";
+			break;
+		case QUARK_FILE_CH_PERMS:
+			s = "PERMS";
+			break;
+		case QUARK_FILE_CH_OWNER:
+			s = "OWNER";
+			break;
+		case QUARK_FILE_CH_XATTRS:
+			s = "XATTRS";
+			break;
+		case QUARK_FILE_CH_OPEN_WRITE:
+			s = "OPEN_WRITE";
+			break;
+		default:
+			s = "INVALID";
+			break;
+		}
+		if (!first)
+			(void)strlcat(buf, "|", len);
+		first = 0;
+		(void)strlcat(buf, s, len);
+		change_mask &= ~ch;
+	}
+}
+
+static void
 module_taints_str(u64 taints, char *buf, size_t len)
 {
 	/* One letter per taint bit, see struct taint_flag in kernel/panic.c */
@@ -2365,6 +2403,11 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 
 		file_op_mask_str(file->op_mask, buf, sizeof(buf));
 		PF(fl, "op=%s\n", buf);
+		if (file->change_mask != 0) {
+			file_change_mask_str(file->change_mask, buf,
+			    sizeof(buf));
+			PF(fl, "change=%s\n", buf);
+		}
 		if (file->path != NULL)
 			PF(fl, "path=%s\n", file->path);
 		if (file->old_path != NULL)
