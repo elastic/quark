@@ -5197,6 +5197,75 @@ t_ecs_date(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * ECS puts the effective ids in process.{user,group} and the real and saved
+ * ones next to them, not inside process.user. The same goes for the parent
+ * and the leaders. Ids are keywords, so strings.
+ */
+static int
+t_ecs_process_user(const struct test *t, struct quark_queue_attr *qa)
+{
+	const char		*keys[] = {
+		"user", "real_user", "saved_user",
+		"group", "real_group", "saved_group"
+	};
+	const char		*nested[] = {
+		"parent", "group_leader", "session_leader", "entry_leader"
+	};
+	struct quark_queue	 qq;
+	struct quark_process	*qps[1 + nitems(nested)];
+	struct quark_event	 event;
+	cJSON			*json, *proc, *id;
+	char			 want[16], *ecs = NULL;
+	size_t			 ecs_len = 0, i, j;
+
+	quark_queue_init_bare(&qq);
+	qq.flags |= QQ_ENTRY_LEADER;
+	/* qps[0] is the process, the others its parent and leaders */
+	for (i = 0; i < nitems(qps); i++) {
+		qps[i] = test_process_event(&qq, 100 + i, "/");
+		qps[i]->flags |= QUARK_F_PROC;
+		/* Distinct ids, i * 10 + the index in keys[] */
+		qps[i]->proc_euid = i * 10;
+		qps[i]->proc_uid = i * 10 + 1;
+		qps[i]->proc_suid = i * 10 + 2;
+		qps[i]->proc_egid = i * 10 + 3;
+		qps[i]->proc_gid = i * 10 + 4;
+		qps[i]->proc_sgid = i * 10 + 5;
+	}
+	qps[0]->proc_ppid = qps[1]->pid;
+	qps[0]->proc_pgid = qps[2]->pid;
+	qps[0]->proc_sid = qps[3]->pid;
+	qps[0]->proc_entry_leader = qps[4]->pid;
+
+	bzero(&event, sizeof(event));
+	event.process = qps[0];
+	assert(quark_event_to_ecs(&qq, &event, &ecs, &ecs_len) == 0);
+	json = cJSON_Parse(ecs);
+	assert(json != NULL);
+	for (i = 0; i < nitems(qps); i++) {
+		proc = cJSON_GetObjectItemCaseSensitive(json, "process");
+		if (i > 0)
+			proc = cJSON_GetObjectItemCaseSensitive(proc,
+			    nested[i - 1]);
+		for (j = 0; j < nitems(keys); j++) {
+			id = cJSON_GetObjectItemCaseSensitive(
+			    cJSON_GetObjectItemCaseSensitive(proc, keys[j]),
+			    "id");
+			snprintf(want, sizeof(want), "%zu", i * 10 + j);
+			if (!cJSON_IsString(id) || strcmp(id->valuestring, want))
+				errx(1, "%s %s.id is not \"%s\" in:\n%s",
+				    i > 0 ? nested[i - 1] : "process",
+				    keys[j], want, ecs);
+		}
+	}
+	cJSON_Delete(json);
+	free(ecs);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -7683,6 +7752,7 @@ struct test all_tests[] = {
 	T(t_hanson),
 	T(t_hanson_escape),
 	T(t_ecs_date),
+	T(t_ecs_process_user),
 	T_EBPF(t_rule_path),
 	T_EBPF(t_rule_exec_change),
 	T_EBPF(t_rule_path2),

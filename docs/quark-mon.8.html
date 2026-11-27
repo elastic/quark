@@ -91,7 +91,20 @@
   <dd>Drop priviledges to nobody and chroot to /var/empty, useful to show how
       quark can run without priviledges.</dd>
   <dt id="E"><a class="permalink" href="#E"><code class="Fl">-E</code></a></dt>
-  <dd>Output ECS JSON to stdout (experimental).</dd>
+  <dd>Output ECS JSON to stdout (experimental).
+      <a class="permalink" href="#process.user"><i class="Em" id="process.user">process.user</i></a>
+      and
+      <a class="permalink" href="#process.group"><i class="Em" id="process.group">process.group</i></a>
+      hold the effective ids, the real and saved ones are in
+      <a class="permalink" href="#process.real_user"><i class="Em" id="process.real_user">process.real_user</i></a>,
+      <a class="permalink" href="#process.real_group"><i class="Em" id="process.real_group">process.real_group</i></a>,
+      <a class="permalink" href="#process.saved_user"><i class="Em" id="process.saved_user">process.saved_user</i></a>
+      and
+      <a class="permalink" href="#process.saved_group"><i class="Em" id="process.saved_group">process.saved_group</i></a>.
+      The same goes for
+      <a class="permalink" href="#process.parent"><i class="Em" id="process.parent">process.parent</i></a>
+      and the leaders of <code class="Fl">-e</code>. User and group ids are
+      strings, as ECS defines them as keywords.</dd>
   <dt id="e"><a class="permalink" href="#e"><code class="Fl">-e</code></a></dt>
   <dd>Include
       <a class="permalink" href="#proc_entry_leader"><i class="Em" id="proc_entry_leader">proc_entry_leader</i></a>
@@ -283,7 +296,7 @@ drop on any</pre>
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">October 30, 2026</td>
+    <td class="foot-date">November 26, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
