@@ -1404,8 +1404,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 				bpf_program__set_autoload(p->progs.fentry__do_unlinkat, 1);
 				bpf_program__set_autoload(p->progs.fexit__do_unlinkat, 1);
 			}
-			if (use_fsnotify)
+			if (use_fsnotify) {
 				bpf_program__set_autoload(p->progs.fentry__fsnotify, 1);
+				bpf_program__set_autoload(p->progs.fentry__do_filp_open, 1);
+			}
 			bpf_program__set_autoload(p->progs.fentry__mnt_want_write, 1);
 			bpf_program__set_autoload(p->progs.fentry__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.fentry__vfs_unlink, 1);
@@ -1426,11 +1428,16 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 				bpf_program__set_autoload(p->progs.fexit__vfs_write, 1);
 				bpf_program__set_autoload(p->progs.fexit__vfs_writev, 1);
 			}
-			if (fe & QQ_FE_OPEN_WRITE)
+			if (fe & QQ_FE_OPEN_WRITE) {
 				bpf_program__set_autoload(p->progs.fexit__do_file_open_root, 1);
+				if (use_fsnotify)
+					bpf_program__set_autoload(p->progs.fentry__do_file_open_root, 1);
+			}
 		} else {
-			if (use_fsnotify)
+			if (use_fsnotify) {
 				bpf_program__set_autoload(p->progs.kprobe__fsnotify, 1);
+				bpf_program__set_autoload(p->progs.kprobe__do_filp_open, 1);
+			}
 			bpf_program__set_autoload(p->progs.kprobe__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.kretprobe__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.kprobe__vfs_unlink, 1);
@@ -1473,8 +1480,11 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 				bpf_program__set_autoload(p->progs.kprobe__vfs_writev, 1);
 				bpf_program__set_autoload(p->progs.kretprobe__vfs_writev, 1);
 			}
-			if (fe & QQ_FE_OPEN_WRITE)
+			if (fe & QQ_FE_OPEN_WRITE) {
 				bpf_program__set_autoload(p->progs.kretprobe__do_file_open_root, 1);
+				if (use_fsnotify)
+					bpf_program__set_autoload(p->progs.kprobe__do_file_open_root, 1);
+			}
 		}
 		/*
 		 * Open for write shares the do_filp_open() probe with file

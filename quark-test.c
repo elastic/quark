@@ -2497,11 +2497,16 @@ static void
 file_open_write_run(struct quark_queue_attr *qa, int fe)
 {
 	struct quark_queue	 qq;
-	struct stat		 st, new_st;
+	struct stat		 st, new_st, memfd_st;
 	char			 dir[] = "/tmp/quark-test.XXXXXX";
 	char			 path[PATH_MAX], fifo[PATH_MAX], sub[PATH_MAX];
 	char			 new_path[PATH_MAX], sub2[PATH_MAX], link_path[PATH_MAX];
+	char			 link2_path[PATH_MAX], memfd_path[PATH_MAX];
 	int			 fd, i, nopen;
+#ifndef NO_MEMFD
+	char			 proc_path[64];
+	int			 mfd;
+#endif
 	int			 wflags[] = {
 		O_WRONLY,
 		O_RDWR,
@@ -2518,13 +2523,23 @@ file_open_write_run(struct quark_queue_attr *qa, int fe)
 	    (int)sizeof(new_path) ||
 	    snprintf(sub2, sizeof(sub2), "%s/dir2", dir) >= (int)sizeof(sub2) ||
 	    snprintf(link_path, sizeof(link_path), "%s/link", dir) >=
-	    (int)sizeof(link_path))
+	    (int)sizeof(link_path) ||
+	    snprintf(link2_path, sizeof(link2_path), "%s/link2", dir) >=
+	    (int)sizeof(link2_path) ||
+	    snprintf(memfd_path, sizeof(memfd_path), "%s/memfd:file", dir) >=
+	    (int)sizeof(memfd_path))
 		errx(1, "path too long");
 
 	/* Make what exists before the queue is opened */
 	if ((fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
 		err(1, "open %s", path);
 	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+	/* A regular file named like a memfd */
+	if ((fd = open(memfd_path, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
+		err(1, "open %s", memfd_path);
+	if (fstat(fd, &memfd_st) == -1)
 		err(1, "fstat");
 	close(fd);
 	if (mkfifo(fifo, 0644) == -1)
@@ -2559,6 +2574,29 @@ file_open_write_run(struct quark_queue_attr *qa, int fe)
 		err(1, "open %s", path);
 	close(fd);
 	nopen++;
+	/*
+	 * The open of the new name right after link(2): on 4.18 the inode and
+	 * the name both match the FS_CREATE of the link.
+	 */
+	if (link(path, link2_path) == -1)
+		err(1, "link");
+	if ((fd = open(link2_path, O_WRONLY)) == -1)
+		err(1, "open %s", link2_path);
+	close(fd);
+	/* A regular file named memfd:file is not a memfd */
+	if ((fd = open(memfd_path, O_WRONLY)) == -1)
+		err(1, "open %s", memfd_path);
+	close(fd);
+#ifndef NO_MEMFD
+	/* A memfd reopened for write is not a regular file open */
+	if ((mfd = memfd_create("quark-test-open-write", 0)) == -1)
+		err(1, "memfd_create");
+	(void)snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", mfd);
+	if ((fd = open(proc_path, O_RDWR)) == -1)
+		err(1, "open %s", proc_path);
+	close(fd);
+	close(mfd);
+#endif
 	/* Read only */
 	if ((fd = open(path, O_RDONLY)) == -1)
 		err(1, "open %s", path);
@@ -2589,6 +2627,10 @@ file_open_write_run(struct quark_queue_attr *qa, int fe)
 		for (i = 0; i < nopen; i++)
 			drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
 			    QUARK_FILE_CH_OPEN_WRITE, path);
+		drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+		    QUARK_FILE_CH_OPEN_WRITE, link2_path);
+		drain_file_event(&qq, memfd_st.st_ino, QUARK_FILE_OP_MODIFY,
+		    QUARK_FILE_CH_OPEN_WRITE, memfd_path);
 	}
 	drain_file_event(&qq, new_st.st_ino, QUARK_FILE_OP_CREATE, 0, new_path);
 	drain_file_event(&qq, new_st.st_ino, QUARK_FILE_OP_REMOVE, 0, new_path);
@@ -2596,6 +2638,7 @@ file_open_write_run(struct quark_queue_attr *qa, int fe)
 	quark_queue_close(&qq);
 
 	if (unlink(path) == -1 || unlink(link_path) == -1 ||
+	    unlink(link2_path) == -1 || unlink(memfd_path) == -1 ||
 	    unlink(fifo) == -1 || rmdir(sub) == -1 || rmdir(sub2) == -1 ||
 	    rmdir(dir) == -1)
 		err(1, "cleanup");
@@ -2604,8 +2647,9 @@ file_open_write_run(struct quark_queue_attr *qa, int fe)
 /*
  * An open of an existing regular file for write gives MODIFY with
  * QUARK_FILE_CH_OPEN_WRITE, and only with QQ_FE_OPEN_WRITE, also after a
- * mkdir(2) or link(2) in the same thread. A read only open, an open that
- * creates the file, a directory and a FIFO give none.
+ * mkdir(2) or link(2) in the same thread, of the new name of a link, and of a
+ * file named memfd:file. A read only open, an open that creates the file, a
+ * memfd, a directory and a FIFO give none.
  */
 static int
 t_file_open_write(const struct test *t, struct quark_queue_attr *qa)
@@ -2935,18 +2979,65 @@ t_bypass(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Bypass delivers the raw events of the file event classes: an open for write
+ * of an existing file is an EBPF_EVENT_FILE_MODIFY with
+ * EBPF_FILE_CHANGE_TYPE_OPEN_WRITE.
+ */
 static int
 t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
-	struct quark_queue		 qq;
+	struct quark_queue			 qq;
+	const struct quark_event		*qev;
+	const struct ebpf_event_header		*eh;
+	const struct ebpf_file_modify_event	*fm;
+	struct timespec				 start, now;
+	struct stat				 st;
+	char					 path[] = "/tmp/quark-test.XXXXXX";
+	int					 fd, found;
 
 	qa->flags &= ~QQ_ENTRY_LEADER;
 	qa->flags |= QQ_BYPASS | QQ_FILE;
+	qa->file_events = QQ_FE_OPEN_WRITE;
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
 
+	if ((fd = open(path, O_WRONLY)) == -1)
+		err(1, "open %s", path);
+	close(fd);
+
+	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
+		err(1, "clock_gettime");
+	for (found = 0, now = start; !found;
+	    (void)clock_gettime(CLOCK_MONOTONIC, &now)) {
+		if ((now.tv_sec - start.tv_sec) >= 5)
+			errx(1, "no open for write event in bypass");
+		qev = drain_for_pid(&qq, -1);
+		assert(qev->events == QUARK_EV_BYPASS);
+		assert(qev->bypass != NULL);
+		eh = qev->bypass;
+		if (eh->type != EBPF_EVENT_FILE_MODIFY)
+			continue;
+		fm = (const struct ebpf_file_modify_event *)eh;
+		if (fm->pids.tgid != (u32)getpid() ||
+		    fm->finfo.inode != st.st_ino)
+			continue;
+		if (fm->change_type != EBPF_FILE_CHANGE_TYPE_OPEN_WRITE)
+			errx(1, "change_type %d, want %d", fm->change_type,
+			    EBPF_FILE_CHANGE_TYPE_OPEN_WRITE);
+		found = 1;
+	}
+
 	quark_queue_close(&qq);
+	if (unlink(path) == -1)
+		err(1, "unlink");
 
 	return (0);
 }
@@ -5792,6 +5883,57 @@ t_ecs_date(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * A file modify event is file-written only with a content change. An open for
+ * write, also aggregated with a chmod or chown, is file-opened-for-write.
+ */
+static int
+t_ecs_file_action(const struct test *t, struct quark_queue_attr *qa)
+{
+	const struct {
+		u32		 change_mask;
+		const char	*expected;
+	} cases[] = {
+		{ QUARK_FILE_CH_CONTENT,	"file-written" },
+		{ QUARK_FILE_CH_PERMS,		"file-written" },
+		{ QUARK_FILE_CH_OPEN_WRITE,	"file-opened-for-write" },
+		{ QUARK_FILE_CH_OPEN_WRITE | QUARK_FILE_CH_PERMS,
+						"file-opened-for-write" },
+		{ QUARK_FILE_CH_OPEN_WRITE | QUARK_FILE_CH_OWNER,
+						"file-opened-for-write" },
+		{ QUARK_FILE_CH_OPEN_WRITE | QUARK_FILE_CH_CONTENT,
+						"file-written" },
+	};
+	size_t		 i;
+
+	for (i = 0; i < nitems(cases); i++) {
+		struct quark_queue	 qq;
+		struct quark_file	 file;
+		struct quark_event	 event = {
+			.events = QUARK_EV_FILE,
+			.file = &file
+		};
+		char			 want[64], *ecs = NULL;
+		size_t			 ecs_len = 0;
+
+		quark_queue_init_bare(&qq);
+		bzero(&file, sizeof(file));
+		file.path = "/tmp/file";
+		file.op_mask = QUARK_FILE_OP_MODIFY;
+		file.change_mask = cases[i].change_mask;
+		assert(quark_event_to_ecs(&qq, &event, &ecs, &ecs_len) == 0);
+		snprintf(want, sizeof(want), "\"action\":\"%s\"",
+		    cases[i].expected);
+		if (strstr(ecs, want) == NULL)
+			errx(1, "change_mask 0x%x: no %s in:\n%s",
+			    cases[i].change_mask, want, ecs);
+		free(ecs);
+		quark_queue_close(&qq);
+	}
+
+	return (0);
+}
+
 static int
 t_rule_path(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -8282,6 +8424,7 @@ struct test all_tests[] = {
 	T(t_hanson),
 	T(t_hanson_escape),
 	T(t_ecs_date),
+	T(t_ecs_file_action),
 	T_EBPF(t_rule_path),
 	T_EBPF(t_rule_exec_change),
 	T_EBPF(t_rule_path2),

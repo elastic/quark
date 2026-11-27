@@ -158,9 +158,13 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 		strlcat(buf, "file", sizeof(buf));
 		if (mask & QUARK_FILE_OP_CREATE)
 			strlcat(buf, "-created", sizeof(buf));
-		/* An open for write alone does not say the file was written */
+		/*
+		 * An open for write does not say the file was written, also when
+		 * it aggregated with a chmod or chown: only a content change does
+		 */
 		if ((mask & QUARK_FILE_OP_MODIFY) &&
-		    change == QUARK_FILE_CH_OPEN_WRITE)
+		    (change & QUARK_FILE_CH_OPEN_WRITE) &&
+		    !(change & QUARK_FILE_CH_CONTENT))
 			strlcat(buf, "-opened-for-write", sizeof(buf));
 		else if (mask & QUARK_FILE_OP_MODIFY)
 			strlcat(buf, "-written", sizeof(buf));

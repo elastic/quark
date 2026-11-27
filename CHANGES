@@ -334,5 +334,10 @@ Changes from 0.11 to 0.12
     file-opened-for-write, and quark-mon(8) -f takes open_write.
   o On 4.18 kernels (RHEL 8) a mkdir(2), link(2), symlink(2) or
     mknod(2) no longer turns the next open of an existing file by the
-    same thread into a CREATE: the create seen by fsnotify must be the
-    inode and the name that the open returns.
+    same thread into a CREATE: an open starts with no create state, and
+    the create seen by fsnotify must be the inode and the name that the
+    open returns. The open of the new name of a hard link is no longer a
+    CREATE either.
+  o The open probe takes a file as a memfd only when it is anonymous, not
+    for any name that starts with memfd:, so the open for write of a
+    regular file named memfd:something is reported.

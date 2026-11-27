@@ -482,9 +482,9 @@ static int do_filp_open__exit(struct file *f)
 
     fmode_t fmode       = BPF_CORE_READ(f, f_mode);
     struct inode *inode = BPF_CORE_READ(f, f_inode);
-    // 4.18.x: the state is left by any create of this thread (mkdir, link,
-    // the copy-up of overlayfs too), only the create of this file counts.
-    // The name tells a hard link to the opened inode from its create.
+    // 4.18.x: the state is from a create during this open call (open__enter()
+    // clears it), the copy-up of overlayfs too: only the create of this file
+    // counts, by its inode and name.
     struct ebpf_events_state *fs_create = ebpf_events_state__get(EBPF_EVENTS_STATE_FS_CREATE);
     bool created                        = false;
     if (fs_create != NULL && fs_create->fs_create.inode == inode) {
@@ -500,16 +500,19 @@ static int do_filp_open__exit(struct file *f)
         // check if memfd file is being opened
         struct path p              = BPF_CORE_READ(f, f_path);
         struct dentry *curr_dentry = BPF_CORE_READ(&p, dentry);
-        struct qstr component      = BPF_CORE_READ(curr_dentry, d_name);
+        // only the name pointer, not the whole qstr: 4.18 has no stack to spare
+        const unsigned char *name  = BPF_CORE_READ(curr_dentry, d_name.name);
         char buf_filename[8]       = {0};
-        int ret =
-            bpf_probe_read_kernel_str(buf_filename, sizeof(MEMFD_STRING), (void *)component.name);
+        int ret = bpf_probe_read_kernel_str(buf_filename, sizeof(MEMFD_STRING), (void *)name);
         if (ret <= 0) {
-            bpf_printk("could not read d_name at %p\n", component.name);
+            bpf_printk("could not read d_name at %p\n", name);
             goto out;
         }
-        // check if file name starts with "memfd:"
-        int is_memfd = is_equal_prefix(MEMFD_STRING, buf_filename, sizeof(MEMFD_STRING) - 1);
+        // check if file name starts with "memfd:", and that it is a memfd: an
+        // anonymous file, whose dentry has no parent (d_alloc_pseudo(), through
+        // alloc_file_pseudo() after 4.18), not a file a user named memfd:x
+        int is_memfd = is_equal_prefix(MEMFD_STRING, buf_filename, sizeof(MEMFD_STRING) - 1) &&
+                       BPF_CORE_READ(curr_dentry, d_parent) == curr_dentry;
         if (is_memfd) {
             // generate a memfd file open event
             prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_MEMFD_OPEN,
@@ -621,6 +624,43 @@ int BPF_PROG(fentry__fsnotify, struct inode *to_tell, u32 mask)
     preempt_enable();
 
     return r;
+}
+
+// 4.18.x: an open starts with no create state, so the state the open exit
+// reads is from an FS_CREATE of this open call. Without it, link(old, new)
+// then an open of new in the same thread matches both the inode and the name,
+// and the open was taken as a create. Loaded with the fsnotify probes.
+static int open__enter(void)
+{
+    // a lookup takes no lock, a delete does: most opens have no state
+    if (ebpf_events_state__get(EBPF_EVENTS_STATE_FS_CREATE) != NULL)
+        ebpf_events_state__del(EBPF_EVENTS_STATE_FS_CREATE);
+
+    return 0;
+}
+
+SEC("fentry/do_filp_open")
+int BPF_PROG(fentry__do_filp_open)
+{
+    return open__enter();
+}
+
+SEC("kprobe/do_filp_open")
+int BPF_KPROBE(kprobe__do_filp_open)
+{
+    return open__enter();
+}
+
+SEC("fentry/do_file_open_root")
+int BPF_PROG(fentry__do_file_open_root)
+{
+    return open__enter();
+}
+
+SEC("kprobe/do_file_open_root")
+int BPF_KPROBE(kprobe__do_file_open_root)
+{
+    return open__enter();
 }
 
 SEC("fexit/do_filp_open")
