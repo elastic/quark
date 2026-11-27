@@ -46,6 +46,7 @@
 #include <ifaddrs.h>
 #include <limits.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3285,6 +3286,103 @@ t_file_open_by_handle(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
+/*
+ * Each way to truncate an existing file gives exactly one MODIFY + CONTENT
+ * event with the size after the truncate. truncate(2) reaches do_truncate()
+ * without a file, the vfs_truncate() probe reports it. The other three pass
+ * a file to do_truncate() and must not pass vfs_truncate().
+ */
+static int
+t_file_truncate(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue		 qq;
+	const struct quark_file		*qf;
+	struct stat			 st;
+	struct rlimit			 rl, orig_rl;
+	void				(*old_xfsz)(int);
+	char				 path[] = "/tmp/quark-test.XXXXXX";
+	int				 fd, fd2;
+
+	/* No write events, the refills below must not count */
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	qa->file_events = QQ_FE_TRUNCATE;
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	assert(write(fd, "0123456789", 10) == 10);
+
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	/* truncate(2) by path */
+	if (truncate(path, 7) == -1)
+		err(1, "truncate");
+	qf = drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (qf->size != 7)
+		errx(1, "truncate: size is %llu, want 7",
+		    (unsigned long long)qf->size);
+
+	/* ftruncate(2) */
+	if (ftruncate(fd, 5) == -1)
+		err(1, "ftruncate");
+	qf = drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (qf->size != 5)
+		errx(1, "ftruncate: size is %llu, want 5",
+		    (unsigned long long)qf->size);
+
+	/* open(2) with O_WRONLY|O_TRUNC */
+	if ((fd2 = open(path, O_WRONLY | O_TRUNC)) == -1)
+		err(1, "open O_WRONLY|O_TRUNC");
+	close(fd2);
+	qf = drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (qf->size != 0)
+		errx(1, "O_WRONLY|O_TRUNC: size is %llu, want 0",
+		    (unsigned long long)qf->size);
+
+	/* open(2) with O_RDONLY|O_TRUNC, Linux truncates too */
+	assert(pwrite(fd, "012", 3, 0) == 3);
+	if ((fd2 = open(path, O_RDONLY | O_TRUNC)) == -1)
+		err(1, "open O_RDONLY|O_TRUNC");
+	close(fd2);
+	qf = drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+	if (qf->size != 0)
+		errx(1, "O_RDONLY|O_TRUNC: size is %llu, want 0",
+		    (unsigned long long)qf->size);
+
+	/*
+	 * A failed truncate(2) gives nothing. Growing the file past
+	 * RLIMIT_FSIZE fails with EFBIG inside do_truncate().
+	 */
+	if (getrlimit(RLIMIT_FSIZE, &orig_rl) == -1)
+		err(1, "getrlimit");
+	rl = orig_rl;
+	rl.rlim_cur = 1;
+	if (setrlimit(RLIMIT_FSIZE, &rl) == -1)
+		err(1, "setrlimit");
+	old_xfsz = signal(SIGXFSZ, SIG_IGN);
+	if (truncate(path, 4096) != -1 || errno != EFBIG)
+		err(1, "truncate past RLIMIT_FSIZE");
+	signal(SIGXFSZ, old_xfsz);
+	if (setrlimit(RLIMIT_FSIZE, &orig_rl) == -1)
+		err(1, "setrlimit");
+
+	/* Nothing else may come before the remove */
+	close(fd);
+	if (unlink(path) == -1)
+		err(1, "unlink");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, path);
+
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
 static int
 t_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -4832,6 +4930,16 @@ run_bpf_state_map(struct quark_queue_attr *qa)
 	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
 	    QUARK_FILE_CH_CONTENT, path);
 
+	/* VFS_TRUNCATE: failed (EISDIR) and succeeded */
+	if (truncate("/tmp", 0) != -1 || errno != EISDIR)
+		err(1, "truncate /tmp");
+	assert_no_bpf_state(&qq, "failed truncate");
+	if (truncate(path, 0) == -1)
+		err(1, "truncate");
+	assert_no_bpf_state(&qq, "truncate");
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_CONTENT, path);
+
 	/* CHOWN */
 	if (chown(path, getuid(), getgid()) == -1)
 		err(1, "chown");
@@ -4924,7 +5032,7 @@ t_bpf_state_map(const struct test *t, struct quark_queue_attr *qa)
 
 	/*
 	 * Also test the kprobe fallback when QUARK_BPF_KPROBE is not already
-	 * set, so default runs exercise the seven kprobe-only states too.
+	 * set, so default runs exercise the eight kprobe-only states too.
 	 */
 	if (getenv("QUARK_BPF_KPROBE") == NULL) {
 		kqa = *qa;
@@ -8726,6 +8834,7 @@ struct test all_tests[] = {
 	T_EBPF(t_file_open_write),
 	T_EBPF(t_file_open_write_paths),
 	T_EBPF(t_file_open_by_handle),
+	T_EBPF(t_file_truncate),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),

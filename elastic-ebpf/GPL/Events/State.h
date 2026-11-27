@@ -24,6 +24,7 @@ enum ebpf_events_state_op {
     EBPF_EVENTS_STATE_FS_CREATE      = 10,
     EBPF_EVENTS_STATE_MEMFD_CREATE   = 11,
     EBPF_EVENTS_STATE_LINK           = 12,
+    EBPF_EVENTS_STATE_VFS_TRUNCATE   = 13,
 };
 
 struct ebpf_events_key {
@@ -115,6 +116,7 @@ struct ebpf_events_state {
         struct ebpf_events_tcp_connect_state tcp_v6_connect;
         struct ebpf_events_chmod_state chmod;
         struct ebpf_events_truncate_state truncate;
+        struct ebpf_events_truncate_state vfs_truncate;
         struct ebpf_events_write_state write;
         struct ebpf_events_writev_state writev;
         struct ebpf_events_chown_state chown;

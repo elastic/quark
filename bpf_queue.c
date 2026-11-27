@@ -1435,8 +1435,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 				bpf_program__set_autoload(p->progs.fexit__chmod_common, 1);
 			if (fe & QQ_FE_CHOWN)
 				bpf_program__set_autoload(p->progs.fexit__chown_common, 1);
-			if (fe & QQ_FE_TRUNCATE)
+			if (fe & QQ_FE_TRUNCATE) {
 				bpf_program__set_autoload(p->progs.fexit__do_truncate, 1);
+				bpf_program__set_autoload(p->progs.fexit__vfs_truncate, 1);
+			}
 			if (fe & QQ_FE_WRITE) {
 				bpf_program__set_autoload(p->progs.fexit__vfs_write, 1);
 				bpf_program__set_autoload(p->progs.fexit__vfs_writev, 1);
@@ -1497,6 +1499,8 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			if (fe & QQ_FE_TRUNCATE) {
 				bpf_program__set_autoload(p->progs.kprobe__do_truncate, 1);
 				bpf_program__set_autoload(p->progs.kretprobe__do_truncate, 1);
+				bpf_program__set_autoload(p->progs.kprobe__vfs_truncate, 1);
+				bpf_program__set_autoload(p->progs.kretprobe__vfs_truncate, 1);
 			}
 			if (fe & QQ_FE_WRITE) {
 				bpf_program__set_autoload(p->progs.kprobe__vfs_write, 1);
@@ -1547,13 +1551,19 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			    "vfs_rename", "new_dentry") == -1)
 				goto fail;
 		}
-		/* do_truncate() */
+		/* do_truncate(), vfs_truncate() */
 		if (fe & QQ_FE_TRUNCATE) {
 			if (relo_ret(btf, &p->rodata->ret__do_truncate__,
 			    "do_truncate") == -1)
 				goto fail;
 			if (relo_param(btf, &p->rodata->arg__do_truncate__filp__,
 			    "do_truncate", "filp") == -1)
+				goto fail;
+			if (relo_ret(btf, &p->rodata->ret__vfs_truncate__,
+			    "vfs_truncate") == -1)
+				goto fail;
+			if (relo_param(btf, &p->rodata->arg__vfs_truncate__path__,
+			    "vfs_truncate", "path") == -1)
 				goto fail;
 		}
 		/* do_file_open_root(), the kretprobe needs no relocation */
