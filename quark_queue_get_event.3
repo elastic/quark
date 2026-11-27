@@ -190,6 +190,7 @@ struct quark_process {
 	u32	 proc_ipc_inonum;
 	u32	 proc_mnt_inonum;
 	u32	 proc_net_inonum;
+	char	 proc_entity_id[17];
 	/* QUARK_F_EXIT */
 	s32	 exit_code;
 	u64	 exit_time_event;
@@ -217,6 +218,14 @@ is unset, the respective members are invalid/unknown.
 .It Dv QUARK_F_PROC
 .Em proc_
 members are valid.
+.Em proc_entity_id
+is a NUL terminated string identifying the process within a host boot,
+derived from
+.Em pid
+and
+.Em proc_time_boot ;
+it is the ECS
+.Em process.entity_id .
 .It Dv QUARK_F_EXIT
 .Em exit_code
 and

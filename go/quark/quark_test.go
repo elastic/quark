@@ -4,6 +4,8 @@
 package quark
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/netip"
@@ -45,6 +47,11 @@ func TestQuark(t *testing.T) {
 		require.Equal(t, fetchPid, pid1.Pid)
 		require.NotEmpty(t, pid1.Comm)
 		require.NotEmpty(t, pid1.Cwd)
+		require.True(t, pid1.Proc.Valid)
+		var id [12]byte
+		binary.LittleEndian.PutUint32(id[0:], pid1.Pid)
+		binary.LittleEndian.PutUint64(id[4:], pid1.Proc.TimeBoot)
+		require.Equal(t, base64.StdEncoding.EncodeToString(id[:]), pid1.Proc.EntityID)
 	})
 
 	t.Run("GetEvent", func(t *testing.T) {

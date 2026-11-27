@@ -111,8 +111,7 @@
           <a class="permalink" href="#bpf.start_time_ns"><i class="Em" id="bpf.start_time_ns">bpf.start_time_ns</i></a>
           retain its host process ID, invoking thread ID and process start time
           even when the process cache has no entry. The start time uses
-          CLOCK_BOOTTIME, like
-          <a class="permalink" href="#proc_time_boot"><i class="Em" id="proc_time_boot">proc_time_boot</i></a>.
+          CLOCK_BOOTTIME, like <i class="Em">proc_time_boot</i>.
         <p class="Pp" id="valid"><a class="permalink" href="#valid"><i class="Em">valid</i></a>
             indicates which metadata was captured.
             <code class="Dv">QUARK_BPF_VALID_ATTR</code> means that
@@ -185,6 +184,7 @@
 	u32	 proc_ipc_inonum;
 	u32	 proc_mnt_inonum;
 	u32	 proc_net_inonum;
+	char	 proc_entity_id[17];
 	/* QUARK_F_EXIT */
 	s32	 exit_code;
 	u64	 exit_time_event;
@@ -210,7 +210,13 @@
     <dl class="Bl-tag Bl-compact">
       <dt id="QUARK_F_PROC"><a class="permalink" href="#QUARK_F_PROC"><code class="Dv">QUARK_F_PROC</code></a></dt>
       <dd><a class="permalink" href="#proc_"><i class="Em" id="proc_">proc_</i></a>
-          members are valid.</dd>
+          members are valid.
+          <a class="permalink" href="#proc_entity_id"><i class="Em" id="proc_entity_id">proc_entity_id</i></a>
+          is a NUL terminated string identifying the process within a host boot,
+          derived from
+          <a class="permalink" href="#pid"><i class="Em" id="pid">pid</i></a>
+          and <i class="Em">proc_time_boot</i>; it is the ECS
+          <a class="permalink" href="#process.entity_id"><i class="Em" id="process.entity_id">process.entity_id</i></a>.</dd>
       <dt id="QUARK_F_EXIT"><a class="permalink" href="#QUARK_F_EXIT"><code class="Dv">QUARK_F_EXIT</code></a></dt>
       <dd><a class="permalink" href="#exit_code"><i class="Em" id="exit_code">exit_code</i></a>
           and <i class="Em">exit_time_event</i> are valid.
@@ -276,7 +282,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 24, 2026</td>
+    <td class="foot-date">November 27, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

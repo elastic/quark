@@ -104,6 +104,7 @@ type Proc struct {
 	IpcInonum       uint32
 	MntInonum       uint32
 	NetInonum       uint32
+	EntityID        string
 	Valid           bool
 }
 
@@ -829,6 +830,7 @@ func processFromC(cProcess *C.struct_quark_process) Process {
 			IpcInonum:       uint32(cProcess.proc_ipc_inonum),
 			MntInonum:       uint32(cProcess.proc_mnt_inonum),
 			NetInonum:       uint32(cProcess.proc_net_inonum),
+			EntityID:        C.GoString(&cProcess.proc_entity_id[0]),
 			Valid:           true,
 		}
 	}
