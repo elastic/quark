@@ -5201,7 +5201,7 @@ t_ecs_date(const struct test *t, struct quark_queue_attr *qa)
  * ECS puts the effective ids in process.{user,group} and the real and saved
  * ones next to them, not inside process.user. The same goes for the parent
  * and the leaders. The bare queue has no passwd or group entries, so the
- * names are not checked.
+ * names are not checked. The ids are keywords in ECS, so strings.
  */
 static int
 t_ecs_process_user(const struct test *t, struct quark_queue_attr *qa)
@@ -5220,7 +5220,7 @@ t_ecs_process_user(const struct test *t, struct quark_queue_attr *qa)
 		"group", "real_user", "real_group", "saved_user", "saved_group"
 	};
 	cJSON			*json, *proc, *id;
-	char			*ecs = NULL;
+	char			 want[16], *ecs = NULL;
 	size_t			 ecs_len = 0, i, j;
 
 	quark_queue_init_bare(&qq);
@@ -5256,10 +5256,11 @@ t_ecs_process_user(const struct test *t, struct quark_queue_attr *qa)
 			id = cJSON_GetObjectItemCaseSensitive(
 			    cJSON_GetObjectItemCaseSensitive(proc, keys[j]),
 			    "id");
-			if (!cJSON_IsNumber(id) || id->valuedouble != i * 10 + j)
-				errx(1, "%s %s.id is not %zu in:\n%s",
+			snprintf(want, sizeof(want), "%zu", i * 10 + j);
+			if (!cJSON_IsString(id) || strcmp(id->valuestring, want))
+				errx(1, "%s %s.id is not \"%s\" in:\n%s",
 				    i > 0 ? nested[i - 1] : "process",
-				    keys[j], i * 10 + j, ecs);
+				    keys[j], want, ecs);
 		}
 		/* user only has id and name, nothing nested */
 		for (j = 0; j < nitems(legacy); j++)
@@ -5269,6 +5270,49 @@ t_ecs_process_user(const struct test *t, struct quark_queue_attr *qa)
 				errx(1, "%s user.%s in:\n%s",
 				    i > 0 ? nested[i - 1] : "process",
 				    legacy[j], ecs);
+	}
+	cJSON_Delete(json);
+	free(ecs);
+	quark_queue_close(&qq);
+
+	return (0);
+}
+
+/*
+ * file.{uid,gid,inode} are keywords in ECS, so strings. The inode is 64 bits
+ * wide and must not be truncated.
+ */
+static int
+t_ecs_file_ids(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct quark_file	 file;
+	struct quark_event	 event = {
+		.events = QUARK_EV_FILE,
+		.file = &file
+	};
+	cJSON			*json, *f;
+	char			*ecs = NULL;
+	size_t			 ecs_len = 0, i;
+	const char		*keys[] = { "uid", "gid", "inode" };
+	const char		*want[] = { "1001", "1002", "18446744073709551615" };
+
+	quark_queue_init_bare(&qq);
+	bzero(&file, sizeof(file));
+	file.path = "/tmp/file";
+	file.op_mask = QUARK_FILE_OP_MODIFY;
+	file.uid = 1001;
+	file.gid = 1002;
+	file.inode = UINT64_MAX;
+	assert(quark_event_to_ecs(&qq, &event, &ecs, &ecs_len) == 0);
+	json = cJSON_Parse(ecs);
+	assert(json != NULL);
+	for (i = 0; i < nitems(keys); i++) {
+		f = cJSON_GetObjectItemCaseSensitive(
+		    cJSON_GetObjectItemCaseSensitive(json, "file"), keys[i]);
+		if (!cJSON_IsString(f) || strcmp(f->valuestring, want[i]))
+			errx(1, "file.%s is not \"%s\" in:\n%s",
+			    keys[i], want[i], ecs);
 	}
 	cJSON_Delete(json);
 	free(ecs);
@@ -7764,6 +7808,7 @@ struct test all_tests[] = {
 	T(t_hanson_escape),
 	T(t_ecs_date),
 	T(t_ecs_process_user),
+	T(t_ecs_file_ids),
 	T_EBPF(t_rule_path),
 	T_EBPF(t_rule_exec_change),
 	T_EBPF(t_rule_path2),
