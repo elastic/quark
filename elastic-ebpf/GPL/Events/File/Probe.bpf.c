@@ -191,9 +191,12 @@ static int mnt_want_write__enter(struct vfsmount *mnt)
 
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_LINK);
     if (state) {
-        // Same as above. The mount is the one of the new name, a link
-        // across mounts fails with EXDEV before vfs_link.
-        if (state->link.step != LINK_STATE_INIT)
+        // The mount is the one of the new name, a link across mounts fails
+        // with EXDEV before vfs_link. Taken from each call outside vfs_link,
+        // so a retry of do_linkat (ESTALE, broken delegation), which looks
+        // both names up again, takes the mount of its new lookup. The calls
+        // of overlayfs are inside vfs_link, where depth is not 0.
+        if (state->link.step == LINK_STATE_PATHS_SET && state->link.depth > 0)
             goto out;
         state->link.mnt  = mnt;
         state->link.step = LINK_STATE_MOUNT_SET;
@@ -271,10 +274,12 @@ static int vfs_unlink__exit(int ret)
     size  = ebpf_resolve_path_to_string(field->data, &p, task);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
-    // symlink_target_path
+    // symlink_target_path, of a symlink only, see two_path_event__emit()
     field      = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
-    char *link = BPF_CORE_READ(p.dentry, d_inode, i_link);
-    size       = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
+    char *link = NULL;
+    if (S_ISLNK(event->finfo.mode))
+        link = BPF_CORE_READ(p.dentry, d_inode, i_link);
+    size = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // pids ss cgroup path
@@ -1037,10 +1042,14 @@ static void two_path_event__emit(enum ebpf_event_type type,
     size  = read_kernel_str_or_empty_str(field->data, PATH_MAX, ss->rename.new_path);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
-    // symlink_target_path
+    // symlink_target_path, of a symlink only: i_link shares a union with
+    // i_pipe and i_cdev, a FIFO or a device would give a pointer to another
+    // structure. The mode is the one ebpf_file_info__fill() read.
     field      = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
-    char *link = BPF_CORE_READ(de, d_inode, i_link);
-    size       = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
+    char *link = NULL;
+    if (S_ISLNK(event->finfo.mode))
+        link = BPF_CORE_READ(de, d_inode, i_link);
+    size = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
     ebpf_vl_field__set_size(&event->vl_fields, field, size);
 
     // pids ss cgroup path

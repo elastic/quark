@@ -351,3 +351,5 @@ Changes from 0.11 to 0.12
     QQ_FE_OPEN_WRITE instead of QQ_FE_WRITE, plus
     QQ_FE_TRUNCATE, QQ_FE_CHMOD, QQ_FE_CHOWN and QQ_FE_LINK.
     quark-mon(8) -f takes drift.
+  o Remove, rename and link events read the symlink target of a symlink
+    only: for a FIFO or a device, the inode holds another pointer there.
