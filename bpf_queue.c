@@ -521,7 +521,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		size_t				 path_len, sym_target_len, old_path_len;
 		size_t				 alloc_len, tmp_len;
 		struct quark_file		*file;
-		u32				 op_mask, change_mask, dummy;
+		u32				 op_mask, change_mask, old_mode, dummy;
 
 		if ((raw = raw_event_alloc(RAW_FILE)) == NULL)
 			goto bad;
@@ -535,6 +535,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		vl = NULL;
 		op_mask = 0;
 		change_mask = 0;
+		old_mode = 0;
 		switch (ev->type) {
 		case EBPF_EVENT_FILE_CREATE: {
 			struct ebpf_file_create_event *create =
@@ -561,6 +562,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 			vl = &modify->vl_fields;
 			raw->pid = modify->pids.tgid;
 			op_mask = QUARK_FILE_OP_MODIFY;
+			old_mode = modify->old_mode;
 			switch (modify->change_type) {
 			case EBPF_FILE_CHANGE_TYPE_CONTENT:
 				change_mask = QUARK_FILE_CH_CONTENT;
@@ -693,6 +695,7 @@ ebpf_events_to_raw(struct quark_queue *qq, struct ebpf_event_header *ev)
 		file->gid = info->gid;
 		file->op_mask = op_mask;
 		file->change_mask = change_mask;
+		file->old_mode = old_mode;
 
 		break;
 	}
@@ -1431,8 +1434,10 @@ bpf_queue_open1(struct quark_queue *qq, int use_fentry)
 			bpf_program__set_autoload(p->progs.fexit__vfs_rename, 1);
 			bpf_program__set_autoload(p->progs.fexit__vfs_unlink, 1);
 			/* File event classes */
-			if (fe & QQ_FE_CHMOD)
+			if (fe & QQ_FE_CHMOD) {
+				bpf_program__set_autoload(p->progs.fentry__chmod_common, 1);
 				bpf_program__set_autoload(p->progs.fexit__chmod_common, 1);
+			}
 			if (fe & QQ_FE_CHOWN)
 				bpf_program__set_autoload(p->progs.fexit__chown_common, 1);
 			if (fe & QQ_FE_TRUNCATE) {

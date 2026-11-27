@@ -2420,6 +2420,8 @@ quark_event_dump(const struct quark_event *qev, FILE *f)
 			    file->sym_target);
 		PF(fl, "mode=0%o uid=%d gid=%d size=%llu inode=%llu\n",
 		    file->mode, file->uid, file->gid, file->size, file->inode);
+		if (file->old_mode != 0)
+			PF(fl, "old_mode=0%o\n", file->old_mode);
 		PF(fl, "atime=%llu mtime=%llu ctime=%llu\n",
 		    file->atime, file->mtime, file->ctime);
 	}
@@ -5132,6 +5134,19 @@ quark_can_aggregate_file(struct quark_queue *qq,
 	    !!(cf->mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
 		return (0);
 	/*
+	 * raw_event_file() keeps the old_mode of the first chmod. The rule
+	 * above leaves the head as the only chmod of a group that can change
+	 * the executable state, so a later chmod with an old_mode of the other
+	 * state would be lost: 0644->0755 then 0755->0750 would only read as
+	 * the file becoming executable, not as an executable being changed.
+	 */
+	if ((pf->change_mask & QUARK_FILE_CH_PERMS) &&
+	    (cf->change_mask & QUARK_FILE_CH_PERMS) &&
+	    pf->old_mode != 0 && cf->old_mode != 0 &&
+	    !!(pf->old_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) !=
+	    !!(cf->old_mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
+		return (0);
+	/*
 	 * Maybe we should escape uid/gid and other mode changes, which can still
 	 * make it possible to hide stuff.
 	 */
@@ -5378,7 +5393,8 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 {
 	struct quark_event	*qev;
 	struct raw_event	*agg;
-	u32			 op_mask, change_mask;
+	u32			 op_mask, change_mask, old_mode;
+	int			 chmod_seen;
 
 	if (raw->file.quark_file == NULL) {
 		qwarnx("quark_file is null");
@@ -5393,19 +5409,28 @@ raw_event_file(struct quark_queue *qq, struct raw_event *raw)
 
 	/*
 	 * File aggregation is basically joining op_mask and then using the last
-	 * raw_event.
+	 * raw_event. old_mode is the mode before the group's first chmod, the
+	 * last event only has the mode before the last one.
 	 */
 	op_mask = raw->file.quark_file->op_mask;
 	change_mask = raw->file.quark_file->change_mask;
+	old_mode = raw->file.quark_file->old_mode;
+	chmod_seen = !!(change_mask & QUARK_FILE_CH_PERMS);
 	TAILQ_FOREACH(agg, &raw->agg_queue, agg_entry) {
 		op_mask |= agg->file.quark_file->op_mask;
 		change_mask |= agg->file.quark_file->change_mask;
+		if (!chmod_seen &&
+		    (agg->file.quark_file->change_mask & QUARK_FILE_CH_PERMS)) {
+			old_mode = agg->file.quark_file->old_mode;
+			chmod_seen = 1;
+		}
 		raw = agg;
 	}
 
 	/* Steal the file */
 	raw->file.quark_file->op_mask = op_mask;
 	raw->file.quark_file->change_mask = change_mask;
+	raw->file.quark_file->old_mode = old_mode;
 	qev->file = raw->file.quark_file;
 	raw->file.quark_file = NULL;
 

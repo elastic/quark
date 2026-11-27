@@ -80,6 +80,7 @@ struct ebpf_events_tcp_connect_state {
 struct ebpf_events_chmod_state {
     struct path *path;
     umode_t mode;
+    umode_t old_mode;
 };
 
 struct ebpf_events_truncate_state {

@@ -232,6 +232,7 @@ struct ebpf_file_modify_event {
     enum ebpf_file_change_type change_type;
     uint32_t mntns;
     char comm[TASK_COMM_LEN];
+    uint16_t old_mode; // i_mode before a chmod, 0 for other changes
 
     // Variable length fields: path, symlink_target_path, pids_ss_cgroup_path
     struct ebpf_varlen_fields_start vl_fields;
