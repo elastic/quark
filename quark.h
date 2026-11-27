@@ -403,6 +403,7 @@ struct raw_packet {
 #define QUARK_FILE_CH_PERMS	(1 << 1)
 #define QUARK_FILE_CH_OWNER	(1 << 2)
 #define QUARK_FILE_CH_XATTRS	(1 << 3)
+#define QUARK_FILE_CH_OPEN_WRITE	(1 << 4)
 
 struct quark_file {
 	const char	*path;		/* points to storage + 0 */
@@ -999,7 +1000,9 @@ struct quark_queue_attr {
 #define QQ_FE_TRUNCATE		(1 << 1)
 #define QQ_FE_CHMOD		(1 << 2)
 #define QQ_FE_CHOWN		(1 << 3)
-#define QQ_FE_ALL		(QQ_FE_WRITE|QQ_FE_TRUNCATE|QQ_FE_CHMOD|QQ_FE_CHOWN)
+#define QQ_FE_OPEN_WRITE	(1 << 4)	/* each open for write */
+#define QQ_FE_ALL		(QQ_FE_WRITE|QQ_FE_TRUNCATE|QQ_FE_CHMOD|QQ_FE_CHOWN|\
+				 QQ_FE_OPEN_WRITE)
 #define QQ_FE_DEFAULT		(QQ_FE_WRITE|QQ_FE_TRUNCATE|QQ_FE_CHMOD|QQ_FE_CHOWN)
 	int			 file_events;		/* QQ_FE_*, 0 is QQ_FE_DEFAULT */
 };

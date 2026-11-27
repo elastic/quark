@@ -153,11 +153,16 @@ ecs_event_action(struct hanson *h, const struct quark_event *qev, int *first)
 			strlcat(buf, "-sent", sizeof(buf));
 	} else if (file) {
 		u32 mask = qev->file->op_mask;
+		u32 change = qev->file->change_mask;
 
 		strlcat(buf, "file", sizeof(buf));
 		if (mask & QUARK_FILE_OP_CREATE)
 			strlcat(buf, "-created", sizeof(buf));
-		if (mask & QUARK_FILE_OP_MODIFY)
+		/* An open for write alone does not say the file was written */
+		if ((mask & QUARK_FILE_OP_MODIFY) &&
+		    change == QUARK_FILE_CH_OPEN_WRITE)
+			strlcat(buf, "-opened-for-write", sizeof(buf));
+		else if (mask & QUARK_FILE_OP_MODIFY)
 			strlcat(buf, "-written", sizeof(buf));
 		if (mask & QUARK_FILE_OP_MOVE)
 			strlcat(buf, "-renamed", sizeof(buf));

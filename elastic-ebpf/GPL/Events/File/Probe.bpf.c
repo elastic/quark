@@ -30,6 +30,12 @@ DECL_FUNC_ARG_EXISTS(vfs_rename, rd);
 /* do_truncate */
 DECL_FUNC_ARG(do_truncate, filp);
 DECL_FUNC_RET(do_truncate);
+/* do_file_open_root */
+DECL_FUNC_RET(do_file_open_root);
+
+// Send a modify event when an existing regular file is opened for write. Set
+// by userspace, the open probes are shared with file creation.
+const volatile bool file_open_write = false;
 
 static int do_unlinkat__enter()
 {
@@ -348,21 +354,57 @@ out:
     return r;
 }
 
+// offset of a member of a create event from its mntns
+#define TAIL_OFF(member)                                                                           \
+    (offsetof(struct ebpf_file_create_event, member) -                                             \
+     offsetof(struct ebpf_file_create_event, mntns))
+
 // prepare a file event and send it to ringbuf.
 // if devshm_only the event is only sent if the file path starts with /dev/shm
 //
+// EBPF_EVENT_FILE_MODIFY is sent as a struct ebpf_file_modify_event with
+// `change_type`, the other types as a struct ebpf_file_create_event. The
+// layouts only differ by change_type before mntns, so the fields from mntns on
+// are written `shift` bytes further for a modify event. `shift` is computed
+// without a branch: with a branch the verifier walks the path resolvers once
+// per layout.
+//
 // Global function, see ebpf_ptr_to_scalar(): do_filp_open__exit() reaches
-// this from three places (create, memfd, shmem) and the verifier would walk
-// the path resolvers once per place otherwise. `file` is the struct file *
-// as a scalar: 4.18's verifier only accepts scalar arguments for a global
-// function and rejects a struct file * or void * taken from the probe context
-// ("Caller passes invalid args"). Disables preemption itself for the per-cpu
-// event buffer and resolver scratch: the caller must not, as a global function
-// may not be called with preemption disabled on 6.10-6.14 verifiers.
-__noinline int prepare_and_send_file_event(u64 file, enum ebpf_event_type type, bool devshm_only)
+// this from four places (create, open for write, memfd, shmem) and the
+// verifier would walk the path resolvers once per place otherwise. `file` is
+// the struct file * as a scalar: 4.18's verifier only accepts scalar arguments
+// for a global function and rejects a struct file * or void * taken from the
+// probe context ("Caller passes invalid args"). Disables preemption itself for
+// the per-cpu event buffer and resolver scratch: the caller must not, as a
+// global function may not be called with preemption disabled on 6.10-6.14
+// verifiers.
+__noinline int prepare_and_send_file_event(u64 file,
+                                           enum ebpf_event_type type,
+                                           enum ebpf_file_change_type change_type,
+                                           bool devshm_only)
 {
     struct file *f = (struct file *)file;
-    struct ebpf_file_create_event *event;
+    struct ebpf_file_modify_event *event;
+    struct ebpf_varlen_fields_start *vl_fields;
+    u32 shift;
+    char *tail;
+
+#define CREATE_OFF(m) offsetof(struct ebpf_file_create_event, m)
+#define MODIFY_OFF(m) offsetof(struct ebpf_file_modify_event, m)
+    _Static_assert(EBPF_EVENT_FILE_MODIFY == (1 << 10), "shift needs a new bit");
+    _Static_assert(MODIFY_OFF(pids) == CREATE_OFF(pids) && MODIFY_OFF(creds) == CREATE_OFF(creds) &&
+                       MODIFY_OFF(finfo) == CREATE_OFF(finfo),
+                   "the layouts differ before change_type");
+    _Static_assert(MODIFY_OFF(change_type) == CREATE_OFF(mntns) &&
+                       MODIFY_OFF(mntns) == CREATE_OFF(mntns) + 4 &&
+                       MODIFY_OFF(comm) == CREATE_OFF(comm) + 4 &&
+                       MODIFY_OFF(vl_fields) == CREATE_OFF(vl_fields) + 4 &&
+                       sizeof(struct ebpf_file_modify_event) ==
+                           sizeof(struct ebpf_file_create_event) + 4,
+                   "the layouts differ by more than the 4 bytes of change_type");
+#undef CREATE_OFF
+#undef MODIFY_OFF
+    shift = (type & EBPF_EVENT_FILE_MODIFY) >> 8; // 4 for a modify event, else 0
 
     preempt_disable();
     event = get_event_buffer();
@@ -376,37 +418,46 @@ __noinline int prepare_and_send_file_event(u64 file, enum ebpf_event_type type, 
     struct path p            = BPF_CORE_READ(f, f_path);
     ebpf_pid_info__fill(&event->pids, task);
     ebpf_cred_info__fill(&event->creds, task);
+    ebpf_file_info__fill(&event->finfo, p.dentry);
+    // a create event has mntns here, overwritten below
+    event->change_type = change_type;
+
+    // where a create event has mntns, comm and the variable length fields
+    tail = (char *)&event->change_type + shift;
     struct ebpf_namespace_info ns;
     ebpf_ns__fill(&ns, task);
-    event->mntns = ns.mnt_inonum;
-    bpf_get_current_comm(event->comm, TASK_COMM_LEN);
-    ebpf_file_info__fill(&event->finfo, p.dentry);
+    *(u32 *)tail = ns.mnt_inonum;
+    bpf_get_current_comm(tail + TAIL_OFF(comm), TASK_COMM_LEN);
+    vl_fields = (struct ebpf_varlen_fields_start *)(tail + TAIL_OFF(vl_fields));
 
     // Variable length fields
-    ebpf_vl_fields__init(&event->vl_fields);
+    ebpf_vl_fields__init(vl_fields);
     struct ebpf_varlen_field *field;
     long size;
 
     // symlink_target_path
-    field      = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
+    field      = ebpf_vl_field__add(vl_fields, EBPF_VL_FIELD_SYMLINK_TARGET_PATH);
     char *link = BPF_CORE_READ(p.dentry, d_inode, i_link);
     size       = read_kernel_str_or_empty_str(field->data, PATH_MAX, link);
-    ebpf_vl_field__set_size(&event->vl_fields, field, size);
+    ebpf_vl_field__set_size(vl_fields, field, size);
 
     // pids ss cgroup path
-    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH);
+    field = ebpf_vl_field__add(vl_fields, EBPF_VL_FIELD_PIDS_SS_CGROUP_PATH);
     size  = ebpf_resolve_pids_ss_cgroup_path_to_string(field->data, task);
-    ebpf_vl_field__set_size(&event->vl_fields, field, size);
+    ebpf_vl_field__set_size(vl_fields, field, size);
 
     // path
-    field = ebpf_vl_field__add(&event->vl_fields, EBPF_VL_FIELD_PATH);
+    field = ebpf_vl_field__add(vl_fields, EBPF_VL_FIELD_PATH);
     size  = ebpf_resolve_path_to_string(field->data, &p, task);
-    ebpf_vl_field__set_size(&event->vl_fields, field, size);
+    ebpf_vl_field__set_size(vl_fields, field, size);
 
     // skip event if only /dev/shm files are wanted and the path does not start with it
     if (!devshm_only || (size >= (long)sizeof(DEVSHM_STRING) - 1 &&
                          is_equal_prefix(field->data, DEVSHM_STRING, sizeof(DEVSHM_STRING) - 1)))
-        ebpf_ringbuf_write(&ringbuf, event, EVENT_SIZE(event), 0);
+        ebpf_ringbuf_write(&ringbuf, event,
+                           (sizeof(struct ebpf_file_create_event) + shift + vl_fields->size) &
+                               (EVENT_BUFFER_SIZE - 1),
+                           0);
 
 out:
     preempt_enable();
@@ -429,11 +480,22 @@ static int do_filp_open__exit(struct file *f)
     if (ebpf_events_is_trusted_pid())
         goto out;
 
-    fmode_t fmode = BPF_CORE_READ(f, f_mode);
-    if ((fmode & (fmode_t)0x100000) ||                                 // FMODE_CREATED
-        (ebpf_events_state__get(EBPF_EVENTS_STATE_FS_CREATE) != NULL)) { // 4.18.x
+    fmode_t fmode       = BPF_CORE_READ(f, f_mode);
+    struct inode *inode = BPF_CORE_READ(f, f_inode);
+    // 4.18.x: the state is left by any create of this thread (mkdir, link,
+    // the copy-up of overlayfs too), only the create of this file counts.
+    // The name tells a hard link to the opened inode from its create.
+    struct ebpf_events_state *fs_create = ebpf_events_state__get(EBPF_EVENTS_STATE_FS_CREATE);
+    bool created                        = false;
+    if (fs_create != NULL && fs_create->fs_create.inode == inode) {
+        struct dentry *de = BPF_CORE_READ(f, f_path.dentry);
+        const void *name  = fs_create->fs_create.name;
+        created           = name == (void *)&de->d_name || name == BPF_CORE_READ(de, d_name.name);
+    }
+    if ((fmode & (fmode_t)0x100000 /* FMODE_CREATED */) || created) {
         // generate a file creation event
-        prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_CREATE, false);
+        prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_CREATE,
+                                    EBPF_FILE_CHANGE_TYPE_UNKNOWN, false);
     } else {
         // check if memfd file is being opened
         struct path p              = BPF_CORE_READ(f, f_path);
@@ -450,9 +512,19 @@ static int do_filp_open__exit(struct file *f)
         int is_memfd = is_equal_prefix(MEMFD_STRING, buf_filename, sizeof(MEMFD_STRING) - 1);
         if (is_memfd) {
             // generate a memfd file open event
-            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_MEMFD_OPEN, false);
+            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_MEMFD_OPEN,
+                                        EBPF_FILE_CHANGE_TYPE_UNKNOWN, false);
             goto out;
         }
+
+        // generate an open for write event for an existing regular file. Not
+        // for a memfd above: a reopen through /proc/self/fd has no real path,
+        // and MEMFD_OPEN reports it. A /dev/shm file is a real file and gets
+        // both events.
+        if (file_open_write && (fmode & (fmode_t)0x2) && // FMODE_WRITE
+            S_ISREG(BPF_CORE_READ(inode, i_mode)))
+            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_MODIFY,
+                                        EBPF_FILE_CHANGE_TYPE_OPEN_WRITE, false);
 
         struct vfsmount *curr_vfsmount = BPF_CORE_READ(&p, mnt);
         const char *fs_type_name       = BPF_CORE_READ(curr_vfsmount, mnt_sb, s_type, name);
@@ -469,7 +541,8 @@ static int do_filp_open__exit(struct file *f)
         int is_tmpfs = is_equal_prefix(buf_fsname, TMPFS_STRING, sizeof(TMPFS_STRING) - 1);
         if (is_tmpfs) {
             // now filter for /dev/shm prefix, if there is match - send an SHMEM file open event
-            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_SHMEM_OPEN, true);
+            prepare_and_send_file_event(ebpf_ptr_to_scalar(f), EBPF_EVENT_FILE_SHMEM_OPEN,
+                                        EBPF_FILE_CHANGE_TYPE_UNKNOWN, true);
         }
     }
 
@@ -479,12 +552,28 @@ out:
     return 0;
 }
 
-static int fsnotify__enter(u32 mask)
+// 4.18.x: fsnotify(to_tell, mask, data, data_is, file_name, cookie).
+// fsnotify_create() and fsnotify_link() pass the inode as data with
+// FSNOTIFY_EVENT_INODE, and the name of the new dentry as file_name: its
+// d_name.name, or &d_name where file_name is a struct qstr * (RHEL 8.10). The
+// open exit takes the state as a create only for the inode and the dentry it
+// opened, the last FS_CREATE of the thread wins. On overlayfs a create
+// notifies the upper dentry first and the overlay dentry last (lookup_open()
+// after ->create()), and the opened file has the overlay inode and dentry.
+//
+// fsnotify() runs for every access, modify and open, so the callers test
+// FS_CREATE before anything else.
+#define FSNOTIFY_FS_CREATE 0x100
+static int fsnotify__enter(const void *data, int data_is, const void *file_name)
 {
-    if (mask & 0x100) { // FS_CREATE
-        struct ebpf_events_state state = {};
-        ebpf_events_state__set(EBPF_EVENTS_STATE_FS_CREATE, &state);
-    }
+    struct ebpf_events_state state = {};
+
+    if (data_is == 2) // FSNOTIFY_EVENT_INODE
+        state.fs_create.inode = (struct inode *)data;
+    else if (data_is == 1) // FSNOTIFY_EVENT_PATH
+        state.fs_create.inode = BPF_CORE_READ((struct path *)data, dentry, d_inode);
+    state.fs_create.name = file_name;
+    ebpf_events_state__set(EBPF_EVENTS_STATE_FS_CREATE, &state);
 
     return 0;
 }
@@ -495,31 +584,40 @@ int BPF_KPROBE(kprobe__fsnotify,
                u32 mask,
                const void *data,
                int data_is,
-               const unsigned char *file_name,
+               const void *file_name,
                u32 cookie)
 {
     int r;
 
+    if (!(mask & FSNOTIFY_FS_CREATE))
+        return 0;
+
     preempt_disable();
-    r = fsnotify__enter(mask);
+    r = fsnotify__enter(data, data_is, file_name);
     preempt_enable();
 
     return r;
 }
 
+// data and file_name are read through the context: the 4.18 verifier refuses a
+// context load of the void * (and of an argument whose type changed).
 SEC("fentry/fsnotify")
-int BPF_PROG(fentry__fsnotify,
-             struct inode *to_tell,
-             u32 mask,
-             const void *data,
-             int data_is,
-             const unsigned char *file_name,
-             u32 cookie)
+int BPF_PROG(fentry__fsnotify, struct inode *to_tell, u32 mask)
 {
+    const void *data = NULL, *file_name = NULL;
+    u64 data_is      = 0;
     int r;
 
+    if (!(mask & FSNOTIFY_FS_CREATE))
+        return 0;
+
+    bpf_probe_read_kernel(&data, sizeof(data), ctx + 2);
+    bpf_probe_read_kernel(&data_is, sizeof(data_is), ctx + 3);
+    bpf_probe_read_kernel(&file_name, sizeof(file_name), ctx + 4);
+
     preempt_disable();
-    r = fsnotify__enter(mask);
+    // data_is is an int, the upper half of its slot is undefined
+    r = fsnotify__enter(data, (int)data_is, file_name);
     preempt_enable();
 
     return r;
@@ -553,6 +651,24 @@ int BPF_PROG(fexit__do_file_open,
 
 SEC("kretprobe/do_file_open")
 int BPF_KRETPROBE(kretprobe__do_file_open, struct file *ret)
+{
+    return do_filp_open__exit(ret);
+}
+
+// open_by_handle_at(2) opens through do_file_open_root(), not do_file_open().
+// Loaded only for open for write events. Its arguments changed across kernels
+// (a dentry and a vfsmount on 4.18, a struct path later), so the return value
+// is relocated.
+SEC("fexit/do_file_open_root")
+int BPF_PROG(fexit__do_file_open_root)
+{
+    struct file *ret = FUNC_RET_READ(struct file *, do_file_open_root);
+
+    return do_filp_open__exit(ret);
+}
+
+SEC("kretprobe/do_file_open_root")
+int BPF_KRETPROBE(kretprobe__do_file_open_root, struct file *ret)
 {
     return do_filp_open__exit(ret);
 }

@@ -86,6 +86,11 @@ struct ebpf_events_memfd_create_state {
     unsigned int flags;
 };
 
+struct ebpf_events_fs_create_state {
+    struct inode *inode;
+    const void *name;
+};
+
 struct ebpf_events_state {
     union {
         struct ebpf_events_unlink_state unlink;
@@ -98,7 +103,7 @@ struct ebpf_events_state {
         struct ebpf_events_writev_state writev;
         struct ebpf_events_chown_state chown;
         struct ebpf_events_memfd_create_state memfd;
-        /* struct ebpf_events_fs_create fs_create; nada */
+        struct ebpf_events_fs_create_state fs_create;
     };
 };
 

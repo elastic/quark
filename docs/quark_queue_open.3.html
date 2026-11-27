@@ -169,14 +169,33 @@
       <dd>A change of the file mode.</dd>
       <dt id="QQ_FE_CHOWN"><a class="permalink" href="#QQ_FE_CHOWN"><code class="Dv">QQ_FE_CHOWN</code></a></dt>
       <dd>A change of the file owner or group.</dd>
+      <dt id="QQ_FE_OPEN_WRITE"><a class="permalink" href="#QQ_FE_OPEN_WRITE"><code class="Dv">QQ_FE_OPEN_WRITE</code></a></dt>
+      <dd>Each successful open of an existing regular file for write, with
+          <code class="Dv">O_WRONLY</code> or <code class="Dv">O_RDWR</code>,
+          also by
+          <a class="Xr" href="open_by_handle_at.2.html">open_by_handle_at(2)</a>.
+          The event has <code class="Dv">QUARK_FILE_CH_OPEN_WRITE</code> in
+          <a class="permalink" href="#change_mask"><i class="Em" id="change_mask">change_mask</i></a>.
+          It says that the content may change, not that it did, and it also
+          covers changes that no <a class="Xr" href="write.2.html">write(2)</a>
+          makes, like a shared <a class="Xr" href="mmap.2.html">mmap(2)</a>,
+          <a class="Xr" href="splice.2.html">splice(2)</a>,
+          <a class="Xr" href="copy_file_range.2.html">copy_file_range(2)</a>,
+          <a class="Xr" href="fallocate.2.html">fallocate(2)</a> or io_uring.
+          The open that creates the file gives the create event only.</dd>
     </dl>
     <p class="Pp"><a class="Xr" href="quark_queue_default_attr.3.html">quark_queue_default_attr(3)</a>
-        sets it to zero, which means <code class="Dv">QQ_FE_DEFAULT</code>: all
-        of the above. There is no way to select no class at all.
-        <code class="Dv">QQ_FE_ALL</code> is all the classes there are, and may
-        grow beyond <code class="Dv">QQ_FE_DEFAULT</code>. Create, remove and
-        move events are always collected. A class that is not selected does not
-        load its probes. <code class="Nm">quark_queue_open</code> fails with
+        sets it to zero, which means <code class="Dv">QQ_FE_DEFAULT</code>:
+        <code class="Dv">QQ_FE_WRITE</code>,
+        <code class="Dv">QQ_FE_TRUNCATE</code>,
+        <code class="Dv">QQ_FE_CHMOD</code> and
+        <code class="Dv">QQ_FE_CHOWN</code>. There is no way to select no class
+        at all. <code class="Dv">QQ_FE_ALL</code> is all the classes there are.
+        Create, remove and move events are always collected. A class that is not
+        selected does not load its probes, except
+        <code class="Dv">QQ_FE_OPEN_WRITE</code>, which shares a probe with the
+        create events and is turned off in it.
+        <code class="Nm">quark_queue_open</code> fails with
         <code class="Er">EINVAL</code> if <i class="Em">file_events</i> has an
         unknown bit, or if it is not zero and <code class="Dv">QQ_FILE</code> or
         <code class="Dv">QQ_EBPF</code> is not set: the other backends have no

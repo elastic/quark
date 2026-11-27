@@ -18,6 +18,9 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
+#ifdef SYS_io_uring_setup
+#include <linux/io_uring.h>
+#endif
 #include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -903,8 +906,12 @@ drain_for_pid(struct quark_queue *qq, pid_t pid)
 
 		qev = quark_queue_get_event(qq);
 
+		/*
+		 * EINTR comes without a signal too: the teardown of an
+		 * io_uring instance interrupts the next epoll_wait(2).
+		 */
 		if (qev == NULL) {
-			if (quark_queue_block(qq) == -1)
+			if (quark_queue_block(qq) == -1 && errno != EINTR)
 				err(1, "quark_queue_block");
 			continue;
 		}
@@ -2307,15 +2314,16 @@ t_file_rename(const struct test *t, struct quark_queue_attr *qa)
 #define FE_SAW_CHMOD	(1 << 2)
 #define FE_SAW_CHOWN	(1 << 3)
 #define FE_SAW_CREATE	(1 << 4)
-#define FE_SAW_WRITE2	(1 << 5)	/* writev(2), size 2 */
+#define FE_SAW_OPEN_WRITE (1 << 5)
+#define FE_SAW_WRITE2	(1 << 6)	/* writev(2), size 2 */
 #define FE_SAW_WRITE	(FE_SAW_WRITE1|FE_SAW_WRITE2)
 
 /*
- * Create a file, run one write, writev, truncate, chmod and chown on it, then
- * remove it. Return which operations gave an event, as a mask of FE_SAW_*.
- * With QQ_MIN_AGG every probe event is a quark event of its own, and the size
- * tells the write (one byte) and the writev (two bytes) from the truncate
- * (zero bytes), so that each probe must send its own event.
+ * Create a file, run one write, writev, truncate, chmod, chown and open for
+ * write on it, then remove it. Return which operations gave an event, as a
+ * mask of FE_SAW_*. With QQ_MIN_AGG every probe event is a quark event of its
+ * own, and the size tells the write (one byte) and the writev (two bytes)
+ * from the truncate (zero bytes), so that each probe must send its own event.
  */
 static int
 file_events_mask_run(struct quark_queue_attr *qa)
@@ -2326,7 +2334,7 @@ file_events_mask_run(struct quark_queue_attr *qa)
 	struct stat			 st;
 	struct iovec			 iov;
 	char				 path[] = "/tmp/quark-test.XXXXXX";
-	int				 fd, saw;
+	int				 fd, fd2, saw;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
@@ -2345,6 +2353,9 @@ file_events_mask_run(struct quark_queue_attr *qa)
 		err(1, "fchmod");
 	if (fchown(fd, getuid(), getgid()) == -1)
 		err(1, "fchown");
+	if ((fd2 = open(path, O_WRONLY)) == -1)
+		err(1, "open");
+	close(fd2);
 	close(fd);
 	if (unlink(path) == -1)
 		err(1, "unlink");
@@ -2388,6 +2399,9 @@ file_events_mask_run(struct quark_queue_attr *qa)
 		case QUARK_FILE_CH_OWNER:
 			saw |= FE_SAW_CHOWN;
 			break;
+		case QUARK_FILE_CH_OPEN_WRITE:
+			saw |= FE_SAW_OPEN_WRITE;
+			break;
 		default:
 			errx(1, "unexpected file change_mask 0x%x",
 			    qf->change_mask);
@@ -2421,9 +2435,13 @@ t_file_events_mask(const struct test *t, struct quark_queue_attr *qa)
 		{ QQ_FE_TRUNCATE,	FE_SAW_TRUNCATE },
 		{ QQ_FE_CHMOD,		FE_SAW_CHMOD },
 		{ QQ_FE_CHOWN,		FE_SAW_CHOWN },
+		{ QQ_FE_OPEN_WRITE,	FE_SAW_OPEN_WRITE },
 		{ QQ_FE_TRUNCATE | QQ_FE_CHMOD | QQ_FE_CHOWN,
 					FE_SAW_TRUNCATE | FE_SAW_CHMOD |
 					FE_SAW_CHOWN },
+		{ QQ_FE_ALL,		FE_SAW_WRITE | FE_SAW_TRUNCATE |
+					FE_SAW_CHMOD | FE_SAW_CHOWN |
+					FE_SAW_OPEN_WRITE },
 	};
 
 	qa->flags |= QQ_FILE;
@@ -2471,6 +2489,408 @@ t_file_events_mask(const struct test *t, struct quark_queue_attr *qa)
 		if (kprobe && unsetenv("QUARK_BPF_KPROBE") == -1)
 			err(1, "unsetenv");
 	}
+
+	return (0);
+}
+
+static void
+file_open_write_run(struct quark_queue_attr *qa, int fe)
+{
+	struct quark_queue	 qq;
+	struct stat		 st, new_st;
+	char			 dir[] = "/tmp/quark-test.XXXXXX";
+	char			 path[PATH_MAX], fifo[PATH_MAX], sub[PATH_MAX];
+	char			 new_path[PATH_MAX], sub2[PATH_MAX], link_path[PATH_MAX];
+	int			 fd, i, nopen;
+	int			 wflags[] = {
+		O_WRONLY,
+		O_RDWR,
+		O_WRONLY | O_APPEND,
+		O_WRONLY | O_CREAT,	/* the file exists, nothing is created */
+	};
+
+	if (mkdtemp(dir) == NULL)
+		err(1, "mkdtemp");
+	if (snprintf(path, sizeof(path), "%s/file", dir) >= (int)sizeof(path) ||
+	    snprintf(fifo, sizeof(fifo), "%s/fifo", dir) >= (int)sizeof(fifo) ||
+	    snprintf(sub, sizeof(sub), "%s/dir", dir) >= (int)sizeof(sub) ||
+	    snprintf(new_path, sizeof(new_path), "%s/new", dir) >=
+	    (int)sizeof(new_path) ||
+	    snprintf(sub2, sizeof(sub2), "%s/dir2", dir) >= (int)sizeof(sub2) ||
+	    snprintf(link_path, sizeof(link_path), "%s/link", dir) >=
+	    (int)sizeof(link_path))
+		errx(1, "path too long");
+
+	/* Make what exists before the queue is opened */
+	if ((fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0644)) == -1)
+		err(1, "open %s", path);
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+	if (mkfifo(fifo, 0644) == -1)
+		err(1, "mkfifo");
+	if (mkdir(sub, 0755) == -1)
+		err(1, "mkdir");
+
+	qa->file_events = fe;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	for (i = 0; i < (int)nitems(wflags); i++) {
+		if ((fd = open(path, wflags[i], 0644)) == -1)
+			err(1, "open %s 0x%x", path, wflags[i]);
+		close(fd);
+	}
+	nopen = i;
+	/*
+	 * A create of something else in this thread, then an open of the
+	 * existing file: not a create. On 4.18 both raise fsnotify(FS_CREATE)
+	 * before the open, link(2) with the inode of the file itself.
+	 */
+	if (mkdir(sub2, 0755) == -1)
+		err(1, "mkdir");
+	if ((fd = open(path, O_WRONLY)) == -1)
+		err(1, "open %s", path);
+	close(fd);
+	nopen++;
+	if (link(path, link_path) == -1)
+		err(1, "link");
+	if ((fd = open(path, O_WRONLY)) == -1)
+		err(1, "open %s", path);
+	close(fd);
+	nopen++;
+	/* Read only */
+	if ((fd = open(path, O_RDONLY)) == -1)
+		err(1, "open %s", path);
+	close(fd);
+	/* A directory, which can't be opened for write */
+	if ((fd = open(sub, O_RDONLY | O_DIRECTORY)) == -1)
+		err(1, "open %s", sub);
+	close(fd);
+	if (open(sub, O_WRONLY) != -1 || errno != EISDIR)
+		errx(1, "open of a directory for write did not fail");
+	/* A FIFO, O_RDWR does not block */
+	if ((fd = open(fifo, O_RDWR)) == -1)
+		err(1, "open %s", fifo);
+	close(fd);
+	/*
+	 * Created by the open, gives the create only. Its remove, which is
+	 * always reported, ends the sequence.
+	 */
+	if ((fd = open(new_path, O_CREAT | O_EXCL | O_RDWR, 0644)) == -1)
+		err(1, "open %s", new_path);
+	if (fstat(fd, &new_st) == -1)
+		err(1, "fstat");
+	close(fd);
+	if (unlink(new_path) == -1)
+		err(1, "unlink");
+
+	if (fe & QQ_FE_OPEN_WRITE) {
+		for (i = 0; i < nopen; i++)
+			drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+			    QUARK_FILE_CH_OPEN_WRITE, path);
+	}
+	drain_file_event(&qq, new_st.st_ino, QUARK_FILE_OP_CREATE, 0, new_path);
+	drain_file_event(&qq, new_st.st_ino, QUARK_FILE_OP_REMOVE, 0, new_path);
+
+	quark_queue_close(&qq);
+
+	if (unlink(path) == -1 || unlink(link_path) == -1 ||
+	    unlink(fifo) == -1 || rmdir(sub) == -1 || rmdir(sub2) == -1 ||
+	    rmdir(dir) == -1)
+		err(1, "cleanup");
+}
+
+/*
+ * An open of an existing regular file for write gives MODIFY with
+ * QUARK_FILE_CH_OPEN_WRITE, and only with QQ_FE_OPEN_WRITE, also after a
+ * mkdir(2) or link(2) in the same thread. A read only open, an open that
+ * creates the file, a directory and a FIFO give none.
+ */
+static int
+t_file_open_write(const struct test *t, struct quark_queue_attr *qa)
+{
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+
+	file_open_write_run(qa, QQ_FE_OPEN_WRITE);
+	file_open_write_run(qa, QQ_FE_DEFAULT);
+
+	return (0);
+}
+
+#ifdef SYS_io_uring_setup
+/*
+ * Write through io_uring with raw system calls, no liburing: one
+ * IORING_OP_WRITEV, which every io_uring kernel has. Returns -1 with errno
+ * set if io_uring can't be set up (not built, or disabled), otherwise the
+ * result of the write.
+ */
+static int
+io_uring_pwrite(int fd, const void *buf, size_t len, off_t off)
+{
+	struct io_uring_params	 p;
+	struct io_uring_sqe	*sqes;
+	struct io_uring_cqe	*cqe;
+	struct iovec		 iov;
+	size_t			 sq_len, cq_len, sqes_len;
+	char			*sq, *cq;
+	u32			 tail, head;
+	int			 ring, r;
+
+	memset(&p, 0, sizeof(p));
+	if ((ring = syscall(SYS_io_uring_setup, 1, &p)) == -1)
+		return (-1);
+	sq_len = p.sq_off.array + p.sq_entries * sizeof(u32);
+	cq_len = p.cq_off.cqes + p.cq_entries * sizeof(struct io_uring_cqe);
+	sqes_len = p.sq_entries * sizeof(struct io_uring_sqe);
+	sq = mmap(NULL, sq_len, PROT_READ | PROT_WRITE,
+	    MAP_SHARED | MAP_POPULATE, ring, IORING_OFF_SQ_RING);
+	cq = mmap(NULL, cq_len, PROT_READ | PROT_WRITE,
+	    MAP_SHARED | MAP_POPULATE, ring, IORING_OFF_CQ_RING);
+	sqes = mmap(NULL, sqes_len, PROT_READ | PROT_WRITE,
+	    MAP_SHARED | MAP_POPULATE, ring, IORING_OFF_SQES);
+	if (sq == MAP_FAILED || cq == MAP_FAILED || sqes == MAP_FAILED)
+		err(1, "mmap io_uring");
+
+	iov.iov_base = (void *)buf;
+	iov.iov_len = len;
+	memset(&sqes[0], 0, sizeof(sqes[0]));
+	sqes[0].opcode = IORING_OP_WRITEV;
+	sqes[0].fd = fd;
+	sqes[0].off = off;
+	sqes[0].addr = (u64)(uintptr_t)&iov;
+	sqes[0].len = 1;
+
+	tail = *(u32 *)(sq + p.sq_off.tail);
+	((u32 *)(sq + p.sq_off.array))[tail & *(u32 *)(sq + p.sq_off.ring_mask)] = 0;
+	__atomic_store_n((u32 *)(sq + p.sq_off.tail), tail + 1, __ATOMIC_RELEASE);
+	if (syscall(SYS_io_uring_enter, ring, 1, 1, IORING_ENTER_GETEVENTS,
+	    NULL, 0) != 1)
+		err(1, "io_uring_enter");
+
+	head = __atomic_load_n((u32 *)(cq + p.cq_off.head), __ATOMIC_ACQUIRE);
+	if (head == __atomic_load_n((u32 *)(cq + p.cq_off.tail), __ATOMIC_ACQUIRE))
+		errx(1, "io_uring: no completion");
+	cqe = (struct io_uring_cqe *)(cq + p.cq_off.cqes) +
+	    (head & *(u32 *)(cq + p.cq_off.ring_mask));
+	r = cqe->res;
+
+	munmap(sqes, sqes_len);
+	munmap(cq, cq_len);
+	munmap(sq, sq_len);
+	close(ring);
+
+	if (r < 0) {
+		errno = -r;
+		err(1, "io_uring write");
+	}
+
+	return (r);
+}
+#endif	/* SYS_io_uring_setup */
+
+/*
+ * With QQ_FE_OPEN_WRITE and without QQ_FE_WRITE, a file changed through a
+ * shared mmap(2), splice(2), copy_file_range(2), fallocate(2) and io_uring
+ * gives exactly the one event of its open. None of these pass vfs_write().
+ */
+static int
+t_file_open_write_paths(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct stat		 st;
+	char			 path[] = "/tmp/quark-test.XXXXXX";
+	char			 src_path[] = "/tmp/quark-test.XXXXXX";
+	char			 want[4], got[4], *map;
+	int			 fd, src_fd, pfd[2];
+	loff_t			 off;
+#ifdef SYS_copy_file_range
+	loff_t			 off_in;
+#endif
+
+	/* The source of splice and copy_file_range, opened before the queue */
+	if ((src_fd = mkstemp(src_path)) == -1)
+		err(1, "mkstemp");
+	if (write(src_fd, "c", 1) != 1)
+		err(1, "write");
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (ftruncate(fd, 4096) == -1)
+		err(1, "ftruncate");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+	memset(want, 0, sizeof(want));
+
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	qa->file_events = QQ_FE_OPEN_WRITE;
+	if (quark_queue_open(&qq, qa) != 0)
+		err(1, "quark_queue_open");
+
+	if ((fd = open(path, O_RDWR)) == -1)
+		err(1, "open");
+
+	/* Shared mmap */
+	map = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (map == MAP_FAILED)
+		err(1, "mmap");
+	map[0] = want[0] = 'm';
+	if (msync(map, 4096, MS_SYNC) == -1)
+		err(1, "msync");
+	if (munmap(map, 4096) == -1)
+		err(1, "munmap");
+
+	/* splice from a pipe */
+	if (pipe(pfd) == -1)
+		err(1, "pipe");
+	if (write(pfd[1], "s", 1) != 1)
+		err(1, "write pipe");
+	off = 1;
+	if (splice(pfd[0], NULL, fd, &off, 1, 0) != 1)
+		err(1, "splice");
+	want[1] = 's';
+	close(pfd[0]);
+	close(pfd[1]);
+
+	/* copy_file_range */
+#ifdef SYS_copy_file_range
+	off_in = 0;
+	off = 2;
+	if (syscall(SYS_copy_file_range, src_fd, &off_in, fd, &off, 1, 0) == 1)
+		want[2] = 'c';
+	else if (errno == ENOSYS)
+		warnx("%s: no copy_file_range, skipping it", __func__);
+	else
+		err(1, "copy_file_range");
+#else
+	warnx("%s: compiled without copy_file_range, skipping it", __func__);
+#endif
+
+	/* fallocate */
+	if (fallocate(fd, 0, 0, 8192) == -1) {
+		if (errno != EOPNOTSUPP)
+			err(1, "fallocate");
+		warnx("%s: no fallocate on this filesystem, skipping it",
+		    __func__);
+	}
+
+	/* io_uring */
+#ifdef SYS_io_uring_setup
+	if (io_uring_pwrite(fd, "u", 1, 3) == 1)
+		want[3] = 'u';
+	else
+		warn("%s: io_uring unavailable, skipping it", __func__);
+#else
+	warnx("%s: compiled without io_uring, skipping it", __func__);
+#endif
+
+	/* The changes landed */
+	if (pread(fd, got, sizeof(got), 0) != sizeof(got))
+		err(1, "pread");
+	if (memcmp(got, want, sizeof(got)))
+		errx(1, "file content is not what was written");
+	close(fd);
+	/* The remove, always reported, ends the sequence */
+	if (unlink(path) == -1)
+		err(1, "unlink");
+
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+	    QUARK_FILE_CH_OPEN_WRITE, path);
+	drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_REMOVE, 0, path);
+
+	quark_queue_close(&qq);
+
+	close(src_fd);
+	if (unlink(src_path) == -1)
+		err(1, "unlink");
+
+	return (0);
+}
+
+/*
+ * open_by_handle_at(2) opens through do_file_open_root(), not through
+ * do_filp_open(), and has a probe of its own. It needs CAP_DAC_READ_SEARCH
+ * and a filesystem that exports file handles.
+ */
+static int
+t_file_open_by_handle(const struct test *t, struct quark_queue_attr *qa)
+{
+	struct quark_queue	 qq;
+	struct stat		 st, sst;
+	struct {
+		struct file_handle	fh;
+		unsigned char		f_handle[MAX_HANDLE_SZ];
+	} h;
+	char			 path[] = "/tmp/quark-test.XXXXXX";
+	char			 sentinel[sizeof(path)];
+	int			 fd, mount_fd, mount_id, i;
+	int			 fes[] = { QQ_FE_OPEN_WRITE, QQ_FE_DEFAULT };
+
+	if ((fd = mkstemp(path)) == -1)
+		err(1, "mkstemp");
+	if (fstat(fd, &st) == -1)
+		err(1, "fstat");
+	close(fd);
+
+	memset(&h, 0, sizeof(h));
+	h.fh.handle_bytes = MAX_HANDLE_SZ;
+	if (name_to_handle_at(AT_FDCWD, path, &h.fh, &mount_id, 0) == -1) {
+		if (errno != EOPNOTSUPP && errno != ENOSYS)
+			err(1, "name_to_handle_at");
+		warn("%s: no file handles on this filesystem, skipping",
+		    __func__);
+		(void)unlink(path);
+		return (0);
+	}
+	if ((mount_fd = open("/tmp", O_RDONLY | O_DIRECTORY)) == -1)
+		err(1, "open /tmp");
+	/* Without CAP_DAC_READ_SEARCH, as in some containers */
+	if ((fd = open_by_handle_at(mount_fd, &h.fh, O_RDONLY)) == -1) {
+		if (errno != EPERM)
+			err(1, "open_by_handle_at");
+		warn("%s: skipping", __func__);
+		close(mount_fd);
+		(void)unlink(path);
+		return (0);
+	}
+	close(fd);
+
+	qa->flags |= QQ_FILE | QQ_MIN_AGG;
+	for (i = 0; i < (int)nitems(fes); i++) {
+		qa->file_events = fes[i];
+		if (quark_queue_open(&qq, qa) != 0)
+			err(1, "quark_queue_open");
+
+		if ((fd = open_by_handle_at(mount_fd, &h.fh, O_WRONLY)) == -1)
+			err(1, "open_by_handle_at O_WRONLY");
+		close(fd);
+		if ((fd = open_by_handle_at(mount_fd, &h.fh, O_RDONLY)) == -1)
+			err(1, "open_by_handle_at O_RDONLY");
+		close(fd);
+		/* A file made and removed, always reported, ends the sequence */
+		strlcpy(sentinel, "/tmp/quark-test.XXXXXX", sizeof(sentinel));
+		if ((fd = mkstemp(sentinel)) == -1)
+			err(1, "mkstemp");
+		if (fstat(fd, &sst) == -1)
+			err(1, "fstat");
+		close(fd);
+		if (unlink(sentinel) == -1)
+			err(1, "unlink");
+
+		if (fes[i] & QQ_FE_OPEN_WRITE)
+			drain_file_event(&qq, st.st_ino, QUARK_FILE_OP_MODIFY,
+			    QUARK_FILE_CH_OPEN_WRITE, path);
+		drain_file_event(&qq, sst.st_ino, QUARK_FILE_OP_CREATE, 0,
+		    sentinel);
+		drain_file_event(&qq, sst.st_ino, QUARK_FILE_OP_REMOVE, 0,
+		    sentinel);
+
+		quark_queue_close(&qq);
+	}
+
+	close(mount_fd);
+	if (unlink(path) == -1)
+		err(1, "unlink");
 
 	return (0);
 }
@@ -7802,6 +8222,9 @@ struct test all_tests[] = {
 	T_EBPF(t_file_bad_unlink_rename),
 	T_EBPF(t_file_rename),
 	T_EBPF(t_file_events_mask),
+	T_EBPF(t_file_open_write),
+	T_EBPF(t_file_open_write_paths),
+	T_EBPF(t_file_open_by_handle),
 	T_EBPF(t_bypass),
 	T_EBPF(t_file_bypass),
 	T_EBPF(t_memfd),

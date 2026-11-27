@@ -324,3 +324,15 @@ Changes from 0.11 to 0.12
     before. A class that is not selected does not load its probes, so
     leaving out QQ_FE_WRITE removes the per write events. The Go
     QueueAttr got FileEvents, and quark-mon(8) got -f.
+  o New file event class QQ_FE_OPEN_WRITE, not in QQ_FE_DEFAULT: an
+    open of an existing regular file for write, also by
+    open_by_handle_at(2), gives a MODIFY event with the new change
+    QUARK_FILE_CH_OPEN_WRITE. It covers changes that no write(2) makes,
+    like a shared mmap(2), splice(2), copy_file_range(2), fallocate(2)
+    and io_uring. The open that creates a file gives the CREATE only.
+    The event dump shows the change mask, ECS has the action
+    file-opened-for-write, and quark-mon(8) -f takes open_write.
+  o On 4.18 kernels (RHEL 8) a mkdir(2), link(2), symlink(2) or
+    mknod(2) no longer turns the next open of an existing file by the
+    same thread into a CREATE: the create seen by fsnotify must be the
+    inode and the name that the open returns.
