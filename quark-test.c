@@ -3816,8 +3816,50 @@ t_bypass(const struct test *t, struct quark_queue_attr *qa)
 /*
  * Bypass delivers the raw events of the file event classes: an open for write
  * of an existing file is an EBPF_EVENT_FILE_MODIFY with
- * EBPF_FILE_CHANGE_TYPE_OPEN_WRITE, and a hard link an EBPF_EVENT_FILE_LINK.
+ * EBPF_FILE_CHANGE_TYPE_OPEN_WRITE, a hard link an EBPF_EVENT_FILE_LINK, and a
+ * chmod a MODIFY with EBPF_FILE_CHANGE_TYPE_PERMISSIONS that has the path and
+ * the mode before it in EBPF_VL_FIELD_OLD_MODE.
  */
+#define BYPASS_SAW_OPEN_WRITE	(1 << 0)
+#define BYPASS_SAW_LINK		(1 << 1)
+#define BYPASS_SAW_CHMOD	(1 << 2)
+
+/* The path and old_mode fields of a chmod, as a QQ_BYPASS reader sees them */
+static void
+bypass_check_chmod(const struct ebpf_file_modify_event *fm, const char *path,
+    u32 old_mode)
+{
+	struct ebpf_varlen_field	*field;
+	u16				 m;
+	u32				 i;
+	int				 saw_path = 0, saw_old_mode = 0;
+
+	FOR_EACH_VARLEN_FIELD_PTR(&fm->vl_fields, field, i) {
+		switch (field->type) {
+		case EBPF_VL_FIELD_PATH:
+			if (strcmp(field->data, path) != 0)
+				errx(1, "bypass chmod path %s, want %s",
+				    field->data, path);
+			saw_path = 1;
+			break;
+		case EBPF_VL_FIELD_OLD_MODE:
+			if (field->size != sizeof(m))
+				errx(1, "bypass old_mode size %u", field->size);
+			memcpy(&m, field->data, sizeof(m));
+			if (m != old_mode)
+				errx(1, "bypass old_mode 0%o, want 0%o", m,
+				    old_mode);
+			saw_old_mode = 1;
+			break;
+		default:
+			break;
+		}
+	}
+	if (!saw_path || !saw_old_mode)
+		errx(1, "bypass chmod: path %d old_mode %d", saw_path,
+		    saw_old_mode);
+}
+
 static int
 t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 {
@@ -3830,12 +3872,11 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 	struct stat				 st;
 	char					 path[] = "/tmp/quark-test.XXXXXX";
 	char					 link_path[sizeof(path) + 5];
-	u64					 wanted;
-	int					 fd;
+	int					 fd, wanted;
 
 	qa->flags &= ~QQ_ENTRY_LEADER;
 	qa->flags |= QQ_BYPASS | QQ_FILE;
-	qa->file_events = QQ_FE_OPEN_WRITE | QQ_FE_LINK;
+	qa->file_events = QQ_FE_OPEN_WRITE | QQ_FE_LINK | QQ_FE_CHMOD;
 
 	if ((fd = mkstemp(path)) == -1)
 		err(1, "mkstemp");
@@ -3854,13 +3895,15 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 	close(fd);
 	if (link(path, link_path) == -1)
 		err(1, "link");
+	if (chmod(path, 0755) == -1)
+		err(1, "chmod");
 
-	wanted = EBPF_EVENT_FILE_MODIFY | EBPF_EVENT_FILE_LINK;
+	wanted = BYPASS_SAW_OPEN_WRITE | BYPASS_SAW_LINK | BYPASS_SAW_CHMOD;
 	if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
 		err(1, "clock_gettime");
 	for (now = start; wanted != 0; (void)clock_gettime(CLOCK_MONOTONIC, &now)) {
 		if ((now.tv_sec - start.tv_sec) >= 5)
-			errx(1, "bypass: missing events 0x%llx", wanted);
+			errx(1, "bypass: missing events 0x%x", wanted);
 		qev = drain_for_pid(&qq, -1);
 		assert(qev->events == QUARK_EV_BYPASS);
 		assert(qev->bypass != NULL);
@@ -3871,21 +3914,28 @@ t_file_bypass(const struct test *t, struct quark_queue_attr *qa)
 			if (fm->pids.tgid != (u32)getpid() ||
 			    fm->finfo.inode != st.st_ino)
 				continue;
-			if (fm->change_type != EBPF_FILE_CHANGE_TYPE_OPEN_WRITE)
-				errx(1, "change_type %d, want %d",
-				    fm->change_type,
-				    EBPF_FILE_CHANGE_TYPE_OPEN_WRITE);
+			switch (fm->change_type) {
+			case EBPF_FILE_CHANGE_TYPE_OPEN_WRITE:
+				wanted &= ~BYPASS_SAW_OPEN_WRITE;
+				break;
+			case EBPF_FILE_CHANGE_TYPE_PERMISSIONS:
+				bypass_check_chmod(fm, path, st.st_mode);
+				wanted &= ~BYPASS_SAW_CHMOD;
+				break;
+			default:
+				errx(1, "change_type %d", fm->change_type);
+			}
 			break;
 		case EBPF_EVENT_FILE_LINK:
 			fl = (const struct ebpf_file_rename_event *)eh;
 			if (fl->pids.tgid != (u32)getpid() ||
 			    fl->finfo.inode != st.st_ino)
 				continue;
+			wanted &= ~BYPASS_SAW_LINK;
 			break;
 		default:
-			continue;
+			break;
 		}
-		wanted &= ~eh->type;
 	}
 
 	quark_queue_close(&qq);
