@@ -1464,6 +1464,21 @@ assert_start_time(struct quark_queue *qq, struct quark_queue_attr *qa,
 	assert(qp->proc_time_boot <= after);
 }
 
+/*
+ * ECS object obj, say process or process.parent, describes qp
+ */
+static void
+assert_ecs_entity_id(const cJSON *obj, const struct quark_process *qp)
+{
+	const cJSON	*pid, *entity_id;
+
+	pid = cJSON_GetObjectItemCaseSensitive(obj, "pid");
+	entity_id = cJSON_GetObjectItemCaseSensitive(obj, "entity_id");
+	assert(cJSON_IsNumber(pid) && (u32)pid->valueint == qp->pid);
+	assert(cJSON_IsString(entity_id) &&
+	    !strcmp(entity_id->valuestring, qp->proc_entity_id));
+}
+
 static int
 fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 {
@@ -1480,6 +1495,7 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	const struct quark_process	*parent;
 	char				*ecs = NULL;
 	size_t				 ecs_len = 0;
+	cJSON				*json, *json_process;
 
 	if (quark_queue_open(&qq, qa) != 0)
 		err(1, "quark_queue_open");
@@ -1617,14 +1633,13 @@ fork_exec_exit(const struct test *t, struct quark_queue_attr *qa, int relative)
 	assert(parent != NULL);
 	assert(strlen(parent->proc_entity_id) == 16);
 	assert(quark_event_to_ecs(&qq, qev, &ecs, &ecs_len) == 0);
-	snprintf(path, sizeof(path),
-	    "\"process\":{\"pid\":%d,\"entity_id\":\"%s\"",
-	    child, qp->proc_entity_id);
-	assert(strstr(ecs, path) != NULL);
-	snprintf(path, sizeof(path),
-	    "\"parent\":{\"pid\":%d,\"entity_id\":\"%s\"",
-	    getpid(), parent->proc_entity_id);
-	assert(strstr(ecs, path) != NULL);
+	json = cJSON_Parse(ecs);
+	assert(json != NULL);
+	json_process = cJSON_GetObjectItemCaseSensitive(json, "process");
+	assert_ecs_entity_id(json_process, qp);
+	assert_ecs_entity_id(
+	    cJSON_GetObjectItemCaseSensitive(json_process, "parent"), parent);
+	cJSON_Delete(json);
 	free(ecs);
 
 	quark_queue_close(&qq);
