@@ -204,6 +204,11 @@ struct quark_process {
 	char	*cwd;
 	/* QUARK_F_CGROUP */
 	char	*cgroup;
+	/* Relations, NULL if unknown or without QQ_RELATIONS */
+	struct quark_process	*parent;
+	struct quark_process	*group_leader;
+	struct quark_process	*session_leader;
+	struct quark_process	*entry_leader;
 };
 .Ed
 .Pp
@@ -246,6 +251,45 @@ is valid.
 .Em cgroup
 is valid.
 .El
+.Pp
+.Em parent ,
+.Em group_leader ,
+.Em session_leader
+and
+.Em entry_leader
+point to the related processes, NULL if unknown, a process can be its own
+leader.
+They require
+.Dv QQ_RELATIONS ,
+and
+.Em entry_leader
+also
+.Dv QQ_ENTRY_LEADER .
+They follow
+.Em proc_ppid
+and
+.Em proc_entry_leader ,
+which then only change on fork and exec: a reparented process keeps its
+original parent until it execs.
+Without
+.Dv QQ_RELATIONS ,
+.Em proc_ppid
+is the current parent as of the last event of the process.
+.Em proc_pgid
+and
+.Em proc_sid
+are updated on every fork, exec, exit and id change of the process, as
+setpgid has no event.
+A relation that is unknown is resolved on a later event of the process, once
+the related process is known.
+A related process that exited is kept for as long as one of them points to it,
+regardless of
+.Em cache_grace_time
+in
+.Xr quark_queue_open 3 ,
+its own relations and
+.Em env
+are then NULL.
 .El
 .Sh MEMORY PROTOCOL
 The returned

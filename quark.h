@@ -647,6 +647,7 @@ enum {
 enum gc_type {
 	GC_INVALID,
 	GC_PROCESS,
+	GC_RELEASED,
 	GC_SOCKET,
 	GC_POD,
 	GC_CONTAINER,
@@ -724,6 +725,14 @@ struct quark_process {
 	struct quark_container *container;
 	char	*env;
 	size_t	 env_len;
+	/* Relations, NULL if unknown, kept while pointed to */
+	struct quark_process	*parent;
+	struct quark_process	*group_leader;
+	struct quark_process	*session_leader;
+	struct quark_process	*entry_leader;
+	u32	 refcnt;	/* relations pointing to us */
+	u32	 retained;	/* grace time over, freed when refcnt reaches 0 */
+	u64	 gc_until;	/* queued events up to this might need us */
 };
 
 struct quark_process_iter {
@@ -954,6 +963,7 @@ struct quark_queue_stats {
 	u64	non_aggregations;
 	u64	lost;
 	u64	garbage_collections;
+	u64	retained_processes; /* exited, kept only for relations */
 	u64	bpf_state_lost; /* discarded/rejected BPF invocation frames */
 	u64	bpf_metadata_lost; /* metadata capture failed for an operation */
 	u64	bpf_retprobe_missed; /* tracefs misses; may overlap state_lost */
@@ -987,6 +997,7 @@ struct quark_queue_attr {
 #define QQ_GETPID		(1 << 13)
 #define QQ_NOVA			(1 << 14)
 #define QQ_MPROTECT		(1 << 15)
+#define QQ_RELATIONS		(1 << 16)
 	int			 flags;
 	int			 max_length;
 	int			 cache_grace_time;	/* in ms */
@@ -1005,6 +1016,8 @@ struct quark_queue {
 	struct raw_event_by_pidtime	 raw_event_by_pidtime;
 	struct process_by_pid		 process_by_pid;
 	struct gc_queue			 event_gc;
+	struct gc_queue			 process_gc;	/* in exit order */
+	struct gc_queue			 release_gc;	/* retained, nothing points to */
 	struct socket_by_src_dst	 socket_by_src_dst;
 	struct passwd_by_uid		 passwd_by_uid;
 	struct group_by_gid		 group_by_gid;

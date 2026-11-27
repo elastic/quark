@@ -199,6 +199,11 @@
 	char	*cwd;
 	/* QUARK_F_CGROUP */
 	char	*cgroup;
+	/* Relations, NULL if unknown or without QQ_RELATIONS */
+	struct quark_process	*parent;
+	struct quark_process	*group_leader;
+	struct quark_process	*session_leader;
+	struct quark_process	*entry_leader;
 };</pre>
     </div>
     <p class="Pp"><i class="Em">flags</i> represent the fields which are known
@@ -236,6 +241,32 @@
       <dd><a class="permalink" href="#cgroup"><i class="Em" id="cgroup">cgroup</i></a>
           is valid.</dd>
     </dl>
+    <p class="Pp" id="parent"><a class="permalink" href="#parent"><i class="Em">parent</i></a>,
+        <a class="permalink" href="#group_leader"><i class="Em" id="group_leader">group_leader</i></a>,
+        <a class="permalink" href="#session_leader"><i class="Em" id="session_leader">session_leader</i></a>
+        and <i class="Em">entry_leader</i> point to the related processes, NULL
+        if unknown, a process can be its own leader. They require
+        <code class="Dv">QQ_RELATIONS</code>, and <i class="Em">entry_leader</i>
+        also <code class="Dv">QQ_ENTRY_LEADER</code>. They follow
+        <i class="Em">proc_ppid</i> and
+        <a class="permalink" href="#proc_entry_leader"><i class="Em" id="proc_entry_leader">proc_entry_leader</i></a>,
+        which then only change on fork and exec: a reparented process keeps its
+        original parent until it execs. Without
+        <code class="Dv">QQ_RELATIONS</code>, <i class="Em">proc_ppid</i> is the
+        current parent as of the last event of the process.
+        <a class="permalink" href="#proc_pgid"><i class="Em" id="proc_pgid">proc_pgid</i></a>
+        and
+        <a class="permalink" href="#proc_sid"><i class="Em" id="proc_sid">proc_sid</i></a>
+        are updated on every fork, exec, exit and id change of the process, as
+        setpgid has no event. A relation that is unknown is resolved on a later
+        event of the process, once the related process is known. A related
+        process that exited is kept for as long as one of them points to it,
+        regardless of
+        <a class="permalink" href="#cache_grace_time"><i class="Em" id="cache_grace_time">cache_grace_time</i></a>
+        in <a class="Xr" href="quark_queue_open.3.html">quark_queue_open(3)</a>,
+        its own relations and
+        <a class="permalink" href="#env"><i class="Em" id="env">env</i></a> are
+        then NULL.</p>
   </dd>
 </dl>
 <section class="Sh">
@@ -276,7 +307,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 24, 2026</td>
+    <td class="foot-date">November 26, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>

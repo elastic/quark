@@ -610,9 +610,22 @@ enum ecs_process_kind {
 };
 
 /*
+ * A related process, without QQ_RELATIONS by pid, which might belong to another
+ * process by now or be gone.
+ */
+static const struct quark_process *
+ecs_related(struct quark_queue *qq, const struct quark_process *rel, u32 pid)
+{
+	if (qq->flags & QQ_RELATIONS)
+		return (rel);
+
+	return (quark_process_lookup(qq, pid));
+}
+
+/*
  * process.* where qp is the actual process we are filling, and orig_qp is the
  * top level process, this is only relevant for session view, where we must
- * compare pids and add same_as_process: bool. Kind expresses what kind of
+ * compare them and add same_as_process: bool. Kind expresses what kind of
  * process we are dealing it, TOP_LEVEL being the top level.
  */
 static int
@@ -713,7 +726,8 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 		int				 parent_first = 1;
 		const struct quark_process	*parent;
 
-		if ((parent = quark_process_lookup(qq, qp->proc_ppid)) != NULL)
+		if ((parent = ecs_related(qq, qp->parent,
+		    qp->proc_ppid)) != NULL)
 			ecs_process(qq, h, parent,
 			    ECS_PROC_PARENT, boottime, &parent_first);
 	}
@@ -723,9 +737,9 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 	if ((qq->flags & QQ_ENTRY_LEADER) == 0)
 		return (0);
 
-	group_leader = quark_process_lookup(qq, qp->proc_pgid);
-	session_leader = quark_process_lookup(qq, qp->proc_sid);
-	entry_leader = quark_process_lookup(qq, qp->proc_entry_leader);
+	group_leader = ecs_related(qq, qp->group_leader, qp->proc_pgid);
+	session_leader = ecs_related(qq, qp->session_leader, qp->proc_sid);
+	entry_leader = ecs_related(qq, qp->entry_leader, qp->proc_entry_leader);
 
 	/* process.group_leader.* */
 	if (group_leader != NULL) {
@@ -736,7 +750,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 			ecs_process(qq, h, group_leader,
 			    ECS_PROC_LEADER, boottime, &group_leader_first);
 			hanson_add_key_value_bool(h, "same_as_process",
-			    group_leader->pid == qp->pid, &group_leader_first);
+			    group_leader == qp, &group_leader_first);
 		}
 		hanson_close_object(h);
 	}
@@ -749,7 +763,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 			ecs_process(qq, h, session_leader,
 			    ECS_PROC_LEADER, boottime, &session_leader_first);
 			hanson_add_key_value_bool(h, "same_as_process",
-			    session_leader->pid == qp->pid, &session_leader_first);
+			    session_leader == qp, &session_leader_first);
 		}
 		hanson_close_object(h);
 	}
@@ -762,7 +776,7 @@ ecs_process(struct quark_queue *qq, struct hanson *h,
 			ecs_process(qq, h, entry_leader,
 			    ECS_PROC_LEADER, boottime, &entry_leader_first);
 			hanson_add_key_value_bool(h, "same_as_process",
-			    entry_leader->pid == qp->pid, &entry_leader_first);
+			    entry_leader == qp, &entry_leader_first);
 			/* process.entry_leader.entry_meta.* */
 			hanson_add_object(h, "entry_meta", &entry_leader_first);
 			{

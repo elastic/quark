@@ -123,6 +123,18 @@ Enable EBPF-only executable mprotect attempt events.
 Each event describes one VMA reaching the kernel's
 .Fn security_file_mprotect
 check and does not imply that the protection change was committed.
+.It Dv QQ_RELATIONS
+Keep the parent, group leader, session leader and entry leader of each process,
+see
+.Em parent
+in
+.Xr quark_queue_get_event 3 .
+A process that exited is kept for as long as another process is related to it,
+see
+.Em cache_grace_time ,
+and
+.Em proc_ppid
+only changes on fork and exec.
 .El
 .It Em max_length
 The maximum size of the internal buffering queue in number of events.
@@ -139,6 +151,30 @@ When a process exits, it is removed from the cache, but only after
 this gives the user a small window where it can still query a terminated process
 via
 .Xr quark_process_lookup 3 .
+.Pp
+With
+.Dv QQ_RELATIONS ,
+a process is kept for longer while it is the parent, group leader, session
+leader or entry leader of another process, or while queued events might still
+relate to it.
+The relations in
+.Xr quark_queue_get_event 3
+don't depend on
+.Em cache_grace_time ,
+which can be zero.
+Past
+.Em cache_grace_time
+such a process is only reachable through those relations,
+.Xr quark_process_lookup 3 ,
+.Xr quark_process_iter 3
+and events other than process events don't see it.
+A process kept this way has no relations or
+.Em env
+of its own, so there are at most four of them per other process in the cache,
+see
+.Em retained_processes
+in
+.Xr quark_queue_get_stats 3 .
 .It Em hold_time
 How long to buffer (hold) an event before delivering it to the user via
 .Xr quark_queue_get_event 3 .

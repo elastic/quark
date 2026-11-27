@@ -24,6 +24,7 @@ func TestStatsConversion(t *testing.T) {
 	cStats.non_aggregations = 4<<32 + 11
 	cStats.lost = 5<<32 + 13
 	cStats.garbage_collections = 6<<32 + 17
+	cStats.retained_processes = 11<<32 + 37
 	cStats.bpf_state_lost = 7<<32 + 19
 	cStats.bpf_metadata_lost = 8<<32 + 23
 	cStats.bpf_retprobe_missed = 9<<32 + 29
@@ -37,6 +38,7 @@ func TestStatsConversion(t *testing.T) {
 		NonAggregations:       4<<32 + 11,
 		Lost:                  5<<32 + 13,
 		GarbageCollections:    6<<32 + 17,
+		RetainedProcesses:     11<<32 + 37,
 		BPFStateLost:          7<<32 + 19,
 		BPFMetadataLost:       8<<32 + 23,
 		BPFRetprobeMissed:     9<<32 + 29,

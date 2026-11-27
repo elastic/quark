@@ -22,6 +22,11 @@ in the queue.
 This includes container metadata that was added after
 .Xr quark_queue_open 3
 returned.
+.Pp
+Like
+.Xr quark_process_lookup 3 ,
+it skips a process that exited and is only kept past the grace time for the
+relations of other processes.
 .Sh EXAMPLES
 .Bd -literal
 

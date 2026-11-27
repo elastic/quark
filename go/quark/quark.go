@@ -147,6 +147,15 @@ type Process struct {
 	Cgroup    string
 	PoisonTag uint64         // Set by matching poison rules, zero if none matched
 	Container *ContainerInfo // nil if the process is not in a container
+	// Relations, nil if unknown or without QQ_RELATIONS. They are
+	// one level deep, the relations of a relation are nil, and a process
+	// related more than once is copied once, Snapshot shares the copies
+	// across all processes. A process can be its own leader. EntryLeader
+	// needs QQ_ENTRY_LEADER.
+	Parent        *Process
+	GroupLeader   *Process
+	SessionLeader *Process
+	EntryLeader   *Process
 }
 
 // Passwd is a cached passwd(5) entry, see PasswdLookup.
@@ -280,6 +289,7 @@ type Queue struct {
 	quarkQueue *C.struct_quark_queue   // pointer to the queue structure
 	ruleset    *C.struct_quark_ruleset // active ruleset, nil if none
 	epollFd    int
+	relations  bool // fill Process relations, the queue has QQ_RELATIONS
 }
 
 const (
@@ -298,6 +308,11 @@ const (
 	QQ_PTRACE        = int(C.QQ_PTRACE)
 	QQ_MODULE_LOAD   = int(C.QQ_MODULE_LOAD)
 	QQ_MPROTECT      = int(C.QQ_MPROTECT)
+	// QQ_RELATIONS keeps the parent and leaders of each process, and fills
+	// Process.Parent, GroupLeader, SessionLeader and EntryLeader in
+	// GetEvent, Lookup and Snapshot. Each related process is copied, about
+	// one Process conversion per relation.
+	QQ_RELATIONS = int(C.QQ_RELATIONS)
 
 	// Event.events
 	QUARK_EV_FORK                  = uint64(C.QUARK_EV_FORK)
@@ -371,6 +386,7 @@ type Stats struct {
 	NonAggregations       uint64
 	Lost                  uint64
 	GarbageCollections    uint64
+	RetainedProcesses     uint64 // Exited, kept only for the relations of others.
 	BPFStateLost          uint64
 	BPFMetadataLost       uint64
 	BPFRetprobeMissed     uint64
@@ -480,6 +496,7 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	}
 
 	queue.epollFd = int(C.quark_queue_get_epollfd(queue.quarkQueue))
+	queue.relations = attr.Flags&QQ_RELATIONS != 0
 
 	return &queue, nil
 }
@@ -510,6 +527,7 @@ func (queue *Queue) GetEvent() (Event, bool) {
 
 	event.Events = uint64(cev.events)
 	event.Process = processFromC(cev.process)
+	queue.relationsFromC(&event.Process, cev.process, nil)
 	if cev.socket != nil {
 		socket := socketFromC(cev.socket)
 		event.Socket = &socket
@@ -573,15 +591,20 @@ func (queue *Queue) GetEventAsECS() ([]byte, bool, error) {
 }
 
 // Lookup returns the Process associated with PID in quark's internal cache. It
-// refreshes the process link to container metadata before it returns.
+// refreshes the process link to container metadata before it returns. A
+// process that exited is returned within the queue's CacheGraceTime, past it
+// a process kept for the relations of others is only reachable through them.
 func (queue *Queue) Lookup(pid int) (Process, bool) {
-	process, _ := C.quark_process_lookup(queue.quarkQueue, C.int(pid))
+	cProcess, _ := C.quark_process_lookup(queue.quarkQueue, C.int(pid))
 
-	if process == nil {
+	if cProcess == nil {
 		return Process{}, false
 	}
 
-	return processFromC(process), true
+	process := processFromC(cProcess)
+	queue.relationsFromC(&process, cProcess, nil)
+
+	return process, true
 }
 
 // SocketLookup looks up the socket identified by the local and remote
@@ -690,15 +713,19 @@ func (queue *Queue) Block() error {
 }
 
 // Snapshot returns all processes in the cache. It refreshes each process link
-// to container metadata before it copies the process into the snapshot.
+// to container metadata before it copies the process into the snapshot. Like
+// Lookup, it skips processes only kept for the relations of others.
 func (queue *Queue) Snapshot() []Process {
 	var processes []Process
 	var iter C.struct_quark_process_iter
 	var qp *C.struct_quark_process
 
+	copies := make(map[*C.struct_quark_process]*Process)
 	C.quark_process_iter_init(&iter, queue.quarkQueue)
 	for qp = C.quark_process_iter_next(&iter); qp != nil; qp = C.quark_process_iter_next(&iter) {
-		processes = append(processes, processFromC(qp))
+		process := processFromC(qp)
+		queue.relationsFromC(&process, qp, copies)
+		processes = append(processes, process)
 	}
 
 	return processes
@@ -716,6 +743,7 @@ func (queue *Queue) Stats() Stats {
 	stats.NonAggregations = uint64(cStats.non_aggregations)
 	stats.Lost = uint64(cStats.lost)
 	stats.GarbageCollections = uint64(cStats.garbage_collections)
+	stats.RetainedProcesses = uint64(cStats.retained_processes)
 	stats.BPFStateLost = uint64(cStats.bpf_state_lost)
 	stats.BPFMetadataLost = uint64(cStats.bpf_metadata_lost)
 	stats.BPFRetprobeMissed = uint64(cStats.bpf_retprobe_missed)
@@ -862,6 +890,38 @@ func processFromC(cProcess *C.struct_quark_process) Process {
 	}
 
 	return process
+}
+
+// relationsFromC fills the relations of process, one level deep, if the queue
+// has QQ_RELATIONS. copies holds the copy of each related process, nil makes one
+// when needed. Container metadata is linked through the process pointer, as
+// Lookup does through the pid, which might belong to another process by now.
+func (queue *Queue) relationsFromC(process *Process,
+	cProcess *C.struct_quark_process,
+	copies map[*C.struct_quark_process]*Process) {
+	if !queue.relations {
+		return
+	}
+	relation := func(c *C.struct_quark_process) *Process {
+		if c == nil {
+			return nil
+		}
+		if p, ok := copies[c]; ok {
+			return p
+		}
+		if copies == nil {
+			copies = make(map[*C.struct_quark_process]*Process)
+		}
+		C.link_container_data(queue.quarkQueue, c)
+		p := processFromC(c)
+		copies[c] = &p
+		return &p
+	}
+
+	process.Parent = relation(cProcess.parent)
+	process.GroupLeader = relation(cProcess.group_leader)
+	process.SessionLeader = relation(cProcess.session_leader)
+	process.EntryLeader = relation(cProcess.entry_leader)
 }
 
 func addrPortFromQuarkSockaddr(csa *C.struct_quark_sockaddr) netip.AddrPort {

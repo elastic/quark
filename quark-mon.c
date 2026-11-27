@@ -36,6 +36,7 @@ dump_stats(struct quark_queue *qq)
 	    "%14s"
 	    "%14s"
 	    "%14s"
+	    "%14s"
 	    "%14s",
 	    "insertions",
 	    "removals",
@@ -43,6 +44,7 @@ dump_stats(struct quark_queue *qq)
 	    "non-aggs",
 	    "lost",
 	    "gc-cols",
+	    "retained",
 	    "stalls"
 	);
 	fputc('\n', stderr);
@@ -53,9 +55,11 @@ dump_stats(struct quark_queue *qq)
 	    "%14llu"
 	    "%14llu"
 	    "%14llu"
+	    "%14llu"
 	    "%14llu",
 	    s.insertions, s.removals, s.aggregations,
-	    s.non_aggregations, s.lost, s.garbage_collections, s.stalls);
+	    s.non_aggregations, s.lost, s.garbage_collections,
+	    s.retained_processes, s.stalls);
 	fputc('\n', stderr);
 }
 
@@ -120,7 +124,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s -h\n", program_invocation_short_name);
-	fprintf(stderr, "usage: %s [-BbDEeFGgHhkLMNnSsTtuv]\n",
+	fprintf(stderr, "usage: %s [-BbDEeFGgHhkLMNnRSsTtuv]\n",
 	    program_invocation_short_name);
 	fprintf(stderr, "%16c [-C filename ] [-K kubeconfig] "
 	    "[-l maxlength] [-m maxnodes]\n", ' ');
@@ -188,7 +192,7 @@ main(int argc, char *argv[])
 	    !strcmp(argv[1], "help")))
 		display_man();
 
-	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:Ttr:SsuvV")) != -1) {
+	while ((ch = getopt(argc, argv, "BbC:DEeFGgHhK:kLl:Mm:NnP:RTtr:SsuvV")) != -1) {
 		const char *errstr;
 
 		switch (ch) {
@@ -280,6 +284,9 @@ main(int argc, char *argv[])
 			filter_ppid = strtonum(optarg, 1, UINT32_MAX, &errstr);
 			if (errstr != NULL)
 				errx(1, "invalid ppid: %s", errstr);
+			break;
+		case 'R':
+			qa.flags |= QQ_RELATIONS;
 			break;
 		case 's':
 			do_snap = 0;

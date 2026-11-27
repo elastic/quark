@@ -317,3 +317,35 @@ Changes from 0.11 to 0.12
     like event times and the EBPF backend. It was CLOCK_MONOTONIC, so
     after a suspend ECS process.end read as earlier by the total time
     asleep since boot.
+  o New QQ_RELATIONS flag, opt-in, quark-mon -R sets it. With it,
+    quark_process{} has parent, group_leader, session_leader and
+    entry_leader, pointers to the related processes, NULL if unknown or
+    without the flag. ECS process.parent and the leaders use them, they
+    used to be looked up by pid and went missing once the related
+    process was collected, for any child that outlived the grace time,
+    and ECS same_as_process compares the processes, not their pids. A
+    process that exited stays in the cache while one of them points to
+    it, or while queued events up to its exit might still relate to it,
+    regardless of cache_grace_time. Past cache_grace_time,
+    quark_process_lookup(3), quark_process_iter(3) and events other than
+    process events don't see it. It keeps no relations or env of its
+    own, so at most four are kept per other cached process.
+  o With QQ_RELATIONS, proc_ppid only changes on fork and exec, an
+    orphan keeps its original parent until it execs, so the exit of a
+    reparented process reports the parent it was started by, not the
+    reaper. A relation that was unknown is resolved on a later event of
+    the process, once the related process is known.
+  o A fork for a pid that exited gets a new quark_process{}, the old
+    one gives the pid away and quark_process_lookup(3) returns the new
+    one. So does any event for an exited process that is only kept for
+    its relations.
+  o KPROBE with QQ_THREAD_EVENTS: a new thread no longer copies the
+    executable and command line of the parent process, nor moves the
+    process to its current parent, and the exit of a thread other than
+    the leader no longer drops the process from the cache.
+  o quark_queue_stats{} got retained_processes, the number of exited
+    processes kept only for the relations of others with QQ_RELATIONS.
+    quark-mon shows it, and so does Go Stats.RetainedProcesses.
+  o Go: QQ_RELATIONS, and Process got Parent, GroupLeader, SessionLeader
+    and EntryLeader, filled by GetEvent, Lookup and Snapshot when the
+    queue has it.

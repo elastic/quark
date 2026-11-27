@@ -120,6 +120,16 @@
           <a class="permalink" href="#security_file_mprotect"><code class="Fn" id="security_file_mprotect">security_file_mprotect</code></a>()
           check and does not imply that the protection change was
         committed.</dd>
+      <dt id="QQ_RELATIONS"><a class="permalink" href="#QQ_RELATIONS"><code class="Dv">QQ_RELATIONS</code></a></dt>
+      <dd>Keep the parent, group leader, session leader and entry leader of each
+          process, see
+          <a class="permalink" href="#parent"><i class="Em" id="parent">parent</i></a>
+          in
+          <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>.
+          A process that exited is kept for as long as another process is
+          related to it, see <i class="Em">cache_grace_time</i>, and
+          <a class="permalink" href="#proc_ppid"><i class="Em" id="proc_ppid">proc_ppid</i></a>
+          only changes on fork and exec.</dd>
     </dl>
   </dd>
   <dt id="max_length"><a class="permalink" href="#max_length"><i class="Em">max_length</i></a></dt>
@@ -135,6 +145,23 @@
         after <i class="Em">cache_grace_time</i>, this gives the user a small
         window where it can still query a terminated process via
         <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>.</p>
+    <p class="Pp" id="env">With <code class="Dv">QQ_RELATIONS</code>, a process
+        is kept for longer while it is the parent, group leader, session leader
+        or entry leader of another process, or while queued events might still
+        relate to it. The relations in
+        <a class="Xr" href="quark_queue_get_event.3.html">quark_queue_get_event(3)</a>
+        don't depend on <i class="Em">cache_grace_time</i>, which can be zero.
+        Past <i class="Em">cache_grace_time</i> such a process is only reachable
+        through those relations,
+        <a class="Xr" href="quark_process_lookup.3.html">quark_process_lookup(3)</a>,
+        <a class="Xr" href="quark_process_iter.3.html">quark_process_iter(3)</a>
+        and events other than process events don't see it. A process kept this
+        way has no relations or
+        <a class="permalink" href="#env"><i class="Em">env</i></a> of its own,
+        so there are at most four of them per other process in the cache, see
+        <a class="permalink" href="#retained_processes"><i class="Em" id="retained_processes">retained_processes</i></a>
+        in
+        <a class="Xr" href="quark_queue_get_stats.3.html">quark_queue_get_stats(3)</a>.</p>
   </dd>
   <dt id="hold_time"><a class="permalink" href="#hold_time"><i class="Em">hold_time</i></a></dt>
   <dd>How long to buffer (hold) an event before delivering it to the user via
@@ -185,7 +212,7 @@
 </div>
 <table class="foot">
   <tr>
-    <td class="foot-date">November 2, 2026</td>
+    <td class="foot-date">November 26, 2026</td>
     <td class="foot-os">Linux</td>
   </tr>
 </table>
