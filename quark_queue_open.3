@@ -158,17 +158,17 @@ Which modify events the file events of
 collect, a bitmask of:
 .Bl -tag -width QQ_FE_TRUNCATE
 .It Dv QQ_FE_WRITE
-Each successful
-.Xr write 2 ,
-.Xr pwrite 2 ,
-.Xr writev 2
+Each
+.Lk https://man7.org/linux/man-pages/man2/write.2.html write(2) ,
+.Lk https://man7.org/linux/man-pages/man2/pwrite.2.html pwrite(2) ,
+.Lk https://man7.org/linux/man-pages/man2/writev.2.html writev(2)
 and
-.Xr pwritev 2
-to a regular file.
+.Lk https://man7.org/linux/man-pages/man2/pwritev.2.html pwritev(2)
+that writes at least one byte to a regular file.
 This is the most frequent file event.
 .It Dv QQ_FE_TRUNCATE
 A file truncated by
-.Xr ftruncate 2
+.Lk https://man7.org/linux/man-pages/man2/ftruncate.2.html ftruncate(2)
 or by an open with
 .Dv O_TRUNC .
 .It Dv QQ_FE_CHMOD

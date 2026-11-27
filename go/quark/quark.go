@@ -459,6 +459,11 @@ func OpenQueue(attr QueueAttr) (*Queue, error) {
 	var queue Queue
 	var cattr C.struct_quark_queue_attr
 
+	// C.int would drop the bits above 31, check them before
+	if attr.FileEvents&^QQ_FE_ALL != 0 {
+		return nil, syscall.EINVAL
+	}
+
 	C.quark_queue_default_attr(&cattr)
 
 	if attr.RuleText != "" {

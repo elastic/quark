@@ -2302,17 +2302,20 @@ t_file_rename(const struct test *t, struct quark_queue_attr *qa)
 	return (0);
 }
 
-#define FE_SAW_WRITE	(1 << 0)
+#define FE_SAW_WRITE1	(1 << 0)	/* write(2), size 1 */
 #define FE_SAW_TRUNCATE	(1 << 1)
 #define FE_SAW_CHMOD	(1 << 2)
 #define FE_SAW_CHOWN	(1 << 3)
 #define FE_SAW_CREATE	(1 << 4)
+#define FE_SAW_WRITE2	(1 << 5)	/* writev(2), size 2 */
+#define FE_SAW_WRITE	(FE_SAW_WRITE1|FE_SAW_WRITE2)
 
 /*
  * Create a file, run one write, writev, truncate, chmod and chown on it, then
  * remove it. Return which operations gave an event, as a mask of FE_SAW_*.
  * With QQ_MIN_AGG every probe event is a quark event of its own, and the size
- * tells the writes (one and two bytes) from the truncate (zero bytes).
+ * tells the write (one byte) and the writev (two bytes) from the truncate
+ * (zero bytes), so that each probe must send its own event.
  */
 static int
 file_events_mask_run(struct quark_queue_attr *qa)
@@ -2365,7 +2368,19 @@ file_events_mask_run(struct quark_queue_attr *qa)
 			errx(1, "unexpected file op_mask 0x%x", qf->op_mask);
 		switch (qf->change_mask) {
 		case QUARK_FILE_CH_CONTENT:
-			saw |= qf->size > 0 ? FE_SAW_WRITE : FE_SAW_TRUNCATE;
+			switch (qf->size) {
+			case 0:
+				saw |= FE_SAW_TRUNCATE;
+				break;
+			case 1:
+				saw |= FE_SAW_WRITE1;
+				break;
+			case 2:
+				saw |= FE_SAW_WRITE2;
+				break;
+			default:
+				errx(1, "unexpected file size %llu", qf->size);
+			}
 			break;
 		case QUARK_FILE_CH_PERMS:
 			saw |= FE_SAW_CHMOD;

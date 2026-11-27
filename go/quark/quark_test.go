@@ -374,6 +374,10 @@ func TestFileEvents(t *testing.T) {
 	attr.FileEvents = ^QQ_FE_ALL
 	_, err = OpenQueue(attr)
 	require.ErrorIs(t, err, syscall.EINVAL)
+	// Unknown class that a conversion to C.int would drop
+	attr.FileEvents = 1 << 32
+	_, err = OpenQueue(attr)
+	require.ErrorIs(t, err, syscall.EINVAL)
 
 	if os.Geteuid() != 0 {
 		t.Skip("skipping the open, needs root")
