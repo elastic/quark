@@ -170,12 +170,11 @@
       <dd>A change of the file mode, with the change
           <code class="Dv">QUARK_FILE_CH_PERMS</code>. <i class="Em">mode</i> is
           the mode the change set and <i class="Em">old_mode</i> the mode before
-          it, both normally read under the inode lock of the change. If the
-          kprobe fallback misses the return of that change,
-          <i class="Em">mode</i> is the requested mode applied to
-          <i class="Em">old_mode</i>, which can keep a set-group-ID bit that the
-          kernel cleared. <i class="Em">old_mode</i> is zero for the other
-          changes, and when it is unknown. An aggregated event has the
+          it, both read under the inode lock of the change.
+          <i class="Em">old_mode</i> is zero for the other changes, and when it
+          is unknown: if a probe of the kprobe fallback missed part of the
+          change, <i class="Em">mode</i> is then read after it, and a later
+          change of the file can show in it. An aggregated event has the
           <i class="Em">mode</i> of its last event and the
           <i class="Em">old_mode</i> of its first chmod. Events whose mode
           differs in executable state do not aggregate, nor chmods whose

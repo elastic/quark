@@ -1464,11 +1464,9 @@ static int chmod_common__enter(const struct path *path, umode_t mode)
         return 0;
     }
 
+    // The modes are read under the inode lock, by the notify_change() probes
     state.chmod.path = (struct path *)path;
     state.chmod.mode = mode;
-    // Read before chmod_common() takes the inode lock, notify_change__enter()
-    // reads it again under the lock.
-    state.chmod.old_mode = BPF_CORE_READ(path, dentry, d_inode, i_mode);
     ebpf_events_state__set(EBPF_EVENTS_STATE_CHMOD, &state);
 
     return 0;
@@ -1606,19 +1604,22 @@ int BPF_KPROBE(kprobe__chmod_common, const struct path *path, umode_t mode)
     return r;
 }
 
-// The mode the chmod set, read at the return of notify_change() under the
-// inode lock. If the kprobe fallback missed that return, a kretprobe of a
-// nested call or its own, the mode chmod_common() computes from the requested
-// one and the mode under the lock: it only differs from the inode when the
-// kernel clears the set-group-ID bit. 0 when unknown, the inode mode is sent.
-static umode_t chmod_common__new_mode(struct ebpf_events_state *state)
+// The modes before and after the chmod, both read under the inode lock by the
+// notify_change() probes. If a probe missed its part, as a kretprobe of the
+// fallback can, both are 0: the event has an unknown old_mode and the inode
+// mode at the exit, which a later chmod of the file can have changed. No mode
+// is guessed from the request, a filesystem can ignore part of it.
+static void chmod_common__modes(struct ebpf_events_state *state,
+                                umode_t *old_mode,
+                                umode_t *new_mode)
 {
-    if (state->chmod.new_mode != 0)
-        return state->chmod.new_mode;
-    if (state->chmod.locked)
-        return (state->chmod.mode & 07777) | (state->chmod.old_mode & ~07777);
-
-    return 0;
+    if (state->chmod.locked && state->chmod.new_mode != 0) {
+        *old_mode = state->chmod.old_mode;
+        *new_mode = state->chmod.new_mode;
+    } else {
+        *old_mode = 0;
+        *new_mode = 0;
+    }
 }
 
 static void chmod_common__exit(struct path *path, int ret, umode_t old_mode, umode_t new_mode)
@@ -1646,8 +1647,7 @@ int BPF_PROG(fexit__chmod_common, const struct path *path, umode_t mode, int ret
     // unknown (0).
     state = ebpf_events_state__get(EBPF_EVENTS_STATE_CHMOD);
     if (state) {
-        old_mode = state->chmod.old_mode;
-        new_mode = chmod_common__new_mode(state);
+        chmod_common__modes(state, &old_mode, &new_mode);
         ebpf_events_state__del(EBPF_EVENTS_STATE_CHMOD);
     }
     chmod_common__exit((struct path *)path, ret, old_mode, new_mode);
@@ -1668,8 +1668,7 @@ int BPF_KRETPROBE(kretprobe__chmod_common, int ret)
         goto out;
 
     path     = state->chmod.path;
-    old_mode = state->chmod.old_mode;
-    new_mode = chmod_common__new_mode(state);
+    chmod_common__modes(state, &old_mode, &new_mode);
     ebpf_events_state__del(EBPF_EVENTS_STATE_CHMOD);
     chmod_common__exit(path, ret, old_mode, new_mode);
 
